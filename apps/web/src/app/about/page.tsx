@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import type { FaqItem } from '@/components/marketing';
+import type { ConditionalFaqItem } from '@/components/marketing';
 import {
   CtaBand,
   Faq,
@@ -13,6 +13,7 @@ import {
   RevealGroup,
   Section,
   SectionHeading,
+  faqForPayments,
   faqSchema,
   graph,
 } from '@/components/marketing';
@@ -38,6 +39,7 @@ import {
   SITE_KEYWORDS,
   SITE_NAME,
 } from '@/lib/site';
+import { takesPayments } from '@/server/billing/payments-live';
 
 /**
  * /about — the position, not the company.
@@ -172,6 +174,11 @@ const PRINCIPLES = [
     icon: FileTextIcon,
     title: 'No dark patterns in the billing',
     body: 'Prices are on the pricing page in numbers. There is no trial that quietly becomes a subscription, no card taken for a free tier, and cancelling is a button rather than a conversation with support.',
+    // Once payments are live (P12): what a trial actually does — the owners
+    // are emailed three days and one day before it first charges — and where
+    // the cancel button is.
+    bodyWhenPaymentsLive:
+      'Prices are on the pricing page in numbers. A trial emails the owners three days and one day before it first charges, the free tier never takes a card, and cancelling is a button in the billing page rather than a conversation with support.',
     cost: 'The quiet auto-conversion is the single most effective growth mechanism in this category, and we have given it up.',
   },
 ] as const;
@@ -282,6 +289,10 @@ const MILESTONES = [
     state: 'next',
     title: 'Billing, switched on',
     body: 'Every paid feature is currently on for everybody and no card is collected anywhere. When that changes we will say so before it changes, and nobody will find out from an invoice.',
+    // Shipped once this deployment takes real payments (P12).
+    stateWhenPaymentsLive: 'shipped',
+    bodyWhenPaymentsLive:
+      'Paid plans are bought from an organisation’s billing page. Dodo Payments, our merchant of record, takes the card, charges the tax and issues the invoice; we never see the card number, and a declined card never stops a build.',
   },
 ] as const;
 
@@ -317,7 +328,7 @@ const STACK = [
    trusting it with credentials — including the two most companies leave off
    the page, which are "can you read them" and "are you ready yet". Answers are
    plain text because the same strings are published as the page's FAQPage. */
-const FAQ: readonly FaqItem[] = [
+const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Who is behind xecret?',
     answer:
@@ -342,6 +353,11 @@ const FAQ: readonly FaqItem[] = [
     question: 'How do you make money?',
     answer:
       'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. While xecret is in pre-alpha every paid feature is on for everybody and no card is collected.',
+    whenPaymentsLive: {
+      question: 'How do you make money?',
+      answer:
+        'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record.',
+    },
   },
   {
     question: 'Is xecret production-ready?',
@@ -353,7 +369,20 @@ const FAQ: readonly FaqItem[] = [
 /** The small uppercase label that names a half of a pairing. */
 const PAIR_LABEL = 'text-fg-subtle text-[0.6875rem] font-semibold tracking-[0.14em] uppercase';
 
-export default function AboutPage() {
+export default async function AboutPage() {
+  const paymentsLive = await takesPayments();
+  const faq = faqForPayments(FAQ, paymentsLive);
+  // The billing milestone moves to Shipped, and the billing principle says
+  // what a trial does, once this deployment takes real payments.
+  const milestones = MILESTONES.map((milestone) =>
+    paymentsLive && 'bodyWhenPaymentsLive' in milestone
+      ? {
+          ...milestone,
+          state: milestone.stateWhenPaymentsLive,
+          body: milestone.bodyWhenPaymentsLive,
+        }
+      : milestone,
+  );
   return (
     <PublicPage current="about">
       <JsonLd
@@ -372,7 +401,7 @@ export default function AboutPage() {
             about: { '@id': absoluteUrl('/#organization') },
             publisher: { '@id': absoluteUrl('/#organization') },
           },
-          faqSchema(FAQ),
+          faqSchema(faq),
           breadcrumbSchema([{ name: 'About', path: '/about' }]),
         )}
       />
@@ -563,7 +592,11 @@ export default function AboutPage() {
                     <h3 className="text-fg mt-5 text-[1.0625rem] leading-6 font-semibold tracking-[-0.01em] text-balance">
                       {principle.title}
                     </h3>
-                    <p className="text-fg-muted mt-3 text-sm leading-7">{principle.body}</p>
+                    <p className="text-fg-muted mt-3 text-sm leading-7">
+                      {paymentsLive && 'bodyWhenPaymentsLive' in principle
+                        ? principle.bodyWhenPaymentsLive
+                        : principle.body}
+                    </p>
                   </div>
 
                   {/* The price, on its own ground, at the foot of every card:
@@ -589,7 +622,9 @@ export default function AboutPage() {
             <ArrowRightIcon className="size-3.5" />
           </Link>
           <Link href="/pricing" className={QUIET_LINK}>
-            Prices, and what pre-alpha means for them
+            {paymentsLive
+              ? 'Prices, and how paying works'
+              : 'Prices, and what pre-alpha means for them'}
             <ArrowRightIcon className="size-3.5" />
           </Link>
         </div>
@@ -612,7 +647,7 @@ export default function AboutPage() {
         <RevealGroup className="mt-12 grid gap-10 lg:grid-cols-4 lg:gap-8">
           {MILESTONE_COLUMNS.map((key) => {
             const state = MILESTONE_STATES[key];
-            const items = MILESTONES.filter((milestone) => milestone.state === key);
+            const items = milestones.filter((milestone) => milestone.state === key);
 
             return (
               <div key={key} className={state.column}>
@@ -706,7 +741,7 @@ export default function AboutPage() {
           title="The questions we would ask a company holding our credentials."
         />
         <Reveal className="mx-auto mt-10 max-w-3xl">
-          <Faq items={FAQ} />
+          <Faq items={faq} />
           <p className="text-fg-muted mt-6 text-center text-sm leading-7">
             Questions about the CLI, CI, migrating off a{' '}
             <code className="text-fg-muted font-mono text-[0.8125rem]">.env</code> file and the

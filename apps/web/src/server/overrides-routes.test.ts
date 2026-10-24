@@ -45,6 +45,14 @@ vi.mock('./logging', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./logging')>()),
   createRequestLog: logging.createRequestLog,
 }));
+// The usage meter (P12) arms a fifteen-second flush in the request's own
+// `waitUntil`, and every request here awaits what it deferred — so the meter
+// only records. Counting itself is `billing/usage.test.ts`'s to prove.
+const meter = vi.hoisted(() => ({ countSecretFetch: vi.fn() }));
+vi.mock('./billing/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./billing/usage')>()),
+  countSecretFetch: meter.countSecretFetch,
+}));
 
 const listRoute =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/overrides/route');

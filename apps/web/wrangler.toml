@@ -98,23 +98,48 @@ ZEPTOMAIL_FROM_NAME = "Xecret"
 # about the omission on every run; an unanswered warning is one that eventually
 # gets read past.
 ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
-
-# The scheduled jobs (`apps/web/worker.ts`, which dispatches on the expression).
+# Payments: Dodo (P12, apps/web/src/server/billing/config.ts). None of these
+# are credentials — the API key and the webhook secret are Worker secrets, at
+# the foot of this file. They are left out until Dodo is set up, because
+# billing is all or nothing: with none of them the deployment simply takes no
+# payments, and with some of them every billing route answers 503. Production
+# takes LIVE mode only — the test-mode rehearsal runs on staging, against its
+# own database (docs/operations/billing.md §2–3). Fill them in together, from
+# the Dodo mode DODO_ENVIRONMENT names, and run `npm run phase:check-deploy`
+# (.local/dodo/dodo-setup.md, docs/operations/billing.md):
 #
-#  - Hourly, `17 * * * *`: deletes reset vaults whose seven-day retention has
-#    ended (P23, migration 0020), and prunes finished webhook deliveries past
-#    thirty days and read sightings unseen for 180 (P19 §5, §7).
-#  - Every five minutes, `*/5 * * * *`: webhook retries that are due, and the
-#    read-alert digests whose hour has passed (P19 §5, §7). A retry delay of "a
-#    minute" therefore means "on the next run".
+#   DODO_ENVIRONMENT = "live_mode"
+#   DODO_PRODUCT_PRO_MONTHLY = "pdt_…"
+#   DODO_PRODUCT_PRO_YEARLY = "pdt_…"
+#   DODO_PRODUCT_TEAM_MONTHLY = "pdt_…"
+#   DODO_PRODUCT_TEAM_YEARLY = "pdt_…"
+#   DODO_METER_SECRET_FETCH = "secret_fetch_kilo"
+#   DODO_ADDON_SAML = "adn_…"            (optional)
+
+# The scheduled jobs (`apps/web/worker.ts`, `src/server/scheduled.ts`, which
+# dispatches on the expression):
+#
+#   17 * * * *   hourly — deletes reset vaults whose seven-day retention has
+#                ended (P23, migration 0020); prunes finished webhook
+#                deliveries past thirty days and read sightings unseen for 180
+#                (P19 §5, §7); then the billing job (P12): ended cancellations,
+#                seat-sync retries, the overage report to Dodo, the dated
+#                reminder emails. The billing job does nothing on a deployment
+#                without the DODO_* variables.
+#   */5 * * * *  every five minutes — webhook retries that are due, and the
+#                read-alert digests whose hour has passed (P19 §5, §7). A retry
+#                delay of "a minute" therefore means "on the next run".
+#   41 3 * * *   nightly — the billing reconciler (P12): every subscription
+#                compared with Dodo, drift reported, nothing corrected.
 #
 # Declared here, under the environment, rather than at the top level, so that
 # local development and the staging stub — which has no database — never run
 # them. Correctness does not hang on their timing: every read of a retained
-# vault already ignores one past its window, and a late retry or digest is late,
-# never lost. `worker.ts` matches these strings exactly; change both together.
+# vault already ignores one past its window, a late retry or digest is late,
+# never lost, and no secret fetch ever waits on billing. All three strings are
+# matched exactly by `src/server/scheduled.ts`; change them there too.
 [env.production.triggers]
-crons = ["17 * * * *", "*/5 * * * *"]
+crons = ["17 * * * *", "*/5 * * * *", "41 3 * * *"]
 
 # ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
 # account's default Secrets Store by scripts/deploy-bootstrap.sh.
@@ -204,6 +229,9 @@ XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
 # `scripts/deploy-web.sh` now refuses to build any environment that does not
 # name one.
 WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
+# Same key map as production: staging shares the database, so it must wrap
+# with a version the shared XECRET_ROOT_KEYS can open.
+XECRET_ROOT_KEY_VERSION = "1"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NOT IN THIS FILE — credentials, and the two ways to hold them
@@ -223,6 +251,11 @@ WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
 #   BETTERSTACK_SOURCE_TOKEN  authorises writing into your log stream
 #   BETTERSTACK_INGEST_URL    the source's own https://<id>.betterstackdata.com
 #   XECRET_LOG_LEVEL          debug | info | warn | error, for an incident
+#   DODO_API_KEY              authenticates every call to Dodo; can change
+#                             what a customer is charged (P12, optional)
+#   DODO_WEBHOOK_SECRET       verifies every payment webhook (`whsec_…`);
+#                             whoever holds it can forge "this organisation
+#                             paid" (P12, optional — with DODO_API_KEY)
 #
 # All are plain strings the Worker reads from `process.env`, so they can be set
 # per environment without a code change. They are deliberately not `vars` here:

@@ -13,13 +13,15 @@ import {
   RevealGroup,
   Section,
   SectionHeading,
+  faqForPayments,
   faqSchema,
   graph,
 } from '@/components/marketing';
-import type { FaqItem } from '@/components/marketing';
+import type { ConditionalFaqItem } from '@/components/marketing';
 // Direct module imports rather than the `components/ui` barrel, for the reason
-// given in app/layout.tsx: this page is prerendered and public, and the barrel
-// drags the dashboard's dependencies onto it.
+// given in app/layout.tsx: this page is public, and the barrel drags the
+// dashboard's dependencies onto it. (It renders per request since the cost
+// answer asks whether this deployment takes payments — `takesPayments`.)
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -38,6 +40,7 @@ import {
   type IconProps,
 } from '@/components/ui/icons';
 import { cn } from '@/lib/cn';
+import { takesPayments } from '@/server/billing/payments-live';
 import {
   absoluteUrl,
   breadcrumbSchema,
@@ -329,7 +332,7 @@ const COMPARISON = [
   },
 ] as const;
 
-const FAQ: readonly FaqItem[] = [
+const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret zero-knowledge?',
     answer:
@@ -359,16 +362,23 @@ const FAQ: readonly FaqItem[] = [
     question: 'What does xecret cost?',
     answer:
       'While xecret is pre-alpha, every paid feature is on for everybody and no card is collected. At 1.0 the free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
+    // Pre-alpha copy until this deployment takes real payments (P12).
+    whenPaymentsLive: {
+      question: 'What does xecret cost?',
+      answer:
+        'The free tier is $0 forever and never asks for a card: 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record. Self-hosting is free, always.',
+    },
   },
 ];
 
-export default function FeaturesPage() {
+export default async function FeaturesPage() {
+  const faq = faqForPayments(FAQ, await takesPayments());
   return (
     <PublicPage current="features">
       <JsonLd
         data={graph(
           softwareApplicationSchema(),
-          faqSchema(FAQ),
+          faqSchema(faq),
           breadcrumbSchema([{ name: 'Features', path: '/features' }]),
         )}
       />
@@ -655,7 +665,7 @@ export default function FeaturesPage() {
         />
 
         <Reveal className="mt-10">
-          <Faq items={FAQ} className="mx-auto max-w-3xl" />
+          <Faq items={faq} className="mx-auto max-w-3xl" />
         </Reveal>
 
         <Reveal delay={120} className="mt-6">

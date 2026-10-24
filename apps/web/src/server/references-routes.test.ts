@@ -47,6 +47,14 @@ vi.mock('./logging', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./logging')>()),
   createRequestLog: logging.createRequestLog,
 }));
+// The usage meter (P12) arms a fifteen-second flush in the request's own
+// `waitUntil`, and every request here awaits what it deferred — so the meter
+// only records. Counting itself is `billing/usage.test.ts`'s to prove.
+const meter = vi.hoisted(() => ({ countSecretFetch: vi.fn() }));
+vi.mock('./billing/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./billing/usage')>()),
+  countSecretFetch: meter.countSecretFetch,
+}));
 
 const pullRoute =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/pull/route');
@@ -450,6 +458,9 @@ describe('pulling an environment that uses neither feature', () => {
       expect(answer.body.bundleVersion).toBe(1);
       expect(answer.body.layers).toBeUndefined();
     }
+    // Each pull is one fetch towards the plan (P12), resolved or not.
+    expect(meter.countSecretFetch).toHaveBeenCalledTimes(2);
+    expect(meter.countSecretFetch).toHaveBeenCalledWith(expect.anything(), org.orgId);
   });
 
   it('costs no statement the feature added', async () => {

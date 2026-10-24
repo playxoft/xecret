@@ -677,8 +677,141 @@ and an owner's password stays a way in past it (the break-glass, T3). A compromi
 identity provider can sign in as any of that organisation's non-owner members, inside its
 verified domains — that is what attaching one means, and it is bounded to that organisation.
 
-*T14 — payments (P12) — is held by the billing branch, which merges first and puts its section
-here.*
+---
+
+### T14 — Payments: forged, replayed or misplaced billing events, and wrong charges (P12)
+
+| | |
+|---|---|
+| **Goal** | Obtain a paid plan without paying; or make a customer pay twice, or for the wrong thing; or use billing to lock a team out of its secrets |
+| **Impact** | High (money, one organisation's features) · **Likelihood** | Medium |
+
+**Threats:** a forged webhook ("this organisation paid for Team") · a captured genuine webhook
+replayed later, or a genuine one delivered twice · webhooks arriving out of order, so an old
+state overwrites a new one · a webhook placed against the wrong organisation — including a
+purchase made outside our checkout (a Dodo payment link with one of our organisation ids typed
+into its metadata, which Dodo signs like any other) · a client choosing its own price, seat
+count or currency (purchasing-power arbitrage by VPN) · two checkouts completing, charging
+twice · one person's two organisations sharing a Dodo customer, so either owner's portal shows
+the other's cards and invoices · an admin opening the customer portal to cancel the owner's
+plan · a seat count drifting from the membership in either direction · a usage meter that
+reports a unit twice, or bills usage from before the subscription · an unpaid subscription
+keeping its plan for ever · a test-mode subscription treated as a paid one · a billing failure,
+or a billing outage, refusing a secret fetch · a customer id, card detail, API key or webhook
+secret reaching a log or an audit row.
+
+**Mitigations:**
+- **The webhook's credential is its signature**: Standard Webhooks HMAC-SHA256 over the raw
+  body with `DODO_WEBHOOK_SECRET`, checked by the reference library (constant-time,
+  rotation-aware) before anything is read or written; a timestamp outside five minutes either
+  way is refused. The secret is validated as `whsec_` plus base64 at configuration time, so a
+  mistyped one fails the deploy check rather than every delivery. A delivery is **claimed** by
+  its `webhook-id` — a primary key, inserted in the same transaction as the change, so
+  concurrent duplicates cannot both win and a handler that throws un-claims it for Dodo's
+  retry. Tests cover forgery, tampering, replay outside the window, and three deliveries —
+  sequential and concurrent — of events whose re-application is *not* idempotent, so the claim
+  is proven on its own.
+- **Snapshots, not deltas.** Every subscription event carries the whole subscription and is
+  applied as one, skipped if older than the last applied for that subscription
+  (`dodo_event_at`), and — for two stamped alike — if its webhook id does not sort after the
+  last one applied (`dodo_event_id`), so both arrival orders end in the same state.
+- **Placement from our own records**: the subscription id we stored, or the checkout we
+  created — by the session id a payment names (`billing_checkouts`), or by the **random nonce**
+  our checkout put in the metadata beside the organisation id. Metadata is attached only when
+  the nonce is that of an open checkout of *that* organisation (unspent, under a week old); an
+  organisation id with no nonce, an unknown one, or another organisation's attaches nothing,
+  is claimed and raised for a human. Attaching a subscription spends its checkout in the same
+  transaction, so nothing attaches through it again — including a subscription an operator
+  later took the organisation off. Never anything a browser sent. An event for one of our
+  subscriptions that cannot be placed yet is answered 503, unclaimed, so Dodo retries — and so
+  is one carrying the nonce of the organisation's own checkout, unspent but past its week, which
+  is never mistaken for a stranger's purchase. A checkout whose payment linked a subscription
+  that never activated is looked up at Dodo by the hourly job and applied, so a customer who
+  paid is not left on Free.
+- **The client names a plan and a period and nothing else** (strict schemas). Seats are counted
+  from the membership, prices are Dodo's, and the currency follows the billing country Dodo
+  records — currency selection is switched off at checkout, and for twelve months a returning
+  organisation is pinned to its first country and currency. A billing country that differs from
+  the card's issuing country, or moves mid-lock, is raised for a human — once, when Dodo's report
+  changes — and changes nothing.
+- **A customer per organisation**: checkout by email always asks Dodo for a new customer
+  (`always_create_new_customer`), so one person owning two organisations is two customers; a
+  returning organisation reuses only its own. The portal is opened only for a customer exactly
+  one organisation holds — a shared one from before this rule is refused and raised.
+- **No second subscription**: checkout is refused for a subscribed organisation, and for one
+  whose paid checkout is still being applied; a repeated request (the same `Idempotency-Key`)
+  gets the first checkout or plan change back instead of a second one at Dodo. A second live
+  subscription that arrives anyway is not applied and alerts a human to refund it — including a
+  second checkout paid before the first activated, which never replaces the first one's link. A
+  webhook never overwrites an operator's grant, and a checkout payment never links a
+  subscription to one (only to a row on Free). That holds for a grant written over the id of a
+  subscription that ended, too: `plan:set` takes any row still carrying a provider id off it
+  before it writes a billing field, whatever the plan, and a paid row that follows a
+  subscription with no product recorded — which no snapshot leaves — is never written by a
+  webhook, never ended by the hourly job's sweeps, and reported by the reconciler once rather
+  than every night. `plan:set` treats a Free row whose paid checkout's subscription is still
+  activating as Dodo's, as it does a paid one: refused without `--over-dodo`, never detached as
+  if its subscription had ended. A checkout for a row recorded in the other Dodo mode is
+  refused before Dodo is asked, rather than charged and then refused. A checkout or plan change Dodo did not answer (a
+  timeout, a broken connection) says it may have gone through, never that nothing was charged,
+  and keeps its idempotency key claimed, so a retry cannot reach Dodo a second time.
+- **Owners only** (`billing.manage`), browser sessions only; the portal link is audited and
+  never stored or logged. Checkout, plan change and the change preview are rate limited.
+- **Seats** follow the membership: the seat-sync debt is written **inside the membership
+  change's own transaction**, so it exists even if the push after the commit never runs. One
+  push at a time per organisation (a lease), counted under the debt's generation and cleared
+  only if no membership change bumped it — a member joining mid-push is pushed next, and the
+  last quantity Dodo applies is the membership's. A push that would collide with a plan change
+  Dodo has scheduled waits for it rather than overriding it — after asking Dodo whether it is
+  still scheduled, so a withdrawn downgrade does not hold the bill back for a period. A push Dodo
+  refuses while already billing that quantity is a paid debt, not a failure. An activation's
+  debt is written in the activation's own transaction. Failures back off and are given up
+  on — raised once — after ten; the nightly reconciler compares Dodo's quantity with the
+  membership itself, not just with our row, and reports any difference — never correcting it
+  silently.
+- **Usage** is counted in the isolate, per second, and flushed at most fifteen seconds after
+  the first fetch waiting (a timer in that request's own `waitUntil`) or at fifty fetches; each
+  count lands in the month it was made in — a monthly plan's period, or a month of a yearly
+  plan's year from its billing anniversary, never a whole year against a monthly allowance. Each
+  month is billed against the allowance it opened with, recorded on its row and only ever
+  raised, so no later downgrade or cleared override re-bills a past month. Only periods the
+  subscription paid for are metered (`metered_from`: its activation, or its trial's end — the
+  booked end, or the first payment Dodo took before it) — usage on Free, or on trial, is
+  never billed by the subscription that followed. A failed flush is dropped, not retried, so
+  the meter can only under-count. Each overage unit has a deterministic event id, which Dodo
+  treats as an idempotency key, and units are recorded as reported only after Dodo accepted
+  them, with `GREATEST`.
+- **Unpaid is not for ever**: a subscription on hold for fourteen days is ended here — Free,
+  nothing deleted, the owners emailed and a human alerted — and a hold or past-due snapshot of
+  that subscription never grants the plan back; only Dodo saying it is `active` again does. A
+  trial still marked as one hours after it ended is refreshed from Dodo's API.
+- **Test is not live**: every row records the Dodo mode its ids came from; a deployment never
+  applies an event to, checks out, pushes seats for, meters, reminds about or reconciles a row
+  of the other mode, and the public pages say payments are taken only in live mode. `check:env`
+  asks Dodo whether the API key and the products belong to the mode `DODO_ENVIRONMENT` names.
+  Test mode is rehearsed on staging, never on production.
+- **D19, unchanged**: `isDataPlaneActive` is `true` for every status, and nothing on the
+  secret-fetch path imports anything billing. An on-hold subscription keeps even the dashboard.
+- **Redaction**: Dodo responses are parsed by schemas that declare only the fields read, so
+  names, addresses and card digits are dropped at the boundary; audit metadata for billing is
+  counts and closed vocabularies; `cus_…` and `whsec_…` are redacted from log and audit text;
+  a sweep test asserts none of a payload's identifiers reach either.
+
+**Residual risk:** Low–Medium. Dodo itself is trusted for what it signs — a compromised Dodo
+account or webhook secret can grant any plan (rotate the secret; the reconciler compares against
+Dodo's API, signed by the API key, not by the webhook); a nonce can be read by whoever holds a
+checkout page, which is the owner who opened it. The usage meter under-counts by up to fifteen
+seconds of an evicted isolate's traffic, in the customer's favour, and units still owed for a
+period that has just ended are reported into Dodo's next one (Dodo refuses events stamped more
+than an hour back) — once, never twice. A subscription ended here after fourteen days on hold
+is still live at Dodo until a human cancels it. An owner's own session can cancel the plan from
+the portal, as the person who pays. Whether `DODO_WEBHOOK_SECRET` is the secret of the endpoint
+in the deployment's own mode cannot be checked with an API key; a mismatch fails closed (every
+delivery 401) and is caught by the first delivery after a deploy. Reading an upgrade during a
+trial as the trial's end rests on Dodo's `previous_billing_date` staying at the subscription's
+creation until a payment — a staging check (docs/operations/billing.md §3).
+
+---
 
 ### T15 — The paid secret features as attack surface (P19)
 
@@ -783,6 +916,7 @@ residuals are a server that misbehaves (T7, T9), and are accepted as such:
 | T11 | Vault reset by whoever holds the browser or the inbox | High | Low–Med | **Medium** without MFA; recoverable for 7 days |
 | T12 | The emailed escape archive, attacked offline | High | Low–Med | **Medium (accepted)**; Low with a strong passphrase |
 | T13 | A customer's identity provider, or whoever can rewire it | Critical (one org) | Low–Med | Low–Medium |
+| T14 | Forged, replayed or misplaced billing events; wrong charges | High | Medium | Low–Medium |
 | T15 | The paid secret features (references, overrides, promotion, restore, webhooks, policies) | High | Low–Med | Low |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
@@ -809,5 +943,9 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-18 | — | WS-5 (organisation SSO settings), review round 1: Boundary 4 added — a customer-attached identity provider; T1 corrected — `state` and PKCE do not cover the planted-AuthKit-session login CSRF, and the confirmation that does is described; T3 — `sso_required` is enforced per request again, and the owner exemption is recorded as a deliberate break-glass with a cost; T13 added — SSO administration owners-only with a step-up for the credential-grade portal link, JIT never re-admits a removed member, the link records its WorkOS environment, the add-on as the blast-radius gate |
 | 2026-10-18 | — | WS-5, review round 2: T1 restated as it now stands — the confirmation → `next` → `?org=` redirect chain closed (no `next` under `/api/`, the deep link honoured only with the warning page's browser-bound token, an SSO sign-in through an organisation the account is not in always held back), sign-out ends the AuthKit session, the last-account cookie, a decline ends the AuthKit session and is audited, inert display of the address and the organisation name; T13 — the portal's own fresh-sign-in record (emailed codes count; dated by `auth_time`), stale invitations withdrawn at JIT join and removal, `workos_home` so no other environment can write a link, foreign links ignored on the sign-in path, the owner exemption audited at CLI approval and owner invitations |
 | 2026-10-19 | — | WS-5, review round 3: T1 — reason (b), the not-member hold-back, restated as covering first-time and non-member identities only (in the attack the returning identity is a member of the attacker's organisation; the warning page's token and the `/api` refusal are what stop an unconfirmed deep link); a finished sign-in's `next` never names a sign-in screen; the double-click window swap on the two one-click screens added to what T1 leaves |
+| 2026-10-20 | — | P12 (payments through Dodo): T14 added — the webhook's signature, replay window and primary-key claim; snapshots applied in order rather than deltas; placement from our own records; nothing priced, counted or currency-chosen by the client, with the region lock and the card-country check raised for a human; no second subscription and no webhook over an operator's grant; owners-only billing; seat sync after the commit with a debt, a re-count and an alert-only reconciler; a meter that can only under-count; D19 unchanged; redaction of customer ids and webhook secrets |
+| 2026-10-20 | — | P12, review round 1: T14 restated as it now stands — subscriptions attach only through a nonce of an open checkout of that organisation (a signed purchase with our org id typed into metadata attaches nothing), spent on attachment; a customer per organisation and a portal only for one's own; no checkout payment links over an operator's grant; the seat debt written in the membership transaction, one push per organisation by lease and generation, pushes waiting for a scheduled plan change, a dead-letter cap, and a reconciler that compares Dodo with the membership; usage flushed by a timer and attributed to the period it was counted in, metering only paid periods (the "under-count only" claim made true); fourteen days on hold ends the plan; the Dodo mode recorded and never crossed; idempotency keys on checkout and plan change |
+| 2026-10-20 | — | P12, review round 2: T14 — usage counted a month at a time (a yearly plan's months from its anniversary) and billed against the allowance each month opened with (migration 0026), so no move re-bills the past; a grant over an ended subscription's id detached by `plan:set` and never written by a webhook; a trial ended by the payment an upgrade takes; stranded paid checkouts swept from Dodo, our own expired checkout retried rather than called foreign, a waiting link never replaced; no checkout across Dodo modes, and `check:env` pairing the key with the mode (the webhook secret's pairing stated as unverifiable); a timed-out checkout or change says it may have gone through and keeps its key; seat pushes confirm a scheduled change with Dodo, treat "no change" as paid, and an activation's debt commits with it |
 | 2026-10-20 | — | P19 (paid secret features): T15 added (written as T14, renumbered in review round 1 because P12 holds T14) — references held to `can()` at write and read, the declaration checked against the decrypted text, overrides made unforgeable by the server (symmetric under the owner's own key, replacing a sealed box), promotion and restore as ordinary audited writes, webhook payload allowlist and endpoint rules, client-enforced policies stated as guard rails, the read-alert throttle |
+| 2026-10-21 | — | P12, review round 3: T14 — an operator's grant over an old subscription's id (a paid row with no product) is left out of the hourly sweeps, which had ended a cancelling or held one to Free, and reported by the reconciler once; `plan:set` refuses, without `--over-dodo`, a Free row waiting on a paid checkout's subscription instead of detaching it as ended; the stranded-checkout sweep ends a wait by the snapshot decision's own reading of ended (a cancellation past its period included) and filters the Dodo mode in its query; alerts the hourly job would repeat are raised once (migration 0027). The trial's early end by payment rests on a staging check that is now a hard gate before live mode |
 | 2026-10-21 | — | P19, review round 2 (F1): T15 restated — `is_production` flipped on an environment that already holds a crossing link bypassed M3 entirely; turning it on now asks about an existing parent or template reference into one that is not production, and turning it off now asks about every still-production environment, in this project or another, that depends on it; a confirmed flip files `environment.link_crosses_protection` the same as a confirmed new link |

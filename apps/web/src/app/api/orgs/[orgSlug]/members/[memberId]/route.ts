@@ -12,6 +12,7 @@ import {
   updateMemberRole,
 } from '@xecret/db/repositories';
 import type { MemberChangeGuard, MemberListEntry, MemberRecord } from '@xecret/db/repositories';
+import { scheduleSeatSync } from '@/server/billing/seats';
 import { requireFeature } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
@@ -252,6 +253,10 @@ export const PATCH = authenticatedRoute<Params>(
         { targetEmail: target.user.email },
       ),
     );
+    // Suspension frees no seat — it is a security act, never a discount — so
+    // this finds the bill already right. Asked anyway, so that stays a fact the
+    // seat sync checks rather than an assumption this route makes (P12).
+    scheduleSeatSync(services, orgId);
 
     // A suspension resolves to `none` everywhere, so this revokes every key the
     // member held; a reinstatement queues them all back. The asymmetry is the
@@ -344,6 +349,9 @@ export const DELETE = authenticatedRoute<Params>(
         { targetEmail: target.user.email, previousRole: removed.role },
       ),
     );
+    // A seat is freed, so the subscription Dodo bills follows — after the
+    // commit, off the response, with the difference credited (P12 seat sync).
+    scheduleSeatSync(services, orgId);
 
     recordKeyReconciliation(reconciliation, {
       orgId,
@@ -363,9 +371,12 @@ export const DELETE = authenticatedRoute<Params>(
  * The checks run inside `setMemberCustomRole`'s transaction, on the member,
  * the role and the member's grant rows as read under the organisation lock —
  * so the "before" the widening test compares with is the role the write
- * replaces, not whatever an earlier read saw. The plan is asked there too, so
- * asking for the role the member already holds — which the repository answers
- * without asking the guard — is a 200 that writes, records and gates nothing.
+ * replaces, not whatever an earlier read saw. The plan is asked there too,
+ * but only of a real change. Asking for the role the member already holds is
+ * still put to the guard and measured like the change it would be, so a
+ * caller who could not make that change gets the same 403 and `denied`
+ * record for the no-op; one who could gets a 200 that writes, records and
+ * gates nothing.
  */
 async function changeCustomRole(params: {
   scope: OrgScope;

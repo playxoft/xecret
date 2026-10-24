@@ -54,6 +54,14 @@ vi.mock('./logging', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./logging')>()),
   createRequestLog: logging.createRequestLog,
 }));
+// The usage meter (P12) arms a fifteen-second flush in the request's own
+// `waitUntil`, and every request here awaits what it deferred — so the meter
+// only records. Counting itself is `billing/usage.test.ts`'s to prove.
+const meter = vi.hoisted(() => ({ countSecretFetch: vi.fn() }));
+vi.mock('./billing/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./billing/usage')>()),
+  countSecretFetch: meter.countSecretFetch,
+}));
 
 const policiesRoute = await import('@/app/api/orgs/[orgSlug]/policies/route');
 const environmentPolicyRoute =
@@ -1039,6 +1047,8 @@ describe('plaintext export disabled', () => {
         }),
       }),
     ]);
+    // Refused before a value was read, so not a fetch towards the plan (P12).
+    expect(meter.countSecretFetch).not.toHaveBeenCalled();
   });
 
   it('still serves the JSON pull `xecret run` reads, marked so the CLI refuses `pull`', async () => {
@@ -1048,6 +1058,7 @@ describe('plaintext export disabled', () => {
     const answer = await call(pullRoute.GET, 'GET', path, params);
     expect(answer.status).toBe(200);
     expect(answer.headers.get('x-xecret-plaintext-export')).toBe('disabled');
+    expect(meter.countSecretFetch).toHaveBeenCalledExactlyOnceWith(expect.anything(), org.orgId);
   });
 
   it('marks an allowed environment as allowed', async () => {

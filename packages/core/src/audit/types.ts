@@ -542,7 +542,111 @@ export type AuditAction =
    * There is no matching event for a *fair-use* ceiling, because crossing one
    * refuses nothing; that path warns and continues.
    */
-  | 'limit.exceeded';
+  | 'limit.exceeded'
+  /*
+   * ── Payments (P12) ──
+   *
+   * What the payment provider did, and what an owner asked it to do. The
+   * *effect* of a billing change on what the organisation may do is always
+   * `plan.changed` — written by the webhook with no `operator`, so it stays
+   * one query to answer "when did this organisation gain Team" whichever way
+   * it got there. The events below are the rest of the story: the requests,
+   * the money that moved, and the alerts a human has to read.
+   *
+   * None of them carries an amount, a card detail, a customer id or a
+   * payment-provider identifier of any kind. `AuditMetadata` has no field that
+   * could hold one, and the redaction below recognises the provider's customer
+   * ids and webhook secrets in the free-text fields that remain.
+   */
+  /**
+   * An owner was sent to the payment provider's hosted checkout for a plan.
+   * Records the request, never the outcome: the return from checkout grants
+   * nothing, and only the provider's webhook — `plan.changed` — does.
+   */
+  | 'billing.checkout_started'
+  /**
+   * An owner moved an existing subscription to another plan or interval. Like
+   * the checkout, the record of a request: the change itself lands as
+   * `plan.changed` when the provider confirms it.
+   */
+  | 'billing.plan_change_requested'
+  /**
+   * An owner was handed a link to the payment provider's customer portal —
+   * where the card is changed, invoices are read and the plan is cancelled.
+   * The link itself is never recorded.
+   */
+  | 'billing.portal_opened'
+  /**
+   * The billed seat count was pushed to the payment provider after membership
+   * changed — `seatCount` after, `previousSeatCount` before. Recorded as
+   * `error` (reason `upstreamUnavailable`) when the push failed and was queued
+   * for the hourly retry; the membership change it followed stands either way.
+   */
+  | 'billing.seats_synced'
+  /**
+   * A payment for the organisation's subscription failed. Nothing is removed
+   * from the data path; the owners are emailed and the dashboard says so.
+   */
+  | 'billing.payment_failed'
+  /**
+   * The payment provider refunded a payment. An alert for a human, never a
+   * reason to change access: a refund is somebody's decision, already made.
+   */
+  | 'billing.refunded'
+  /**
+   * A cardholder opened a dispute (a chargeback). An alert for a human, and
+   * deliberately not a signal to lock anybody out — a dispute is often a
+   * misunderstanding, and refusing a team its secrets over one would turn a
+   * $30 fee into a lost customer.
+   */
+  | 'billing.dispute_opened'
+  /**
+   * The purchasing-power guardrail (pricing-plan §4): the billing country the
+   * provider reported is not the country that issued the card that paid. An
+   * alert for a human; nothing is changed automatically, because a traveller
+   * and an arbitrageur look the same to a webhook.
+   */
+  | 'billing.region_mismatch'
+  /**
+   * A second live subscription arrived for an organisation that already has
+   * one — two checkouts completed. Not applied: the existing subscription
+   * stays the one access follows, and a human refunds the other.
+   */
+  | 'billing.duplicate_subscription'
+  /**
+   * The nightly reconciler found this organisation's subscription row
+   * disagreeing with the payment provider. `driftFields` names what differs.
+   * Alert-only: nothing is corrected automatically, because silent correction
+   * hides the bug that caused the drift.
+   */
+  | 'billing.drift_detected'
+  /**
+   * Metered overage units — one per thousand secret fetches past the plan's
+   * allowance — were reported to the payment provider. `unitCount` is how
+   * many this report added. Our own count was written first; it is the
+   * figure an invoice dispute is settled with.
+   */
+  | 'billing.usage_reported';
+
+/**
+ * A subscription status as the audit log records it — the same closed set as
+ * `SubscriptionStatus` in `@xecret/core/entitlements`, restated here so this
+ * module keeps no dependency on that one.
+ */
+export type AuditSubscriptionStatus =
+  'active' | 'trialing' | 'past_due' | 'on_hold' | 'cancelled' | 'expired';
+
+/** Which part of a subscription row the reconciler found disagreeing with the provider. */
+export type BillingDriftField =
+  | 'plan'
+  | 'interval'
+  | 'status'
+  | 'seats'
+  | 'periodEnd'
+  | 'cancelAtPeriodEnd'
+  | 'product'
+  | 'addon'
+  | 'missing';
 
 /**
  * Fields permitted in `metadata`.
@@ -724,6 +828,36 @@ export interface AuditMetadata {
   limitName?: string;
   /** Seats billed after the change. A count, never an amount of money. */
   seatCount?: number;
+  /** Seats billed before a seat change. A count, never an amount of money. */
+  previousSeatCount?: number;
+  /**
+   * The billing interval a subscription moved to, and the one it held before.
+   * A closed set; the sanitiser drops anything else.
+   */
+  billingInterval?: 'monthly' | 'yearly';
+  previousBillingInterval?: 'monthly' | 'yearly';
+  /**
+   * The subscription status after a billing change, and before it — the
+   * fact behind "the card failed on the 3rd", which is a status and not a
+   * plan. A closed set, checked rather than copied.
+   */
+  subscriptionStatus?: AuditSubscriptionStatus;
+  previousSubscriptionStatus?: AuditSubscriptionStatus;
+  /**
+   * The ISO-4217 currency the subscription is billed in, e.g. `INR`. A
+   * currency, never an amount: three capital letters or nothing.
+   */
+  currency?: string;
+  /**
+   * The payment provider's event that caused the record, e.g.
+   * `subscription.renewed`. A dotted lower-case name or nothing, so the
+   * field cannot carry a payload however it is called.
+   */
+  billingEvent?: string;
+  /** What the reconciler found disagreeing (`billing.drift_detected`). A closed list. */
+  driftFields?: readonly BillingDriftField[];
+  /** How many metered units a usage report added (`billing.usage_reported`). */
+  unitCount?: number;
   /**
    * The person who ran an operator script, as they named themselves.
    *

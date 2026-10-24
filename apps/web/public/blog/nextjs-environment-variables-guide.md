@@ -3,6 +3,7 @@ title: Next.js environment variables: what NEXT_PUBLIC_ really does, and the thr
 description: The inlining model for the App Router: build time versus runtime, which .env file wins, the server-only boundary, and how to grep what actually shipped.
 keywords: [Next.js environment variables, NEXT_PUBLIC_, server-only secrets, app router env, next.js build time variables]
 published: 2026-08-05
+updated: 2026-10-20
 author: The xecret team
 role: Playxoft
 category: Engineering
@@ -238,5 +239,5 @@ patterns, [the quickstart](/docs/quickstart) is five minutes, and the
 [trust model](/docs/security/trust-model) states plainly what we can and cannot
 see — server-side envelope encryption, so we can technically decrypt, which is
 the trade that makes team sharing and CI tokens work without a key exchange.
-It is pre-alpha; [everything is currently on for everyone](/pricing) with no
-card collected.
+It is pre-alpha; [the pricing page](/pricing) says what each plan includes and
+what, if anything, it costs on the day you read this.

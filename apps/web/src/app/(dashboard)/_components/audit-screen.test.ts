@@ -134,6 +134,44 @@ describe('describeEvent', () => {
     expect(describeEvent(event('auth.login', { confirmation: 'because' }))).toBe('');
   });
 
+  it('reads a billing record: the plan, the seats and what said so', () => {
+    expect(
+      describeEvent(
+        event('plan.changed', {
+          plan: 'team',
+          previousPlan: 'free',
+          billingInterval: 'monthly',
+          subscriptionStatus: 'active',
+          previousSubscriptionStatus: 'active',
+          seatCount: 4,
+          previousSeatCount: 1,
+          billingEvent: 'subscription.active',
+        }),
+      ),
+    ).toBe('free → team (monthly) · 1 → 4 seats · from subscription.active');
+    expect(
+      describeEvent(
+        event('plan.changed', {
+          plan: 'free',
+          previousPlan: 'team',
+          reason: 'subscription on hold for 14 days without a payment',
+        }),
+      ),
+    ).toBe('team → free · subscription on hold for 14 days without a payment');
+    expect(describeEvent(event('billing.usage_reported', { unitCount: 12 }))).toBe(
+      '12 metered units',
+    );
+    expect(
+      describeEvent({
+        ...event('billing.drift_detected', { driftFields: ['seats', 'periodEnd'], plan: 'team' }),
+        outcome: 'error' as const,
+      }),
+    ).toBe('team · drift in seats, periodEnd');
+    expect(describeEvent(event('plan.changed', { plan: 'enterprise', operator: 'ops' }))).toBe(
+      'enterprise · by ops',
+    );
+  });
+
   it('says which way an SSO policy switch moved', () => {
     expect(describeEvent(event('org.sso.required_toggled', { enabled: true }))).toBe('switched on');
     expect(describeEvent(event('org.sso.jit_toggled', { enabled: false }))).toBe('switched off');

@@ -250,6 +250,9 @@ describe('createCustomRole', () => {
       'in full-width letters',
       String.fromCodePoint(0xff24, 0xff45, 0xff50, 0xff4c, 0xff4f, 0xff59, 0xff45, 0xff52),
     ],
+    ['with a capital I for the l', 'DepIoyer'],
+    ['with a digit 1 for the l', 'Dep1oyer'],
+    ['with a digit 0 for the o', 'Depl0yer'],
   ])(
     'refuses a name another role holds %s, on the name field, before inserting',
     async (_how, name) => {
@@ -273,6 +276,19 @@ describe('createCustomRole', () => {
       expect(statements.some((statement) => statement.sql.startsWith('insert'))).toBe(false);
     },
   );
+
+  it('defines a name that differs from every other by more than a lookalike', async () => {
+    // Both are folded — every i and l is one stroke — and still two names.
+    const { db } = creating(0, [DEPLOYER], [[OTHER_ROLE_ID, 'Reading']]);
+
+    await expect(
+      createCustomRole(db, {
+        orgId: ORG_ID,
+        definition: { ...DEFINITION, name: 'Billing' },
+        createdBy: CREATOR_ID,
+      }),
+    ).resolves.toBeDefined();
+  });
 
   it('refuses a name spaced differently from one another role holds', async () => {
     const { db } = creating(0, [DEPLOYER], [[OTHER_ROLE_ID, 'Release manager']]);

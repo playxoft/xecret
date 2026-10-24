@@ -23,10 +23,11 @@ import {
   RevealGroup,
   Section,
   SectionHeading,
+  faqForPayments,
   faqSchema,
   graph,
 } from '@/components/marketing';
-import type { FaqItem } from '@/components/marketing';
+import type { ConditionalFaqItem } from '@/components/marketing';
 import { Button } from '@/components/ui/button';
 import { CopyButton } from '@/components/ui/copy-button';
 import {
@@ -49,6 +50,7 @@ import {
   SITE_NAME,
   softwareApplicationSchema,
 } from '@/lib/site';
+import { takesPayments } from '@/server/billing/payments-live';
 import { CliDemo } from './cli-demo';
 import { InstallGuide } from './install-guide';
 
@@ -200,7 +202,7 @@ const CANNOT_SEE = [
   'Anything at all, on a self-hosted deployment — that database is yours',
 ] as const;
 
-const FAQ: readonly FaqItem[] = [
+const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can xecret read my secrets?',
     answer:
@@ -225,6 +227,12 @@ const FAQ: readonly FaqItem[] = [
     question: 'What does it cost?',
     answer:
       'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. While xecret is in pre-alpha, every paid feature is on for everybody and no card is collected.',
+    // Pre-alpha copy until this deployment takes real payments (P12).
+    whenPaymentsLive: {
+      question: 'What does it cost?',
+      answer:
+        'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record.',
+    },
   },
   {
     question: 'Is xecret ready for production?',
@@ -233,11 +241,12 @@ const FAQ: readonly FaqItem[] = [
   },
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const faq = faqForPayments(FAQ, await takesPayments());
   // No BreadcrumbList here: a breadcrumb whose only entry is the site root
   // describes nothing, and publishing one on the home page is how a site ends
   // up with a trail that says "xecret › xecret" under its own search result.
-  const structuredData = graph(softwareApplicationSchema(), faqSchema(FAQ));
+  const structuredData = graph(softwareApplicationSchema(), faqSchema(faq));
 
   return (
     <PublicPage signInShortcut>
@@ -697,7 +706,7 @@ export default function LandingPage() {
           align="center"
         />
         <Reveal className="mx-auto mt-10 max-w-3xl">
-          <Faq items={FAQ} />
+          <Faq items={faq} />
         </Reveal>
         <Reveal className="mt-6 text-center">
           <p className="text-fg-muted text-sm leading-7">

@@ -158,6 +158,13 @@ const SECTIONS: readonly LegalSection[] = [
           single sign-on cannot silently re-admit you. Accepting a fresh invitation clears it.
         </>,
         <>
+          <strong className="text-fg font-medium">Billing, for a paid plan.</strong> The
+          organisation&rsquo;s plan, billing period, seat count, currency and billing country, the
+          dates of the current period, the identifiers Dodo Payments issues for its customer record
+          and its subscription, and a count of secret fetches per period. We never see or store a
+          card number; Dodo holds the card.
+        </>,
+        <>
           <strong className="text-fg font-medium">Your PIN, as a hash.</strong> Plus the
           failed-attempt counter and lockout state that stop it being guessed. We cannot recover a
           PIN; a reset link goes to the address on the account.
@@ -175,7 +182,9 @@ const SECTIONS: readonly LegalSection[] = [
           <LegalLink href="/docs/security/vault-archive">vault archive</LegalLink> — your secrets,
           still encrypted, with the names of your organisations, projects, environments and secrets
           in plain text — attached to a message to your own address, or a notice in its place if you
-          chose to reset without it. WorkOS also sends, on our behalf, the mail that belongs to
+          chose to reset without it. On a paid plan, an organisation&rsquo;s owners also receive its
+          billing emails — a trial ending, a payment that failed, a renewal coming up, a seat
+          change, a receipt being ready. WorkOS also sends, on our behalf, the mail that belongs to
           signing in: a message to verify your email address, a password reset link when you ask for
           one, a one-time sign-in code if you choose to sign in by email, and the one-time code that
           confirms a vault reset. That is the whole of it: no newsletter, no product marketing, and
@@ -266,14 +275,24 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:
-          PIN reset links, organisation invitations, and the vault archive or notice sent when you
-          reset your vault. The archive passes through it as an attachment: encrypted values it
-          cannot read, and names in plain text.
+          PIN reset links, organisation invitations, the billing emails an organisation&rsquo;s
+          owners receive on a paid plan, and the vault archive or notice sent when you reset your
+          vault. The archive passes through it as an attachment: encrypted values it cannot read,
+          and names in plain text.
         </>,
         <>
           <strong className="text-fg font-medium">Better Stack</strong> — log shipping, when a
           deployment is configured for it. When it is not, request logs stay in Cloudflare&rsquo;s
           own tail.
+        </>,
+        <>
+          <strong className="text-fg font-medium">Dodo Payments</strong> — payments, as the merchant
+          of record, for an organisation that buys a paid plan. It takes the payment, charges the
+          tax and issues the invoice, so it receives the name, email address and billing country of
+          the owner who checks out, and it holds the card: the card number is entered on its
+          checkout and never reaches xecret. We send it the organisation&rsquo;s id, the seat count
+          and, past the included allowance, a count of secret fetches. It never receives a secret or
+          anything else you store in xecret.
         </>,
       ],
       'We will list a new sub-processor here before it starts processing anything.',

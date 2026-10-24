@@ -45,7 +45,20 @@ export type Action =
    * (none is based on `owner`). Reading the settings and switching a policy
    * *off* stay with `org.update`.
    */
-  | 'sso.manage';
+  | 'sso.manage'
+  /**
+   * Managing what the organisation pays for (P12): reading the billing
+   * screen, starting a checkout, changing plan, opening the payment provider's
+   * customer portal. Held by owners alone, and no custom role can carry it.
+   *
+   * Owner-only because each of those spends the organisation's money, and the
+   * customer portal is where the card is changed and the subscription
+   * cancelled — an admin who could open it could cancel the plan out from
+   * under the owner who pays for it. Admins see nothing billing-related beyond
+   * what a refusal says; that is the price of the rule being enforced by
+   * capability rather than by hiding a link.
+   */
+  | 'billing.manage';
 
 /**
  * Who is acting.

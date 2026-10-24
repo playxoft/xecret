@@ -10,6 +10,20 @@
  *   phase run -- npm run plan:set  -- --org acme --limit-override projects=2000
  *   phase run -- npm run plan:set  -- --org acme --plan free
  *
+ * On an organisation billed through Dodo (P12) — a paid plan that follows a
+ * subscription, or a Free row waiting for the subscription a paid checkout
+ * linked — `--plan`, `--interval`, `--seats` and `--status` are refused unless
+ * `--over-dodo` is passed: Dodo owns those, and its next webhook (or the
+ * waiting subscription's activation) would overwrite them. `--over-dodo` takes
+ * the organisation off its Dodo subscription — the provider ids are cleared in
+ * the same transaction (`detachFromProvider`) and printed, so the operator can
+ * cancel the subscription at Dodo — and the plan becomes an operator's grant,
+ * which no webhook overwrites. A row on Free that still carries the ids of a
+ * subscription that ended is taken off them the same way, without the flag,
+ * whenever a billing field is set: a grant over a kept id would follow a
+ * subscription Dodo can still send events for. Add-ons and limit overrides are
+ * never Dodo's and are always settable.
+ *
  * ## Seats are two columns, and this tool writes both
  *
  * `org_subscriptions.seats` is what the invoice is computed from.
@@ -66,6 +80,13 @@ import {
 import { createAuditBuilder } from '../packages/core/src/audit/index.ts';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
 import { appendAuditEvents } from '../packages/db/src/repositories/audit.ts';
+import {
+  awaitingActivation,
+  billedByDodo,
+  detachFromProvider,
+  operatorBillingEdit,
+  raiseCurrentUsageAllowance,
+} from '../packages/db/src/repositories/billing.ts';
 import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
 import { orgSubscriptions } from '../packages/db/src/schema/billing.ts';
 import { subscriptionStatusEnum } from '../packages/db/src/schema/enums.ts';
@@ -258,6 +279,19 @@ function describe(
   console.log(`  add-ons         saml=${row.addonSaml} directorySync=${row.addonDirectorySync}`);
   console.log(`  currency        ${row.currency ?? '—'} ${row.billingCountry ?? ''}`);
   console.log(`  period ends     ${row.currentPeriodEnd?.toISOString() ?? '—'}`);
+  // Whether Dodo owns the billing fields — and so whether this tool may change
+  // them without --over-dodo. The ids themselves are not printed: a customer id
+  // stays out of terminals and scrollback as it stays out of logs.
+  console.log(
+    `  billed by       ${
+      awaitingActivation(row)
+        ? 'Dodo (a paid checkout, waiting for its subscription to activate)'
+        : billedByDodo(row)
+          ? 'Dodo (plan, interval, seats and status follow its webhooks)'
+          : 'this tool'
+    }`,
+  );
+  if (row.cancelAtPeriodEnd) console.log('  cancels         at the end of the current period');
   console.log(`  grandfathered   ${row.grandfatheredUntil?.toISOString() ?? '—'}`);
   console.log(`  overrides       ${row.limitOverrides ? JSON.stringify(row.limitOverrides) : '—'}`);
   console.log(`  features        ${enabled.length ? enabled.join(', ') : 'none'}`);
@@ -342,6 +376,52 @@ async function main(): Promise<void> {
       if (row) describe(row, slug, org.seatLimit);
       return;
     }
+
+    // ── A subscription Dodo bills is Dodo's to change (P12) ──
+    // Its plan, interval, seats and status are written by the payment webhook
+    // from Dodo's own record, and the next webhook would quietly put back
+    // whatever this run wrote — or, for seats, the seat sync would push this
+    // number to Dodo and charge for it. So the billing fields of such a
+    // subscription are refused here unless the operator says, in so many
+    // words, that they mean to diverge from Dodo; the change is then theirs to
+    // make in Dodo too. Add-ons and limit overrides are not Dodo's and stay
+    // free to set. A Free row waiting for the subscription a paid checkout
+    // linked counts as billed: the customer has paid, and the activation on
+    // its way would land over this run (`billedByDodo`).
+    //
+    // And whatever the plan, a row that still carries provider ids — a Free
+    // row keeps the id of the subscription it ended on — is taken off them
+    // before a billing field is written: a grant over a kept id would follow a
+    // subscription Dodo can still send events for (`operatorBillingEdit`).
+    const touchesBilling = ['plan', 'interval', 'seats', 'status'].some(
+      (flag) => typeof args[flag] === 'string',
+    );
+    const edit =
+      existing === undefined
+        ? 'write'
+        : operatorBillingEdit(existing, { touchesBilling, overDodo: args['over-dodo'] === true });
+    if (edit === 'refuse') {
+      fail(
+        existing !== undefined && awaitingActivation(existing)
+          ? `"${slug}" is on Free waiting for the Dodo subscription a paid checkout linked to it: ` +
+              'the customer has paid, and the subscription’s activation — its webhook, or the ' +
+              'hourly job asking Dodo — would overwrite this change. Wait for it (the billing ' +
+              'screen shows the plan within the hour), or see "Stranded checkouts" in ' +
+              'docs/operations/billing.md — or pass --over-dodo to take the organisation off ' +
+              'that subscription and set the plan by hand (it keeps billing at Dodo until you ' +
+              'cancel or refund it there).'
+          : `"${slug}" is billed through Dodo, which owns its plan, interval, seats and status: ` +
+              'the next payment webhook would overwrite this change. Change it in the billing ' +
+              'screen or the Dodo dashboard instead — or pass --over-dodo to take the ' +
+              'organisation off its Dodo subscription and set the plan by hand (the subscription ' +
+              'keeps billing at Dodo until you cancel it there).',
+      );
+    }
+    // Taking the organisation off Dodo: its provider ids go, in the same
+    // transaction as the plan, so the row afterwards reads as exactly what it
+    // is — an operator's grant (or Free) — and no webhook, seat sync or meter
+    // acts on it again.
+    const detach = edit === 'detach';
 
     const patch: Partial<typeof orgSubscriptions.$inferInsert> = {};
     const changes: string[] = [];
@@ -517,6 +597,7 @@ async function main(): Promise<void> {
     if (changes.length === 0) {
       fail('Nothing to do. Pass --plan, --seats, --status, --addon, --limit-override, or --show.');
     }
+    if (detach) changes.push('detached-from-dodo');
 
     patch.updatedAt = new Date();
 
@@ -563,7 +644,8 @@ async function main(): Promise<void> {
     // The audit row joins them: a record of a change that did not fully commit
     // is worse than no record, and this is the table the product promises is
     // truthful.
-    const updated = await db.transaction(async (tx) => {
+    const { updated, detached } = await db.transaction(async (tx) => {
+      const detached = detach ? await detachFromProvider(tx, org.id) : null;
       if (seats !== undefined) await setBilledSeats(tx, org.id, seats);
 
       const [row] = await tx
@@ -578,11 +660,35 @@ async function main(): Promise<void> {
       // outcome this table must never have.
       if (!row) throw new Error('The subscription UPDATE matched no row.');
 
+      // A raise of the allowance counts for the month it is granted in: the
+      // month's recorded allowance is what its overage is billed past, and it
+      // is only ever raised, so clearing the override later re-bills nothing.
+      if (patch.limitOverrides !== undefined || patch.plan !== undefined) {
+        await raiseCurrentUsageAllowance(tx, org.id);
+      }
+
       await appendAuditEvents(tx, [event]);
-      return row;
+      return { updated: row, detached };
     });
 
     console.log(`✓ ${slug}: ${changes.join(' ')}`);
+    if (detached !== null) {
+      // The run's record of which subscription it took the organisation off —
+      // the only one, since the row no longer says. The customer id is not
+      // printed: the subscription finds it in the Dodo dashboard.
+      console.warn(
+        existing !== undefined && awaitingActivation(existing)
+          ? `  ! Taken off Dodo subscription ${detached.dodoSubscriptionId ?? '(none)'}, which a ` +
+              'paid checkout had linked and which had not activated yet. The customer has paid ' +
+              'and it is live at Dodo: cancel or refund it there. Nothing here will act on it again.'
+          : existing?.plan === 'free'
+            ? `  ! Taken off the Dodo subscription it ended on (${detached.dodoSubscriptionId ?? 'none'}), ` +
+              'so no later event of that subscription can overwrite this change. If it is somehow ' +
+              'still live at Dodo, cancel it there.'
+            : `  ! Taken off Dodo subscription ${detached.dodoSubscriptionId ?? '(none)'}. It keeps ` +
+              'billing at Dodo until you cancel it there; nothing here will act on it again.',
+      );
+    }
     describe(updated, slug, seats?.enforced ?? org.seatLimit);
   } finally {
     await end();

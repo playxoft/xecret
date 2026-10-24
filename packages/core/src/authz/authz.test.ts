@@ -180,7 +180,7 @@ describe('the role matrix', () => {
   it('permits an admin every action except deleting the organisation and administering its SSO', () => {
     for (const action of ALL_ACTIONS) {
       expect(permits(member('admin'), action), action).toBe(
-        action !== 'org.delete' && action !== 'sso.manage',
+        action !== 'org.delete' && action !== 'sso.manage' && action !== 'billing.manage',
       );
     }
   });
@@ -212,6 +212,7 @@ describe('the role matrix', () => {
     'org.update': false,
     'org.delete': false,
     'sso.manage': false,
+    'billing.manage': false,
   };
 
   const VIEWER_ON_NON_PRODUCTION: Record<Action, boolean> = {
@@ -238,6 +239,7 @@ describe('the role matrix', () => {
     'org.update': false,
     'org.delete': false,
     'sso.manage': false,
+    'billing.manage': false,
   };
 
   it('gives a developer the secrets of a non-production environment and nothing administrative', () => {
@@ -883,6 +885,32 @@ describe('the tables themselves', () => {
       }
       expect(actionsForBase(baseRole)).not.toContain('sso.manage');
       expect(actionsBeyondBase(baseRole, ['sso.manage'])).toEqual(['sso.manage']);
+    }
+  });
+
+  it('never lets a non-owner role manage billing (P12)', () => {
+    // Every billing act spends the organisation's money or can end its
+    // subscription; the customer portal is where a plan is cancelled.
+    for (const role of ROLES) {
+      expect(ROLE_CAPABILITIES[role]['billing.manage'], role).toBe(role === 'owner');
+    }
+  });
+
+  it('lets no custom role carry billing management, whatever its list says', () => {
+    for (const baseRole of CUSTOM_ROLE_BASE_ROLES) {
+      for (const role of ROLES) {
+        const capabilities = effectiveCapabilities(role, {
+          id: 'greedy',
+          name: 'Greedy',
+          baseRole,
+          allowedActions: ALL_ACTIONS,
+        });
+        expect(capabilities['billing.manage'], `${role} holding a ${baseRole}-based role`).toBe(
+          false,
+        );
+      }
+      expect(actionsForBase(baseRole)).not.toContain('billing.manage');
+      expect(actionsBeyondBase(baseRole, ['billing.manage'])).toEqual(['billing.manage']);
     }
   });
 

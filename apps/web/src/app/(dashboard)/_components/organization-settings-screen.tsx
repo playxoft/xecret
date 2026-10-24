@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 
 import { ORGANIZATION_NAME_MAX_LENGTH } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
@@ -24,7 +25,7 @@ import {
   useToast,
 } from '@/components/ui';
 import type { Organization, OrganizationResponse } from '@/components/projects/types';
-import { apiPath } from '../_lib/paths';
+import { apiPath, appPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
 import { canAdminister, useOrganization, useSession } from './session';
@@ -117,6 +118,23 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
               </dl>
             </CardContent>
           </Card>
+
+          {canAdminister(membership, 'billing.manage') ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Billing</CardTitle>
+                <CardDescription>
+                  The plan, the seats it is billed for, this period’s usage, and the card that pays
+                  for it.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button variant="secondary" asChild>
+                  <Link href={appPath.orgBilling(orgSlug)}>Open billing</Link>
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
 
           <RolesCard orgSlug={orgSlug} organization={membership} />
 

@@ -1,5 +1,6 @@
 import { hashToken, isWellFormedToken } from '@xecret/core/auth';
 import { acceptInvitation, readInvitationGrants } from '@xecret/db/repositories';
+import { scheduleSeatSync } from '@/server/billing/seats';
 import { errors } from '@/server/errors';
 import { toInviteKeyGrant } from '@/server/schemas/env-keys';
 import { attemptKey, enforce } from '@/server/rate-limit';
@@ -86,6 +87,10 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
       ),
     );
   }
+
+  // A seat is taken, so the subscription Dodo bills follows — after the commit,
+  // off the response (P12 seat sync).
+  scheduleSeatSync(services, accepted.organization.id);
 
   // The membership now exists, so the key reconciliation can decide what this
   // person is owed.

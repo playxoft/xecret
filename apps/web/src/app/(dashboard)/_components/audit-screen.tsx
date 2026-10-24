@@ -112,6 +112,18 @@ export const AUDIT_FILTER_ACTIONS = [
   'org.sso.portal_link_created',
   'org.sso.required_toggled',
   'org.sso.jit_toggled',
+  'plan.changed',
+  'billing.checkout_started',
+  'billing.plan_change_requested',
+  'billing.portal_opened',
+  'billing.seats_synced',
+  'billing.payment_failed',
+  'billing.refunded',
+  'billing.dispute_opened',
+  'billing.region_mismatch',
+  'billing.duplicate_subscription',
+  'billing.drift_detected',
+  'billing.usage_reported',
 ] as const;
 
 interface Filters {
@@ -761,7 +773,10 @@ export function describeEvent(event: AuditEvent): string {
       );
     }
   }
-  if (typeof m['reason'] === 'string' && event.outcome !== 'success') {
+  // Payments (P12): what moved, by how much, and what said so.
+  const billing = event.action === 'plan.changed' || event.action.startsWith('billing.');
+  if (billing) parts.push(...describeBilling(m));
+  if (typeof m['reason'] === 'string' && (event.outcome !== 'success' || billing)) {
     parts.push(m['reason'] === 'removed' ? 'removed from the organisation' : m['reason']);
   }
 
@@ -827,6 +842,51 @@ const POLICY_WORDS: Readonly<Record<string, string>> = {
   plaintextExport: 'plaintext export',
   readAlerts: 'new-address read alerts',
 };
+
+/**
+ * The billing records' metadata as phrases: the plan and interval moved
+ * between, the status, the seats, the metered units, the drifted fields, and
+ * the provider event or operator behind the change. Provider identifiers are
+ * never in this metadata to begin with.
+ */
+function describeBilling(m: AuditEvent['metadata']): string[] {
+  const parts: string[] = [];
+  const text = (key: string) => (typeof m[key] === 'string' ? (m[key] as string) : null);
+  const number = (key: string) => (typeof m[key] === 'number' ? (m[key] as number) : null);
+  const moved = (before: string | number | null, after: string | number) =>
+    before !== null && before !== after ? `${before} → ${after}` : String(after);
+
+  const plan = text('plan');
+  if (plan !== null) {
+    const interval = text('billingInterval');
+    const previousInterval = text('previousBillingInterval');
+    const label = (name: string, period: string | null) => (period ? `${name} (${period})` : name);
+    const before = text('previousPlan');
+    parts.push(
+      before !== null && (before !== plan || previousInterval !== interval)
+        ? `${label(before, previousInterval)} → ${label(plan, interval)}`
+        : label(plan, interval),
+    );
+  }
+  const status = text('subscriptionStatus');
+  if (status !== null) {
+    const before = text('previousSubscriptionStatus');
+    if (before !== null && before !== status) parts.push(`${before} → ${status}`);
+  }
+  const seats = number('seatCount');
+  if (seats !== null) parts.push(`${moved(number('previousSeatCount'), seats)} seats`);
+  const units = number('unitCount');
+  if (units !== null) parts.push(`${units} metered unit${units === 1 ? '' : 's'}`);
+  if (Array.isArray(m['driftFields']) && m['driftFields'].length > 0) {
+    parts.push(`drift in ${(m['driftFields'] as unknown[]).map(String).join(', ')}`);
+  }
+  if (text('addonName') !== null) parts.push(`add-on: ${text('addonName')}`);
+  const operator = text('operator');
+  if (operator !== null) parts.push(`by ${operator}`);
+  const from = text('billingEvent');
+  if (from !== null) parts.push(`from ${from}`);
+  return parts;
+}
 
 /** Why a sign-in was held back for confirmation, as a phrase. */
 const CONFIRMATION_WORDS: Readonly<Record<string, string>> = {

@@ -738,7 +738,8 @@ between a check and a write. An organisation may define at most 100 roles.
 **Names are unique as a reader sees them, not as `custom_roles_org_name_unique` does.** The
 constraint compares bytes; the application refuses a second name with the same *skeleton*
 (`customRoleNameSkeleton` in `@xecret/core/validation`: case, letter width, lookalike Cyrillic
-and Greek letters and Latin accents folded), which no index can express. So the repository reads
+and Greek letters, Latin accents, and the lookalikes within Latin — I, l, 1 and `|` as one stroke,
+0 as o, rn as m, vv as w — folded), which no index can express. So the repository reads
 every name in the organisation under the organisation lock and compares them in JavaScript —
 race-free because every role write takes that lock — and the constraint stays behind it for
 exact duplicates. Stored names are normalised first: variation selectors dropped, spaces
@@ -961,10 +962,33 @@ audit_logs — no FKs by design; references are soft
       organisations and VALIDATE of organizations_workos_link_client_check;
       sessions.workos_session_id (the AuthKit session, ended at sign-out) and
       sessions.fresh_auth_at (the setup portal's step-up) — additive
-0024  (P12, payments — on its own branch; see below)
-0025  (P12, payments, review round 1 — on its own branch; see below)
-0026  (P12, payments, review round 2 — on its own branch; see below)
-0027  (P12, payments, review round 3 — on its own branch; see below)
+0024  payments through Dodo (P12): org_subscriptions.current_period_start, .dodo_product_id,
+      .dodo_event_at (the ordering guard for webhook snapshots), .renewal_amount_minor;
+      billing_checkouts and billing_license_keys (insert-only grants — a checkout that
+      happened, a licence issued, never the key), billing_seat_syncs (seat counts owed to
+      Dodo), billing_reminders (the email deduplication, by primary key) — additive
+0025  P12, review round 1: org_subscriptions.metered_from (usage is billed only from the
+      activation or the trial's end), .dodo_mode (test and live never cross), .dodo_event_id
+      (the tie-break for snapshots stamped alike), .on_hold_since (fourteen days ends the
+      plan), .dodo_scheduled_change_at (seat pushes wait for it), .dodo_currency and
+      .dodo_billing_country (what Dodo last reported); billing_checkouts.nonce (unique),
+      .subscription_id and .consumed_at (column-level UPDATE grant only — a checkout attaches
+      one subscription); billing_seat_syncs.generation, .claimed_until, .not_before,
+      .dead_lettered_at (one push per organisation, cleared only under the generation it
+      counted, retried only when due); the plan_ended_unpaid reminder; billing_requests
+      (idempotency keys for checkout and plan change) — additive, one backfill of
+      metered_from
+0026  P12, review round 2: org_usage_counters.included_fetches — the allowance a usage
+      month opened with (the plan's includedFetchesPerMonth with any support raise),
+      raised and never lowered while the month is current; the overage meter bills a
+      month against it alone, so a later downgrade or a cleared override never
+      re-bills it, and a month without one is never billed. (A yearly plan's counter
+      rows are months of its year, from the billing anniversary — no schema change.)
+      — additive, one backfill from each organisation's current plan
+0027  P12, review round 3: billing_reminders_kind_check widened with three once-only
+      alerts (alert_unknown_product, alert_activation_waiting, alert_operator_managed) —
+      the reminders' primary key deduplicates an error line the hourly job would
+      otherwise repeat every run; never an email — constraint only, no backfill
 0028  secret references (P19 §1): environments.parent_environment_id (same-project
       composite FK, never itself), secret_versions.declared_references (jsonb array,
       GIN-indexed for "who points here"), and 'template' in secrets_value_type_check
@@ -981,19 +1005,31 @@ audit_logs — no FKs by design; references are soft
 0032  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
 ```
 
+Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
+build on every whole-row `select()` on `org_subscriptions` names the four new columns — the
+billing screen and its routes, the webhook, the billing jobs, and the check that refuses to
+delete an organisation (or an account's last organisation) Dodo still bills. Resolving an
+organisation on a request reads only `entitlementColumns` and is unaffected. Applying it first is
+harmless; older code never reads or writes any of it. `docs/operations/billing.md` §5.
+Migration 0025 follows the same rule, and adds the membership changes to what needs it: from
+that build `addMember` and `removeMember` write the seat-sync debt in their own transaction,
+naming `billing_seat_syncs.generation`. Migration 0026 too: from that build the usage flush
+writes `org_usage_counters.included_fetches` and the meter reads it. And 0027: from that build
+the hourly billing job and the reconciler write the once-only alert kinds to `billing_reminders`.
+
 Migrations 0028–0032 (P19) are additive and follow the same rule as 0018–0023: **apply them
 before the code that names their columns**, because from that build on every `select()` on
 `environments` and `secret_versions` names them. Nothing older reads the five new tables, and
 every row older code writes satisfies the new CHECKs.
 
-**P12 merges first.** P12's billing migrations hold 0024–0027 on their own branch, and P19
-was renumbered to 0028–0032 to sit after them (review round 1), journal timestamps included:
-Drizzle's migrator applies an entry only when its `when` is later than the last one the
-database recorded, so P19's entries (`when` 1788500000000–1788900000000) are dated strictly
-after P12's four (1788100000000–1788400000000); an equal stamp would be skipped just the same.
-If P19 were applied first, a database would record P19's later timestamps and then silently
-skip P12's — so the order is P12, then P19, and a database that has already run P19 on a
-branch without P12 is rebuilt, not patched.
+**P12 merged first.** P12's billing migrations hold 0024–0027, and P19 was renumbered to
+0028–0032 to sit after them (review round 1), journal timestamps included: Drizzle's migrator
+applies an entry only when its `when` is later than the last one the database recorded, so
+P19's entries (`when` 1788500000000–1788900000000) are dated strictly after P12's four
+(1788100000000–1788400000000); an equal stamp would have been skipped just the same. Had P19
+been applied first, a database would have recorded P19's later timestamps and then silently
+skipped P12's — so the order was P12, then P19, and a database that ran P19 from its branch
+before P12 was merged is rebuilt, not patched.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,

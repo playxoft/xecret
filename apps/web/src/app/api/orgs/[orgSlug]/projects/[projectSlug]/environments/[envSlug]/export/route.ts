@@ -1,3 +1,4 @@
+import { countSecretFetch } from '@/server/billing/usage';
 import { assertPlaintextExportAllowed } from '@/server/export-policy';
 import { parseQuery } from '@/server/http';
 import { noteEnvironmentRead } from '@/server/read-alerts';
@@ -112,6 +113,10 @@ export const GET = authenticatedRoute<Params>(
     );
 
     noteEnvironmentRead(scope, services, principal);
+
+    // One fetch towards the plan's allowance (P12) — a map increment; the
+    // write happens later, from `waitUntil`, and can never fail this read.
+    countSecretFetch(services, scope.organization.id);
 
     const document = renderSecretDocument(secrets, format);
 

@@ -3,6 +3,7 @@ title: There is an API key in your git history. Here is how to find it, and what
 description: A key deleted in a later commit is still live and still readable. How to find secrets in git history, plus the rotate-first runbook that keeps production up.
 keywords: [leaked API key, git history secrets, secret scanning, gitleaks, trufflehog, rotate credentials, incident runbook]
 published: 2026-07-29
+updated: 2026-10-20
 author: The xecret team
 role: Playxoft
 category: Security
@@ -236,5 +237,6 @@ is no file to commit and every read is audited — see
 server-side envelope encryption, so the service can technically decrypt your
 values, and we would rather you read the
 [trust model](/docs/security/trust-model) now than discover the model later.
-It is pre-alpha, everything is currently on for everyone with no card
-collected, and [the feature set](/features) is public before you decide.
+It is pre-alpha, [the pricing page](/pricing) says what each plan includes and
+what, if anything, it costs on the day you read this, and
+[the feature set](/features) is public before you decide.

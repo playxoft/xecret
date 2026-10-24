@@ -164,6 +164,28 @@ different things. During a review, "could this person still act during the
 window?" has a different answer for each — a suspended member resolves to
 `none` everywhere while keeping their grants.
 
+### Plans and billing
+
+Written by the system for what the payment provider, the seat sync and the billing jobs did,
+and by an owner for what they asked for. The actor of a system row says which: `Dodo webhook`,
+`seat sync`, `billing job` or `billing reconciler`. No row carries an amount, a card detail,
+or any identifier of the payment provider's — only plans, statuses, counts and the name of the
+event that caused it.
+
+| Action | Recorded when |
+|---|---|
+| `plan.changed` | What the organisation may do changed: a subscription started, changed plan or period, changed status, gained or lost seats, was cancelled for the period end, or ended. With the plan, interval, status and seats before and after, and the provider event (`billingEvent`) or the job's `reason` — a cancellation that reached its period end, or a subscription fourteen days on hold without a payment. An operator's change by hand carries `operator` |
+| `billing.checkout_started` | An owner was sent to checkout, for the plan, period and seat count recorded. Nothing is bought until the payment provider says so |
+| `billing.plan_change_requested` | An owner asked for a plan or period change — `takes effect now` or `takes effect at renewal` |
+| `billing.portal_opened` | An owner was handed a link to the payment provider's customer portal. The link itself is never recorded |
+| `billing.seats_synced` | The seat count billed followed the membership — or, as an `error`, could not reach the payment provider and is being retried |
+| `billing.payment_failed` | A payment was declined |
+| `billing.refunded` `billing.dispute_opened` | Money moved back, or a chargeback was opened. Access is unchanged by either |
+| `billing.usage_reported` | Metered secret fetches past the allowance were reported, with `unitCount` (a unit is a thousand fetches) |
+| `billing.region_mismatch` | The payment provider reported a billing country or currency other than the one the organisation is priced in, or a card from another country. Outcome `error`; nothing changed |
+| `billing.duplicate_subscription` | A subscription or a checkout payment was not applied: a second one beside the one the organisation has (or is still waiting to activate), one bought over a plan set by hand, or one that did not come from a checkout of this organisation's. Outcome `error` |
+| `billing.drift_detected` | The nightly comparison found our record and the payment provider's disagreeing — `driftFields` names what (`seats` includes the membership no longer matching what is billed). Nothing is corrected automatically |
+
 ### Credentials
 
 | Action | Recorded when |

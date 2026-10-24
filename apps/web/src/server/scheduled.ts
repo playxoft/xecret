@@ -2,9 +2,10 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
 
 /**
  * Scheduled work, run by the Worker's Cron Triggers through the application
- * itself: hourly, the retained-vault purge (P23) and the pruning of old webhook
- * deliveries and read sightings; every five minutes, webhook retries and
- * read-alert digests (P19 §5, §7). `jobsForCron` is which runs when.
+ * itself: hourly, the retained-vault purge (P23), the pruning of old webhook
+ * deliveries and read sightings (P19 §5, §7) and the billing job (P12); every
+ * five minutes, webhook retries and read-alert digests (P19 §5, §7); nightly,
+ * the billing reconciler (P12). `jobsForCron` is which runs when.
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -25,32 +26,50 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * And even a caller who got through would achieve nothing it should not: every
  * job does only what is due anyway — deletes retained vaults whose seven days
  * are over (migration 0020's triggers refuse anything earlier), prunes rows
- * past their age, sends deliveries and digests that are owed.
+ * past their age, sends deliveries and digests that are owed; the billing jobs
+ * report units with deterministic ids Dodo deduplicates, send reminders
+ * deduplicated by their own table, and compare rows without correcting them.
  */
 
 export const SCHEDULED_HEADER = 'x-xecret-scheduled';
 export const VAULT_PURGE_PATH = '/api/internal/scheduled/vault-purge';
 /** Hourly: old webhook deliveries and old read sightings. */
 export const PRUNE_PATH = '/api/internal/scheduled/prune';
+/** P12, hourly: ended cancellations, seat-sync retries, the overage report, the dated reminders. */
+export const BILLING_HOURLY_PATH = '/api/internal/scheduled/billing-hourly';
 /** Every five minutes: webhook retries, then read-alert digests. */
 export const NOTIFICATIONS_PATH = '/api/internal/scheduled/notifications';
-
-/** The two expressions in `wrangler.toml`'s `[env.production.triggers]`, exactly. */
-export const HOURLY_CRON = '17 * * * *';
-export const FIVE_MINUTE_CRON = '*/5 * * * *';
+/** P12, nightly: the comparison with Dodo, alert-only. */
+export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';
 
 /**
- * Which jobs a Cron Trigger runs, by the expression that fired it.
+ * The three expressions in `wrangler.toml`'s `[env.production.triggers]`,
+ * exactly. Kept beside the paths so the schedule and what it runs are read in
+ * one place; `worker.ts` dispatches on `controller.cron`, which is exactly one
+ * of these strings.
+ */
+export const HOURLY_CRON = '17 * * * *';
+export const FIVE_MINUTE_CRON = '*/5 * * * *';
+export const DAILY_CRON = '41 3 * * *';
+
+/**
+ * Which jobs a Cron Trigger runs, in order, by the expression that fired it.
  *
- * Anything that is not the five-minute expression runs the hourly jobs. That is
- * the safe default in the direction that matters: the hourly jobs are
- * idempotent — they delete only what is already due — so an expression edited
- * in `wrangler.toml` and not here runs them more often than it needs to, which
- * costs a few queries, rather than not at all, which would leave retained
- * vaults past their window undeleted.
+ * Hourly, the jobs that touch only the database run before the one that calls
+ * Dodo, so a slow or failing billing provider never delays the seven-day purge
+ * or the pruning (each job runs in isolation regardless — `runScheduledJobs`).
+ *
+ * Anything that is neither the five-minute nor the nightly expression runs the
+ * hourly jobs. That is the safe default in the direction that matters: the
+ * hourly jobs are idempotent — they do only what is already due — so an
+ * expression edited in `wrangler.toml` and not here runs them more often than
+ * it needs to, which costs a few queries, rather than not at all, which would
+ * leave retained vaults past their window undeleted.
  */
 export function jobsForCron(cron: string): readonly string[] {
-  return cron === FIVE_MINUTE_CRON ? [NOTIFICATIONS_PATH] : [VAULT_PURGE_PATH, PRUNE_PATH];
+  if (cron === FIVE_MINUTE_CRON) return [NOTIFICATIONS_PATH];
+  if (cron === DAILY_CRON) return [BILLING_DAILY_PATH];
+  return [VAULT_PURGE_PATH, PRUNE_PATH, BILLING_HOURLY_PATH];
 }
 
 /**

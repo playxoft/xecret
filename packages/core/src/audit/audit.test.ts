@@ -658,6 +658,15 @@ describe('every declared metadata field survives sanitisation', () => {
       endpointHost: 'hooks.example.com',
       eventTypes: ['secret.updated', 'environment.promoted'],
       policyName: 'secrets',
+      previousSeatCount: 11,
+      billingInterval: 'yearly',
+      previousBillingInterval: 'monthly',
+      subscriptionStatus: 'on_hold',
+      previousSubscriptionStatus: 'active',
+      currency: 'INR',
+      billingEvent: 'subscription.renewed',
+      driftFields: ['seats', 'periodEnd'],
+      unitCount: 42,
     } satisfies Required<AuditMetadata>;
 
     const record = builderWith().success('member.role_changed', null, everyField);
@@ -728,6 +737,15 @@ describe('every declared metadata field survives sanitisation', () => {
       endpointHost: 'hooks.example.com',
       eventTypes: ['secret.updated', 'environment.promoted'],
       policyName: 'secrets',
+      previousSeatCount: 11,
+      billingInterval: 'yearly',
+      previousBillingInterval: 'monthly',
+      subscriptionStatus: 'on_hold',
+      previousSubscriptionStatus: 'active',
+      currency: 'INR',
+      billingEvent: 'subscription.renewed',
+      driftFields: ['seats', 'periodEnd'],
+      unitCount: 42,
     });
   });
 
@@ -747,6 +765,45 @@ describe('every declared metadata field survives sanitisation', () => {
     expect('restoredTo' in record.metadata).toBe(false);
     expect('createdCount' in record.metadata).toBe(false);
     expect(record.metadata.endpointHost).toContain(REDACTED);
+  });
+
+  it('keeps the payment fields only when they are the shapes they claim to be (P12)', () => {
+    // Each reached past the type with a cast, the way a careless spread of a
+    // provider payload would: an amount, a customer id, a status nobody
+    // defined, a field list carrying an identifier. All dropped, none cleaned.
+    const record = builderWith().success('plan.changed', null, {
+      currency: '4499',
+      billingEvent: 'subscription.renewed cus_TV52uJWWXt2yIoBBxpjaa',
+      billingInterval: 'weekly' as never,
+      subscriptionStatus: 'paused' as never,
+      previousSubscriptionStatus: 'canceled' as never,
+      driftFields: ['seats', 'cus_TV52uJWWXt2yIoBBxpjaa', 'seats'] as never,
+      unitCount: Number.POSITIVE_INFINITY,
+    });
+
+    expect(record.metadata).toEqual({ driftFields: ['seats'] });
+
+    // A lower-case currency is not normalised into a valid one: dropped.
+    expect(builderWith().success('plan.changed', null, { currency: 'inr' }).metadata).toEqual({});
+    // Not an array at all: dropped rather than thrown on.
+    expect(
+      builderWith().success('billing.drift_detected', null, { driftFields: 'seats' as never })
+        .metadata,
+    ).toEqual({});
+  });
+
+  it('redacts a webhook signing secret and a customer id from the free-text fields', () => {
+    const record = builderWith().success('billing.refunded', null, {
+      reason: 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw leaked with cus_TV52uJWWXt2yIoBBxpjaa',
+      operator: 'cus_0NWiIY7Hp6dGcJnZjKvSf',
+    });
+
+    expect(record.metadata.reason).toBe(`${REDACTED} leaked with ${REDACTED}`);
+    expect(record.metadata.operator).toBe(REDACTED);
+    expect(looksLikeCredential('whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw')).toBe(true);
+    expect(looksLikeCredential('cus_TV52uJWWXt2yIoBBxpjaa')).toBe(true);
+    // A bare prefix in a sentence is not a finding.
+    expect(looksLikeCredential('the cus_ prefix')).toBe(false);
   });
 
   it('keeps why a sign-in was held back only when it is one of the known reasons', () => {

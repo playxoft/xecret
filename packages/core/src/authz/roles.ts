@@ -157,8 +157,10 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'org.update': true,
     'org.delete': true,
     'sso.manage': true,
+    'billing.manage': true,
   },
-  // Identical to `owner` but for `org.delete` and `sso.manage`. Deleting the
+  // Identical to `owner` but for `org.delete`, `sso.manage` and
+  // `billing.manage`. Deleting the
   // organisation destroys every key and every secret in it, so it stays with
   // the role that cannot be removed while it is the last of its kind.
   //
@@ -169,6 +171,10 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
   // exemption is not in play — so it would be an admin-to-owner escalation in
   // all but name. Admins keep reading the settings and switching a policy off
   // (`org.update`).
+  //
+  // `billing.manage` is owner-only because every billing act spends the
+  // organisation's money or can end its subscription — the payment provider's
+  // portal is where a plan is cancelled — and the person who pays is the owner.
   admin: {
     'project.read': true,
     'project.create': true,
@@ -193,6 +199,7 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'org.update': true,
     'org.delete': false,
     'sso.manage': false,
+    'billing.manage': false,
   },
   // A developer's authority is enumerated rather than expressed as "admin minus
   // a few things", so a new action defaults to denied for them.
@@ -233,6 +240,7 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'org.update': false,
     'org.delete': false,
     'sso.manage': false,
+    'billing.manage': false,
   },
   // Every mutation is `false`, not merely gated on access level. Granting a
   // viewer `admin` on one environment is an easy slip in the grants UI; it
@@ -261,6 +269,7 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'org.update': false,
     'org.delete': false,
     'sso.manage': false,
+    'billing.manage': false,
   },
 };
 
@@ -332,6 +341,7 @@ export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
   'org.update': { scope: 'org' },
   'org.delete': { scope: 'org' },
   'sso.manage': { scope: 'org' },
+  'billing.manage': { scope: 'org' },
 };
 
 /* ── Custom roles ──────────────────────────────────────────────────────────── */

@@ -3,6 +3,7 @@ import { clearedSessionCookie, csrfCookie, serializeCookie } from '@xecret/core/
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { deleteAccount, updateDisplayName } from '@/server/account-service';
+import { scheduleSeatSync } from '@/server/billing/seats';
 import { accountPatchSchema, toAccountProfile } from '@/server/schemas/account';
 import { confirmationMatches } from '@/server/schemas/resources';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -109,6 +110,8 @@ export const DELETE = authenticatedRoute(
     }
 
     const result = await deleteAccount(services, principal.user.id);
+    // A seat fewer in every organisation the account left (P12 seat sync).
+    scheduleSeatSync(services, result.leftOrganizationIds);
 
     // Recorded after the transaction committed, against the (now soft-deleted)
     // primary organisation — the row survives precisely so records like this one

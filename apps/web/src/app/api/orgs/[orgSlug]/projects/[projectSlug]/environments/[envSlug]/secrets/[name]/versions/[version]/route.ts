@@ -1,3 +1,4 @@
+import { countSecretFetch } from '@/server/billing/usage';
 import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
@@ -90,6 +91,9 @@ export const GET = authenticatedRoute<Params>(
     // An unaudited reveal is the failure that matters most on this path, and a
     // record that did not say *which* version was read would answer the easy
     // half of the question during an incident.
+    // One fetch towards the plan's allowance (P12) — a map increment; the
+    // write happens later, from `waitUntil`, and can never fail this read.
+    countSecretFetch(services, scope.organization.id);
     record(
       audit(scope.organization.id).success(
         'secret.revealed',
