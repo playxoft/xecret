@@ -157,7 +157,7 @@ func cmdLogin(args []string) error {
 	// Best effort, and after the new credential is safely stored: a failure
 	// here costs a stale device in the dashboard, never the login.
 	revokeCtx, cancelRevoke := context.WithTimeout(context.Background(), replacedRevokeTimeout)
-	if err := revokeReplaced(revokeCtx, previous, base, result.Token); err != nil {
+	if err := revokeReplaced(revokeCtx, previous, result.Token); err != nil {
 		a.printer.Warnf("could not revoke the credential this login replaced: %v", err)
 		a.printer.Warnf("revoke the old device from your organisation's Tokens page in the dashboard.")
 	}
@@ -185,22 +185,28 @@ func cmdLogin(args []string) error {
 const replacedRevokeTimeout = 10 * time.Second
 
 // revokeReplaced revokes the CLI credential a login has just replaced, against
-// the deployment it belongs to.
+// the deployment it belongs to — the one stored with it, and no other.
 //
-// Nothing to do when there was none, or when it is the token just issued. A
-// 401 is success: the credential was already revoked or had expired, which is
-// the state this wants. Anything else is returned, for the caller to report —
-// never to fail the login with.
-func revokeReplaced(ctx context.Context, previous *cred.Credentials, base, current string) error {
+// Nothing to do when there was none, or when it is the token just issued. Nor
+// when the stored credential names no deployment: there is then no deployment
+// it provably belongs to, and presenting it to whichever one this login used
+// would hand one deployment's token to another.
+//
+// xecret's own 401 — its error envelope, code `unauthenticated` — is success:
+// the credential was already revoked or had expired, which is the state this
+// wants. Any other 401 is something in between (a proxy, an access gateway)
+// that never asked xecret, and is returned like every other failure, for the
+// caller to report — never to fail the login with.
+func revokeReplaced(ctx context.Context, previous *cred.Credentials, current string) error {
 	if previous == nil || previous.Token == "" || previous.Token == current {
 		return nil
 	}
-	origin := previous.APIURL
-	if origin == "" {
-		origin = base
+	if previous.APIURL == "" {
+		return nil
 	}
-	err := api.New(origin, previous.Token, userAgent()).RevokeSelf(ctx)
-	if apiErr, ok := api.AsError(err); ok && apiErr.Status == http.StatusUnauthorized {
+	err := api.New(previous.APIURL, previous.Token, userAgent()).RevokeSelf(ctx)
+	if apiErr, ok := api.AsError(err); ok &&
+		apiErr.Status == http.StatusUnauthorized && apiErr.Code == "unauthenticated" {
 		return nil
 	}
 	return err

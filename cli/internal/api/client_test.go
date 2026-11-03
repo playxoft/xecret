@@ -88,41 +88,79 @@ func TestSSORequiredHintSaysToLogInThroughSSO(t *testing.T) {
 
 // A plan limit is the organisation's, not the person's access, and the hint
 // says what the person can do about it. At the CLI-device ceiling that is
-// revoking a device they no longer use, which is in their own hands.
+// revoking a device they no longer use, which is in their own hands; at a
+// feature the plan lacks there is nothing to remove, only a plan to move to.
 func TestPlanLimitHintNamesTheWayForward(t *testing.T) {
 	for _, tc := range []struct {
+		name     string
 		resource string
+		limit    string
+		message  string
 		want     []string
+		refuse   []string
 	}{
-		{"cliDevicesPerUser", []string{"Tokens page", "xecret logout", "xecret login"}},
-		{"serviceTokens", []string{"Tokens page"}},
-		{"projects", []string{"plan limit", "owner"}},
+		{"device ceiling", "cliDevicesPerUser", "2", "This organisation is on the Free plan.",
+			[]string{"Tokens page", "xecret logout", "xecret login"}, nil},
+		{"service tokens", "serviceTokens", "10", "This organisation is on the Free plan.",
+			[]string{"Tokens page"}, nil},
+		{"a count", "projects", "5", "This organisation is on the Free plan.",
+			[]string{"plan limit", "Remove one"}, nil},
+		{"a feature", "personalOverrides", "null", "personalOverrides is not included in the free plan.",
+			[]string{"not part of your organisation's plan", "billing page"}, []string{"Remove one"}},
+		{"an add-on", "samlSso", "null", "samlSso is an add-on this organisation has not purchased.",
+			[]string{"not part of your organisation's plan"}, []string{"Remove one"}},
 	} {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":{"code":"plan_limit","message":"This organisation is on the Free plan.",` +
-				`"requestId":"req-3","plan":{"resource":"` + tc.resource + `","limit":2,"current":2,` +
-				`"plan":"free","upgradeTo":"pro"}}}`))
-		}))
+		body := `{"error":{"code":"plan_limit","message":"` + tc.message + `","requestId":"req-3",` +
+			`"plan":{"resource":"` + tc.resource + `","limit":` + tc.limit + `,"current":null,` +
+			`"plan":"free","upgradeTo":"pro"}}}`
+		apiErr := planLimitFrom(t, body)
 
-		_, err := New(server.URL, "", "test-agent").ExchangeCode(context.Background(), "code", "verifier")
-		server.Close()
-
-		apiErr, ok := AsError(err)
-		if !ok {
-			t.Fatalf("%s: want *Error, got %T: %v", tc.resource, err, err)
-		}
 		if apiErr.Code != "plan_limit" || apiErr.PlanResource != tc.resource {
-			t.Errorf("%s: decoded %+v", tc.resource, apiErr)
+			t.Errorf("%s: decoded %+v", tc.name, apiErr)
+		}
+		if apiErr.PlanCountable != (tc.limit != "null") {
+			t.Errorf("%s: PlanCountable = %v", tc.name, apiErr.PlanCountable)
 		}
 		hint := apiErr.Hint()
 		for _, want := range tc.want {
 			if !strings.Contains(hint, want) {
-				t.Errorf("%s: hint %q should mention %q", tc.resource, hint, want)
+				t.Errorf("%s: hint %q should mention %q", tc.name, hint, want)
+			}
+		}
+		for _, refuse := range tc.refuse {
+			if strings.Contains(hint, refuse) {
+				t.Errorf("%s: hint %q should not say %q", tc.name, hint, refuse)
 			}
 		}
 	}
+}
+
+// The server's device refusal carries its own remedy sentence; printing the
+// hint under it would say the same thing twice.
+func TestTheDeviceHintIsNotRepeatedUnderTheServersOwnRemedy(t *testing.T) {
+	body := `{"error":{"code":"plan_limit","message":"This organisation is on the Free plan, which ` +
+		`allows 2 CLI devices per person. Revoke a device you no longer use, on the Tokens page, ` +
+		`then log in again.","requestId":"req-4","plan":{"resource":"cliDevicesPerUser","limit":2}}}`
+	if hint := planLimitFrom(t, body).Hint(); hint != "" {
+		t.Errorf("hint = %q, want none beside the server's own remedy", hint)
+	}
+}
+
+func planLimitFrom(t *testing.T, body string) *Error {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "", "test-agent").ExchangeCode(context.Background(), "code", "verifier")
+	apiErr, ok := AsError(err)
+	if !ok {
+		t.Fatalf("want *Error, got %T: %v", err, err)
+	}
+	return apiErr
 }
 
 func TestGetRetriesOn503(t *testing.T) {

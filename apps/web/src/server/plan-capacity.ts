@@ -26,6 +26,10 @@ import type { EnvironmentScope } from './tenancy';
  * the refusal reaches them — the consent screen and `xecret login`. Each login
  * is a device, so an old laptop or a login this machine replaced is usually
  * what is holding the place.
+ *
+ * The Go CLI recognises its opening words ("Revoke a device you no longer use")
+ * and then prints no hint of its own beneath it (`cli/internal/api/client.go`),
+ * so change them in both places or not at all.
  */
 export const CLI_DEVICE_REMEDY =
   'Revoke a device you no longer use — on the Tokens page of this organisation in the ' +

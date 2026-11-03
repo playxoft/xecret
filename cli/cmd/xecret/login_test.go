@@ -20,27 +20,31 @@ type revokeRecorder struct {
 	requests []string
 }
 
-func (r *revokeRecorder) server(t *testing.T, status int) *httptest.Server {
+// server answers every request with status and body.
+func (r *revokeRecorder) server(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.requests = append(r.requests, req.Method+" "+req.URL.Path+" "+req.Header.Get("Authorization"))
 		r.mu.Unlock()
-		w.WriteHeader(status)
-		if status >= 400 {
-			_, _ = w.Write([]byte(`{"error":{"code":"forbidden","message":"No.","requestId":"req-1"}}`))
+		if body != "" {
+			w.Header().Set("Content-Type", "application/json")
 		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(server.Close)
 	return server
 }
 
+const xecretUnauthenticated = `{"error":{"code":"unauthenticated","message":"Not signed in.","requestId":"req-1"}}`
+
 func TestALoginRevokesTheCredentialItReplaces(t *testing.T) {
 	recorder := &revokeRecorder{}
-	server := recorder.server(t, http.StatusNoContent)
+	server := recorder.server(t, http.StatusNoContent, "")
 
 	previous := &cred.Credentials{APIURL: server.URL, Token: "xct_live_old"}
-	if err := revokeReplaced(context.Background(), previous, server.URL, "xct_live_new"); err != nil {
+	if err := revokeReplaced(context.Background(), previous, "xct_live_new"); err != nil {
 		t.Fatalf("revokeReplaced: %v", err)
 	}
 
@@ -50,33 +54,16 @@ func TestALoginRevokesTheCredentialItReplaces(t *testing.T) {
 	}
 }
 
-func TestReplacedCredentialIsRevokedWhereItBelongs(t *testing.T) {
-	// A login to a different deployment revokes the old credential against the
-	// deployment that issued it, never the new one.
-	old := &revokeRecorder{}
-	oldServer := old.server(t, http.StatusNoContent)
-	current := &revokeRecorder{}
-	currentServer := current.server(t, http.StatusNoContent)
-
-	previous := &cred.Credentials{APIURL: oldServer.URL, Token: "xct_live_old"}
-	if err := revokeReplaced(context.Background(), previous, currentServer.URL, "xct_live_new"); err != nil {
-		t.Fatalf("revokeReplaced: %v", err)
-	}
-	if len(old.requests) != 1 || len(current.requests) != 0 {
-		t.Fatalf("old saw %q, current saw %q", old.requests, current.requests)
-	}
-}
-
 func TestNothingIsRevokedWithoutAReplacedCredential(t *testing.T) {
 	recorder := &revokeRecorder{}
-	server := recorder.server(t, http.StatusNoContent)
+	server := recorder.server(t, http.StatusNoContent, "")
 
 	for _, previous := range []*cred.Credentials{
 		nil,
 		{APIURL: server.URL, Token: ""},
 		{APIURL: server.URL, Token: "xct_live_same"},
 	} {
-		if err := revokeReplaced(context.Background(), previous, server.URL, "xct_live_same"); err != nil {
+		if err := revokeReplaced(context.Background(), previous, "xct_live_same"); err != nil {
 			t.Fatalf("revokeReplaced(%+v): %v", previous, err)
 		}
 	}
@@ -85,22 +72,47 @@ func TestNothingIsRevokedWithoutAReplacedCredential(t *testing.T) {
 	}
 }
 
-func TestAnAlreadyRevokedCredentialIsNotAFailure(t *testing.T) {
+// A credential stored with no deployment is not presented anywhere: there is
+// no deployment it provably belongs to, and sending it to the one this login
+// used could hand one deployment's token to another.
+func TestACredentialWithNoDeploymentIsNotSentAnywhere(t *testing.T) {
+	previous := &cred.Credentials{APIURL: "", Token: "xct_live_old"}
+	if err := revokeReplaced(context.Background(), previous, "xct_live_new"); err != nil {
+		t.Fatalf("revokeReplaced: %v", err)
+	}
+}
+
+func TestXecretsOwn401MeansTheCredentialIsAlreadyGone(t *testing.T) {
 	recorder := &revokeRecorder{}
-	server := recorder.server(t, http.StatusUnauthorized)
+	server := recorder.server(t, http.StatusUnauthorized, xecretUnauthenticated)
 
 	previous := &cred.Credentials{APIURL: server.URL, Token: "xct_live_old"}
-	if err := revokeReplaced(context.Background(), previous, server.URL, "xct_live_new"); err != nil {
-		t.Fatalf("a 401 means it is already gone, want nil: %v", err)
+	if err := revokeReplaced(context.Background(), previous, "xct_live_new"); err != nil {
+		t.Fatalf("xecret's unauthenticated means it is already gone, want nil: %v", err)
+	}
+}
+
+// A 401 that is not xecret's — a proxy, an access gateway in front of it —
+// never reached the server that holds the credential, so it is not taken to
+// mean the credential is gone.
+func TestAnother401IsReportedLikeAnyFailure(t *testing.T) {
+	for _, body := range []string{"", "Unauthorized", `{"error":{"code":"forbidden","message":"No."}}`} {
+		recorder := &revokeRecorder{}
+		server := recorder.server(t, http.StatusUnauthorized, body)
+
+		previous := &cred.Credentials{APIURL: server.URL, Token: "xct_live_old"}
+		if err := revokeReplaced(context.Background(), previous, "xct_live_new"); err == nil {
+			t.Fatalf("a 401 with body %q is not xecret's; want it reported", body)
+		}
 	}
 }
 
 func TestAFailedRevocationIsReportedForTheCallerToWarnAbout(t *testing.T) {
 	recorder := &revokeRecorder{}
-	server := recorder.server(t, http.StatusForbidden)
+	server := recorder.server(t, http.StatusForbidden, `{"error":{"code":"forbidden","message":"No."}}`)
 
 	previous := &cred.Credentials{APIURL: server.URL, Token: "xct_live_old"}
-	if err := revokeReplaced(context.Background(), previous, server.URL, "xct_live_new"); err == nil {
+	if err := revokeReplaced(context.Background(), previous, "xct_live_new"); err == nil {
 		t.Fatal("want the refusal returned, so the login can warn about the stale device")
 	}
 }

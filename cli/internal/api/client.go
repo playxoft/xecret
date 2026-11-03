@@ -64,6 +64,10 @@ type Error struct {
 	// PlanResource is the limit a `plan_limit` refusal names — "projects",
 	// "cliDevicesPerUser" — from the envelope's `plan` block. Empty otherwise.
 	PlanResource string
+	// PlanCountable is whether that refusal was a ceiling on a count (its
+	// `limit` a number) rather than a feature or add-on the plan lacks (`limit`
+	// null). Only a count can be made room in by removing something.
+	PlanCountable bool
 }
 
 func (e *Error) Error() string {
@@ -96,16 +100,26 @@ func (e *Error) Hint() string {
 		// The organisation's plan, not the person's access: the message names
 		// the limit and the plan that allows more. Where the thing at the limit
 		// is one the person can give back themselves, say how.
-		switch e.PlanResource {
-		case "cliDevicesPerUser":
+		switch {
+		case e.PlanResource == "cliDevicesPerUser":
+			// A server that already says how — the remedy it appends to this
+			// refusal — is not repeated underneath itself.
+			if strings.Contains(e.Message, "Revoke a device you no longer use") {
+				return ""
+			}
 			return "Each login is a device. Revoke one you no longer use on your organisation's " +
 				"Tokens page in the dashboard (or run 'xecret logout' on it), then run 'xecret login' again."
-		case "serviceTokens":
+		case e.PlanResource == "serviceTokens":
 			return "Revoke a service token you no longer use on your organisation's Tokens page in " +
 				"the dashboard, or ask an owner about a plan that allows more."
+		case e.PlanCountable:
+			return "This is your organisation's plan limit, not your access. Remove one you no longer " +
+				"need, or ask an owner about a plan that allows more."
 		}
-		return "This is your organisation's plan limit, not your access. Remove one you no longer " +
-			"need, or ask an owner about a plan that allows more."
+		// A feature or add-on the plan does not include: there is nothing to
+		// remove, only a plan to move to.
+		return "This is not part of your organisation's plan. An owner can move to a plan that " +
+			"includes it from the organisation's billing page."
 	case "forbidden":
 		return "Ask an organisation admin to review your access."
 	case "not_found":
@@ -150,10 +164,12 @@ type errorEnvelope struct {
 			Field   string `json:"field"`
 			Message string `json:"message"`
 		} `json:"fields"`
-		// Present only on `plan_limit`. Only the resource is read: the rest is
-		// for the dashboard's upgrade button.
+		// Present only on `plan_limit`. Only the resource, and whether there was
+		// a count to be at, are read: the rest is for the dashboard's upgrade
+		// button.
 		Plan *struct {
 			Resource string `json:"resource"`
+			Limit    *int   `json:"limit"`
 		} `json:"plan"`
 	} `json:"error"`
 }
@@ -340,6 +356,7 @@ func decodeError(response *http.Response, body io.Reader) error {
 		}
 		if envelope.Error.Plan != nil {
 			apiErr.PlanResource = envelope.Error.Plan.Resource
+			apiErr.PlanCountable = envelope.Error.Plan.Limit != nil
 		}
 		// Field problems carry the rule that failed, never the value — safe
 		// and genuinely useful at a terminal.
