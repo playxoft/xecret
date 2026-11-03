@@ -158,13 +158,36 @@ export function describeLimit(resource: LimitedResource, limit: number): string 
   return `${limit.toLocaleString('en-US')} ${limit === 1 ? one : many}`;
 }
 
-/** Build the refusal body for a ceiling that has been reached. */
+/**
+ * Build the refusal body for a ceiling that has been reached.
+ *
+ * The sentence says whose number it is. Usually the plan's — "the Free plan,
+ * which allows 5 projects" — but a support override raises a ceiling above the
+ * plan's (raise-only, so a ceiling that differs from the plan's is always a
+ * raised one), and telling an organisation that Free allows the 10 it was
+ * granted would state a limit no plan has.
+ */
 export function limitError(
   entitlements: Entitlements,
   resource: LimitedResource,
   verdict: Extract<LimitVerdict, { kind: 'exceeded' }>,
 ): PlanLimitError {
   const allows = describeLimit(resource, verdict.limit);
+  const plan = PLANS[entitlements.plan];
+  const planLimit = plan.limits[resource];
+  const more = verdict.upgradeTo ? ` The ${PLANS[verdict.upgradeTo].name} plan allows more.` : '';
+
+  let message: string;
+  if (planLimit !== null && planLimit !== verdict.limit) {
+    message =
+      `This organisation has reached its limit of ${allows}, raised for it above the ` +
+      `${plan.name} plan's ${describeLimit(resource, planLimit)}.${more}`;
+  } else if (verdict.upgradeTo) {
+    message = `This organisation is on the ${plan.name} plan, which allows ${allows}.${more}`;
+  } else {
+    message = `This organisation has reached its limit of ${allows}.`;
+  }
+
   return {
     error: 'plan_limit',
     resource,
@@ -172,9 +195,7 @@ export function limitError(
     current: verdict.current,
     plan: entitlements.plan,
     upgradeTo: verdict.upgradeTo,
-    message: verdict.upgradeTo
-      ? `This organisation is on the ${PLANS[entitlements.plan].name} plan, which allows ${allows}. The ${PLANS[verdict.upgradeTo].name} plan allows more.`
-      : `This organisation has reached its limit of ${allows}.`,
+    message,
   };
 }
 

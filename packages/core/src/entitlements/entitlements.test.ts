@@ -805,6 +805,24 @@ describe('error bodies', () => {
     );
   });
 
+  /**
+   * A ceiling support raised is the organisation's, not the plan's: saying
+   * "the Free plan, which allows 10 projects" would state a limit Free does
+   * not have.
+   */
+  it('names a raised ceiling as the organisation’s own, beside the plan’s', () => {
+    const raised = entitlementsFor('free', { limitOverrides: { projects: 10 } });
+    const verdict = checkLimit(raised, 'projects', 10);
+    if (verdict.kind !== 'exceeded') throw new Error('expected exceeded');
+
+    expect(limitError(raised, 'projects', verdict)).toMatchObject({
+      limit: 10,
+      upgradeTo: 'pro',
+      message:
+        "This organisation has reached its limit of 10 projects, raised for it above the Free plan's 5 projects. The Pro plan allows more.",
+    });
+  });
+
   it('a feature refusal names the plan that includes it', () => {
     const free = entitlementsFor('free');
     const body = featureError(free, 'oidcSso', cheapestPlanWithFeature('oidcSso'));
