@@ -86,6 +86,45 @@ func TestSSORequiredHintSaysToLogInThroughSSO(t *testing.T) {
 	}
 }
 
+// A plan limit is the organisation's, not the person's access, and the hint
+// says what the person can do about it. At the CLI-device ceiling that is
+// revoking a device they no longer use, which is in their own hands.
+func TestPlanLimitHintNamesTheWayForward(t *testing.T) {
+	for _, tc := range []struct {
+		resource string
+		want     []string
+	}{
+		{"cliDevicesPerUser", []string{"Tokens page", "xecret logout", "xecret login"}},
+		{"serviceTokens", []string{"Tokens page"}},
+		{"projects", []string{"plan limit", "owner"}},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"plan_limit","message":"This organisation is on the Free plan.",` +
+				`"requestId":"req-3","plan":{"resource":"` + tc.resource + `","limit":2,"current":2,` +
+				`"plan":"free","upgradeTo":"pro"}}}`))
+		}))
+
+		_, err := New(server.URL, "", "test-agent").ExchangeCode(context.Background(), "code", "verifier")
+		server.Close()
+
+		apiErr, ok := AsError(err)
+		if !ok {
+			t.Fatalf("%s: want *Error, got %T: %v", tc.resource, err, err)
+		}
+		if apiErr.Code != "plan_limit" || apiErr.PlanResource != tc.resource {
+			t.Errorf("%s: decoded %+v", tc.resource, apiErr)
+		}
+		hint := apiErr.Hint()
+		for _, want := range tc.want {
+			if !strings.Contains(hint, want) {
+				t.Errorf("%s: hint %q should mention %q", tc.resource, hint, want)
+			}
+		}
+	}
+}
+
 func TestGetRetriesOn503(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -61,8 +62,15 @@ func cmdLogin(args []string) error {
 		}
 	}
 
-	if existing, err := cred.Load(a.store); err == nil {
-		a.printer.Infof("Currently signed in as %s — a successful login will replace that credential.", existing.Email)
+	// The credential this login will replace, if there is one. It is revoked on
+	// the server once the new one is saved: left live, every re-login would
+	// leave a device behind that nothing on this machine can use or revoke, and
+	// the plan's ceiling on devices per person would fill with them.
+	previous, err := cred.Load(a.store)
+	if err == nil {
+		a.printer.Infof("Currently signed in as %s — a successful login will replace that credential.", previous.Email)
+	} else {
+		previous = nil
 	}
 
 	verifier, err := auth.GenerateVerifier()
@@ -146,6 +154,15 @@ func cmdLogin(args []string) error {
 		return err
 	}
 
+	// Best effort, and after the new credential is safely stored: a failure
+	// here costs a stale device in the dashboard, never the login.
+	revokeCtx, cancelRevoke := context.WithTimeout(context.Background(), replacedRevokeTimeout)
+	if err := revokeReplaced(revokeCtx, previous, base, result.Token); err != nil {
+		a.printer.Warnf("could not revoke the credential this login replaced: %v", err)
+		a.printer.Warnf("revoke the old device from your organisation's Tokens page in the dashboard.")
+	}
+	cancelRevoke()
+
 	a.printer.Successf(
 		"Signed in as %s (organisation %s)",
 		a.printer.Bold(result.User.Email),
@@ -161,6 +178,32 @@ func cmdLogin(args []string) error {
 
 	a.printer.Infof("This device appears as %q in the dashboard and can be revoked there.", device)
 	return nil
+}
+
+// replacedRevokeTimeout bounds the revocation of a replaced credential. It runs
+// after the login has succeeded, so it must never keep the person waiting long.
+const replacedRevokeTimeout = 10 * time.Second
+
+// revokeReplaced revokes the CLI credential a login has just replaced, against
+// the deployment it belongs to.
+//
+// Nothing to do when there was none, or when it is the token just issued. A
+// 401 is success: the credential was already revoked or had expired, which is
+// the state this wants. Anything else is returned, for the caller to report —
+// never to fail the login with.
+func revokeReplaced(ctx context.Context, previous *cred.Credentials, base, current string) error {
+	if previous == nil || previous.Token == "" || previous.Token == current {
+		return nil
+	}
+	origin := previous.APIURL
+	if origin == "" {
+		origin = base
+	}
+	err := api.New(origin, previous.Token, userAgent()).RevokeSelf(ctx)
+	if apiErr, ok := api.AsError(err); ok && apiErr.Status == http.StatusUnauthorized {
+		return nil
+	}
+	return err
 }
 
 // acceptHandoff opens the sealed User Key and records it, with the ids that make

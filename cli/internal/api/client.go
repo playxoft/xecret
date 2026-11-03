@@ -61,6 +61,9 @@ type Error struct {
 	Code      string
 	Message   string
 	RequestID string
+	// PlanResource is the limit a `plan_limit` refusal names — "projects",
+	// "cliDevicesPerUser" — from the envelope's `plan` block. Empty otherwise.
+	PlanResource string
 }
 
 func (e *Error) Error() string {
@@ -89,6 +92,20 @@ func (e *Error) Hint() string {
 		// needs to grant anything: approve the device again from an SSO sign-in.
 		return "This organisation requires single sign-on. Run 'xecret login' again and, in the " +
 			"browser, sign in through your organisation's single sign-on before approving this device."
+	case "plan_limit":
+		// The organisation's plan, not the person's access: the message names
+		// the limit and the plan that allows more. Where the thing at the limit
+		// is one the person can give back themselves, say how.
+		switch e.PlanResource {
+		case "cliDevicesPerUser":
+			return "Each login is a device. Revoke one you no longer use on your organisation's " +
+				"Tokens page in the dashboard (or run 'xecret logout' on it), then run 'xecret login' again."
+		case "serviceTokens":
+			return "Revoke a service token you no longer use on your organisation's Tokens page in " +
+				"the dashboard, or ask an owner about a plan that allows more."
+		}
+		return "This is your organisation's plan limit, not your access. Remove one you no longer " +
+			"need, or ask an owner about a plan that allows more."
 	case "forbidden":
 		return "Ask an organisation admin to review your access."
 	case "not_found":
@@ -133,6 +150,11 @@ type errorEnvelope struct {
 			Field   string `json:"field"`
 			Message string `json:"message"`
 		} `json:"fields"`
+		// Present only on `plan_limit`. Only the resource is read: the rest is
+		// for the dashboard's upgrade button.
+		Plan *struct {
+			Resource string `json:"resource"`
+		} `json:"plan"`
 	} `json:"error"`
 }
 
@@ -315,6 +337,9 @@ func decodeError(response *http.Response, body io.Reader) error {
 		}
 		if envelope.Error.RequestID != "" {
 			apiErr.RequestID = envelope.Error.RequestID
+		}
+		if envelope.Error.Plan != nil {
+			apiErr.PlanResource = envelope.Error.Plan.Resource
 		}
 		// Field problems carry the rule that failed, never the value — safe
 		// and genuinely useful at a terminal.
