@@ -1,4 +1,4 @@
-import { and, count, eq, gt, inArray, isNull, lt, lte } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, lt, lte, ne } from 'drizzle-orm';
 import { generateToken, hashToken, invitationExpiryFrom, invitationState } from '@xecret/core/auth';
 import { roleDefaultAccessLevel } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
@@ -335,7 +335,11 @@ export async function acceptInvitation(
       );
     }
 
-    await assertSeatAvailable(tx, organization, now);
+    // This invitation's own seat is the one being taken, so it is not counted
+    // against itself: it was already promised when the invitation was issued.
+    // Counting it made the last seat an organisation had impossible to fill —
+    // promised, and then refused at acceptance for being promised.
+    await assertSeatAvailable(tx, organization, now, invitation.id);
 
     // `addMember` throws `conflict` when the user already belongs — the
     // two-tabs case — and the invitation is then left open rather than
@@ -754,14 +758,20 @@ async function lockOrganization(tx: Executor, orgId: string) {
  * Whether one more person fits: seated members plus open invitations, against
  * the organisation's limit. Call it under the organisation lock, or the answer
  * is about an organisation that may already have changed.
+ *
+ * `accepting` names the invitation whose acceptance is being decided. Its seat
+ * was promised when it was issued, and the acceptance turns that promise into
+ * a member rather than claiming a second seat — so it is left out of the open
+ * invitations counted against it.
  */
 async function hasFreeSeat(
   tx: Executor,
   organization: { id: string; seatLimit: number },
   now: Date,
+  accepting?: string,
 ): Promise<boolean> {
   const seated = await countSeatedMembers(tx, organization.id);
-  const promised = await countOpenInvitations(tx, organization.id, now);
+  const promised = await countOpenInvitations(tx, organization.id, now, accepting);
   return seated + promised < organization.seatLimit;
 }
 
@@ -769,8 +779,9 @@ async function assertSeatAvailable(
   tx: Executor,
   organization: { id: string; seatLimit: number },
   now: Date,
+  accepting?: string,
 ): Promise<void> {
-  if (!(await hasFreeSeat(tx, organization, now))) {
+  if (!(await hasFreeSeat(tx, organization, now, accepting))) {
     throw new RepositoryError(
       'seatLimit',
       'This organisation has no seats left. Remove a member or revoke an invitation first.',
@@ -786,7 +797,12 @@ async function countSeatedMembers(exec: Executor, orgId: string): Promise<number
   return row?.value ?? 0;
 }
 
-async function countOpenInvitations(exec: Executor, orgId: string, now: Date): Promise<number> {
+async function countOpenInvitations(
+  exec: Executor,
+  orgId: string,
+  now: Date,
+  excluding?: string,
+): Promise<number> {
   const [row] = await exec
     .select({ value: count() })
     .from(invitations)
@@ -796,6 +812,7 @@ async function countOpenInvitations(exec: Executor, orgId: string, now: Date): P
         isNull(invitations.acceptedAt),
         isNull(invitations.revokedAt),
         gt(invitations.expiresAt, now),
+        excluding === undefined ? undefined : ne(invitations.id, excluding),
       ),
     );
   return row?.value ?? 0;
