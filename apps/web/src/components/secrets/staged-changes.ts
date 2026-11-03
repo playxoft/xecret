@@ -25,6 +25,7 @@ import {
   TEMPLATE_RETYPE_NEEDS_VALUE,
 } from './template-references';
 import type { SecretSummary } from './types';
+import type { WrittenNote } from './use-opened-notes';
 
 /**
  * The editor's unsaved work.
@@ -292,6 +293,13 @@ export interface SaveOutcome {
    * exist, and the next edit would seed itself from it.
    */
   wrote: boolean;
+  /**
+   * The sealed notes this save wrote to existing rows, each with the blob it
+   * replaced and the blob it stored — so the screen can show the new note the
+   * moment the save lands rather than the old one until the listing is re-read.
+   * Empty in `server` mode, where the re-read listing carries the note itself.
+   */
+  notesWritten: WrittenNote[];
 }
 
 export interface StagedChanges {
@@ -1131,6 +1139,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
         notAttempted: 0,
         rateLimited: false,
         wrote: false,
+        notesWritten: [],
       };
       const survivingDrafts: Draft[] = [];
       const survivingEdits = new Map<string, PendingEdit>();
@@ -1529,12 +1538,21 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
             const typeOnly = written === undefined && edit.valueType !== undefined;
             if (hasMeta || typeOnly) {
               const note = edit.note?.trim();
-              await io.patchMetadata(target, {
+              const nextNote = note === undefined ? undefined : note.length === 0 ? null : note;
+              const stored = await io.patchMetadata(target, {
                 ...(renaming ? { name: rename } : {}),
-                ...(note === undefined ? {} : { note: note.length === 0 ? null : note }),
+                ...(nextNote === undefined ? {} : { note: nextNote }),
                 ...(typeOnly ? { valueType: edit.valueType } : {}),
               });
               changed = true;
+              if (nextNote !== undefined && stored.encNote !== undefined) {
+                outcome.notesWritten.push({
+                  id: row.id,
+                  replaced: row.encNote ?? null,
+                  sealed: stored.encNote,
+                  note: nextNote,
+                });
+              }
             }
 
             if (changed) {

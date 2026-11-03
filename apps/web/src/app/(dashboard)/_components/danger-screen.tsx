@@ -71,10 +71,18 @@ function DeleteProjectCard() {
     orgSlug === '' ? null : apiPath.projects(orgSlug),
   );
 
+  // What the project is *called*, for the copy that names it. The slug is the
+  // identifier — what the confirmation asks to be typed, because it is the one
+  // string that cannot be typed by accident — and the name is how a person
+  // recognises it, which is what the dialog title and the toast are for.
+  const projectName =
+    (projects.data?.projects ?? []).find((project) => project.slug === projectSlug)?.name ??
+    projectSlug;
+
   async function deleteProject() {
     try {
       await api.delete(apiPath.project(orgSlug, projectSlug), { confirm: confirmText.trim() });
-      toast({ variant: 'success', title: `Deleted ${projectSlug}` });
+      toast({ variant: 'success', title: `Deleted ${projectName}` });
       setProjectSlug('');
       setConfirmText('');
       setProblem(null);
@@ -192,7 +200,7 @@ function DeleteProjectCard() {
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
-        title={`Delete ${projectSlug}?`}
+        title={`Delete ${projectName}?`}
         description="Every environment and secret in it disappears from every listing, every pull, and every CI pipeline immediately."
         confirmLabel="Delete project"
         onConfirm={deleteProject}

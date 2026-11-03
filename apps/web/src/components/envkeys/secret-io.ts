@@ -28,11 +28,12 @@ import type {
   ImportPlanResponse,
   SecretListResponse,
   SecretRestoreResponse,
+  SecretSummary,
   SecretWriteResponse,
 } from '@/components/secrets/types';
-import { withEnvKey } from './env-key-store';
+import { heldEnvKeys, withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
-import { decryptValue, encodeNote, encryptValue } from './secret-crypto';
+import { decryptNote, decryptValue, encodeNote, encryptValue } from './secret-crypto';
 import type { SecretTarget } from './secret-crypto';
 import type { ClientEnvironmentBundle, DeclaredReferencePayload } from './types';
 
@@ -184,6 +185,20 @@ export interface MetadataPatch {
   valueType?: string | undefined;
 }
 
+/** What a metadata write stored, for the one caller that has a use for it. */
+export interface MetadataWritten {
+  /**
+   * The sealed note an `e2ee` write stored — `null` where it cleared the note —
+   * or absent where it wrote no note, or the environment is `server`-mode.
+   *
+   * Returned so the screen can show the note it has just written the moment the
+   * save lands, rather than the note it replaced until the listing is re-read
+   * and nothing while the new seal is opened: it is the exact blob the next
+   * listing will carry.
+   */
+  encNote?: string | null | undefined;
+}
+
 export interface SecretIo {
   mode: 'server' | 'e2ee';
   /** The current plaintext of a secret. Audited on the server in both modes. */
@@ -222,7 +237,28 @@ export interface SecretIo {
     },
   ) => Promise<SecretWriteResponse>;
   /** Metadata only. Appends no version, and needs no key in `server` mode. */
-  patchMetadata: (secret: SecretRef, patch: MetadataPatch) => Promise<void>;
+  patchMetadata: (secret: SecretRef, patch: MetadataPatch) => Promise<MetadataWritten>;
+  /**
+   * The listing with every note in `note`, where the table reads it.
+   *
+   * In `server` mode that is already where the listing puts it, and the rows
+   * come back as they went in. In `e2ee` mode the listing carries the note only
+   * as `encNote` — `note` is always `null` there — so each one is decrypted
+   * here. Before this existed nothing decrypted them at all: a note written to
+   * an end-to-end encrypted environment was encrypted, stored and listed, and
+   * the table, reading `note`, showed every one of them as absent — which reads
+   * exactly like a note that was never saved.
+   *
+   * A note carries no key id, so one written before a rotation is tried against
+   * every key version this session holds for the environment, not only the
+   * active one. One that opens under none of them comes back with
+   * `noteState: 'unreadable'` rather than failing the listing — the row is
+   * still a row, its name and value still work, and the table says why the
+   * note is not shown instead of showing it as absent. One that opens only
+   * under a retired key comes back with `noteUnderRetiredKey: true`, because
+   * nothing in a note says it was sealed *before* that key was retired.
+   */
+  openNotes: (secrets: readonly SecretSummary[]) => Promise<SecretSummary[]>;
   restore: (secret: SecretRef, fromVersion: number) => Promise<SecretRestoreResponse>;
   /** Runs an import. `dryRun` previews without writing, in both modes. */
   runImport: (input: {
@@ -322,7 +358,12 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
         ...(patch.note === undefined ? {} : { note: patch.note }),
         ...(patch.valueType === undefined ? {} : { valueType: patch.valueType }),
       });
+      // Nothing sealed: the plaintext note is what the next listing carries.
+      return {};
     },
+
+    // The plaintext note is already on the row.
+    openNotes: (secrets) => Promise.resolve([...secrets]),
 
     restore: (secret, fromVersion) =>
       api.post<SecretRestoreResponse>(
@@ -565,8 +606,8 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         );
       }),
 
-    patchMetadata: async (secret, patch) => {
-      await withEnvKey(material, async () => {
+    patchMetadata: (secret, patch) =>
+      withEnvKey(material, async () => {
         const encNote = await encodeNote({
           material,
           target: targetFor(secret.id),
@@ -581,8 +622,60 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           ...(encNote === undefined ? {} : { encNote }),
           ...(patch.valueType === undefined ? {} : { valueType: patch.valueType }),
         });
-      });
-    },
+
+        return encNote === undefined ? {} : { encNote };
+      }),
+
+    openNotes: (secrets) =>
+      withEnvKey(material, async () => {
+        // The active key first — nearly every note is sealed under it — and then
+        // every other version of this environment's key the session still
+        // holds. Read inside the lease, which is what keeps a lock from
+        // overwriting the older arrays while they are being tried.
+        const keys = [
+          material,
+          ...heldEnvKeys(material.environmentId).filter((held) => held !== material),
+        ];
+
+        const opened: SecretSummary[] = [];
+        for (const secret of secrets) {
+          const blob = secret.encNote ?? null;
+          if (blob === null) {
+            opened.push(secret);
+            continue;
+          }
+
+          let note: string | null = null;
+          let openedBy: EnvKeyMaterial | null = null;
+          for (const key of keys) {
+            try {
+              // Bound to the row's id and to no version (spec §4.2), which is
+              // why the listing's id is all this needs.
+              note = await decryptNote({ material: key, target: targetFor(secret.id), blob });
+              openedBy = key;
+              break;
+            } catch {
+              // Not this key. Nothing from the failure is kept — it would
+              // describe a ciphertext.
+            }
+          }
+
+          opened.push(
+            note === null
+              ? { ...secret, note: null, noteState: 'unreadable', noteUnderRetiredKey: undefined }
+              : {
+                  ...secret,
+                  note,
+                  noteState: undefined,
+                  // Said, not refused: a note opened only by a retired key may
+                  // have been sealed after the rotation, by somebody that
+                  // rotation was meant to shut out. See `noteUnderRetiredKey`.
+                  noteUnderRetiredKey: openedBy !== material,
+                },
+          );
+        }
+        return opened;
+      }),
 
     restore: async (secret, fromVersion) =>
       withEnvKey(material, async () => {
