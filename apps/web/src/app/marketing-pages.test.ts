@@ -210,6 +210,8 @@ const NOUNS = {
   serviceTokens: '(service tokens|ci tokens)',
   seats: 'members?',
   auditRetentionDays: 'days of (audit )?history',
+  cliDevicesPerUser: 'cli devices',
+  webhooks: 'webhooks',
 } as const;
 
 describe('every limit stated in prose matches the engine', () => {
@@ -232,6 +234,8 @@ describe('every limit stated in prose matches the engine', () => {
       'environmentsPerProject',
       'secretsPerEnvironment',
       'serviceTokens',
+      'cliDevicesPerUser',
+      'webhooks',
       'auditRetentionDays',
     ],
     faq: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
@@ -293,6 +297,37 @@ describe('every limit stated in prose matches the engine', () => {
    * than hypothetical.
    */
   const ENUMERATES_FREE = ['terms', 'faq', 'features', 'about', '.'] as const;
+
+  /**
+   * `/terms` binds, and every ceiling the server refuses a creation on is one a
+   * customer agreed to — so the Free bullet states all of them, not only the
+   * handful the marketing pages repeat. A ceiling of zero is stated as "no".
+   */
+  it('terms states every ceiling the server enforces on Free', () => {
+    const region = freeRegion(SOURCES.get('terms') ?? '');
+    expect(region).not.toBe('');
+    const free = PLANS.free.limits;
+
+    for (const field of [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'secretsPerEnvironment',
+      'serviceTokens',
+      'seats',
+      'cliDevicesPerUser',
+      'webhooks',
+      'auditRetentionDays',
+    ] as const) {
+      const value = free[field];
+      if (value === null) continue;
+      const stated =
+        value === 0
+          ? new RegExp(`\\bno ${NOUNS[field]}`).test(region.toLowerCase().replace(/\s+/g, ' '))
+          : states(region, value, NOUNS[field]);
+      expect(stated, `terms does not state free.${field} = ${value}`).toBe(true);
+    }
+  });
 
   it('every page that states the free ceilings states the engine ones', () => {
     const free = PLANS.free.limits;
@@ -455,28 +490,58 @@ describe('the add-ons are described the same way everywhere', () => {
 
   it('gives the notice the legal pages promise before a change takes effect', () => {
     // §Changes: "for a material change we will give notice … before it takes
-    // effect, 30 days ahead where we reasonably can". This PR rewrote the
-    // contractual plan ladder, which is material by any reading.
+    // effect, 30 days ahead where we reasonably can".
     //
-    // The date has been wrong in both directions here. It first stayed at the
-    // old value, so a customer got no signal that the prices binding them had
-    // changed. Then it moved to the publish date, which made the page promise
-    // advance notice and give none — and fed `datePublished`, so the new table
-    // claimed to have been in force before it was written. It leads the publish
-    // date now, which is the only arrangement the document's own §Changes
-    // supports.
+    // The date has been wrong in both directions. It once stayed at the old
+    // value, so a customer got no signal that the prices binding them had
+    // changed; then it moved to the publish date, so the page promised advance
+    // notice and gave none — and fed `datePublished`, claiming the new table was
+    // in force before it was written. So a dated version must take effect at or
+    // after it was written.
+    //
+    // A version may instead take effect on publication (`EFFECTIVE = null`):
+    // the deploy is its date, which the source cannot know. That is a change
+    // made *without* the notice §Changes promises, so §Changes itself has to
+    // say so — checked against that section's own text, not anywhere in the
+    // file, where a comment would satisfy it.
     for (const page of ['terms', 'privacy'] as const) {
       const source = SOURCES.get(page) ?? '';
       const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
-      const effective = /const EFFECTIVE = '([\d-]+)'/.exec(source)?.[1];
+      const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
+      const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
 
       expect(updated, `${page} has no UPDATED date`).toBeDefined();
+      if (onPublication) {
+        const start = source.indexOf("id: 'changes'");
+        expect(start, `${page} takes effect on publication but has no §Changes`).toBeGreaterThan(
+          -1,
+        );
+        const rest = source.slice(start + 1);
+        const next = rest.search(/id: '[a-z-]+'/);
+        const changes = (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
+        expect(changes, `${page} takes effect on publication without §Changes saying so`).toContain(
+          'This version is a change made without that notice, and it takes effect on publication.',
+        );
+        continue;
+      }
       expect(effective, `${page} has no EFFECTIVE date`).toBeDefined();
       expect(
         Date.parse(effective as string),
         `${page} takes effect before it was published`,
       ).toBeGreaterThanOrEqual(Date.parse(updated as string));
     }
+  });
+
+  /**
+   * The version these terms replace promised something this one withdraws for
+   * the limits it introduces, and counsel reads the two side by side: §Changes
+   * quotes the withdrawn sentence exactly, rather than paraphrasing it.
+   */
+  it('quotes the withdrawn plan-lapse promise exactly', () => {
+    const terms = (SOURCES.get('terms') ?? '').replace(/\s+/g, ' ');
+    expect(terms).toContain(
+      '&ldquo;we will tell you what exceeds the Free limits and give you a reasonable window to bring the organisation under them or export it&rdquo;',
+    );
   });
 
   it('never charges Enterprise for directory sync', () => {

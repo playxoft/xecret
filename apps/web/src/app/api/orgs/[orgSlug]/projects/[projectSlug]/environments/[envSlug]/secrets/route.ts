@@ -2,7 +2,8 @@ import { listSecrets } from '@xecret/db/repositories';
 import type { SecretWriterRef } from '@xecret/db/repositories';
 import type { ServiceContext } from '@/server/context';
 import type { EnvironmentScope } from '@/server/tenancy';
-import type { SecretWriteResult } from '@/server/secrets-service';
+import type { SecretCapacity, SecretWriteResult } from '@/server/secrets-service';
+import { secretCapacity } from '@/server/plan-capacity';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { toSecretValueType } from '@xecret/core/validation';
@@ -156,6 +157,26 @@ export const POST = authenticatedRoute<Params>(
         environmentId: scope.environment.id,
       });
 
+    // The plan's `secretsPerEnvironment` ceiling, checked inside the write's
+    // transaction; a refusal is filed as `quotaExceeded`, naming the secret.
+    const capacityFor = (name: string, id: string | null): SecretCapacity =>
+      secretCapacity(
+        scope,
+        planRefusal(
+          record,
+          audit(scope.organization.id),
+          'secret.created',
+          { type: 'secret', id, projectId: scope.project.id, environmentId: scope.environment.id },
+          'secretsPerEnvironment',
+          scope.entitlements.plan,
+          {
+            secretName: name,
+            projectSlug: scope.project.slug,
+            environmentSlug: scope.environment.slug,
+          },
+        ),
+      );
+
     const written = e2ee
       ? await createClientSecret(
           scope,
@@ -179,8 +200,16 @@ export const POST = authenticatedRoute<Params>(
               { secretName: name },
             ),
           policyRefused,
+          capacityFor,
         )
-      : await createServerSecret(scope, services, writer, request, policyRefused(null));
+      : await createServerSecret(
+          scope,
+          services,
+          writer,
+          request,
+          policyRefused(null),
+          capacityFor,
+        );
 
     // The name, never the value. `AuditMetadata` makes the second half of that
     // sentence a type error rather than a habit — there is no field to put a
@@ -248,6 +277,7 @@ async function createServerSecret(
   writer: SecretWriterRef,
   request: Request,
   refused: (names: readonly string[]) => void,
+  capacityFor: (name: string, id: string | null) => SecretCapacity,
 ): Promise<CreatedSecret> {
   const body = await parseJsonBody(request, createSecretBody);
 
@@ -265,6 +295,7 @@ async function createServerSecret(
     value: body.value,
     valueType: body.valueType,
     ...(body.note === undefined ? {} : { note: body.note }),
+    capacity: capacityFor(body.name, null),
   });
 
   return { result, note: body.note ?? null, encNote: null, valueType: body.valueType };
@@ -286,6 +317,7 @@ async function createClientSecret(
   principal: Principal,
   refusal: (name: string, id: string) => () => void,
   policyRefused: (id: string) => (names: readonly string[]) => void,
+  capacityFor: (name: string, id: string | null) => SecretCapacity,
 ): Promise<CreatedSecret> {
   const body = await parseJsonBody(request, createClientSecretBody);
 
@@ -335,6 +367,7 @@ async function createClientSecret(
       ...(body.encNote === undefined ? {} : { encNote: body.encNote }),
     },
     valueType: body.valueType,
+    capacity: capacityFor(body.name, body.id),
   });
 
   return {

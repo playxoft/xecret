@@ -934,13 +934,23 @@ describe('the billing screen', () => {
     });
   });
 
-  it('warns a Free organisation near the seat ceiling it is actually held to', async () => {
+  it('warns a Free organisation at the seat ceiling it is actually held to — three', async () => {
     const { orgId, slug, owner } = await seedOrg();
-    for (let index = 0; index < 3; index += 1)
-      await addMember(orgId, (await seedUser()).id, 'viewer');
     void owner;
-    const answer = await call(statusRoute.GET, 'GET', slug);
-    const warnings = (answer.body['billing'] as { warnings: unknown[] }).warnings;
-    expect(warnings).toContainEqual({ resource: 'seats', limit: 5, current: 4, atLimit: false });
+    const warningsOf = async () =>
+      ((await call(statusRoute.GET, 'GET', slug)).body['billing'] as { warnings: unknown[] })
+        .warnings;
+
+    // Two of three is under the 80% line; the third seat is the limit itself.
+    await addMember(orgId, (await seedUser()).id, 'viewer');
+    expect(await warningsOf()).not.toContainEqual(expect.objectContaining({ resource: 'seats' }));
+
+    await addMember(orgId, (await seedUser()).id, 'viewer');
+    expect(await warningsOf()).toContainEqual({
+      resource: 'seats',
+      limit: 3,
+      current: 3,
+      atLimit: true,
+    });
   });
 });

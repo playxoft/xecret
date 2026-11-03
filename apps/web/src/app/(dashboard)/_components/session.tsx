@@ -113,6 +113,16 @@ export interface SessionValue {
    */
   refresh: () => Promise<void>;
   /**
+   * Re-reads the project the breadcrumb trail names.
+   *
+   * The trail labels its crumbs with the project's and the environment's
+   * display names, read by the shell from its own request — so a screen that
+   * renames either has to say so, the way the organisation settings screen
+   * calls `refresh` after a rename. Without it the heading takes the new name
+   * and the crumb above it keeps the old one until the next project.
+   */
+  refreshTrail: () => void;
+  /**
    * Opens the "New organisation" dialog.
    *
    * The dialog is mounted once, by `DashboardChrome`, and this is how the three

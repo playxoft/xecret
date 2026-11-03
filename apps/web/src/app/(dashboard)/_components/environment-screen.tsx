@@ -36,6 +36,7 @@ import { ExportDialog } from '@/components/secrets/export-dialog';
 import { ImportDialog } from '@/components/secrets/import-dialog';
 import { SecretTable, SecretTableSkeleton } from '@/components/secrets/secret-table';
 import type { SecretListResponse, SecretSummary } from '@/components/secrets/types';
+import { useOpenedNotes } from '@/components/secrets/use-opened-notes';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
@@ -88,6 +89,15 @@ export function EnvironmentScreen({
   // Admins only: `pendingGrants` is `null` for a caller who may not see who is
   // waiting, which is the same answer as "nobody is".
   const pendingCount = keyState?.pendingGrants?.length ?? 0;
+
+  /**
+   * The listing the table renders: the masked one, with each note readable.
+   *
+   * In an end-to-end encrypted environment a note arrives only as `encNote`,
+   * and the table reads `note` — so this is the step that makes a saved note
+   * show up as saved. See `use-opened-notes.ts`.
+   */
+  const { secrets: listing, remember: rememberNotes } = useOpenedNotes(secrets.data, io);
 
   /**
    * Whether to offer the rotation button.
@@ -318,7 +328,7 @@ export function EnvironmentScreen({
           <ErrorState subject="this project" error={project.error} onRetry={project.reload} />
         ) : secrets.error !== null ? (
           <ErrorState subject="this environment" error={secrets.error} onRetry={secrets.reload} />
-        ) : secrets.data === null ? (
+        ) : listing === null ? (
           <SecretTableSkeleton />
         ) : (
           <SecretTable
@@ -335,11 +345,12 @@ export function EnvironmentScreen({
             comparedEnvironments={comparedEnvironments}
             onStopComparing={() => setCompared([])}
             externalWrites={externalWrites}
-            secrets={secrets.data}
+            secrets={listing}
             onLoadMore={secrets.loadMore}
             loadingMore={secrets.loadingMore}
             loadMoreError={secrets.loadMoreError}
             onChanged={secrets.reload}
+            onNotesWritten={rememberNotes}
             onImport={() => setImporting(true)}
             onExport={() => setExporting(true)}
           />

@@ -25,7 +25,9 @@ import {
   enforceSecretRateLimit,
   secretWriter,
 } from '@/server/secrets-service';
-import type { ClientSecretWrite, SecretWrite } from '@/server/secrets-service';
+import type { ClientSecretWrite, SecretCapacity, SecretWrite } from '@/server/secrets-service';
+import { secretCapacity } from '@/server/plan-capacity';
+import { planRefusal } from '@/server/template-writes';
 import { batchChanges, emitSecretChanges } from '@/server/change-events';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { EnvironmentScope } from '@/server/tenancy';
@@ -195,6 +197,7 @@ export const POST = authenticatedRoute<Params>(
       writer,
       writes,
       dryRun: body.dryRun,
+      capacity: importCapacity(scope, audit, record, body.dryRun),
     });
 
     // Keyed by target name, which the planner guarantees is unique within a plan
@@ -280,6 +283,39 @@ function importPolicyRefusal(
       environmentId: scope.environment.id,
     },
     { projectSlug: scope.project.slug, environmentSlug: scope.environment.slug },
+  );
+}
+
+/**
+ * The plan's `secretsPerEnvironment` ceiling for an import, weighed whole: the
+ * new names it brings must fit beside what the environment holds, or nothing is
+ * written. A preview asks the same question, so it says what the import would
+ * refuse — and, like every preview, records nothing.
+ */
+function importCapacity(
+  scope: EnvironmentScope,
+  audit: (orgId: string) => AuditBuilder,
+  record: (...events: AuditRecord[]) => void,
+  dryRun: boolean | undefined,
+): SecretCapacity {
+  return secretCapacity(
+    scope,
+    dryRun
+      ? undefined
+      : planRefusal(
+          record,
+          audit(scope.organization.id),
+          'secret.imported',
+          {
+            type: 'environment',
+            id: scope.environment.id,
+            projectId: scope.project.id,
+            environmentId: scope.environment.id,
+          },
+          'secretsPerEnvironment',
+          scope.entitlements.plan,
+          { projectSlug: scope.project.slug, environmentSlug: scope.environment.slug },
+        ),
   );
 }
 
@@ -387,6 +423,7 @@ async function importClientEntries(context: {
     writer,
     writes,
     dryRun: body.dryRun,
+    capacity: importCapacity(scope, audit, record, body.dryRun),
   });
 
   const counts = { create: 0, overwrite: 0, unchanged: 0 };

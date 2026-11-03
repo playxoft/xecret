@@ -541,6 +541,16 @@ export {
 export type { GraphEnvironmentRecord, GraphSecretRecord } from './references';
 
 export {
+  countLiveCliDevices,
+  countLiveEnvironments,
+  countLiveProjects,
+  countLiveServiceTokens,
+  liveServiceToken,
+  lockCapacity,
+} from './capacity';
+export type { CapacityScope } from './capacity';
+
+export {
   deleteOverride,
   deleteOverridesForMember,
   listOverrides,

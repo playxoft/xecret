@@ -13,7 +13,7 @@ import { ConfirmDialog } from './confirm-dialog';
  * ── Why this is not just `beforeunload` ──
  * `beforeunload` catches a reload, a closed tab and a typed URL, and nothing
  * else. Inside the app almost every departure is a client-side navigation —
- * clicking another environment in the switcher, a project in the sidebar, the
+ * clicking another environment in the switcher, an item in the sidebar, the
  * breadcrumb back to the organisation, the Back button — and the browser has no
  * idea any of that happened. So there are three guards here doing three
  * different jobs, and the two in-app ones are where the friendly message lives:

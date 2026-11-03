@@ -38,10 +38,36 @@ export interface SecretSummary {
    */
   id: string;
   name: string;
-  /** `null` in `e2ee` mode, where `encNote` carries it instead. */
+  /**
+   * The note, in plaintext — the one field every screen reads it from.
+   *
+   * The API sends `null` here in `e2ee` mode, where `encNote` carries it
+   * instead; `SecretIo.openNotes` decrypts it into this field before the
+   * listing reaches a table. A screen that skips that step shows every note in
+   * an end-to-end encrypted environment as missing.
+   */
   note: string | null;
   /** The encrypted note, for an `e2ee` environment. `null` when there is none. */
   encNote?: string | null;
+  /**
+   * Why `note` is empty although the row has a sealed note. Set in the
+   * browser, never by the API; absent when there is nothing to explain.
+   *
+   * Without it a note that has not been opened reads exactly like no note at
+   * all, which is how "the description is not saving" looked — and an editor
+   * offered over an empty box writes a new note straight over one nobody saw.
+   */
+  noteState?: NoteState | undefined;
+  /**
+   * Set in the browser when the note opened only under a retired version of
+   * the environment's key, not the active one.
+   *
+   * Shown beside the note rather than acted on. A note's ciphertext names no
+   * key, so one sealed under an old key *after* the rotation that retired it —
+   * by somebody who held that key and has since lost access — opens exactly
+   * like one written before it. See `RETIRED_KEY_NOTE_COPY`.
+   */
+  noteUnderRetiredKey?: boolean | undefined;
   /**
    * The declared shape of the value — one of `SECRET_VALUE_TYPES`.
    *
@@ -59,6 +85,18 @@ export interface SecretSummary {
   createdBy: string | null;
   createdByServiceTokenId: string | null;
 }
+
+/**
+ * A sealed note this browser cannot show.
+ *
+ *  - `sealed` — not opened here yet: it is being decrypted, or this
+ *    environment's key is not open in this browser. Read-only until it opens,
+ *    so nothing is written over a note nobody has seen.
+ *  - `unreadable` — it would not open under any key this browser holds, which
+ *    is what a note written before a rotation looks like to the key that
+ *    replaced it. Said as much, and a new note may replace it.
+ */
+export type NoteState = 'sealed' | 'unreadable';
 
 export interface SecretListResponse {
   data: readonly SecretSummary[];

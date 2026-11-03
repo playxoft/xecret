@@ -288,7 +288,7 @@ const MILESTONES = [
   {
     state: 'next',
     title: 'Billing, switched on',
-    body: 'Every paid feature is currently on for everybody and no card is collected anywhere. When that changes we will say so before it changes, and nobody will find out from an invoice.',
+    body: 'No card is collected anywhere yet, and each plan’s limits apply now, exactly as the pricing page states them. Nothing will start charging without our saying so first, and nobody will find out from an invoice.',
     // Shipped once this deployment takes real payments (P12).
     stateWhenPaymentsLive: 'shipped',
     bodyWhenPaymentsLive:
@@ -352,7 +352,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'How do you make money?',
     answer:
-      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. While xecret is in pre-alpha every paid feature is on for everybody and no card is collected.',
+      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. While xecret is in pre-alpha no card is collected, and each plan’s limits apply now.',
     whenPaymentsLive: {
       question: 'How do you make money?',
       answer:

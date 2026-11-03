@@ -260,12 +260,13 @@ const eslintConfig = defineConfig([
     // The ban exists because a `node:fs` import that reaches the worker bundle
     // is a 500 in production, and test files are only *usually* outside it — a
     // shared helper under `__tests__` that runtime code later imports is
-    // exactly how that stops being true. Three files asking for the exemption is
+    // exactly how that stops being true. Four files asking for the exemption is
     // a thing a reviewer can see; every test in the app holding it is not.
     files: [
       'src/app/pricing/pricing-page.test.ts',
       'src/app/marketing-pages.test.ts',
       'src/server/bindings.test.ts',
+      'src/app/(dashboard)/_components/screen-wiring.test.ts',
     ],
     rules: {
       // Same reasoning as the block above, one step further out: these files
@@ -278,6 +279,10 @@ const eslintConfig = defineConfig([
       // agree, and when they do not, `phase run` injects a value the
       // application cannot see and every request answers 503 while the
       // configuration looks correct everywhere somebody would think to look.
+      // `screen-wiring.test.ts` checks the calls between the dashboard's
+      // screens and its shell that only the running app would otherwise show
+      // missing — a rename that never reaches the breadcrumb, a listing whose
+      // notes are never opened.
       //
       // Stated as the narrower rule rather than as `'off'`, for the reason
       // spelled out above: ESLint replaces a rule's configuration wholesale,

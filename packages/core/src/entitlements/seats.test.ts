@@ -9,7 +9,7 @@ import { FREE_SEAT_LIMIT, providerSeats, resolveBilledSeats, UNCAPPED_SEAT_LIMIT
  * invoice is computed from, and `organizations.seat_limit`, which
  * `assertSeatAvailable` refuses an invitation against. They agree on every paid
  * plan and disagree on Free, which bills one seat while enforcing the column's
- * default of five.
+ * default of three — or more, where support raised it.
  *
  * That is why "never lower a number nobody asked to lower" is a property worth
  * testing rather than a nicety: the failure is felt by a teammate who cannot be
@@ -20,16 +20,17 @@ describe('resolveBilledSeats', () => {
   /**
    * Two regressions in one case, pulling opposite ways.
    *
-   * A Free organisation bills 1 seat and enforces 5 — `seat_limit`'s column
-   * default, which nothing sets from the plan. Deriving the new count from the
-   * *billed* one alone gave `max(1, 3) = 3` on an upgrade to Team, so an
-   * organisation with four members came out of the upgrade over its own limit
-   * and unable to invite anybody; the upgrade was run to give it more.
+   * A Free organisation bills 1 seat and enforces whatever `seat_limit` says —
+   * here 5, a ceiling support raised. Deriving the new count from the *billed*
+   * one alone gave `max(1, 3) = 3` on an upgrade to Team, so an organisation
+   * with four members came out of the upgrade over its own limit and unable to
+   * invite anybody; the upgrade was run to give it more.
    *
    * Folding `enforced` into `billed` fixed that and broke the invoice instead: a
-   * one-person organisation upgrading to Pro was charged for five seats, because
-   * a column default nobody had chosen became a price. An access ceiling may
-   * stop itself being lowered. It may never set what somebody pays.
+   * one-person organisation upgrading to Pro was charged for every seat of its
+   * access ceiling, because a number nobody had chosen as a price became one.
+   * An access ceiling may stop itself being lowered. It may never set what
+   * somebody pays.
    */
   it('keeps the enforced ceiling without letting it set the invoice', () => {
     const decision = resolveBilledSeats({
@@ -50,11 +51,11 @@ describe('resolveBilledSeats', () => {
       plan: 'pro',
       requested: null,
       billed: 1,
-      enforced: 5,
+      enforced: FREE_SEAT_LIMIT,
     });
 
     expect(decision.billed).toBe(1);
-    expect(decision.enforced).toBe(5);
+    expect(decision.enforced).toBe(FREE_SEAT_LIMIT);
   });
 
   it('takes the plan minimum when it is the largest of the three', () => {
@@ -130,7 +131,8 @@ describe('resolveBilledSeats', () => {
       1,
     );
     expect(
-      resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: 5 }).billed,
+      resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: FREE_SEAT_LIMIT })
+        .billed,
     ).toBe(1);
   });
 
@@ -140,15 +142,18 @@ describe('resolveBilledSeats', () => {
    * One number meant Free's *invoice* figure of 1 was written into
    * `organizations.seat_limit`, so `plan:set --org acme --seats 10` on a Free
    * organisation — or any `--plan free` downgrade — dropped the enforced ceiling
-   * from 5 to 1 and a three-person team could suddenly invite nobody. It also
-   * contradicted the divergence documented on `FREE_LIMITS.seats` and on the
-   * column, which says the looser number is the one that applies until payments.
+   * from Free's seats to 1 and a three-person team could suddenly invite nobody.
    */
   it('never writes Free’s invoice figure into the enforced ceiling', () => {
-    const decision = resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: 5 });
+    const decision = resolveBilledSeats({
+      plan: 'free',
+      requested: null,
+      billed: 1,
+      enforced: FREE_SEAT_LIMIT,
+    });
 
     expect(decision.billed).toBe(1);
-    expect(decision.enforced).toBe(5);
+    expect(decision.enforced).toBe(FREE_SEAT_LIMIT);
     expect(decision.lowersEnforced).toBe(false);
   });
 
@@ -171,11 +176,13 @@ describe('resolveBilledSeats', () => {
    */
   it('lets an explicit request raise Free’s enforced ceiling but never lower it', () => {
     expect(
-      resolveBilledSeats({ plan: 'free', requested: 10, billed: 1, enforced: 5 }).enforced,
+      resolveBilledSeats({ plan: 'free', requested: 10, billed: 1, enforced: FREE_SEAT_LIMIT })
+        .enforced,
     ).toBe(10);
     expect(
-      resolveBilledSeats({ plan: 'free', requested: 2, billed: 1, enforced: 5 }).enforced,
-    ).toBe(5);
+      resolveBilledSeats({ plan: 'free', requested: 2, billed: 1, enforced: FREE_SEAT_LIMIT })
+        .enforced,
+    ).toBe(FREE_SEAT_LIMIT);
   });
 
   /** On every paid plan the two numbers are the same, and stay that way. */
@@ -224,6 +231,16 @@ describe('providerSeats', () => {
 
   it('answers Free with the ceiling every Free organisation already has', () => {
     expect(providerSeats('free', 12)).toEqual({ billed: 1, enforced: FREE_SEAT_LIMIT });
+  });
+
+  /**
+   * The owner's decision, and the number the pricing page publishes: a Free
+   * organisation seats three. Read from the plan rather than written out again
+   * — the two were 5 and 3 until migration 0033, and the looser one applied.
+   */
+  it('holds Free to the seats the plan publishes, which is three', () => {
+    expect(FREE_SEAT_LIMIT).toBe(PLANS.free.limits.seats);
+    expect(FREE_SEAT_LIMIT).toBe(3);
   });
 
   it('reads a retired plan as the plan that replaced it', () => {

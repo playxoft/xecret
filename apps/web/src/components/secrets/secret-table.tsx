@@ -60,6 +60,7 @@ import { draftTargets, useStagedChanges } from './staged-changes';
 import type { SaveOutcome } from './staged-changes';
 import { VersionHistoryDialog } from './version-history-dialog';
 import type { SecretSummary } from './types';
+import type { WrittenNote } from './use-opened-notes';
 
 export interface SecretTableProps {
   orgSlug: string;
@@ -116,6 +117,11 @@ export interface SecretTableProps {
    */
   loadMoreError: unknown;
   onChanged: () => void;
+  /**
+   * The sealed notes a save wrote, handed back to whoever opens the listing's
+   * notes so the rows show them at once — `useOpenedNotes`'s `remember`.
+   */
+  onNotesWritten?: ((notes: readonly WrittenNote[]) => void) | undefined;
   /** Opens the import and export dialogs, which the environment screen owns. */
   onImport?: (() => void) | undefined;
   onExport?: (() => void) | undefined;
@@ -165,6 +171,7 @@ export function SecretTable({
   loadingMore,
   loadMoreError,
   onChanged,
+  onNotesWritten,
   onImport,
   onExport,
 }: SecretTableProps) {
@@ -805,6 +812,10 @@ export function SecretTable({
       policy: secretPolicy,
       isProduction,
     });
+    // Before the re-read: the save has just dropped each row's staged note, and
+    // without this the row would show the note it replaced until the listing
+    // lands. See `useOpenedNotes`.
+    onNotesWritten?.(outcome.notesWritten);
     // Always, even on a total failure: a partial batch has already changed the
     // environment, and leaving the table showing the old versions would make the
     // next save operate on stale version numbers.

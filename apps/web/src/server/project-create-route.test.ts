@@ -52,6 +52,10 @@ const repositories = vi.hoisted(() => ({
   hasVault: vi.fn(),
   createProject: vi.fn(),
   createEnvironment: vi.fn(),
+  // The plan ceilings: room for whatever these tests create. Enforcement itself
+  // is `plan-limits-routes.test.ts`'s, against a real database.
+  lockCapacity: vi.fn(async () => undefined),
+  countLiveProjects: vi.fn(async () => 0),
 }));
 
 const rateLimit = vi.hoisted(() => ({ enforce: vi.fn() }));
@@ -249,7 +253,7 @@ beforeEach(() => {
       id: ORG_ID,
       name: 'Acme',
       slug: 'acme',
-      seatLimit: 5,
+      seatLimit: 3,
       createdBy: OWNER_USER_ID,
       createdAt: EPOCH,
       updatedAt: EPOCH,
