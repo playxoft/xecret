@@ -7,8 +7,10 @@ import {
   resolveEntitlements,
   resolvePlanId,
 } from './entitlements';
+import { DEFAULT_ENVIRONMENTS } from '../validation/slug';
 import {
   checkLimit,
+  describeLimit,
   featureError,
   hasAddon,
   hasFeature,
@@ -689,6 +691,54 @@ describe('checkLimit', () => {
       checkLimit(entitlementsFor('free'), resource, 0).kind,
     );
   });
+
+  /**
+   * One request can create several — an import, a promotion, a project with its
+   * environments. The batch is weighed whole: it fits or it is refused, and the
+   * plan it names is one that would hold all of it.
+   */
+  it('weighs a batch whole: allowed when it fits, refused when it would pass the ceiling', () => {
+    const free = entitlementsFor('free');
+    expect(checkLimit(free, 'projects', 3, 2).kind).not.toBe('exceeded');
+    const over = checkLimit(free, 'projects', 3, 3);
+    expect(over).toMatchObject({ kind: 'exceeded', limit: 5, current: 3, upgradeTo: 'pro' });
+  });
+
+  it('names the plan that would hold the whole batch, not merely one more', () => {
+    // 1,001 secrets fit neither Free (250) nor Pro (1,000).
+    const verdict = checkLimit(entitlementsFor('free'), 'secretsPerEnvironment', 0, 1_001);
+    expect(verdict.kind === 'exceeded' && verdict.upgradeTo).toBe('team');
+  });
+
+  it('never refuses a request that adds nothing, however far over the ceiling', () => {
+    // An organisation past its ceiling — downgraded, or holding more before the
+    // limit was enforced — may still change what it has.
+    expect(checkLimit(entitlementsFor('free'), 'projects', 40, 0).kind).not.toBe('exceeded');
+  });
+
+  it('refuses the next one for an organisation already past its ceiling', () => {
+    const verdict = checkLimit(entitlementsFor('free'), 'projects', 40);
+    expect(verdict).toMatchObject({ kind: 'exceeded', limit: 5, current: 40 });
+  });
+
+  it('reads a malformed batch size as one, so a bad count cannot open the gate', () => {
+    expect(checkLimit(entitlementsFor('free'), 'projects', 5, Number.NaN).kind).toBe('exceeded');
+  });
+
+  /**
+   * A project is created with the default environments in one request, so no
+   * plan may allow fewer per project than a project starts with — the route
+   * would refuse every project on it.
+   */
+  it('lets every plan hold the environments a project starts with', () => {
+    for (const id of PLAN_IDS) {
+      expect(
+        checkLimit(entitlementsFor(id), 'environmentsPerProject', 0, DEFAULT_ENVIRONMENTS.length)
+          .kind,
+        id,
+      ).not.toBe('exceeded');
+    }
+  });
 });
 
 describe('cheapestPlanWithLimit', () => {
@@ -722,7 +772,37 @@ describe('error bodies', () => {
       plan: 'free',
       upgradeTo: 'pro',
     });
-    expect(body.message).toContain('pro');
+    expect(body.message).toBe(
+      'This organisation is on the Free plan, which allows 5 projects. The Pro plan allows more.',
+    );
+  });
+
+  it('says a limit the way the pricing page does, in the singular when it is one', () => {
+    expect(describeLimit('organizations', 1)).toBe('1 organisation');
+    expect(describeLimit('secretsPerEnvironment', 1_000)).toBe('1,000 secrets per environment');
+    expect(describeLimit('environmentsPerProject', 3)).toBe('3 environments per project');
+    expect(describeLimit('cliDevicesPerUser', 2)).toBe('2 CLI devices per person');
+    expect(describeLimit('webhooks', 0)).toBe('0 webhooks');
+  });
+
+  it('says what the limit is when no plan would lift it', () => {
+    const team = entitlementsFor('team');
+    const verdict = checkLimit(team, 'projects', 1_000_000);
+    if (verdict.kind !== 'exceeded') throw new Error('expected exceeded');
+    // Enterprise is unlimited, so a Team organisation is pointed there.
+    expect(verdict.upgradeTo).toBe('enterprise');
+
+    const capped = entitlementsFor('enterprise', { limitOverrides: {} });
+    const none = checkLimit(
+      { ...capped, limits: { ...capped.limits, projects: 2 } },
+      'projects',
+      2,
+    );
+    if (none.kind !== 'exceeded') throw new Error('expected exceeded');
+    expect(none.upgradeTo).toBeNull();
+    expect(limitError(capped, 'projects', none).message).toBe(
+      'This organisation has reached its limit of 2 projects.',
+    );
   });
 
   it('a feature refusal names the plan that includes it', () => {
