@@ -14,10 +14,11 @@ import type { EnvironmentResponse, ProjectResponse } from '@/components/projects
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { CardGridSkeleton, ErrorState } from './resource-states';
-import { canAdminister, useOrganization } from './session';
+import { canAdminister, useOrganization, useSession } from './session';
 
 export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; projectSlug: string }) {
   const organization = useOrganization(orgSlug);
+  const { refreshTrail } = useSession();
   const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectSlug));
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -55,7 +56,12 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
                   project={project.data.project}
                   environments={project.data.environments}
                   organization={organization}
-                  onChanged={project.reload}
+                  onChanged={() => {
+                    void project.reload();
+                    // A rename: the breadcrumb reads the name from the shell's
+                    // own request, which this screen's reload does not touch.
+                    refreshTrail();
+                  }}
                 />
               ) : null}
             </>

@@ -1,9 +1,15 @@
 import { AuthorizationError } from '@xecret/core/authz';
-import { createEnvironment, listEnvironments, RepositoryError } from '@xecret/db/repositories';
+import {
+  countLiveEnvironments,
+  createEnvironment,
+  listEnvironments,
+  RepositoryError,
+} from '@xecret/db/repositories';
 import { actorId } from '@/server/actor';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
+import { withinCapacity } from '@/server/plan-capacity';
 import { authenticatedRoute } from '@/server/route';
 import {
   environmentCreateSchema,
@@ -13,6 +19,7 @@ import {
 } from '@/server/schemas/resources';
 import { assertSelfGrant, callerHasVault, requireSealingUser } from '@/server/env-keys-service';
 import { toGrantSeed } from '@/server/schemas/env-keys';
+import { planRefusal } from '@/server/template-writes';
 import { authorize, resolveProjectPath } from '@/server/tenancy';
 
 /**
@@ -137,30 +144,60 @@ export const POST = authenticatedRoute<Params>(
     // developer. What has to be guarded is the other direction — reclassifying
     // an environment that already holds production secrets — and that is
     // `PATCH …/environments/{envSlug}`.
-    const environment = await createEnvironment(services.db, {
-      orgId,
-      projectId: scope.project.id,
-      id: body.id,
-      name: body.name,
-      slug,
-      isProduction: body.isProduction,
-      sortOrder: body.sortOrder,
-      encryptionMode: 'e2ee',
-      keyInit: { createdBy: creator, grant: toGrantSeed(body.keys.grant) },
-    }).catch((cause: unknown) => {
-      if (cause instanceof RepositoryError && cause.code === 'conflict') {
-        throw errors.conflict(`An environment with the slug "${slug}" already exists.`);
-      }
-      // `notFound` here means the project was deleted between resolution and
-      // this write. The repository raises the same code when an organisation has
-      // no active master key, which is an operator-level fault — the two are not
-      // distinguishable without matching on a message, and a message is not an
-      // API contract. The first is the one that actually happens.
-      if (cause instanceof RepositoryError && cause.code === 'notFound') {
-        throw errors.notFound('project deleted concurrently');
-      }
-      throw cause;
-    });
+    //
+    // ── The plan's `environmentsPerProject` ceiling (enforced from day one) ──
+    // Counted under its lock as the first thing in the transaction that
+    // creates, so two concurrent creations cannot both take the last place. A
+    // project already holding more — a downgrade — keeps every environment it
+    // has; only this one is refused, and filed as `quotaExceeded`.
+    const keyInit = { createdBy: creator, grant: toGrantSeed(body.keys.grant) };
+    const environment = await services.db
+      .transaction(async (tx) => {
+        await withinCapacity(
+          tx,
+          scope.entitlements,
+          'environmentsPerProject',
+          scope.project.id,
+          (exec) => countLiveEnvironments(exec, orgId, scope.project.id),
+          {
+            refused: planRefusal(
+              record,
+              audit(orgId),
+              'environment.created',
+              { type: 'environment', id: null, projectId: scope.project.id },
+              'environmentsPerProject',
+              scope.entitlements.plan,
+              { projectSlug: scope.project.slug, environmentSlug: slug },
+            ),
+          },
+        );
+
+        return createEnvironment(tx, {
+          orgId,
+          projectId: scope.project.id,
+          id: body.id,
+          name: body.name,
+          slug,
+          isProduction: body.isProduction,
+          sortOrder: body.sortOrder,
+          encryptionMode: 'e2ee',
+          keyInit,
+        });
+      })
+      .catch((cause: unknown) => {
+        if (cause instanceof RepositoryError && cause.code === 'conflict') {
+          throw errors.conflict(`An environment with the slug "${slug}" already exists.`);
+        }
+        // `notFound` here means the project was deleted between resolution and
+        // this write. The repository raises the same code when an organisation has
+        // no active master key, which is an operator-level fault — the two are not
+        // distinguishable without matching on a message, and a message is not an
+        // API contract. The first is the one that actually happens.
+        if (cause instanceof RepositoryError && cause.code === 'notFound') {
+          throw errors.notFound('project deleted concurrently');
+        }
+        throw cause;
+      });
 
     record(
       audit(orgId).success(

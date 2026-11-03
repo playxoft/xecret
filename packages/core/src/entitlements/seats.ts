@@ -31,17 +31,21 @@ export const UNCAPPED_SEAT_LIMIT = 100_000;
 
 /**
  * The seat ceiling a Free organisation is held to: `organizations.seat_limit`'s
- * column default, and what every Free organisation is refused against today.
+ * column default, and what every Free organisation is refused against.
  *
- * Not `PLANS.free.limits.seats` (3). That divergence is the one documented on
- * `FREE_LIMITS.seats` and is left to the owner to close, with the thirty days'
- * notice pricing-plan §5 promises before any limit applies. A paid subscription
- * that ends returns the organisation to this — the number every Free
- * organisation already has — rather than to a tighter one no other Free
- * organisation is held to. Nobody already seated is removed by it: the ceiling
- * refuses new invitations, never existing members.
+ * Read from `PLANS.free.limits.seats` — the number the pricing page publishes —
+ * rather than written out again. It was once a separate 5 beside a published
+ * 3, and the looser number was the one that applied; migration 0033 brought the
+ * column default and the existing Free organisations down to the plan, and
+ * deriving this is what keeps the two from drifting apart a second time. `null`
+ * would mean Free had stopped limiting seats, which an integer column says as
+ * {@link UNCAPPED_SEAT_LIMIT}.
+ *
+ * A paid subscription that ends returns the organisation to this. Nobody
+ * already seated is removed by it: the ceiling refuses new invitations, never
+ * existing members.
  */
-export const FREE_SEAT_LIMIT = 5;
+export const FREE_SEAT_LIMIT: number = PLANS.free.limits.seats ?? UNCAPPED_SEAT_LIMIT;
 
 /**
  * Seats for a subscription the payment provider manages: what to bill for the
@@ -111,9 +115,9 @@ export interface SeatDecision {
  * They are not the same question and on Free they are not the same number.
  * `billed` is what the invoice says; Free bills one seat by definition, which
  * `org_subscriptions_seats_check` and the pricing page both agree on. `enforced`
- * is `organizations.seat_limit`, a column that predates plans, defaults to 5 and
- * is not set from the plan at provisioning — the divergence documented on
- * `FREE_LIMITS.seats` and on the column itself, which stands until payments.
+ * is `organizations.seat_limit`, which defaults to Free's {@link FREE_SEAT_LIMIT}
+ * and which support can raise — so a Free organisation bills 1 and enforces 3,
+ * or more.
  *
  * Collapsing them to one number is a bug in the shape of a simplification: it
  * writes the Free invoice figure of 1 into `seat_limit` and a three-person
@@ -122,9 +126,10 @@ export interface SeatDecision {
  *
  * ── Why a run that was told nothing never lowers `enforced` ──
  * Deriving from the *billed* count alone let an upgrade tighten it: a Free
- * organisation bills 1 and enforces 5, so moving it to Team with no seat count
- * gave `max(1, 3) = 3` — an organisation with four members instantly over its
- * own limit, immediately after the upgrade that was meant to give it more.
+ * organisation whose ceiling had been raised to 5 bills 1, so moving it to
+ * Team with no seat count gave `max(1, 3) = 3` — an organisation with four
+ * members instantly over its own limit, immediately after the upgrade that was
+ * meant to give it more.
  *
  * So `requested: null` takes the largest of what is billed, what is enforced,
  * and the plan's minimum. Reducing access is a deliberate act and requires
@@ -158,10 +163,11 @@ export function resolveBilledSeats(request: SeatRequest): SeatDecision {
 
   if (requested === null) {
     // Two numbers, from two sources, and conflating them put people on the wrong
-    // invoice. `enforced` is `organizations.seat_limit`, which defaults to 5 and
-    // is never set from a plan — so folding it into `billed` charged a
-    // one-person Free organisation for five Pro seats the moment somebody
-    // upgraded it, with nothing warning because `raisedToMinimum` was false.
+    // invoice. `enforced` is `organizations.seat_limit`, an access ceiling that
+    // a Free organisation holds above the one seat it is billed for — so
+    // folding it into `billed` charged a one-person Free organisation for every
+    // seat of that ceiling the moment somebody upgraded it to Pro, with nothing
+    // warning because `raisedToMinimum` was false.
     //
     // An access ceiling must never set a price. It may only stop itself being
     // lowered, which is what the second line does.

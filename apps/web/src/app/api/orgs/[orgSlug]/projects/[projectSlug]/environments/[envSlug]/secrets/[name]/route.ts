@@ -4,6 +4,7 @@ import { toSecretValueType } from '@xecret/core/validation';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
+import { secretCapacity } from '@/server/plan-capacity';
 import {
   patchSecretMetadataBody,
   secretNameFromPath,
@@ -260,6 +261,9 @@ export const PATCH = authenticatedRoute<Params>(
             },
             ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
             existing,
+            // An append never creates, so the ceiling cannot refuse it — and an
+            // environment past its ceiling keeps every secret rotatable.
+            capacity: secretCapacity(scope),
           });
           return { result, valueType: body.valueType, crossings };
         })()
@@ -288,6 +292,9 @@ export const PATCH = authenticatedRoute<Params>(
             // rotation.
             ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
             existing,
+            // An append never creates, so the ceiling cannot refuse it — and an
+            // environment past its ceiling keeps every secret rotatable.
+            capacity: secretCapacity(scope),
           });
           return { result, valueType: body.valueType, crossings: [] as ProtectionCrossing[] };
         })();

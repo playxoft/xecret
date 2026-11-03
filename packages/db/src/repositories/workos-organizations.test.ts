@@ -683,6 +683,10 @@ const sha256 = hashToken;
 describe('accepting an invitation into an organisation that requires single sign-on', () => {
   async function requiringOrg(workosOrgId: string) {
     const orgId = await seedOrg({ workosOrgId });
+    // Room for every invitation a case sends. Single sign-on is sold from Team,
+    // which seats as many as it pays for; the Free default of three would
+    // refuse the third invitation before the SSO rule was ever asked.
+    await t.pg.query(`update organizations set seat_limit = 25 where id = $1`, [orgId]);
     await t.pg.query(
       `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'owner')`,
       [randomUUID(), orgId, founderId],

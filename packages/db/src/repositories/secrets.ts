@@ -1,4 +1,17 @@
-import { and, asc, count, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { uuidv7 } from '@xecret/core/ids';
 import type { EncryptedValue } from '@xecret/core/crypto';
@@ -984,12 +997,28 @@ export async function updateSecretMetadata(
   }
 }
 
-/** Counts an environment's live secrets, for quota checks and list headers. */
+/**
+ * Counts an environment's live secrets, for quota checks and list headers.
+ *
+ * `excluding` leaves out secrets a write is about to remove in the same
+ * transaction — a promotion or a restore that takes out what the source no
+ * longer has — so the `secretsPerEnvironment` check weighs what the
+ * environment will hold, not what it held before the removals. `named` counts
+ * only secrets holding one of these names: whether a create would collide with
+ * a live secret, asked before a full environment is reported as the reason.
+ */
 export async function countSecrets(
   exec: Executor,
   orgId: string,
   environmentId: string,
+  options: {
+    excluding?: readonly string[] | undefined;
+    named?: readonly string[] | undefined;
+  } = {},
 ): Promise<number> {
+  const excluding = options.excluding ?? [];
+  const named = options.named;
+  if (named !== undefined && named.length === 0) return 0;
   const [row] = await exec
     .select({ total: count() })
     .from(secrets)
@@ -1002,6 +1031,8 @@ export async function countSecrets(
         isNull(secrets.deletedAt),
         isNull(environments.deletedAt),
         isNull(projects.deletedAt),
+        excluding.length === 0 ? undefined : notInArray(secrets.id, [...excluding]),
+        named === undefined ? undefined : inArray(secrets.name, [...named]),
       ),
     );
 

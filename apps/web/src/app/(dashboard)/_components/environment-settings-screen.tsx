@@ -10,7 +10,7 @@ import type { EnvironmentResponse } from '@/components/projects/types';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
-import { canAdminister, useOrganization } from './session';
+import { canAdminister, useOrganization, useSession } from './session';
 
 export function EnvironmentSettingsScreen({
   orgSlug,
@@ -22,6 +22,7 @@ export function EnvironmentSettingsScreen({
   envSlug: string;
 }) {
   const organization = useOrganization(orgSlug);
+  const { refreshTrail } = useSession();
   // This route needs the secret count, which only the environment detail
   // endpoint returns — the delete confirmation says how much is about to become
   // unreachable, and "some secrets" is not an answer anybody can act on.
@@ -61,7 +62,13 @@ export function EnvironmentSettingsScreen({
             environment={environment.data.environment}
             canManage={canManage}
             canDelete={canAdminister(organization, 'environment.delete')}
-            onChanged={environment.reload}
+            onChanged={() => {
+              void environment.reload();
+              // The breadcrumb names this environment from the shell's own
+              // request, so a rename here has to reach it too — or the heading
+              // takes the new name and the crumb above it keeps the old one.
+              refreshTrail();
+            }}
           />
 
           {/* Below the naming form, because rotating is a rarer and heavier act

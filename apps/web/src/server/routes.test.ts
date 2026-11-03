@@ -203,7 +203,7 @@ describe('the organisation limit', () => {
 
   // Deleting is not advice to somebody whose ceiling is their only organisation.
   it('points at the plan rather than at deletion when the ceiling is one', () => {
-    expect(organizationLimitReached(1).message).toContain('Upgrade');
+    expect(organizationLimitReached(1).message).toContain('Upgrade to Pro');
     expect(organizationLimitReached(3).message).toContain('Delete one');
   });
 
@@ -500,7 +500,7 @@ describe('response shapes', () => {
     id: '0198c0de-0000-7000-8000-000000000001',
     name: 'Acme',
     slug: 'acme',
-    seatLimit: 5,
+    seatLimit: 3,
     // No WorkOS organisation and no SSO requirement: the overwhelmingly common
     // shape, and the one every assertion in this file is about.
     workosOrgId: null,

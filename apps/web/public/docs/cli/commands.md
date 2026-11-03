@@ -46,6 +46,15 @@ xecret login --api-url https://secrets.your-company.com
 The device name is what you will look for later when revoking access from
 *Tokens → Your devices*, so make it something you will recognise.
 
+Logging in again replaces the credential this machine held, and the CLI revokes
+the old one on the server once the new one is saved — so re-running
+`xecret login` does not leave a stale device behind. If that revocation fails
+(the old deployment is unreachable, say), the login still succeeds and says so;
+revoke the old device from *Tokens → Your devices*. Each plan limits how many
+devices one person may have signed in to an organisation (two on Free); at the
+limit, the consent screen says so and the way forward is to revoke one you no
+longer use.
+
 ### `xecret logout`
 
 ```bash

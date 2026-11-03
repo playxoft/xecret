@@ -15,6 +15,7 @@ import { json, parseJsonBody } from '@/server/http';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { graphWriteGuard } from '@/server/references-service';
 import type { ProtectionCrossing } from '@/server/references-service';
+import { secretCapacity } from '@/server/plan-capacity';
 import { authenticatedRoute } from '@/server/route';
 import { promoteClientBody } from '@/server/schemas/secrets';
 import {
@@ -228,6 +229,22 @@ export const POST = authenticatedRoute<Params>(
       removals: removed.map((secret) => secret.secretId),
       dryRun: body.dryRun,
       guard,
+      // The target's `secretsPerEnvironment` ceiling, weighed against what it
+      // will hold once the promotion's own removals are applied.
+      capacity: secretCapacity(
+        target,
+        body.dryRun
+          ? undefined
+          : planRefusal(
+              record,
+              builder,
+              'environment.promoted',
+              resource,
+              'secretsPerEnvironment',
+              target.entitlements.plan,
+              context,
+            ),
+      ),
     });
     const counts = countResults(results, removed.length);
 

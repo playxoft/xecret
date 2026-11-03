@@ -60,7 +60,13 @@ export interface LegalPageProps {
   description: string;
   /** ISO dates. Rendered long-form, and published in `<time dateTime>`. */
   updated: string;
-  effective: string;
+  /**
+   * When this version binds: an ISO date, or `null` for a version that takes
+   * effect on its publication — which is the deploy, a date the source cannot
+   * know when it is written. A fixed date that the deploy then passes would
+   * claim the version bound people before they could read it.
+   */
+  effective: string | null;
   /**
    * The plain-English précis, above the formal text. On a secrets product this
    * is not a gimmick — it is the part people read — so it is a required prop
@@ -214,9 +220,13 @@ export function LegalPage({
               {formatDate(updated)}
             </time>
             {' · Effective '}
-            <time dateTime={effective} className="text-fg-muted font-medium">
-              {formatDate(effective)}
-            </time>
+            {effective === null ? (
+              <span className="text-fg-muted font-medium">on publication</span>
+            ) : (
+              <time dateTime={effective} className="text-fg-muted font-medium">
+                {formatDate(effective)}
+              </time>
+            )}
           </p>
 
           <div className="border-warning-line bg-warning-tint mt-6 rounded-xl border p-5">

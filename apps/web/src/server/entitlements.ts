@@ -23,47 +23,53 @@ import { errors } from './errors';
  * viewer a writer, and an owner on Free still cannot read an environment they
  * hold no grant on.
  *
- * ── ⚠ WHERE THESE ARE CALLED, AND WHERE THEY ARE NOT ──
+ * ── Where these are called ──
  * `requireFeature` gates `customRoles` (defining, editing and assigning a
  * custom role) and the P19 features, each on the control-plane act that turns
  * it on — never on the read that uses it: `secretReferencing` (a parent, a
  * template), `personalOverrides` (setting one), `environmentPromotion`,
  * `pointInTimeRestore` (whose window is `limits.pitrDays`), `tokenIpAllowlist`
  * and `secretPolicy` (tightening or enabling a policy), `disableEnvExport` and
- * `newIpReadAlerts` (switching one on). `requireCapacity` is called for exactly
- * one ceiling, `webhooks`. Do not read its presence as evidence that project,
- * seat, service-token, environment or secret ceilings are enforced anywhere:
- * they are not. The only other *limit* enforced in the product today is the
- * organisations-per-account ceiling, which lives in `provisionOrganization`
- * because it needs a row lock rather than a route-layer check.
+ * `newIpReadAlerts` (switching one on). A downgrade takes none of the settings
+ * back: what was set stays set, and only turning something *on* asks the plan
+ * again. Most keep working, too — a parent still inherits, an override still
+ * applies, a policy is still enforced. Read alerts are the exception: they are
+ * a service the plan provides rather than a setting, so on a plan without
+ * `newIpReadAlerts` no sighting is recorded and nothing is sent
+ * (`read-alerts.ts`) until it includes them again.
  *
- * Why staged rather than wired: payments are the *eleventh* of twelve phases in
- * `.local/plans/v2/01-billing.md`, and this is the first. Every organisation is
- * on Free until a checkout page exists, so wiring these today would hand every
- * account in the product a hard ceiling with no way to pay past it — a refusal
- * whose `upgradeTo` points at a plan nobody can buy. The gates land with the
- * checkout that makes them answerable, and they exist now so that the phases
- * between here and there have something to call rather than each growing its own
- * temporary way to ask the same question.
+ * `requireCapacity` is called for every countable ceiling the plans define, at
+ * the place each thing is created, and from the day the plan publishes it — the
+ * owner's decision (2026-11), there being nobody on the product yet whom an
+ * immediate limit could surprise. `plan-capacity.ts` holds the race-safe form,
+ * counted inside the creating transaction under `lockCapacity`:
  *
- * Custom roles and the P19 features are the exception because each is a *new*
- * capability rather than a ceiling on an existing one: gating one takes nothing
- * away from anybody who has it today, and until checkout ships the plans that
- * buy them are set by hand through the operator tool (`npm run plan:set`),
- * which is the manual bridge the billing plan provides for exactly this. The
- * P19 gates also never take a feature back on a downgrade: what was set keeps
- * working — a parent still inherits, an override still applies, a policy is
- * still enforced — and only turning something *on* asks the plan again.
+ *  - `projects` — `POST …/projects`, which also weighs the environments a
+ *    project arrives with against `environmentsPerProject`;
+ *  - `environmentsPerProject` — `POST …/projects/{p}/environments`;
+ *  - `secretsPerEnvironment` — every write that can create a secret (create,
+ *    import, promotion, point-in-time restore), through the capacity check the
+ *    secret writes take inside their own transaction;
+ *  - `serviceTokens` — `POST …/tokens/service`;
+ *  - `cliDevicesPerUser` — the CLI token exchange, and the consent screen ahead
+ *    of it so the refusal reaches a browser where an old device can be revoked;
+ *  - `webhooks` — `POST …/webhooks`.
  *
- * The seats ceiling is the one to know about, because it is enforced by a
- * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 3,
- * and `organizations.seat_limit` — which `assertSeatAvailable` actually refuses
- * invitations against — defaults to 5. The looser number is what applies. See
- * the note on `seats` in `packages/core/src/entitlements/plans.ts`.
+ * Two ceilings are enforced elsewhere, by mechanisms that predate this file:
+ * `organizations`, in `provisionOrganization` under the account lock, and
+ * `seats`, by `assertSeatAvailable` against `organizations.seat_limit` — which
+ * defaults to `FREE_LIMITS.seats` (3) since migration 0033 brought the two
+ * together. See the note on `seats` in `packages/core/src/entitlements/plans.ts`.
  *
- * When wiring does happen, the counts these take are pre-addition counts from
- * the repository layer, and `limit.exceeded` should be recorded on the refusal —
- * it is in `AuditAction` for that, and is likewise not yet emitted anywhere.
+ * **Only creation is refused.** No capacity check deletes, hides, locks or slows
+ * what an organisation already holds past a ceiling — one that downgraded, or
+ * that held more before the limits were enforced. Its projects, environments,
+ * secrets and tokens stay readable, editable and usable; the next one is what
+ * it cannot add. (Webhooks at a ceiling of zero are the one pause, and it is
+ * `refuseWhilePaused`'s in `webhooks-service.ts`, not a capacity check's; the
+ * terms state it.) Owners are not exempt: a limit is the organisation's, not a
+ * role's. Each refusal is a `403 plan_limit` naming the limit and the cheapest
+ * plan above that would allow it, and is audited as `quotaExceeded`.
  *
  * ── The rule every function here obeys ──
  * **Nothing in this file may be called on the secret-fetch path.** A build never
@@ -74,7 +80,10 @@ import { errors } from './errors';
  * only durable moat this product has.
  *
  * `secrets-service.ts` has no import from this module, and it should stay that
- * way.
+ * way. The one ceiling on a secret write reaches it as a capacity check the
+ * caller supplies (`secretCapacity` in `plan-capacity.ts`), the way the
+ * reference-graph check does — so the module that serves fetches still cannot
+ * reach a billing decision.
  */
 
 /** Convert a core refusal into the API's `plan_limit` response. */
@@ -151,24 +160,60 @@ export function requireAddon(
 }
 
 /**
- * Refuse unless there is room for one more `resource`.
+ * Refuse unless there is room for `adding` more `resource` — one, unless a
+ * single request creates several.
  *
- * `current` is the count **before** the addition, which is what every existing
- * counting query in the repository layer already returns — `seatUsage`,
- * `countSecrets`, `countOrganizationsHeldBy`. Passing the post-addition count
- * would silently allow one over every ceiling in the product.
+ * `current` is the count **before** the addition, which is what every counting
+ * query in the repository layer returns — `countLiveProjects`, `countSecrets`,
+ * `countOrganizationsHeldBy`. Passing the post-addition count would silently
+ * allow one over every ceiling in the product. For a count that must not race
+ * the write it guards, use `withinCapacity` in `plan-capacity.ts`, which takes
+ * it under a lock inside the creating transaction.
  *
  * A `warn` verdict returns normally. Crossing a fair-use ceiling refuses
  * nothing; it is a support conversation, and the caller may surface it.
+ *
+ * `refused`, when given, runs first — for the audit record of the attempt, as
+ * on `requireFeature`. `remedy`, when given, is a sentence appended to the
+ * refusal naming what the person can do short of upgrading — revoke an old
+ * device, say — for a ceiling where that is the likelier way forward.
  */
 export function requireCapacity(
   entitlements: Entitlements,
   resource: LimitedResource,
   current: number,
+  options: CapacityOptions = {},
 ): void {
-  const verdict = checkLimit(entitlements, resource, current);
+  const verdict = checkLimit(entitlements, resource, current, options.adding ?? 1);
   if (verdict.kind !== 'exceeded') return;
-  toApiError(limitError(entitlements, resource, verdict));
+  options.refused?.();
+  const detail = limitError(entitlements, resource, verdict);
+  toApiError(
+    options.remedy === undefined
+      ? detail
+      : { ...detail, message: `${detail.message} ${options.remedy}` },
+  );
+}
+
+/** How a capacity check is asked. See `requireCapacity`. */
+export interface CapacityOptions {
+  /** How many the request adds. One unless a single request creates several. */
+  adding?: number | undefined;
+  /** Records the refusal, before it is thrown. */
+  refused?: (() => void) | undefined;
+  /** A sentence naming the way forward, appended to the refusal. */
+  remedy?: string | undefined;
+}
+
+/**
+ * Whether a ceiling on `resource` exists for this organisation at all.
+ *
+ * `null` is unlimited for billing — only a fair-use ceiling applies, and it
+ * warns rather than refuses — so a check can never refuse, and a creation need
+ * not be serialised behind a capacity lock to find that out.
+ */
+export function hasCeiling(entitlements: Entitlements, resource: LimitedResource): boolean {
+  return entitlements.limits[resource] !== null;
 }
 
 /**

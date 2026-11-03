@@ -1,6 +1,7 @@
 import { AuthorizationError } from '@xecret/core/authz';
 import { DEFAULT_ENVIRONMENTS } from '@xecret/core/validation';
 import {
+  countLiveProjects,
   createEnvironment,
   createProject,
   listProjects,
@@ -8,10 +9,12 @@ import {
 } from '@xecret/db/repositories';
 import type { EnvironmentRecord, ProjectRecord } from '@xecret/db/repositories';
 import { actorId } from '@/server/actor';
+import { requireCapacity } from '@/server/entitlements';
 import { assertSelfGrant, callerHasVault, requireSealingUser } from '@/server/env-keys-service';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
+import { withinCapacity } from '@/server/plan-capacity';
 import { authenticatedRoute } from '@/server/route';
 import { toGrantSeed } from '@/server/schemas/env-keys';
 import {
@@ -23,6 +26,7 @@ import {
   toProjectListItem,
 } from '@/server/schemas/resources';
 import type { ProjectEnvironmentInit } from '@/server/schemas/resources';
+import { planRefusal } from '@/server/template-writes';
 import { authorize, resolveOrg } from '@/server/tenancy';
 import type { OrgScope } from '@/server/tenancy';
 
@@ -167,6 +171,26 @@ export const POST = authenticatedRoute<Params>(
     // The same assertion `POST …/environments` makes, for the same reason.
     for (const init of inits.values()) assertSelfGrant(init.keys.grant, createdBy);
 
+    // ── The plan (enforced from the day it is published) ──
+    // A refusal is filed as `quotaExceeded`, naming the limit and the plan. The
+    // environments a project arrives with must fit its plan too — no plan
+    // allows fewer than a project starts with, which the plan definitions'
+    // own tests assert, so this can only refuse if that ever stops being true.
+    const refused = (limitName: 'projects' | 'environmentsPerProject') =>
+      planRefusal(
+        record,
+        audit(orgId),
+        'project.created',
+        { type: 'project', id: null },
+        limitName,
+        scope.entitlements.plan,
+        { projectSlug: slug },
+      );
+    requireCapacity(scope.entitlements, 'environmentsPerProject', 0, {
+      adding: DEFAULT_ENVIRONMENTS.length,
+      refused: refused('environmentsPerProject'),
+    });
+
     /**
      * One transaction for the project and its environments.
      *
@@ -184,6 +208,19 @@ export const POST = authenticatedRoute<Params>(
      */
     const created = await services.db
       .transaction(async (tx) => {
+        // The `projects` ceiling, first: counted under its lock, inside the
+        // transaction that creates, so two concurrent creations cannot both
+        // pass a count of four against a limit of five. Projects the
+        // organisation already holds past the ceiling are untouched.
+        await withinCapacity(
+          tx,
+          scope.entitlements,
+          'projects',
+          orgId,
+          (exec) => countLiveProjects(exec, orgId),
+          { refused: refused('projects') },
+        );
+
         const project = await createProject(tx, {
           orgId,
           name: body.name,
