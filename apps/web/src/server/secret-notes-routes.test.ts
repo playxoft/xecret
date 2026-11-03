@@ -284,8 +284,12 @@ describe('a note on a secret, in an end-to-end encrypted environment', () => {
       [env.id],
     );
     expect(stored.rows[0]?.note).toBeNull();
-    expect(stored.rows[0]?.enc_note).not.toBeNull();
-    expect(JSON.stringify(stored.rows)).not.toContain('rotates quarterly');
+    // The column holds the ASCII of the blob the listing serves, and the note
+    // is nowhere in it.
+    const sealedText = new TextDecoder().decode(stored.rows[0]!.enc_note!);
+    expect(sealedText).toBe(listed?.encNote);
+    expect(sealedText).not.toContain('rotates quarterly');
+    expect(sealedText).not.toContain(toBase64Url(new TextEncoder().encode('rotates quarterly')));
 
     // …and what the table is now handed.
     expect((await shown(org, io)).get('STRIPE_KEY')).toBe('Billing — rotates quarterly');
@@ -300,8 +304,11 @@ describe('a note on a secret, in an end-to-end encrypted environment', () => {
 
     // Added to a key that had none — the other way a description is typed.
     const [created] = await listing(org);
-    await io.patchMetadata(refOf(created!), { note: 'Primary, read-write' });
+    const written = await io.patchMetadata(refOf(created!), { note: 'Primary, read-write' });
     expect((await shown(org, io)).get('DATABASE_URL')).toBe('Primary, read-write');
+    // What the write says it stored is exactly what the next listing carries —
+    // the premise of the table showing the new note before that listing lands.
+    expect(written.encNote).toBe((await listing(org))[0]?.encNote);
 
     const [described] = await listing(org);
     await io.patchMetadata(refOf(described!), { note: 'Primary — failover in eu-west' });
@@ -315,7 +322,55 @@ describe('a note on a secret, in an end-to-end encrypted environment', () => {
     expect((await shown(org, io)).get('DATABASE_URL')).toBeNull();
   });
 
-  it('shows a note it cannot open as absent, and still shows every other one', async () => {
+  it('opens a note sealed before a rotation, with the retired key this session still holds', async () => {
+    const { org, env } = await setup('e2ee');
+    const before = openedKey(env);
+    await clientSecretIo(ioContext(org), before).create({
+      name: 'WEBHOOK_SECRET',
+      value: 'whsec_one',
+      note: 'Signed by the payments team',
+      valueType: 'string',
+    });
+
+    // The rotation: a new key version is opened beside the old one, and the IO
+    // the screen re-opens with is built around the new one. Notes carry no key
+    // id, so this one has to be found by trying the keys there are.
+    const after: EnvKeyMaterial = {
+      environmentId: env.id,
+      envDataKeyId: crypto.randomUUID(),
+      edkVersion: 2,
+      edk: generateEnvironmentDataKey(),
+      ehk: before.ehk,
+    };
+    holdEnvKey(after);
+    const rotated = clientSecretIo(ioContext(org), after);
+
+    const [opened] = await rotated.openNotes(await listing(org));
+    expect(opened).toMatchObject({ note: 'Signed by the payments team' });
+    expect(opened?.noteState).toBeUndefined();
+  });
+
+  it('says a note will not open, rather than showing it as absent', async () => {
+    const { org, env } = await setup('e2ee');
+    await clientSecretIo(ioContext(org), openedKey(env)).create({
+      name: 'LEGACY_TOKEN',
+      value: 'one',
+      note: 'from before the rotation',
+      valueType: 'string',
+    });
+
+    // A fresh load after the rotation: only the new key was ever opened here.
+    releaseEnvKeys();
+    const rotated = clientSecretIo(
+      ioContext(org),
+      openedKey({ ...env, keyId: crypto.randomUUID() }),
+    );
+
+    const [row] = await rotated.openNotes(await listing(org));
+    expect(row).toMatchObject({ note: null, noteState: 'unreadable' });
+  });
+
+  it('shows a note it cannot open as unreadable, and still shows every other one', async () => {
     const { org, env } = await setup('e2ee');
     const io = clientSecretIo(ioContext(org), openedKey(env));
 
@@ -344,9 +399,11 @@ describe('a note on a secret, in an end-to-end encrypted environment', () => {
     );
     expect(put.status).toBe(200);
 
-    const notes = await shown(org, io);
-    expect(notes.get('OPENS')).toBe('readable');
-    expect(notes.get('SEALED_ELSEWHERE')).toBeNull();
+    const opened = await io.openNotes(await listing(org));
+    const byName = new Map(opened.map((secret) => [secret.name, secret]));
+    expect(byName.get('OPENS')).toMatchObject({ note: 'readable' });
+    expect(byName.get('OPENS')?.noteState).toBeUndefined();
+    expect(byName.get('SEALED_ELSEWHERE')).toMatchObject({ note: null, noteState: 'unreadable' });
   });
 });
 

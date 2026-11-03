@@ -97,7 +97,7 @@ export function EnvironmentScreen({
    * and the table reads `note` — so this is the step that makes a saved note
    * show up as saved. See `use-opened-notes.ts`.
    */
-  const listing = useOpenedNotes(secrets.data, io);
+  const { secrets: listing, remember: rememberNotes } = useOpenedNotes(secrets.data, io);
 
   /**
    * Whether to offer the rotation button.
@@ -350,6 +350,7 @@ export function EnvironmentScreen({
             loadingMore={secrets.loadingMore}
             loadMoreError={secrets.loadMoreError}
             onChanged={secrets.reload}
+            onNotesWritten={rememberNotes}
             onImport={() => setImporting(true)}
             onExport={() => setExporting(true)}
           />

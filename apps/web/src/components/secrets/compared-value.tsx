@@ -375,6 +375,8 @@ export function ComparedValue({
         onEditCancel={cancel}
         onCommit={commit}
         note={writtenNote !== undefined ? writtenNote : (secret?.note ?? null)}
+        // A note just written here is known, whatever the listing still says.
+        noteState={writtenNote !== undefined ? undefined : secret?.noteState}
         onNoteChange={saveNote}
         noteSaving={noteSaving}
         noteError={noteError}

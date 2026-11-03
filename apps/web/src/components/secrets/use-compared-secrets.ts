@@ -14,6 +14,7 @@ import type { SecretIo } from '@/components/envkeys';
 import { readVaultKeys } from '@/components/vault/key-store';
 import type { EnvironmentTarget } from './environment-target';
 import type { SecretListResponse, SecretSummary } from './types';
+import { withOpenedNotes } from './use-opened-notes';
 
 /**
  * The masked listings of the environments being compared alongside this one.
@@ -208,15 +209,18 @@ export function useComparedSecrets(
         comparedIo({ orgSlug, orgId, projectSlug, envSlug: slug }, controller.signal),
       ])
         .then(async ([response, io]) => {
+          // Before the decryptions, not only after them: a comparison dropped
+          // while its listing was in flight has nothing to open notes for.
+          if (controller.signal.aborted) return;
           // Each note made readable by that environment's own key, as the
           // environment on screen does for its own — a compared cell shows and
           // edits the note too, and in `e2ee` mode the listing carries it only
-          // sealed. A failure keeps the listing as it came: the notes stay
-          // absent, and the names and values are still the comparison.
+          // sealed. Where there is no key, or opening fails, each sealed note
+          // is marked `sealed` rather than shown as absent, and the names and
+          // values are still the comparison.
+          const sealed = withOpenedNotes(response.data, new Map());
           const listing =
-            io === null
-              ? response.data
-              : await io.openNotes(response.data).catch(() => response.data);
+            io === null ? sealed : await io.openNotes(response.data).catch(() => sealed);
           if (controller.signal.aborted) return;
           const byName = new Map(listing.map((secret) => [secret.name, secret]));
           setEntries((current) => ({

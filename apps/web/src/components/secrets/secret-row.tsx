@@ -24,12 +24,13 @@ import { nameWarning, policyProblem } from '@/components/policies/policy-checks'
 import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { ComparedValue } from './compared-value';
 import type { EnvironmentTarget } from './environment-target';
+import { NOTE_STATE_COPY, NOTE_STATE_LABEL, noteEditable } from './note-state';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import { crossesTemplateBoundary, TEMPLATE_RENAME_REFUSAL } from './template-references';
 import type { PendingEdit } from './staged-changes';
 import type { PlaintextCache } from './use-plaintext-cache';
 import type { SecretIo } from '@/components/envkeys';
-import type { SecretSummary } from './types';
+import type { NoteState, SecretSummary } from './types';
 import type { ComparedEnvironment } from './use-compared-secrets';
 import { ValueField } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
@@ -350,6 +351,11 @@ export function SecretRow({
   const comparing = compare.length > 0;
   /** The staged note where there is one, the stored note otherwise. */
   const note = edit?.note ?? secret.note;
+  /**
+   * Why the stored note is not on screen, when it is sealed and not opened.
+   * A staged note is the user's own and needs no explaining, so it clears this.
+   */
+  const noteState = edit?.note === undefined ? secret.noteState : undefined;
 
   /**
    * Stages a note, or un-stages it when it is back to what is stored.
@@ -427,6 +433,7 @@ export function SecretRow({
           isProduction={isProduction}
           staged={staged}
           note={note}
+          noteState={noteState}
           onMetaChange={onMetaChange}
           onNoteChange={changeNote}
           onTypeChange={changeType}
@@ -472,6 +479,7 @@ export function SecretRow({
             forgetToken={forgetToken}
             onCommit={onCommit}
             note={note}
+            noteState={noteState}
             onNoteChange={changeNote}
             onHistory={() => onHistory(envSlug)}
             onDelete={onDelete}
@@ -559,6 +567,7 @@ function NameCell({
   isProduction,
   staged,
   note,
+  noteState,
   onMetaChange,
   onNoteChange,
   onTypeChange,
@@ -576,6 +585,8 @@ function NameCell({
   staged: boolean;
   /** The note in effect — the staged one where there is one, the stored one otherwise. */
   note: string | null;
+  /** Why the stored note is not shown, where it is sealed and not opened. */
+  noteState: NoteState | undefined;
   onMetaChange: (patch: { name?: string | null; note?: string | null }) => void;
   /** Stages a note, or un-stages it when it is back to what is stored. */
   onNoteChange: (note: string | null) => void;
@@ -769,7 +780,12 @@ function NameCell({
               </Tooltip>
             ) : null}
 
-            <Tooltip content={hasNote ? note : 'Add a note'} open={descriptionTip && !describing}>
+            <Tooltip
+              content={
+                noteState !== undefined ? NOTE_STATE_COPY[noteState] : hasNote ? note : 'Add a note'
+              }
+              open={descriptionTip && !describing}
+            >
               <button
                 type="button"
                 onClick={() => {
@@ -785,15 +801,25 @@ function NameCell({
                 // which is where a screen reader user reads it — the tooltip is
                 // the pointer's copy of the same thing.
                 aria-label={
-                  hasNote ? `Note on ${secret.name} — show it` : `Add a note to ${secret.name}`
+                  noteState !== undefined
+                    ? `Note on ${secret.name} — ${NOTE_STATE_LABEL[noteState]}`
+                    : hasNote
+                      ? `Note on ${secret.name} — show it`
+                      : `Add a note to ${secret.name}`
                 }
                 aria-expanded={describing}
                 className={cn(
                   'flex size-6 shrink-0 cursor-pointer items-center justify-center rounded transition-colors',
                   'hover:bg-surface-hover disabled:pointer-events-none disabled:opacity-60',
                   // Quiet where there is nothing to read, so a row with no note
-                  // is not carrying a mark that says it has one.
-                  hasNote || describing ? 'text-accent-text' : 'text-fg-subtle hover:text-fg',
+                  // is not carrying a mark that says it has one. A note that
+                  // exists and cannot be read is not nothing: it is marked as
+                  // the warning it is.
+                  noteState === 'unreadable'
+                    ? 'text-warning-text'
+                    : hasNote || describing || noteState === 'sealed'
+                      ? 'text-accent-text'
+                      : 'text-fg-subtle hover:text-fg',
                 )}
               >
                 <NoteIcon aria-hidden="true" className="size-4" />
@@ -817,6 +843,12 @@ function NameCell({
 
       {nameProblem !== null ? (
         <p className="text-danger-text px-2 text-sm leading-5">{nameProblem}</p>
+      ) : null}
+
+      {describing && noteState !== undefined ? (
+        // Said where the note would have been, so an empty field is never
+        // mistaken for an empty note.
+        <p className="text-fg-subtle px-2 text-sm leading-5">{NOTE_STATE_COPY[noteState]}</p>
       ) : null}
 
       {describing ? (
@@ -843,8 +875,15 @@ function NameCell({
               setDescribing(false);
             }
           }}
-          disabled={disabled}
-          placeholder="What this key is for, who owns it, when it rotates"
+          // A note still being opened is one nobody has seen yet: typing here
+          // would write over it. It opens in a moment, or the line above says
+          // why it will not.
+          disabled={disabled || !noteEditable(noteState)}
+          placeholder={
+            noteState === 'unreadable'
+              ? 'A new note, to replace the one above'
+              : 'What this key is for, who owns it, when it rotates'
+          }
           aria-label={`Description of ${secret.name}`}
           maxLength={NOTE_MAX_LENGTH}
           autoComplete="off"

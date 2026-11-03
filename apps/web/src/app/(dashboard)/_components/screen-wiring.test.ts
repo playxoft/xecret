@@ -37,9 +37,13 @@ describe('the notes of an end-to-end encrypted environment are opened before the
   // that made every saved note look unsaved — see `use-opened-notes.ts`.
   it('on the environment screen', () => {
     const screen = source('./environment-screen.tsx');
-    expect(screen).toMatch(/const listing = useOpenedNotes\(secrets\.data, io\)/);
+    expect(screen).toMatch(
+      /const \{ secrets: listing, remember: rememberNotes \} = useOpenedNotes\(secrets\.data, io\)/,
+    );
     const table = screen.slice(screen.indexOf('<SecretTable'));
     expect(attribute(table, 'secrets')).toBe('listing');
+    // And the notes a save writes go back to it, so the row shows them at once.
+    expect(attribute(table, 'onNotesWritten')).toBe('rememberNotes');
   });
 
   it('in every compared environment', () => {
