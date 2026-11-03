@@ -38,7 +38,14 @@ export interface SecretSummary {
    */
   id: string;
   name: string;
-  /** `null` in `e2ee` mode, where `encNote` carries it instead. */
+  /**
+   * The note, in plaintext — the one field every screen reads it from.
+   *
+   * The API sends `null` here in `e2ee` mode, where `encNote` carries it
+   * instead; `SecretIo.openNotes` decrypts it into this field before the
+   * listing reaches a table. A screen that skips that step shows every note in
+   * an end-to-end encrypted environment as missing.
+   */
   note: string | null;
   /** The encrypted note, for an `e2ee` environment. `null` when there is none. */
   encNote?: string | null;

@@ -28,11 +28,12 @@ import type {
   ImportPlanResponse,
   SecretListResponse,
   SecretRestoreResponse,
+  SecretSummary,
   SecretWriteResponse,
 } from '@/components/secrets/types';
 import { withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
-import { decryptValue, encodeNote, encryptValue } from './secret-crypto';
+import { decryptNote, decryptValue, encodeNote, encryptValue } from './secret-crypto';
 import type { SecretTarget } from './secret-crypto';
 import type { ClientEnvironmentBundle, DeclaredReferencePayload } from './types';
 
@@ -223,6 +224,22 @@ export interface SecretIo {
   ) => Promise<SecretWriteResponse>;
   /** Metadata only. Appends no version, and needs no key in `server` mode. */
   patchMetadata: (secret: SecretRef, patch: MetadataPatch) => Promise<void>;
+  /**
+   * The listing with every note in `note`, where the table reads it.
+   *
+   * In `server` mode that is already where the listing puts it, and the rows
+   * come back as they went in. In `e2ee` mode the listing carries the note only
+   * as `encNote` — `note` is always `null` there — so each one is decrypted
+   * here. Before this existed nothing decrypted them at all: a note written to
+   * an end-to-end encrypted environment was encrypted, stored and listed, and
+   * the table, reading `note`, showed every one of them as absent — which reads
+   * exactly like a note that was never saved.
+   *
+   * A note that does not open is left absent rather than failing the listing.
+   * The usual cause is a note written before a rotation, under a key this IO
+   * does not hold; the row is still a row, and its name and value still work.
+   */
+  openNotes: (secrets: readonly SecretSummary[]) => Promise<SecretSummary[]>;
   restore: (secret: SecretRef, fromVersion: number) => Promise<SecretRestoreResponse>;
   /** Runs an import. `dryRun` previews without writing, in both modes. */
   runImport: (input: {
@@ -323,6 +340,9 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
         ...(patch.valueType === undefined ? {} : { valueType: patch.valueType }),
       });
     },
+
+    // The plaintext note is already on the row.
+    openNotes: (secrets) => Promise.resolve([...secrets]),
 
     restore: (secret, fromVersion) =>
       api.post<SecretRestoreResponse>(
@@ -583,6 +603,29 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         });
       });
     },
+
+    openNotes: (secrets) =>
+      withEnvKey(material, async () => {
+        const opened: SecretSummary[] = [];
+        for (const secret of secrets) {
+          const blob = secret.encNote ?? null;
+          if (blob === null) {
+            opened.push(secret);
+            continue;
+          }
+          try {
+            // Bound to the row's id and to no version (spec §4.2), which is why
+            // the listing's id is all this needs.
+            const note = await decryptNote({ material, target: targetFor(secret.id), blob });
+            opened.push({ ...secret, note });
+          } catch {
+            // Absent, not an error: see `openNotes` on `SecretIo`. Nothing from
+            // the failure is kept — it would describe a ciphertext.
+            opened.push(secret);
+          }
+        }
+        return opened;
+      }),
 
     restore: async (secret, fromVersion) =>
       withEnvKey(material, async () => {
