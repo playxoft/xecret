@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { NOTE_STATE_COPY, noteEditable } from './note-state';
+import { NOTE_STATE_COPY, noteEditable, stagedNote } from './note-state';
 import { pruneNotes, sealedNoteKey, unopenedNotes, withOpenedNotes } from './use-opened-notes';
 import type { OpenedNotes, WrittenNote, WrittenNotes } from './use-opened-notes';
 import type { SecretSummary } from './types';
@@ -95,6 +95,23 @@ describe('a note the row cannot show', () => {
     expect(noteEditable('unreadable')).toBe(true);
     expect(NOTE_STATE_COPY.unreadable).toMatch(/replaces it/);
     expect(noteEditable(undefined)).toBe(true);
+  });
+
+  it('is cleared by an empty box, rather than the empty box un-staging itself', () => {
+    // The box over an unreadable note shows nothing, and the note it stands
+    // for is not nothing. Comparing the empty box with "" un-staged the clear,
+    // so Replace, empty, Save did nothing and said nothing.
+    const unreadable = { note: null, noteState: 'unreadable' as const };
+    expect(stagedNote(unreadable, null)).toBe('');
+    expect(stagedNote(unreadable, '')).toBe('');
+    expect(stagedNote(unreadable, 'a new one')).toBe('a new one');
+  });
+
+  it('un-stages, everywhere else, once the box is back to what is stored', () => {
+    expect(stagedNote({ note: 'kept' }, 'kept')).toBeNull();
+    expect(stagedNote({ note: 'kept' }, null)).toBe('');
+    expect(stagedNote({ note: null }, null)).toBeNull();
+    expect(stagedNote({ note: null }, 'new')).toBe('new');
   });
 });
 

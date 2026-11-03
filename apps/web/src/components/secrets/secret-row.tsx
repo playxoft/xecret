@@ -24,7 +24,7 @@ import { nameWarning, policyProblem } from '@/components/policies/policy-checks'
 import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { ComparedValue } from './compared-value';
 import type { EnvironmentTarget } from './environment-target';
-import { NOTE_STATE_COPY, NOTE_STATE_LABEL, noteEditable } from './note-state';
+import { NOTE_STATE_COPY, NOTE_STATE_LABEL, noteEditable, stagedNote } from './note-state';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import { crossesTemplateBoundary, TEMPLATE_RENAME_REFUSAL } from './template-references';
 import type { PendingEdit } from './staged-changes';
@@ -365,8 +365,7 @@ export function SecretRow({
    * mean different things and this is where they are told apart.
    */
   function changeNote(next: string | null) {
-    const value = next ?? '';
-    onMetaChange({ note: value === (secret.note ?? '') ? null : value });
+    onMetaChange({ note: stagedNote(secret, next) });
   }
 
   /**
