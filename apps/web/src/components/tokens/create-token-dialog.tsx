@@ -265,6 +265,15 @@ function CreateTokenFlow({
   }
 
   if (outcome !== null) {
+    // Every environment on this step is named as the pickers named it — by what
+    // it is called, not by its slug — the failed ones as much as the minted
+    // ones, or the two lists would describe one project in two vocabularies.
+    // Both listings are already in hand; a slug stands in only if one has gone.
+    const environmentName = (slug: string) =>
+      project.data?.environments.find((entry) => entry.slug === slug)?.name ?? slug;
+    const projectName = (slug: string) =>
+      projects.data?.projects.find((entry) => entry.slug === slug)?.name ?? slug;
+
     return (
       <>
         <DialogHeader>
@@ -282,7 +291,8 @@ function CreateTokenFlow({
         <DialogBody className="flex flex-col gap-3">
           {outcome.failed.length > 0 ? (
             <Alert tone="danger" title="Some environments failed">
-              No token was created for: {outcome.failed.join(', ')}. The ones below were.
+              No token was created for: {outcome.failed.map(environmentName).join(', ')}. The ones
+              below were.
             </Alert>
           ) : null}
 
@@ -295,22 +305,12 @@ function CreateTokenFlow({
           ) : null}
 
           {outcome.minted.map((issued) => {
-            // Named as the pickers above named them: the project and the
-            // environment by what they are called, not by their slugs. Both
-            // listings are already in hand; the slug stands in only if one of
-            // them has gone.
-            const { projectSlug: mintedProject, environmentSlug } = issued.serviceToken;
-            const projectName =
-              projects.data?.projects.find((entry) => entry.slug === mintedProject)?.name ??
-              mintedProject;
-            const environmentName =
-              project.data?.environments.find((entry) => entry.slug === environmentSlug)?.name ??
-              environmentSlug;
+            const environment = environmentName(issued.serviceToken.environmentSlug);
 
             return (
               <div key={issued.serviceToken.id} className="flex flex-col gap-1">
                 <p className="text-fg-muted text-sm font-medium">
-                  {projectName} / {environmentName}
+                  {projectName(issued.serviceToken.projectSlug)} / {environment}
                   {issued.keyShared ? null : (
                     <span className="text-fg-subtle"> &mdash; no key shared</span>
                   )}
@@ -319,10 +319,7 @@ function CreateTokenFlow({
                   <code className="text-fg min-w-0 flex-1 truncate font-mono text-sm">
                     {issued.token}
                   </code>
-                  <CopyButton
-                    value={issued.token}
-                    label={`Copy the token for ${environmentName}`}
-                  />
+                  <CopyButton value={issued.token} label={`Copy the token for ${environment}`} />
                 </div>
               </div>
             );
