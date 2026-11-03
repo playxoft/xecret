@@ -244,13 +244,22 @@ SELECT o.slug, s.plan, s.status, s.dodo_subscription_id, s.dodo_mode
     OR (s.dodo_mode IS NULL
         AND (s.dodo_subscription_id IS NOT NULL OR s.dodo_customer_id IS NOT NULL));
 
--- Every test row, Free ones included, returns to Free's default seats — the
--- same rows the next statement resets.
+-- Every test row returns to Free's default seats — the same rows the next
+-- statement resets. A paid one whatever its ceiling; a Free one only from the 5
+-- an ended subscription left it at, so a ceiling support raised is kept, as
+-- migration 0033 keeps it.
 UPDATE organizations SET seat_limit = 3, updated_at = now()
  WHERE id IN (SELECT org_id FROM org_subscriptions
-               WHERE dodo_mode = 'test_mode'
-                  OR (dodo_mode IS NULL
-                      AND (dodo_subscription_id IS NOT NULL OR dodo_customer_id IS NOT NULL)));
+               WHERE (dodo_mode = 'test_mode'
+                      OR (dodo_mode IS NULL
+                          AND (dodo_subscription_id IS NOT NULL OR dodo_customer_id IS NOT NULL)))
+                 AND plan <> 'free')
+    OR (seat_limit = 5
+        AND id IN (SELECT org_id FROM org_subscriptions
+                    WHERE (dodo_mode = 'test_mode'
+                           OR (dodo_mode IS NULL
+                               AND (dodo_subscription_id IS NOT NULL OR dodo_customer_id IS NOT NULL)))
+                      AND plan = 'free'));
 UPDATE org_subscriptions
    SET plan = 'free', billing_interval = NULL, status = 'active', seats = 1,
        dodo_subscription_id = NULL, dodo_customer_id = NULL, dodo_product_id = NULL,
@@ -509,7 +518,8 @@ Past five seconds it fails and rolls back whole; run it again.
   devices per person and webhooks, beside the organisation and seat ceilings that already
   were (`docs/architecture/api.md` §3 lists where). Only creation is refused; nothing already
   held past a ceiling is deleted or refused a read. The terms say exactly what a lower plan does
-  stop: webhook endpoints are paused on a plan that allows none, and a feature the plan lacks
+  stop: webhook endpoints are paused on a plan that allows none; new-address read alerts stop
+  (nothing recorded, nothing sent) on a plan without them; and any other feature the plan lacks
   keeps working as set but cannot be changed.
 - **No card or invoice UI.** Dodo's customer portal is it.
 - **A subscription ended here after fourteen days on hold is not cancelled at Dodo.** The alert

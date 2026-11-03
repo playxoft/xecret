@@ -307,12 +307,14 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           {paymentsLive ? ' — which an owner can move to from the billing page' : ''}. Reaching a
           limit, or a plan lapsing, deletes none of the organisation&rsquo;s projects, environments,
           secrets or tokens: they stay readable and editable, and only adding more is refused. A
-          lower plan does stop two things. On a plan that allows no webhooks, existing webhook
+          lower plan does stop three things. On a plan that allows no webhooks, existing webhook
           endpoints are kept but paused &mdash; they send nothing, and cannot be edited, switched
           back on or tested until the plan allows them again, though switching one off or deleting
-          it is never refused. And a feature the plan does not include, such as personal overrides
-          or secret templates, keeps working as it was set but cannot be changed or added to, though
-          what was set can always be removed. The current numbers are on{' '}
+          it is never refused. On a plan without new-address read alerts, the alerts stop: new
+          addresses reading an environment are not recorded and no alert or digest is sent until the
+          plan includes them again. And any other feature the plan does not include, such as
+          personal overrides or secret templates, keeps working as it was set but cannot be changed
+          or added to, though what was set can always be removed. The current numbers are on{' '}
           <LegalLink href="/pricing">the pricing page</LegalLink>, and if they ever disagree with
           this section, this section is the one you agreed to.
         </>,
@@ -408,12 +410,16 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       heading: 'Changes to these terms',
       paragraphs: [
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
-        'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept it, delete your account before then.',
+        'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
         <>
-          This version is a change made without that notice. It takes effect on publication, and it
-          replaces the earlier wording that we would give a reasonable window before the Free limits
-          applied: the limits under <LegalLink href="#plans">Plans, prices and billing</LegalLink>{' '}
-          apply from its publication, with no such window.
+          This version is a change made without that notice, and it takes effect on publication. The
+          version before it said, of an organisation whose plan lapsed: &ldquo;we will tell you what
+          exceeds the Free limits and give you a reasonable window to bring the organisation under
+          them or export it&rdquo;. This version provides neither of those for the limits under{' '}
+          <LegalLink href="#plans">Plans, prices and billing</LegalLink>: we do not tell you in
+          advance what exceeds a limit, and there is no window before a limit applies &mdash; each
+          applies from the publication of this version. What a limit does, and does not do, to what
+          an organisation already holds is set out in that section.
         </>,
       ],
     },

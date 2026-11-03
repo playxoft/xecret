@@ -189,8 +189,10 @@ with `limitName`. Owners are exempt from none of it. Nothing an organisation alr
 a countable ceiling is deleted or refused a read or an edit — only the next one is refused. The
 one ceiling that also pauses what exists is `webhooks` at zero: on a plan that allows none, the
 endpoints are kept but send nothing, and editing, re-enabling or testing one is refused
-(switching one off and deleting it never are). A feature a plan lacks keeps working as it was
-set, but turning it on or changing it asks the plan.
+(switching one off and deleting it never are). New-address read alerts stop on a plan without
+`newIpReadAlerts`: no sighting is recorded and no alert or digest is sent until the plan includes
+them again (`read-alerts.ts`). Any other feature a plan lacks keeps working as it was set, but
+turning it on or changing it asks the plan.
 
 | Ceiling | Refused at |
 |---|---|

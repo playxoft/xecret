@@ -30,8 +30,13 @@ import { errors } from './errors';
  * template), `personalOverrides` (setting one), `environmentPromotion`,
  * `pointInTimeRestore` (whose window is `limits.pitrDays`), `tokenIpAllowlist`
  * and `secretPolicy` (tightening or enabling a policy), `disableEnvExport` and
- * `newIpReadAlerts` (switching one on). A downgrade never takes one back: what
- * was set keeps working, and only turning something *on* asks the plan again.
+ * `newIpReadAlerts` (switching one on). A downgrade takes none of the settings
+ * back: what was set stays set, and only turning something *on* asks the plan
+ * again. Most keep working, too — a parent still inherits, an override still
+ * applies, a policy is still enforced. Read alerts are the exception: they are
+ * a service the plan provides rather than a setting, so on a plan without
+ * `newIpReadAlerts` no sighting is recorded and nothing is sent
+ * (`read-alerts.ts`) until it includes them again.
  *
  * `requireCapacity` is called for every countable ceiling the plans define, at
  * the place each thing is created, and from the day the plan publishes it — the
