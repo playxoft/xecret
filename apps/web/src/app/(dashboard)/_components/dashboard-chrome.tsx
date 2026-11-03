@@ -75,18 +75,15 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     null;
 
   // Built before the early returns below, because hooks cannot run
-  // conditionally. It issues no request until there is an organisation in the
-  // *URL* — `projectsOrgSlug`, not the resolved slug — so the loading and
-  // locked paths, and the account area, cost nothing extra. The membership is
-  // threaded in from the session resource because this runs above the
-  // SessionProvider, and is read for the same organisation the hrefs are built
-  // from, so the admin-only items can never describe one organisation's
-  // authority over another's links.
+  // conditionally. It issues no request: every item comes from the URL. The
+  // membership is threaded in from the session resource because this runs
+  // above the SessionProvider, and is read for the same organisation the hrefs
+  // are built from, so the admin-only items can never describe one
+  // organisation's authority over another's links.
   const viewer = memberships?.find((organization) => organization.slug === navOrgSlug) ?? null;
   const nav = useDashboardNav({
-    ...location,
     orgSlug: navOrgSlug,
-    projectsOrgSlug: location.orgSlug,
+    projectSlug: location.projectSlug,
     viewer,
   });
 

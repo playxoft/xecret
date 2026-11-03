@@ -43,20 +43,16 @@ function chordId(keys: readonly string[]): string | null {
 function collect(sections: readonly NavSection[]): ReadonlyMap<string, string> {
   const map = new Map<string, string>();
 
-  function walk(items: readonly NavItem[]): void {
-    for (const item of items) {
-      if (item.shortcut && item.shortcut.length > 0) {
-        const id = chordId(item.shortcut);
-        // First declaration wins. A duplicate is a bug in the nav definition
-        // rather than something to resolve at runtime, and silently
-        // preferring the later one would make it depend on section order.
-        if (id !== null && !map.has(id)) map.set(id, item.href);
-      }
-      if (item.children) walk(item.children);
+  const items: readonly NavItem[] = sections.flatMap((section) => section.items);
+  for (const item of items) {
+    if (item.shortcut && item.shortcut.length > 0) {
+      const id = chordId(item.shortcut);
+      // First declaration wins. A duplicate is a bug in the nav definition
+      // rather than something to resolve at runtime, and silently preferring
+      // the later one would make it depend on section order.
+      if (id !== null && !map.has(id)) map.set(id, item.href);
     }
   }
-
-  walk(sections.flatMap((section) => section.items));
   return map;
 }
 
