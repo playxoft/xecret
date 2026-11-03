@@ -2209,12 +2209,15 @@ function CellValue({ value }: { value: Cell }) {
  *
  * ── Why it is only a default ──
  * Every currency is in the markup and the selector switches between them with
- * CSS. So a wrong guess — a VPN, a traveller, a mis-geolocated range — costs
- * one click, not a wrong price. That is what allows this to be a short list of
- * obvious countries rather than an exhaustive mapping nobody can maintain, and
- * it is why the header is never used for anything but this. **What somebody is
- * actually charged is decided at checkout from their billing country and the
- * card that pays**, never from a header a client can send.
+ * CSS. On localhost — the only place `currencyMenuShown` offers the selector
+ * today — a wrong guess therefore costs one click. Everywhere the menu is
+ * withheld, a wrong guess — a VPN, a traveller, a mis-geolocated range —
+ * sticks for the visit: the owner's call (2026-11-04), accepted knowingly,
+ * because **what somebody is actually charged is decided at checkout from
+ * their billing country and the card that pays**, never from this header and
+ * never from the sheet on screen. The short list of obvious countries, rather
+ * than an exhaustive mapping nobody can maintain, is what the escape hatch
+ * used to justify; it stays short because the price consequence is nil.
  */
 async function resolveInitialCurrency(): Promise<CurrencyId> {
   try {
@@ -2325,7 +2328,13 @@ function PriceControls({ currencyMenu }: { currencyMenu: boolean }) {
           {CURRENCIES.map((currency) => (
             <span
               key={currency.id}
-              className={`x-save x-save-${currency.id} text-success-text text-xs font-normal`}
+              // A tint pill rather than bare green text: the chip rides inside
+              // the Yearly label, which is `--accent`-filled while selected —
+              // and Yearly opens selected. Green ON the accent fill fails
+              // contrast, so the pill brings its own background (`--success-text`
+              // on `--success-tint` is AA in both themes) and reads the same in
+              // either state of the toggle.
+              className={`x-save x-save-${currency.id} bg-success-tint text-success-text rounded-full px-1.5 py-0.5 text-xs font-normal`}
             >
               Save up to {YEARLY_SAVING[currency.id]}%
             </span>
@@ -2481,6 +2490,16 @@ export default async function PricingPage() {
             name="currency"
             value={currency.id}
             defaultChecked={currency.id === initialCurrency}
+            // Disabled wherever the menu is not offered. The radios must still
+            // EXIST there — `:checked` on a disabled input keeps matching, and
+            // every price on the page is revealed from it — but an enabled,
+            // sr-only radio with no visible control is a trap: focus vanishes
+            // into a clipped 1px box (the focus ring is drawn on menu elements
+            // that no longer render), and an arrow key silently switches every
+            // figure with nothing on screen to switch them back. Disabled, they
+            // leave the tab order and ignore keys, which is "no switching"
+            // meant literally.
+            disabled={!currencyMenu}
             // Named explicitly, because two controls render a `<label for>` at
             // this input and engines concatenate every associated label into the
             // accessible name — so it announced as "$ USD $ USD". An `aria-label`
@@ -2754,7 +2773,11 @@ export default async function PricingPage() {
                     </p>
                     <p className="text-fg-subtle mt-1 text-sm">{addon.from}</p>
                   </div>
-                  <p className="text-fg-muted text-sm leading-6 lg:flex-1">{addon.body}</p>
+                  {/* Capped: at the row's full width this paragraph ran about
+                      120 characters a line, half again past comfortable. */}
+                  <p className="text-fg-muted max-w-3xl text-sm leading-6 lg:flex-1">
+                    {addon.body}
+                  </p>
                 </div>
               ))}
             </div>

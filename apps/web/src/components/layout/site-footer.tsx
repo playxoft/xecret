@@ -91,10 +91,10 @@ export function SiteFooter({ gradientId }: { gradientId?: string | undefined }) 
           <div className="max-w-sm">
             <Link href="/" aria-label="xecret home" className="inline-flex items-center gap-2.5">
               <LogoMark className="size-9" gradientId={gradientId} />
-              {/* A step up from the header's wordmark (owner's call, 2026-11-04):
-                  the brand column opens the footer's four-column block, and at
-                  `text-lg` the name sat visibly smaller than the 36px mark
-                  beside it. `text-2xl` squares with the mark's cap height. */}
+              {/* A step up (owner's call, 2026-11-04): at `text-lg` the name sat
+                  visibly undersized against the 36px mark. `text-2xl` restores
+                  roughly the header Wordmark's 1.6:1 mark-to-word ratio
+                  (36:24 here, 24:15 there). */}
               <span className="text-fg text-2xl font-semibold tracking-tight">xecret</span>
             </Link>
             <p className="text-fg-muted mt-4 text-sm leading-6">

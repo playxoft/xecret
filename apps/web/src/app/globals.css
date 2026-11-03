@@ -1057,13 +1057,12 @@
   box-shadow: var(--shadow-raised);
 }
 
-/* The chip rides inside the label, so on the selected half it is sitting on
-   `--accent` and its resting `--fg-subtle` would be close to invisible. Held
-   slightly under the label's own colour so it still reads as secondary. */
-.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] .x-save {
-  color: var(--accent-fg);
-  opacity: 0.75;
-}
+/* The saving chip needs no selected-state colour override any more: it is a
+   `--success-tint` pill (page.tsx), so it carries its own background on the
+   `--accent` fill and keeps AA contrast in both halves of the toggle. The rule
+   that used to repaint it `--accent-fg` here would beat the utility classes
+   (this sheet is unlayered) and turn the pill's text grey exactly in the
+   default state — which is how the chip's green once shipped invisible. */
 
 /* The inputs are `sr-only`, so the base `:focus-visible` outline would be drawn
    around a clipped 1px box nobody can see. It is drawn on the label the input

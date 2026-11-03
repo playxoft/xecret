@@ -321,12 +321,27 @@ describe('the honesty rules this page is built on', () => {
 
   it('selects a currency from the request, and charges from the billing country', () => {
     // The header is a *default* and nothing more: every currency is in the
-    // markup and the selector is pure CSS, so a VPN or a traveller costs one
-    // click rather than a wrong price. What anyone is actually charged is
+    // markup and the selector is pure CSS. What anyone is actually charged is
     // decided at checkout from their billing country and the card that pays.
     expect(SOURCE).toContain('CF-IPCountry');
     expect(SOURCE).toContain('CURRENCY_BY_COUNTRY');
-    expect(SOURCE).toContain('never from a header a client can send');
+    expect(SOURCE).toContain('never from this header');
+  });
+
+  it('offers the currency menu on localhost only, and fails closed', () => {
+    // The owner's rule (2026-11-04): the public page states one currency and
+    // offers no switching until multi-currency checkout has been rehearsed.
+    // Each pin below is a way the gate was, or could be, silently lost:
+    // the render no longer conditional, the host check widened, the catch
+    // defaulting open, or the radios left focusable with no visible control —
+    // an invisible arrow-key currency switch on production.
+    expect(SOURCE).toContain('{currencyMenu && (');
+    expect(SOURCE).toContain("name === 'localhost'");
+    expect(SOURCE).toContain("name.endsWith('.localhost')");
+    expect(SOURCE).toContain("name === '127.0.0.1'");
+    expect(SOURCE).toContain("name === '[::1]'");
+    expect(SOURCE).toMatch(/catch \{\s*return false;/);
+    expect(SOURCE).toContain('disabled={!currencyMenu}');
   });
 
   it('falls back to dollars where there is no request', () => {
