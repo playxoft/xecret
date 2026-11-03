@@ -339,7 +339,7 @@ export async function acceptInvitation(
     // against itself: it was already promised when the invitation was issued.
     // Counting it made the last seat an organisation had impossible to fill —
     // promised, and then refused at acceptance for being promised.
-    await assertSeatAvailable(tx, organization, now, invitation.id);
+    await assertSeatAvailable(tx, organization, now, { invitationId: invitation.id });
 
     // `addMember` throws `conflict` when the user already belongs — the
     // two-tabs case — and the invitation is then left open rather than
@@ -476,7 +476,16 @@ export async function joinOrganizationJustInTime(
       return { outcome: 'removed' };
     }
 
-    if (!(await hasFreeSeat(tx, organization, new Date()))) return { outcome: 'no-seat' };
+    // An invitation already open to this person is the seat they are taking,
+    // not one more: it is revoked below once they are in. Counting it refused
+    // somebody invited into the last seat who arrived through single sign-on.
+    const [joiner] = await tx
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, params.userId))
+      .limit(1);
+    const own = joiner === undefined ? {} : { email: joiner.email };
+    if (!(await hasFreeSeat(tx, organization, new Date(), own))) return { outcome: 'no-seat' };
 
     const member = await addMember(tx, {
       orgId: organization.id,
@@ -755,23 +764,37 @@ async function lockOrganization(tx: Executor, orgId: string) {
 }
 
 /**
+ * Open invitations that do not hold a seat against the join being decided,
+ * because they are this join's own: the person joining is the one they were
+ * promised to.
+ */
+interface OwnInvitations {
+  /** The invitation being accepted. */
+  invitationId?: string;
+  /** Every open invitation to this address — the just-in-time join's joiner. */
+  email?: string;
+}
+
+/**
  * Whether one more person fits: seated members plus open invitations, against
  * the organisation's limit. Call it under the organisation lock, or the answer
  * is about an organisation that may already have changed.
  *
- * `accepting` names the invitation whose acceptance is being decided. Its seat
- * was promised when it was issued, and the acceptance turns that promise into
- * a member rather than claiming a second seat — so it is left out of the open
- * invitations counted against it.
+ * `own` names the open invitations that belong to the person joining. Their
+ * seat was promised to this person when they were issued, and joining turns
+ * that promise into a member rather than claiming a second seat — so they are
+ * left out of the count against it. An acceptance names its invitation; the
+ * just-in-time join names the joiner's address, whose open invitations it
+ * revokes once they are in.
  */
 async function hasFreeSeat(
   tx: Executor,
   organization: { id: string; seatLimit: number },
   now: Date,
-  accepting?: string,
+  own: OwnInvitations = {},
 ): Promise<boolean> {
   const seated = await countSeatedMembers(tx, organization.id);
-  const promised = await countOpenInvitations(tx, organization.id, now, accepting);
+  const promised = await countOpenInvitations(tx, organization.id, now, own);
   return seated + promised < organization.seatLimit;
 }
 
@@ -779,9 +802,9 @@ async function assertSeatAvailable(
   tx: Executor,
   organization: { id: string; seatLimit: number },
   now: Date,
-  accepting?: string,
+  own: OwnInvitations = {},
 ): Promise<void> {
-  if (!(await hasFreeSeat(tx, organization, now, accepting))) {
+  if (!(await hasFreeSeat(tx, organization, now, own))) {
     throw new RepositoryError(
       'seatLimit',
       'This organisation has no seats left. Remove a member or revoke an invitation first.',
@@ -801,7 +824,7 @@ async function countOpenInvitations(
   exec: Executor,
   orgId: string,
   now: Date,
-  excluding?: string,
+  own: OwnInvitations = {},
 ): Promise<number> {
   const [row] = await exec
     .select({ value: count() })
@@ -812,7 +835,9 @@ async function countOpenInvitations(
         isNull(invitations.acceptedAt),
         isNull(invitations.revokedAt),
         gt(invitations.expiresAt, now),
-        excluding === undefined ? undefined : ne(invitations.id, excluding),
+        own.invitationId === undefined ? undefined : ne(invitations.id, own.invitationId),
+        // `citext`, so the address compares as the invitation was addressed.
+        own.email === undefined ? undefined : ne(invitations.email, own.email),
       ),
     );
   return row?.value ?? 0;

@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { hashToken } from '@xecret/core/auth';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
-import { acceptInvitation, createInvitation, seatUsage } from './invitations';
+import {
+  acceptInvitation,
+  createInvitation,
+  joinOrganizationJustInTime,
+  seatUsage,
+} from './invitations';
 import { RepositoryError } from './shared';
 
 /**
@@ -105,6 +110,40 @@ describe('filling the last seats through invitations', () => {
     const refused = invite(orgId, ownerId);
     await expect(refused).rejects.toBeInstanceOf(RepositoryError);
     await expect(refused).rejects.toMatchObject({ code: 'seatLimit' });
+  });
+
+  /**
+   * The same rule for the just-in-time join (SSO): somebody invited into the
+   * last seat who then arrives through the organisation's single sign-on takes
+   * the seat they were promised, and their invitation is revoked as they join.
+   */
+  it('admits through single sign-on somebody invited into the last seat, and only them', async () => {
+    const { orgId, ownerId } = await seedOrg(2);
+    await t.pg.query(
+      `update organizations set workos_org_id = $2, workos_client_id = 'client_test', jit_join_enabled = true
+        where id = $1`,
+      [orgId, `org_01T${orgId.replaceAll('-', '').slice(0, 20)}`],
+    );
+    const invited = await invite(orgId, ownerId);
+    const stranger = await seedUser();
+
+    // The one seat left is promised to the invitee: a stranger cannot take it…
+    expect(
+      await joinOrganizationJustInTime(t.db, { orgId, userId: stranger.id, role: 'viewer' }),
+    ).toEqual({ outcome: 'no-seat' });
+
+    // …and the invitee, arriving through SSO instead of the link, can.
+    const joined = await joinOrganizationJustInTime(t.db, {
+      orgId,
+      userId: invited.person.id,
+      role: 'viewer',
+    });
+    expect(joined.outcome).toBe('joined');
+    expect(await seatUsage(t.db, orgId, new Date())).toEqual({
+      members: 2,
+      pendingInvitations: 0,
+      seatLimit: 2,
+    });
   });
 
   it('still refuses an acceptance the seats cannot hold — a limit lowered after the invitation', async () => {
