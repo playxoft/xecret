@@ -14,16 +14,19 @@ import type { SecretIo } from '@/components/envkeys';
 import { readVaultKeys } from '@/components/vault/key-store';
 import type { EnvironmentTarget } from './environment-target';
 import type { SecretListResponse, SecretSummary } from './types';
+import { withOpenedNotes } from './use-opened-notes';
 
 /**
  * The masked listings of the environments being compared alongside this one.
  *
  * ── What it fetches, and what it deliberately does not ──
  * `GET …/secrets` per compared environment: names, versions, timestamps,
- * authors — no ciphertext is read and nothing is decrypted. Putting staging
- * beside dev must not decrypt staging; the values arrive when somebody asks for
- * them, one at a time through the audited reveal, or a whole environment at a
- * time through `loadValues` below — which is what "Reveal all" and "Reveal on
+ * authors and notes — no value's ciphertext is read and no value is decrypted.
+ * (The notes are, in `e2ee` mode: they are labels shown beside every row, and
+ * the listing carries them sealed.) Putting staging beside dev must not decrypt
+ * staging's values; those arrive when somebody asks for them, one at a time
+ * through the audited reveal, or a whole environment at a time through
+ * `loadValues` below — which is what "Reveal all" and "Reveal on
  * hover" call, so those two mean every environment on screen rather than only
  * the one the page is about.
  *
@@ -205,9 +208,21 @@ export function useComparedSecrets(
         ),
         comparedIo({ orgSlug, orgId, projectSlug, envSlug: slug }, controller.signal),
       ])
-        .then(([response, io]) => {
+        .then(async ([response, io]) => {
+          // Before the decryptions, not only after them: a comparison dropped
+          // while its listing was in flight has nothing to open notes for.
           if (controller.signal.aborted) return;
-          const byName = new Map(response.data.map((secret) => [secret.name, secret]));
+          // Each note made readable by that environment's own key, as the
+          // environment on screen does for its own — a compared cell shows and
+          // edits the note too, and in `e2ee` mode the listing carries it only
+          // sealed. Where there is no key, or opening fails, each sealed note
+          // is marked `sealed` rather than shown as absent, and the names and
+          // values are still the comparison.
+          const sealed = withOpenedNotes(response.data, new Map());
+          const listing =
+            io === null ? sealed : await io.openNotes(response.data).catch(() => sealed);
+          if (controller.signal.aborted) return;
+          const byName = new Map(listing.map((secret) => [secret.name, secret]));
           setEntries((current) => ({
             ...current,
             [slug]: {

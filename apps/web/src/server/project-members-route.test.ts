@@ -234,7 +234,7 @@ beforeEach(() => {
       id: ORG_ID,
       name: 'Acme',
       slug: 'acme',
-      seatLimit: 5,
+      seatLimit: 3,
       createdBy: OWNER_USER_ID,
       createdAt: EPOCH,
       updatedAt: EPOCH,

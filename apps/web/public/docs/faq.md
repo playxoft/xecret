@@ -114,8 +114,13 @@ into it.
 
 ### How many people can I add?
 
-As many as your plan allows; the seat count is enforced when an invitation is
-accepted, inside the same transaction as the membership.
+As many as your plan allows — three on Free, counting the people you have
+invited and not yet seen accept; Pro and above do not limit members. The seat
+count is enforced when an invitation is sent and again when it is accepted,
+inside the same transaction as the membership. Every other plan limit works the
+same way and applies from the day it is published: adding one past it is
+refused, naming the plan that allows more, and nothing you already have is
+taken away. See [plan limits](api/reference.md#plan-limits).
 
 ### What is the difference between a CLI token and a service token?
 

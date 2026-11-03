@@ -32,20 +32,19 @@ export const organizations = pgTable(
      * The seat ceiling **invitations are actually refused against**, by
      * `assertSeatAvailable` under the organisation's row lock.
      *
-     * Not the same number as `FREE_LIMITS.seats`, which is 3. This column
-     * predates the plans table, nothing sets it from the plan at provisioning
-     * time, and the default of 5 is therefore what a Free organisation gets.
-     * The gap has narrowed — it was 1 against 5 — and it is still a gap. The
-     * divergence is deliberate and documented at both ends — see the note on
-     * `seats` in `packages/core/src/entitlements/plans.ts` — and it closes when
-     * payments land.
+     * Defaults to Free's 3 (`FREE_LIMITS.seats`, read as `FREE_SEAT_LIMIT`),
+     * which is what an organisation is created with. It defaulted to 5 until
+     * migration 0033, which also brought existing Free organisations down to 3
+     * — except any already seating or promising more, which it left at 5 and
+     * reported. Support raises it; a paid plan with no seat cap writes
+     * `UNCAPPED_SEAT_LIMIT`; a subscription that ends writes 3 back.
      *
      * Two columns rather than one once billing exists: this is what the member
      * service enforces, `org_subscriptions.seats` is what the invoice says, and
      * their failure modes differ. `setBilledSeats` writes the pair in one
      * transaction so nothing can move one without the other.
      */
-    seatLimit: integer('seat_limit').notNull().default(5),
+    seatLimit: integer('seat_limit').notNull().default(3),
     /**
      * The WorkOS Organization this maps to, or null.
      *

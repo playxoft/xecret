@@ -90,6 +90,19 @@ export function readEnvKey(environmentId: string, envDataKeyId: string): EnvKeyM
 }
 
 /**
+ * Every key version this session holds for one environment.
+ *
+ * For a ciphertext that does not name the key it was sealed under: a secret's
+ * note, whose AAD carries no key id, so a note written before a rotation can
+ * only be opened by trying the keys there are. Read it inside a `withEnvKey`
+ * lease — the lease is what keeps a lock from overwriting these arrays while
+ * they are being tried.
+ */
+export function heldEnvKeys(environmentId: string): EnvKeyMaterial[] {
+  return [...held.values()].filter((material) => material.environmentId === environmentId);
+}
+
+/**
  * Takes ownership of freshly opened key material.
  *
  * Ownership as in the vault's store: the arrays are not copied, and the caller

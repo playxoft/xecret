@@ -5,10 +5,12 @@ import {
   listEnvironmentsForOrganization,
   listGrantsForOrganization,
   listMembers,
+  RepositoryError,
   seatUsage,
   setInvitationPublicKey,
 } from '@xecret/db/repositories';
 import { publicOrigin } from '@/server/bindings';
+import { errors } from '@/server/errors';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { invitationMail } from '@/server/invitation-mail';
 import { describeMailFailure, mailerFrom } from '@/server/mail';
@@ -20,6 +22,7 @@ import {
   requireMembership,
   requireSessionPrincipal,
   resolveInvitationGrants,
+  seatsFullMessage,
 } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
@@ -175,7 +178,13 @@ export const POST = authenticatedRoute<Params>(
       role: body.role,
       invitedBy: inviter.user.id,
       ...(initialGrants === undefined ? {} : { initialGrants }),
-    }).catch(mapMembershipError);
+    }).catch((cause: unknown) => {
+      // Out of seats: said with the number and the plan that would hold more.
+      if (cause instanceof RepositoryError && cause.code === 'seatLimit') {
+        throw errors.conflict(seatsFullMessage(scope));
+      }
+      return mapMembershipError(cause);
+    });
 
     // ── The invitation's own keypair ──
     // Recorded after the invitation exists, because the grants that will be

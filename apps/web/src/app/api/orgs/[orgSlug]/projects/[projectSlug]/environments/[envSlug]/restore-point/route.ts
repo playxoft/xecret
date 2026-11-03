@@ -21,6 +21,7 @@ import {
   toRestorePlanPayload,
 } from '@/server/restore-point';
 import type { RestoreItem } from '@/server/restore-point';
+import { secretCapacity } from '@/server/plan-capacity';
 import { authenticatedRoute } from '@/server/route';
 import { restorePointBody, restorePointQuery } from '@/server/schemas/secrets';
 import {
@@ -266,6 +267,22 @@ export const POST = authenticatedRoute<Params>(
           remove: removed.map((item) => item.name),
         },
       }),
+      // A restore re-creates what was deleted since the instant and removes
+      // what was created since; the environment's ceiling weighs the result.
+      capacity: secretCapacity(
+        scope,
+        body.dryRun
+          ? undefined
+          : planRefusal(
+              record,
+              builder,
+              'environment.restored',
+              resource,
+              'secretsPerEnvironment',
+              scope.entitlements.plan,
+              context,
+            ),
+      ),
     });
     const counts = countResults(results, removed.length);
 
