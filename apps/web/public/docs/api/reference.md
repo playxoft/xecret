@@ -209,8 +209,11 @@ the plan that would allow more:
 
 Only live things count: deleting a project or environment, or revoking a token,
 frees its place, and an expired token holds none. Nothing you already have past
-a limit — after a downgrade, say — is deleted, locked or slowed: it stays
-readable and editable, and only adding more is refused. Creating an
+a limit — after a downgrade, say — is deleted: it stays readable and editable,
+and only adding more is refused. The exception is webhooks on a plan that allows
+none, which are kept but paused — they send nothing, and cannot be edited,
+switched back on or tested until the plan allows them (switching one off or
+deleting it always works). Creating an
 organisation past the account's limit, and inviting past the organisation's
 seats, answer **409** `conflict` instead, with the same information in the
 message.

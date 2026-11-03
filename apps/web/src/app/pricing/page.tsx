@@ -1818,7 +1818,7 @@ const FAQ: readonly PricingFaqItem[] = [
   {
     question: 'Do you take a card during pre-alpha?',
     answer:
-      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every paid feature that exists is switched on for every account, and the ones marked "Coming soon" on this page are not built for anybody. We will give notice well before that changes rather than converting anyone silently.',
+      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every organisation starts on Free, and each plan’s limits and features apply as this page shows them; the ones marked "Coming soon" are not built for anybody. Nothing will start charging without notice, and nobody is converted to a paid plan silently.',
     whenPaymentsLive: {
       question: 'How do I pay?',
       answer:
@@ -2805,7 +2805,7 @@ export default async function PricingPage() {
                     which is the same pair the plan cards use.{' '}
                     {paymentsLive
                       ? 'Paid plans are bought from an organisation’s billing page.'
-                      : 'During pre-alpha every feature that exists is available on every account and nothing is billed.'}
+                      : 'During pre-alpha nothing is billed, and each plan’s limits and features apply as the table shows them.'}
                   </caption>
                   <thead className="bg-canvas-inset">
                     <tr className="border-line border-b">

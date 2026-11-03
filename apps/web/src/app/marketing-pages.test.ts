@@ -210,6 +210,8 @@ const NOUNS = {
   serviceTokens: '(service tokens|ci tokens)',
   seats: 'members?',
   auditRetentionDays: 'days of (audit )?history',
+  cliDevicesPerUser: 'cli devices',
+  webhooks: 'webhooks',
 } as const;
 
 describe('every limit stated in prose matches the engine', () => {
@@ -232,6 +234,8 @@ describe('every limit stated in prose matches the engine', () => {
       'environmentsPerProject',
       'secretsPerEnvironment',
       'serviceTokens',
+      'cliDevicesPerUser',
+      'webhooks',
       'auditRetentionDays',
     ],
     faq: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
@@ -293,6 +297,37 @@ describe('every limit stated in prose matches the engine', () => {
    * than hypothetical.
    */
   const ENUMERATES_FREE = ['terms', 'faq', 'features', 'about', '.'] as const;
+
+  /**
+   * `/terms` binds, and every ceiling the server refuses a creation on is one a
+   * customer agreed to — so the Free bullet states all of them, not only the
+   * handful the marketing pages repeat. A ceiling of zero is stated as "no".
+   */
+  it('terms states every ceiling the server enforces on Free', () => {
+    const region = freeRegion(SOURCES.get('terms') ?? '');
+    expect(region).not.toBe('');
+    const free = PLANS.free.limits;
+
+    for (const field of [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'secretsPerEnvironment',
+      'serviceTokens',
+      'seats',
+      'cliDevicesPerUser',
+      'webhooks',
+      'auditRetentionDays',
+    ] as const) {
+      const value = free[field];
+      if (value === null) continue;
+      const stated =
+        value === 0
+          ? new RegExp(`\\bno ${NOUNS[field]}`).test(region.toLowerCase().replace(/\s+/g, ' '))
+          : states(region, value, NOUNS[field]);
+      expect(stated, `terms does not state free.${field} = ${value}`).toBe(true);
+    }
+  });
 
   it('every page that states the free ceilings states the engine ones', () => {
     const free = PLANS.free.limits;
@@ -468,9 +503,19 @@ describe('the add-ons are described the same way everywhere', () => {
     for (const page of ['terms', 'privacy'] as const) {
       const source = SOURCES.get(page) ?? '';
       const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
-      const effective = /const EFFECTIVE = '([\d-]+)'/.exec(source)?.[1];
+      const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
+      // `null` is "on publication": a version whose date is its deploy, which
+      // the source cannot know. It must then say so in §Changes, since it is a
+      // change made without the notice that section otherwise promises.
+      const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
 
       expect(updated, `${page} has no UPDATED date`).toBeDefined();
+      if (onPublication) {
+        expect(source, `${page} takes effect on publication without saying so`).toMatch(
+          /takes effect on publication/,
+        );
+        continue;
+      }
       expect(effective, `${page} has no EFFECTIVE date`).toBeDefined();
       expect(
         Date.parse(effective as string),

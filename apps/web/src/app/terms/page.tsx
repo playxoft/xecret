@@ -32,7 +32,14 @@ const DESCRIPTION =
   'The terms for the hosted xecret service: pre-alpha status, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
 const UPDATED = '2026-11-03';
-const EFFECTIVE = '2026-11-03';
+/**
+ * `null`: this version takes effect on publication — the deploy that ships it —
+ * rather than on a date written beforehand. Its limits apply from the moment it
+ * is live (see §Changes, which says so), and a fixed date the deploy then
+ * passed would have the page claim it bound people before anyone could read it.
+ * A later version with advance notice sets a date again, at or after UPDATED.
+ */
+const EFFECTIVE: string | null = null;
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -73,7 +80,7 @@ function summaryFor(paymentsLive: boolean): readonly string[] {
     'xecret is pre-alpha. No SLA, no warranty, breaking changes, and you should keep your own copy of anything you cannot rebuild.',
     paymentsLive
       ? 'Paid plans are bought by an organisation’s owner, at the checkout of Dodo Payments, our merchant of record. A declined card never stops a build.'
-      : 'No card is collected and nothing is charged. Each plan’s limits apply from the day they are published; nothing starts charging without telling you first.',
+      : 'No card is collected and nothing is charged. Each plan’s limits apply from the publication of this version; nothing starts charging without telling you first.',
     'You are responsible for your account, your PIN and your tokens — including revoking one when a laptop or a CI system goes away.',
     'The server is AGPL-3.0 and the CLI is MIT. Running it yourself is governed by those licences, not by these terms, and we receive nothing from your deployment.',
     paymentsLive
@@ -87,7 +94,7 @@ function billingClauses(paymentsLive: boolean) {
   return {
     opening: paymentsLive
       ? 'Paid plans are bought from an organisation’s billing page, by one of its owners, at the checkout of Dodo Payments. Dodo is the merchant of record: it takes the payment, charges the tax your country requires and issues the invoice, and its own terms apply to the purchase. The prices below are the published ones; the checkout shows the price in your currency before you pay.'
-      : 'While xecret is in pre-alpha no card is collected and nothing is charged. The limits of each plan below apply from the day they are published, and the prices are what they will be at 1.0.',
+      : 'While xecret is in pre-alpha no card is collected and nothing is charged. The limits of each plan below apply from the publication of this version, and the prices are what they will be at 1.0.',
     billing: paymentsLive
       ? 'Paid plans are billed in advance, per member, for the term the owner chooses — monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges — it is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
       : 'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
@@ -247,27 +254,31 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         [
           <>
             <strong className="text-fg font-medium">Free — $0, forever.</strong> 1 organisation, 5
-            projects, 3 members, 3 environments per project, 7 days of audit history, CLI and CI
-            tokens, community support on GitHub.
+            projects, 3 members, 3 environments per project, 250 secrets in each, 10 service tokens,
+            2 CLI devices per member, no webhooks, 7 days of audit history, community support on
+            GitHub.
           </>,
           <>
             <strong className="text-fg font-medium">Pro — $8 per member per month</strong>, or $5
             per member per month billed yearly. 3 organisations, 25 projects, 10 environments per
-            project, 1,000 secrets in each, unlimited members, 50 service tokens, 30 days of audit
-            history, 200,000 secret fetches a month, email support.
+            project, 1,000 secrets in each, unlimited members, 50 service tokens, 5 CLI devices per
+            member, 3 webhooks, 30 days of audit history, 200,000 secret fetches a month, email
+            support.
           </>,
           <>
             <strong className="text-fg font-medium">Team — $19 per member per month</strong>, or $12
             per member per month billed yearly. Everything in Pro, plus 10 organisations, 100
-            projects, 25 environments per project, 5,000 secrets in each, 250 service tokens, 180
-            days of audit history, 1,000,000 secret fetches a month, roles and per-environment
-            access, and priority support with a one-business-day response target.
+            projects, 25 environments per project, 5,000 secrets in each, 250 service tokens, 10 CLI
+            devices per member, 25 webhooks, 180 days of audit history, 1,000,000 secret fetches a
+            month, roles and per-environment access, and priority support with a one-business-day
+            response target.
           </>,
           <>
             <strong className="text-fg font-medium">Enterprise — custom.</strong> Everything in
-            Team, without the organisation, project, environment, secret or token ceilings, plus a
-            year of audit history, invoiced billing, a self-hosting support contract, a named
-            contact, and a contractual SLA. SAML single sign-on is included at this tier.
+            Team, without the organisation, project, environment, secret, token, device or webhook
+            ceilings, plus a year of audit history, invoiced billing, a self-hosting support
+            contract, a named contact, and a contractual SLA. SAML single sign-on is included at
+            this tier.
           </>,
           <>
             <strong className="text-fg font-medium">Add-ons, charged per connection.</strong> SAML
@@ -290,15 +301,20 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           {paymentsLive
             ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way.'
             : ''}{' '}
-          A plan&rsquo;s limits apply from the day they are published, with no notice period: once
-          an organisation is at one, the next project, environment, secret, token, device or member
+          The limits above apply from the publication of this version. Once an organisation is at
+          one, the next project, environment, secret, service token, CLI device, webhook or member
           past it is refused, and the refusal names the plan that would allow it
-          {paymentsLive ? ' — which an owner can move to from the billing page' : ''}. Nothing
-          already there is deleted, locked or slowed by a limit, or by a plan lapsing: an
-          organisation over its plan&rsquo;s limits keeps reading, changing and exporting everything
-          it has, and simply cannot add more until it is under them or on a plan that allows them.
-          The current numbers are on <LegalLink href="/pricing">the pricing page</LegalLink>, and if
-          they ever disagree with this section, this section is the one you agreed to.
+          {paymentsLive ? ' — which an owner can move to from the billing page' : ''}. Reaching a
+          limit, or a plan lapsing, deletes none of the organisation&rsquo;s projects, environments,
+          secrets or tokens: they stay readable and editable, and only adding more is refused. A
+          lower plan does stop two things. On a plan that allows no webhooks, existing webhook
+          endpoints are kept but paused &mdash; they send nothing, and cannot be edited, switched
+          back on or tested until the plan allows them again, though switching one off or deleting
+          it is never refused. And a feature the plan does not include, such as personal overrides
+          or secret templates, keeps working as it was set but cannot be changed or added to, though
+          what was set can always be removed. The current numbers are on{' '}
+          <LegalLink href="/pricing">the pricing page</LegalLink>, and if they ever disagree with
+          this section, this section is the one you agreed to.
         </>,
         clauses.refunds,
       ],
@@ -393,6 +409,12 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       paragraphs: [
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept it, delete your account before then.',
+        <>
+          This version is a change made without that notice. It takes effect on publication, and it
+          replaces the earlier wording that we would give a reasonable window before the Free limits
+          applied: the limits under <LegalLink href="#plans">Plans, prices and billing</LegalLink>{' '}
+          apply from its publication, with no such window.
+        </>,
       ],
     },
     {
@@ -471,7 +493,7 @@ const STRUCTURED_DATA = graph(
     url: CANONICAL,
     description: DESCRIPTION,
     inLanguage: 'en',
-    datePublished: EFFECTIVE,
+    ...(EFFECTIVE === null ? {} : { datePublished: EFFECTIVE }),
     dateModified: UPDATED,
     isPartOf: { '@id': absoluteUrl('/#website') },
     publisher: { '@id': absoluteUrl('/#organization') },

@@ -508,8 +508,9 @@ Past five seconds it fails and rolls back whole; run it again.
   published: projects, environments per project, secrets per environment, service tokens, CLI
   devices per person and webhooks, beside the organisation and seat ceilings that already
   were (`docs/architecture/api.md` §3 lists where). Only creation is refused; nothing already
-  held past a ceiling is deleted, locked or refused a read, and a lapsed subscription changes
-  only what can be added next.
+  held past a ceiling is deleted or refused a read. The terms say exactly what a lower plan does
+  stop: webhook endpoints are paused on a plan that allows none, and a feature the plan lacks
+  keeps working as set but cannot be changed.
 - **No card or invoice UI.** Dodo's customer portal is it.
 - **A subscription ended here after fourteen days on hold is not cancelled at Dodo.** The alert
   says so; a human decides.

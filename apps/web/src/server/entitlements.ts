@@ -56,11 +56,13 @@ import { errors } from './errors';
  * defaults to `FREE_LIMITS.seats` (3) since migration 0033 brought the two
  * together. See the note on `seats` in `packages/core/src/entitlements/plans.ts`.
  *
- * **Only creation is refused.** Nothing here deletes, hides, locks or slows what
- * an organisation already holds past a ceiling — one that downgraded, or that
- * held more before the limits were enforced. Its projects, environments,
+ * **Only creation is refused.** No capacity check deletes, hides, locks or slows
+ * what an organisation already holds past a ceiling — one that downgraded, or
+ * that held more before the limits were enforced. Its projects, environments,
  * secrets and tokens stay readable, editable and usable; the next one is what
- * it cannot add. Owners are not exempt: a limit is the organisation's, not a
+ * it cannot add. (Webhooks at a ceiling of zero are the one pause, and it is
+ * `refuseWhilePaused`'s in `webhooks-service.ts`, not a capacity check's; the
+ * terms state it.) Owners are not exempt: a limit is the organisation's, not a
  * role's. Each refusal is a `403 plan_limit` naming the limit and the cheapest
  * plan above that would allow it, and is audited as `quotaExceeded`.
  *

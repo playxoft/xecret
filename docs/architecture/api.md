@@ -186,7 +186,11 @@ inside the transaction that creates, under a capacity lock (`lockCapacity`), and
 `plan_limit` when the request would pass it. `upgradeTo` is the cheapest plan ranked above the
 organisation's that would hold the request; a refusal is audited as `error` / `quotaExceeded`
 with `limitName`. Owners are exempt from none of it. Nothing an organisation already holds past
-a ceiling is deleted, locked or refused a read or an edit — only the next one is refused.
+a countable ceiling is deleted or refused a read or an edit — only the next one is refused. The
+one ceiling that also pauses what exists is `webhooks` at zero: on a plan that allows none, the
+endpoints are kept but send nothing, and editing, re-enabling or testing one is refused
+(switching one off and deleting it never are). A feature a plan lacks keeps working as it was
+set, but turning it on or changing it asks the plan.
 
 | Ceiling | Refused at |
 |---|---|
