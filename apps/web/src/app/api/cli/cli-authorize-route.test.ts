@@ -169,7 +169,7 @@ function organization(slug: string, over: Record<string, unknown> = {}) {
     id: ORG_ID,
     name: 'An organisation',
     slug,
-    seatLimit: 5,
+    seatLimit: 3,
     workosOrgId: null,
     workosClientId: null,
     ssoRequired: false,

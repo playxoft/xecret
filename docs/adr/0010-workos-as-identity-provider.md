@@ -574,8 +574,9 @@ nothing added for WorkOS, because the browser only navigates there.
   is a different identity holding a linked address, which the linker refuses as a conflict, and
   only a manual database repair undoes it.
 - An account in two organisations that both require SSO cannot sign in at all.
-- The default seat limit is five, and just-in-time membership in an SSO organisation will reach
-  it quickly; the refusal is humane, but somebody has to raise the limit.
+- The default seat limit is Free's three (five when this was written; migration 0033), and
+  just-in-time membership in an SSO organisation will reach it quickly; the refusal is humane,
+  but somebody has to raise the limit.
 
 ### Revisit when
 - Self-hosters ask for a deployment without WorkOS: a second `IdentityProvider`, with its own

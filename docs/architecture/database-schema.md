@@ -225,7 +225,7 @@ CREATE TABLE organizations (
   id            uuid PRIMARY KEY,
   name          text        NOT NULL,
   slug          citext      NOT NULL UNIQUE,
-  seat_limit    integer     NOT NULL DEFAULT 5 CHECK (seat_limit >= 0),
+  seat_limit    integer     NOT NULL DEFAULT 3 CHECK (seat_limit >= 0),  -- 0033; Free's seats (was 5)
   workos_org_id text        UNIQUE,                  -- 0018; set lazily, on enabling SSO
   workos_client_id text,                             -- 0022; the WorkOS environment of the link
   sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; per request, owners exempt
@@ -1003,7 +1003,18 @@ audit_logs — no FKs by design; references are soft
       environments.plaintext_export_disabled / .read_alerts (P19 §9, §7) — additive;
       grants for the new table
 0032  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
+0033  the Free plan seats three: organizations.seat_limit defaults to 3 (was 5), and a
+      backfill moves live Free organisations from 5 to 3 — only those carrying no Dodo
+      ids and no support override whose seated members plus open invitations fit in
+      three; each Free organisation it leaves at 5 is reported as a WARNING. No
+      column, no constraint; order against the build does not matter
 ```
+
+Migration 0033 changes a default and backfills one column, and the build beside it writes 3
+itself wherever it writes a Free ceiling (`FREE_SEAT_LIMIT`, now read from the plan), so it may
+run before or after that build. The only Free ceiling an older build writes is the 5 a lapsing
+paid subscription is returned to, onto a row that carries its Dodo ids — which the backfill
+leaves alone either way.
 
 Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
 build on every whole-row `select()` on `org_subscriptions` names the four new columns — the

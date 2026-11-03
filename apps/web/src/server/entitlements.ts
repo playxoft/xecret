@@ -56,10 +56,10 @@ import { errors } from './errors';
  * still enforced — and only turning something *on* asks the plan again.
  *
  * The seats ceiling is the one to know about, because it is enforced by a
- * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 3,
- * and `organizations.seat_limit` — which `assertSeatAvailable` actually refuses
- * invitations against — defaults to 5. The looser number is what applies. See
- * the note on `seats` in `packages/core/src/entitlements/plans.ts`.
+ * *different* mechanism: `assertSeatAvailable` refuses invitations against
+ * `organizations.seat_limit`, which defaults to `FREE_LIMITS.seats` (3) since
+ * migration 0033 brought the two together. See the note on `seats` in
+ * `packages/core/src/entitlements/plans.ts`.
  *
  * When wiring does happen, the counts these take are pre-addition counts from
  * the repository layer, and `limit.exceeded` should be recorded on the refusal —
