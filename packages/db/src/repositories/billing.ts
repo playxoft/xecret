@@ -22,6 +22,7 @@ import { users } from '../schema/identity';
 import { projects } from '../schema/resources';
 import { invitations, orgMembers, organizations } from '../schema/tenancy';
 import { serviceTokens } from '../schema/tokens';
+import { liveServiceToken } from './capacity';
 import type { Executor, Transaction } from './shared';
 import type { SubscriptionPatch, SubscriptionRecord } from './subscriptions';
 
@@ -1457,8 +1458,10 @@ export async function billingCounts(
           and ${invitations.expiresAt} > ${now})`,
       projects: sql<number>`(select count(*)::int from ${projects}
         where ${projects.orgId} = ${orgId} and ${projects.deletedAt} is null)`,
+      // Live tokens only — the count the `serviceTokens` ceiling refuses at
+      // (`countLiveServiceTokens`), so a warning and a refusal agree.
       serviceTokens: sql<number>`(select count(*)::int from ${serviceTokens}
-        where ${serviceTokens.orgId} = ${orgId} and ${serviceTokens.revokedAt} is null)`,
+        where ${serviceTokens.orgId} = ${orgId} and ${liveServiceToken()})`,
     })
     .from(organizations)
     .where(eq(organizations.id, orgId))
