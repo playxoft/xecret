@@ -96,6 +96,10 @@ const tokenRoute = await import('@/app/api/orgs/[orgSlug]/tokens/[kind]/[tokenId
 const cliAuthorizeRoute = await import('@/app/api/cli/authorize/route');
 const cliTokenRoute = await import('@/app/api/cli/token/route');
 const membersRoute = await import('@/app/api/orgs/[orgSlug]/members/route');
+const promoteRoute =
+  await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/promote/route');
+const restorePointRoute =
+  await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/restore-point/route');
 const { createCliAuthCode } = await import('@xecret/db/repositories');
 
 let t: TestDatabase;
@@ -310,17 +314,27 @@ async function seedEnv(org: Org, projectId: string, slug: string): Promise<Env> 
   return { id, keyId, slug };
 }
 
-/** `count` live secrets, each with a first version, named `BULK_1`… after `prefix`. */
-async function seedSecrets(org: Org, env: Env, count: number, prefix = 'BULK_'): Promise<void> {
+/**
+ * `count` live secrets, each with a first version, named `BULK_1`… after
+ * `prefix` — written at `at` (now unless said), so a point-in-time restore has
+ * a past to restore to.
+ */
+async function seedSecrets(
+  org: Org,
+  env: Env,
+  count: number,
+  prefix = 'BULK_',
+  at: Date = new Date(),
+): Promise<void> {
   await t.pg.query(
     `with created as (
-       insert into secrets (id, environment_id, name, created_by)
-       select gen_random_uuid(), $1, $2 || g, $3 from generate_series(1, $4::int) g
+       insert into secrets (id, environment_id, name, created_by, created_at, updated_at)
+       select gen_random_uuid(), $1, $2 || g, $3, $8, $8 from generate_series(1, $4::int) g
        returning id
      )
      insert into secret_versions
-       (id, secret_id, version, ciphertext, env_data_key_id, client_algorithm, value_hmac, created_by)
-     select gen_random_uuid(), created.id, 1, $5, $6, 'xk2.gcm', $7, $3 from created`,
+       (id, secret_id, version, ciphertext, env_data_key_id, client_algorithm, value_hmac, created_by, created_at)
+     select gen_random_uuid(), created.id, 1, $5, $6, 'xk2.gcm', $7, $3, $8 from created`,
     [
       env.id,
       prefix,
@@ -329,7 +343,15 @@ async function seedSecrets(org: Org, env: Env, count: number, prefix = 'BULK_'):
       new TextEncoder().encode(blob('seeded')),
       env.keyId,
       new Uint8Array(32),
+      at,
     ],
+  );
+}
+
+async function setPlan(org: Org, plan: 'pro' | 'team' | 'enterprise'): Promise<void> {
+  await t.pg.query(
+    `update org_subscriptions set plan = $2, billing_interval = 'monthly' where org_id = $1`,
+    [org.orgId, plan],
   );
 }
 
@@ -591,10 +613,14 @@ function expectPlanLimit(answer: Answer, resource: string, limit: number): void 
 
 /** The audit record of a refused creation: an `error`, `quotaExceeded`, naming the limit. */
 function expectRefusalFiled(action: string, limitName: string): void {
+  expectRefusalFiledFor(action, limitName, 'free');
+}
+
+function expectRefusalFiledFor(action: string, limitName: string, plan: string): void {
   expect(audit.filter((event) => event.action === action)).toEqual([
     expect.objectContaining({
       outcome: 'error',
-      metadata: expect.objectContaining({ reason: 'quotaExceeded', limitName, plan: 'free' }),
+      metadata: expect.objectContaining({ reason: 'quotaExceeded', limitName, plan }),
     }),
   ]);
 }
@@ -751,6 +777,20 @@ describe('secrets per environment — Free allows 250', () => {
 
     expect(answer.status).toBe(201);
     expect(answer.body.secret?.name).toBe('LAST_ONE');
+  });
+
+  it('answers a name that is already taken as the 409 it is, even at the limit', async () => {
+    const { org, env } = await environmentHolding(FREE.secretsPerEnvironment!);
+
+    const answer = await createSecret(org, env, 'BULK_1');
+
+    // Refused for the name, not the plan: with room to spare it would still fail.
+    expect(answer.status).toBe(409);
+    expect(answer.body.error?.code).toBe('conflict');
+    expect(answer.body.error?.message).toMatch(/already exists/);
+    expect(
+      audit.filter((event) => event.action === 'secret.created' && event.outcome === 'error'),
+    ).toEqual([]);
   });
 
   it('weighs an import whole: refused when its new names would pass the limit, nothing written', async () => {
@@ -930,6 +970,8 @@ describe('CLI devices per person — Free allows two', () => {
 
     expectPlanLimit(answer, 'cliDevicesPerUser', 2);
     expect(answer.body.error?.message).toContain('allows 2 CLI devices per person');
+    // The way forward short of upgrading, where the person can take it.
+    expect(answer.body.error?.message).toContain('Revoke a device you no longer use');
     expect(answer.body.code).toBeUndefined();
     expectRefusalFiled('token.authorized', 'cliDevicesPerUser');
   });
@@ -941,6 +983,7 @@ describe('CLI devices per person — Free allows two', () => {
     const answer = await exchangeDevice(org, org.owner);
 
     expectPlanLimit(answer, 'cliDevicesPerUser', 2);
+    expect(answer.body.error?.message).toContain('`xecret logout`');
     expect(answer.body.token).toBeUndefined();
     expectRefusalFiled('token.created', 'cliDevicesPerUser');
     expect(await countRows(`cli_tokens where org_id = $1`, [org.orgId])).toBe(2);
@@ -1059,5 +1102,142 @@ describe('seats — Free seats three', () => {
 
     expect((await invite(org)).status).toBe(409);
     expect(await countRows(`org_members where org_id = $1`, [org.orgId])).toBe(5);
+  });
+});
+
+/* ── a paid ceiling, and none ─────────────────────────────────────────────── */
+
+describe('secrets per environment on Pro — 1,000, through promotion and restore', () => {
+  const PRO = PLANS.pro.limits;
+  const entryFor = (env: Env, name: string, id: string = randomUUID()) => ({
+    id,
+    name,
+    expectedVersion: 1,
+    value: {
+      ciphertext: blob(name),
+      clientAlgorithm: 'xk2.gcm',
+      envDataKeyId: env.keyId,
+      valueHmac: HMAC,
+    },
+  });
+
+  function expectProLimit(answer: Answer): void {
+    expect(answer.status).toBe(403);
+    expect(answer.body.error?.code).toBe('plan_limit');
+    expect(answer.body.error?.plan).toMatchObject({
+      resource: 'secretsPerEnvironment',
+      limit: PRO.secretsPerEnvironment,
+      plan: 'pro',
+      upgradeTo: 'team',
+    });
+  }
+
+  async function proProject() {
+    const org = await seedOrg();
+    await setPlan(org, 'pro');
+    const project = await seedProject(org);
+    const staging = await seedEnv(org, project, 'staging');
+    const production = await seedEnv(org, project, 'production');
+    return { org, staging, production };
+  }
+
+  const promote = (org: Org, target: Env, body: unknown) =>
+    call(
+      promoteRoute.POST,
+      'POST',
+      envPath(org, target.slug, '/promote'),
+      envParams(org, target.slug),
+      body,
+    );
+
+  it('refuses a promotion that would carry the target past its ceiling, writing nothing', async () => {
+    const { org, staging, production } = await proProject();
+    await seedSecrets(org, staging, 1, 'NEW_');
+    await seedSecrets(org, production, PRO.secretsPerEnvironment!);
+
+    const answer = await promote(org, production, {
+      source: 'staging',
+      writes: [entryFor(production, 'NEW_1')],
+      dryRun: false,
+    });
+
+    expectProLimit(answer);
+    expectRefusalFiledFor('environment.promoted', 'secretsPerEnvironment', 'pro');
+    expect(await countRows(`secrets where environment_id = $1`, [production.id])).toBe(1000);
+  });
+
+  it('lets one that removes as many as it creates through — weighed after its own removals', async () => {
+    const { org, staging, production } = await proProject();
+    await seedSecrets(org, staging, 1, 'NEW_');
+    await seedSecrets(org, production, PRO.secretsPerEnvironment!);
+
+    const answer = await promote(org, production, {
+      source: 'staging',
+      writes: [entryFor(production, 'NEW_1')],
+      removals: ['BULK_1'],
+      dryRun: false,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(
+      await countRows(`secrets where environment_id = $1 and deleted_at is null`, [production.id]),
+    ).toBe(1000);
+  });
+
+  /**
+   * A restore re-creates what was deleted since the instant: an environment
+   * that held 1,001 then and holds 1,000 now cannot be put back on Pro.
+   */
+  it('refuses a restore that would re-create past the ceiling, and allows it beneath', async () => {
+    const restoreTo = async (org: Org, env: Env) => {
+      const at = new Date(Date.now() - 60 * 60_000);
+      return call(
+        restorePointRoute.POST,
+        'POST',
+        envPath(org, env.slug, '/restore-point'),
+        envParams(org, env.slug),
+        { at: at.toISOString(), writes: [entryFor(env, 'GONE_1')], dryRun: false },
+      );
+    };
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+    const seedHistory = async (org: Org, env: Env, live: number) => {
+      await seedSecrets(org, env, live, 'BULK_', twoHoursAgo);
+      // Live at the instant, deleted half an hour ago.
+      await seedSecrets(org, env, 1, 'GONE_', twoHoursAgo);
+      await t.pg.query(
+        `update secrets set deleted_at = now() - interval '30 minutes'
+          where environment_id = $1 and name = 'GONE_1'`,
+        [env.id],
+      );
+    };
+
+    const full = await proProject();
+    await seedHistory(full.org, full.production, PRO.secretsPerEnvironment!);
+    const refused = await restoreTo(full.org, full.production);
+    expectProLimit(refused);
+    expectRefusalFiledFor('environment.restored', 'secretsPerEnvironment', 'pro');
+
+    audit = [];
+    const roomy = await proProject();
+    await seedHistory(roomy.org, roomy.production, PRO.secretsPerEnvironment! - 1);
+    const restored = await restoreTo(roomy.org, roomy.production);
+    expect(restored.status).toBe(200);
+    expect(
+      await countRows(`secrets where environment_id = $1 and deleted_at is null`, [
+        roomy.production.id,
+      ]),
+    ).toBe(1000);
+  });
+});
+
+describe('a plan with no ceiling', () => {
+  it('creates past every number Free and Pro publish, on Enterprise', async () => {
+    const org = await seedOrg();
+    await setPlan(org, 'enterprise');
+    await seedProjects(org, 120);
+
+    const answer = await createProject(org, 'one-more');
+
+    expect(answer.status).toBe(201);
   });
 });

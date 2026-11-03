@@ -4,6 +4,7 @@ import { AuthorizationError } from '@xecret/core/authz';
 import { slugReferenceSchema } from '@xecret/core/validation';
 import { countLiveCliDevices, createCliAuthCode } from '@xecret/db/repositories';
 import { requireCapacity } from '@/server/entitlements';
+import { CLI_DEVICE_REMEDY } from '@/server/plan-capacity';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -125,16 +126,18 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     scope.entitlements,
     'cliDevicesPerUser',
     await countLiveCliDevices(services.db, orgId, principal.user.id),
-    1,
-    planRefusal(
-      record,
-      audit(orgId),
-      'token.authorized',
-      { type: 'token', id: null },
-      'cliDevicesPerUser',
-      scope.entitlements.plan,
-      { deviceName: body.deviceName, source: 'dashboard' },
-    ),
+    {
+      refused: planRefusal(
+        record,
+        audit(orgId),
+        'token.authorized',
+        { type: 'token', id: null },
+        'cliDevicesPerUser',
+        scope.entitlements.plan,
+        { deviceName: body.deviceName, source: 'dashboard' },
+      ),
+      remedy: CLI_DEVICE_REMEDY,
+    },
   );
 
   // How this session signed in rides on the approval and then on the token, so

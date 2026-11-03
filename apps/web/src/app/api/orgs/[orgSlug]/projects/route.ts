@@ -186,13 +186,10 @@ export const POST = authenticatedRoute<Params>(
         scope.entitlements.plan,
         { projectSlug: slug },
       );
-    requireCapacity(
-      scope.entitlements,
-      'environmentsPerProject',
-      0,
-      DEFAULT_ENVIRONMENTS.length,
-      refused('environmentsPerProject'),
-    );
+    requireCapacity(scope.entitlements, 'environmentsPerProject', 0, {
+      adding: DEFAULT_ENVIRONMENTS.length,
+      refused: refused('environmentsPerProject'),
+    });
 
     /**
      * One transaction for the project and its environments.

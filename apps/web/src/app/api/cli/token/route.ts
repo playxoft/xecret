@@ -18,7 +18,7 @@ import { DatabaseAuditSink } from '@/server/audit-sink';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import { describeError } from '@/server/logging';
-import { withinCapacity } from '@/server/plan-capacity';
+import { CLI_DEVICE_REMEDY, withinCapacity } from '@/server/plan-capacity';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute, publicRoute } from '@/server/route';
 import type { ServiceContext } from '@/server/context';
@@ -30,9 +30,15 @@ import type { ServiceContext } from '@/server/context';
  * `POST` is a `publicRoute` because the caller has no xecret credential yet —
  * what it holds is the one-time code the consent screen produced and the PKCE
  * verifier that never left its process. Both are required, the code is
- * consumed atomically before anything else is looked at, and every failure
- * after the rate limit is the same fixed 401: telling a caller *which* half of
+ * consumed atomically before anything else is looked at, and every failure of
+ * the handshake itself is the same fixed 401: telling a caller *which* half of
  * a stolen handshake was wrong is a gift (see `errors.ts`).
+ *
+ * One refusal comes after a handshake that succeeded, and it is not a 401: the
+ * plan's `cliDevicesPerUser` ceiling, a `403 plan_limit` naming the limit and
+ * what to do about it. It can only reach somebody who held both halves — the
+ * code and the verifier — so it tells a thief nothing, and the code is already
+ * spent: the person revokes a device and runs `xecret login` again.
  *
  * The minted token is returned exactly once. Only its hash is stored, and no
  * listing anywhere returns it — the same rule as every other credential.
@@ -130,6 +136,7 @@ export const POST = publicRoute(async ({ request, services }) => {
               }),
             ]),
           ),
+        remedy: CLI_DEVICE_REMEDY,
       },
     );
 

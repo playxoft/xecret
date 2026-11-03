@@ -167,19 +167,46 @@ export function requireAddon(
  * nothing; it is a support conversation, and the caller may surface it.
  *
  * `refused`, when given, runs first — for the audit record of the attempt, as
- * on `requireFeature`.
+ * on `requireFeature`. `remedy`, when given, is a sentence appended to the
+ * refusal naming what the person can do short of upgrading — revoke an old
+ * device, say — for a ceiling where that is the likelier way forward.
  */
 export function requireCapacity(
   entitlements: Entitlements,
   resource: LimitedResource,
   current: number,
-  adding = 1,
-  refused?: () => void,
+  options: CapacityOptions = {},
 ): void {
-  const verdict = checkLimit(entitlements, resource, current, adding);
+  const verdict = checkLimit(entitlements, resource, current, options.adding ?? 1);
   if (verdict.kind !== 'exceeded') return;
-  refused?.();
-  toApiError(limitError(entitlements, resource, verdict));
+  options.refused?.();
+  const detail = limitError(entitlements, resource, verdict);
+  toApiError(
+    options.remedy === undefined
+      ? detail
+      : { ...detail, message: `${detail.message} ${options.remedy}` },
+  );
+}
+
+/** How a capacity check is asked. See `requireCapacity`. */
+export interface CapacityOptions {
+  /** How many the request adds. One unless a single request creates several. */
+  adding?: number | undefined;
+  /** Records the refusal, before it is thrown. */
+  refused?: (() => void) | undefined;
+  /** A sentence naming the way forward, appended to the refusal. */
+  remedy?: string | undefined;
+}
+
+/**
+ * Whether a ceiling on `resource` exists for this organisation at all.
+ *
+ * `null` is unlimited for billing — only a fair-use ceiling applies, and it
+ * warns rather than refuses — so a check can never refuse, and a creation need
+ * not be serialised behind a capacity lock to find that out.
+ */
+export function hasCeiling(entitlements: Entitlements, resource: LimitedResource): boolean {
+  return entitlements.limits[resource] !== null;
 }
 
 /**

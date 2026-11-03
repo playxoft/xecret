@@ -1,7 +1,10 @@
+import { checkLimit } from '@xecret/core/entitlements';
 import type { Entitlements, LimitedResource } from '@xecret/core/entitlements';
 import { countSecrets, lockCapacity } from '@xecret/db/repositories';
 import type { CapacityScope, Executor } from '@xecret/db/repositories';
-import { requireCapacity } from './entitlements';
+import { hasCeiling, requireCapacity } from './entitlements';
+import type { CapacityOptions } from './entitlements';
+import { errors } from './errors';
 import type { SecretCapacity } from './secrets-service';
 import type { EnvironmentScope } from './tenancy';
 
@@ -19,12 +22,25 @@ import type { EnvironmentScope } from './tenancy';
  */
 
 /**
+ * What somebody at the CLI-device ceiling can do short of upgrading, said where
+ * the refusal reaches them — the consent screen and `xecret login`. Each login
+ * is a device, so an old laptop or a login this machine replaced is usually
+ * what is holding the place.
+ */
+export const CLI_DEVICE_REMEDY =
+  'Revoke a device you no longer use — on the Tokens page of this organisation in the ' +
+  'dashboard, or by running `xecret logout` on it — then log in again.';
+
+/**
  * Lock `scopeId` for `resource`, count, and refuse unless `adding` more fit.
  *
- * Returns the count it decided from. Call it as the first statement of the
- * transaction that creates — before any row lock or write — so the lock it
- * takes can never be waited on by something holding a row this transaction
- * needs (see `lockCapacity`).
+ * Call it as the first statement of the transaction that creates — before any
+ * row lock or write — so the lock it takes can never be waited on by something
+ * holding a row this transaction needs (see `lockCapacity`).
+ *
+ * Where the organisation has no ceiling on `resource` (Enterprise, or a support
+ * override to unlimited) it returns at once: no refusal is possible, so there is
+ * nothing to count and no reason to serialise its creations behind each other.
  */
 export async function withinCapacity(
   tx: Executor,
@@ -32,12 +48,11 @@ export async function withinCapacity(
   resource: CapacityScope & LimitedResource,
   scopeId: string,
   count: (exec: Executor) => Promise<number>,
-  options: { adding?: number; refused?: (() => void) | undefined } = {},
-): Promise<number> {
+  options: CapacityOptions = {},
+): Promise<void> {
+  if (!hasCeiling(entitlements, resource)) return;
   await lockCapacity(tx, resource, scopeId);
-  const current = await count(tx);
-  requireCapacity(entitlements, resource, current, options.adding ?? 1, options.refused);
-  return current;
+  requireCapacity(entitlements, resource, await count(tx), options);
 }
 
 /**
@@ -54,18 +69,43 @@ export async function withinCapacity(
  * removed. One that creates is weighed whole, against what the environment
  * will hold once the batch's own removals are applied.
  *
+ * A create whose name a live secret already holds is answered as the `409` it
+ * is — "already exists" — even at the ceiling: the request would be refused
+ * with room to spare, and a 403 naming the plan would send the person to
+ * upgrade for a write that would still fail.
+ *
  * `refused` records the attempt (`planRefusal`); a dry run passes none, as a
- * preview is not audited.
+ * preview is not audited. An environment with no ceiling (Enterprise) is
+ * neither counted nor locked.
  */
 export function secretCapacity(scope: EnvironmentScope, refused?: () => void): SecretCapacity {
   return async (exec, change) => {
-    if (change.creates <= 0) return;
+    if (change.creates <= 0 || !hasCeiling(scope.entitlements, 'secretsPerEnvironment')) return;
     if (change.inTransaction) {
       await lockCapacity(exec, 'secretsPerEnvironment', scope.environment.id);
     }
-    const current = await countSecrets(exec, scope.organization.id, scope.environment.id, {
-      excluding: change.removals,
+    const orgId = scope.organization.id;
+    const environmentId = scope.environment.id;
+    const current = await countSecrets(exec, orgId, environmentId, { excluding: change.removals });
+
+    const verdict = checkLimit(
+      scope.entitlements,
+      'secretsPerEnvironment',
+      current,
+      change.creates,
+    );
+    if (verdict.kind === 'exceeded') {
+      const taken = await countSecrets(exec, orgId, environmentId, {
+        excluding: change.removals,
+        named: change.names,
+      });
+      if (taken > 0) {
+        throw errors.conflict('A secret with that name already exists in this environment.');
+      }
+    }
+    requireCapacity(scope.entitlements, 'secretsPerEnvironment', current, {
+      adding: change.creates,
+      refused,
     });
-    requireCapacity(scope.entitlements, 'secretsPerEnvironment', current, change.creates, refused);
   };
 }

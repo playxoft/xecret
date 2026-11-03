@@ -206,6 +206,8 @@ export interface SecretWriteResult {
  */
 export interface SecretCapacityChange {
   creates: number;
+  /** The names those creates take — so a name already taken can be told apart from a full environment. */
+  names: readonly string[];
   removals: readonly string[];
   /**
    * Whether the executor is the write's own transaction. A dry run counts
@@ -383,11 +385,7 @@ export async function applySecretWrites(
     // plan's ceiling is still asked, so a preview says what the write would
     // refuse.
     if (batch.dryRun === true) {
-      await batch.capacity(services.db, {
-        creates: countCreates(prepared),
-        removals: [],
-        inTransaction: false,
-      });
+      await checkCapacity(batch.capacity, services.db, prepared, [], false);
       return results;
     }
 
@@ -581,11 +579,7 @@ export async function applyClientSecretWrites(
   const results = prepared.map(toClientWriteResult);
   if (batch.dryRun === true) {
     await batch.guard?.(services.db);
-    await batch.capacity(services.db, {
-      creates: countCreates(prepared),
-      removals,
-      inTransaction: false,
-    });
+    await checkCapacity(batch.capacity, services.db, prepared, removals, false);
     return results;
   }
 
@@ -825,11 +819,7 @@ async function commitClientWrites(
       // Then the plan's ceiling, under its own lock and before any row is
       // touched, weighing what the environment will hold once the removals
       // below are applied. See `SecretCapacity`.
-      await checks.capacity(tx, {
-        creates: countCreates(writes),
-        removals,
-        inTransaction: true,
-      });
+      await checkCapacity(checks.capacity, tx, writes, removals, true);
 
       // Removals first, so a name a removal frees is free for a create in the
       // same transaction.
@@ -1131,9 +1121,25 @@ function isPendingWrite(write: PreparedWrite): write is PendingWrite {
   return write.kind !== 'unchanged' && write.encrypted !== undefined;
 }
 
-/** How many of a batch's prepared writes create a secret rather than append to one. */
-function countCreates(writes: readonly { kind: string }[]): number {
-  return writes.filter((write) => write.kind === 'create').length;
+/**
+ * Runs the plan's ceiling for the writes of a batch that create a secret.
+ *
+ * Nothing created, nothing asked. A batch that would create with no check to
+ * run is a wiring fault — every route that can create passes one, and the
+ * types require it — and it is refused as a 500 rather than let past the
+ * ceiling: failing closed is the only safe reading of a missing limit check.
+ */
+async function checkCapacity(
+  capacity: SecretCapacity | undefined,
+  exec: Executor,
+  writes: readonly { kind: string; name: string }[],
+  removals: readonly string[],
+  inTransaction: boolean,
+): Promise<void> {
+  const names = writes.filter((write) => write.kind === 'create').map((write) => write.name);
+  if (names.length === 0) return;
+  if (capacity === undefined) throw errors.internal('secret create without a capacity check');
+  await capacity(exec, { creates: names.length, names, removals, inTransaction });
 }
 
 function toWriteResult(write: PreparedWrite): SecretWriteResult {
@@ -1285,17 +1291,12 @@ async function commitWrites(
   retypes: readonly UnchangedWrite[] = [],
   capacity?: SecretCapacity,
 ): Promise<void> {
-  const creates = countCreates(writes);
   try {
     await services.db.transaction(async (tx) => {
       // The plan's ceiling first, under its lock, before any row is touched.
       // Optional only for the restore of an earlier version, which appends and
-      // can never create; a write that would create without the check is a
-      // wiring fault, refused rather than let past the ceiling.
-      if (creates > 0) {
-        if (capacity === undefined) throw errors.internal('secret create without a capacity check');
-        await capacity(tx, { creates, removals: [], inTransaction: true });
-      }
+      // can never create — see `checkCapacity`.
+      await checkCapacity(capacity, tx, writes, [], true);
 
       for (const write of writes) {
         const payload = {

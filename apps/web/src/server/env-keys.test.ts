@@ -1476,6 +1476,33 @@ describe('the client write path', () => {
     expect(error.code).toBe('unavailable');
   });
 
+  it('refuses a create that arrives without its capacity hook, as a fault, writing nothing', async () => {
+    for (const dryRun of [false, true]) {
+      const error = await rejection(() =>
+        applyClientSecretWrites(scope(), services(), {
+          writer: { userId: OWNER_ID },
+          capacity: undefined as unknown as SecretCapacity,
+          dryRun,
+          writes: [
+            {
+              name: 'DATABASE_URL',
+              secretId: NEW_SECRET_ID,
+              expectedVersion: 1,
+              value: {
+                ciphertext: CIPHERTEXT,
+                clientAlgorithm: 'xk2.gcm',
+                envDataKeyId: KEY_ID,
+                valueHmac: HMAC_A,
+              },
+            },
+          ],
+        }),
+      );
+      expect(error.code).toBe('internal_error');
+    }
+    expect(repository.createSecret).not.toHaveBeenCalled();
+  });
+
   it('does not read the key state for an empty batch', async () => {
     await expect(
       applyClientSecretWrites(scope(), services(), {

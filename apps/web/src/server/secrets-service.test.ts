@@ -743,6 +743,76 @@ describe('dry run', () => {
   });
 });
 
+/**
+ * The plan's `secretsPerEnvironment` ceiling reaches this module as a hook the
+ * route supplies (`secretCapacity`). Every route passes one and the types
+ * require it; a write that would create without one is a wiring fault, and it
+ * fails closed — a 500, nothing written — rather than passing the ceiling by.
+ */
+describe('the capacity hook', () => {
+  const missing = undefined as unknown as SecretCapacity;
+
+  it('refuses a create that arrives without one, as a fault, writing nothing', async () => {
+    const h = await harness();
+
+    for (const dryRun of [false, true]) {
+      const error = await rejection(() =>
+        applySecretWrites(h.scope, h.services, {
+          writer: { userId: USER_ID },
+          capacity: missing,
+          dryRun,
+          writes: [{ name: 'NEW_ONE', value: 'a' }],
+        }),
+      );
+      expect(error.code).toBe('internal_error');
+    }
+    expect(repository.createSecret).not.toHaveBeenCalled();
+  });
+
+  it('is asked with the batch’s creates, by name, inside the write and before it', async () => {
+    const h = await harness();
+    const asked: unknown[] = [];
+    const capacity: SecretCapacity = async (_exec, change) => {
+      asked.push(change);
+      expect(repository.createSecret).not.toHaveBeenCalled();
+    };
+
+    await applySecretWrites(h.scope, h.services, {
+      writer: { userId: USER_ID },
+      capacity,
+      writes: [
+        { name: 'NEW_ONE', value: 'a' },
+        {
+          name: 'CHANGED',
+          value: 'b',
+          existing: { secretId: SECRET_S, version: 1, valueHmac: null },
+        },
+      ],
+    });
+
+    expect(asked).toEqual([{ creates: 1, names: ['NEW_ONE'], removals: [], inTransaction: true }]);
+    expect(repository.createSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not asked, and not needed, by a batch that creates nothing', async () => {
+    const h = await harness();
+
+    await applySecretWrites(h.scope, h.services, {
+      writer: { userId: USER_ID },
+      capacity: missing,
+      writes: [
+        {
+          name: 'CHANGED',
+          value: 'b',
+          existing: { secretId: SECRET_S, version: 1, valueHmac: null },
+        },
+      ],
+    });
+
+    expect(repository.addSecretVersion).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('response headers', () => {
   // The reveal route relies on this rather than setting the header itself, so
   // the reliance is asserted rather than assumed.
