@@ -232,6 +232,13 @@
       "when": 1788900000000,
       "tag": "0032_read_sightings",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789000000000,
+      "tag": "0033_free_seat_limit",
+      "breakpoints": true
     }
   ]
 }

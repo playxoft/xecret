@@ -38,6 +38,9 @@ const repository = vi.hoisted(() => ({
   findOrganizationBySlugWithEntitlements: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   createCliAuthCode: vi.fn(),
+  // The plan's CLI-device ceiling: none of these approvals is near it.
+  // Enforcement itself is `plan-limits-routes.test.ts`'s, against a real database.
+  countLiveCliDevices: vi.fn(async () => 0),
 }));
 
 const rateLimit = vi.hoisted(() => ({ enforce: vi.fn() }));
@@ -169,7 +172,7 @@ function organization(slug: string, over: Record<string, unknown> = {}) {
     id: ORG_ID,
     name: 'An organisation',
     slug,
-    seatLimit: 5,
+    seatLimit: 3,
     workosOrgId: null,
     workosClientId: null,
     ssoRequired: false,

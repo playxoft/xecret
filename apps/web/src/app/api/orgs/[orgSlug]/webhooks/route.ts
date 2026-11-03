@@ -1,12 +1,11 @@
 import { auditingDenials } from '@xecret/core/authz';
-import { checkLimit } from '@xecret/core/entitlements';
 import { uuidv7 } from '@xecret/core/ids';
 import { checkWebhookUrl, generateWebhookSecret } from '@xecret/core/webhooks';
 import { countWebhooks, createWebhook, listWebhooks } from '@xecret/db/repositories';
 import { actingUserId, actorId } from '@/server/actor';
-import { requireCapacity } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
+import { withinCapacity } from '@/server/plan-capacity';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { endpointHostOf, toWebhookPayload, webhookCreateSchema } from '@/server/schemas/webhooks';
@@ -90,15 +89,6 @@ export const POST = authenticatedRoute<Params>(
     const body = await parseJsonBody(request, webhookCreateSchema);
     const endpointHost = endpointHostOf(body.url);
 
-    const used = await countWebhooks(services.db, orgId);
-    if (checkLimit(scope.entitlements, 'webhooks', used).kind === 'exceeded') {
-      planRefusal(record, builder, 'webhook.created', null, 'webhooks', scope.entitlements.plan, {
-        endpointHost,
-        eventTypes: body.eventTypes,
-      })();
-    }
-    requireCapacity(scope.entitlements, 'webhooks', used);
-
     const check = checkWebhookUrl(body.url);
     if (!check.valid) {
       throw errors.validation([{ field: 'url', message: check.message ?? 'Invalid URL.' }]);
@@ -106,14 +96,41 @@ export const POST = authenticatedRoute<Params>(
 
     const id = uuidv7();
     const secret = generateWebhookSecret();
-    const webhook = await createWebhook(services.db, {
-      id,
-      orgId,
-      url: body.url,
-      description: body.description ?? null,
-      eventTypes: body.eventTypes,
-      secret: await sealWebhookSecret(services, orgId, id, secret),
-      createdBy: actingUserId(principal),
+    // Sealed before the transaction, so no cryptography runs while it is open.
+    const sealed = await sealWebhookSecret(services, orgId, id, secret);
+
+    // The plan's `webhooks` count, under the organisation's capacity lock and
+    // inside the transaction that adds — so two concurrent requests cannot both
+    // take the last place. Endpoints already past it (a downgrade) are kept.
+    const webhook = await services.db.transaction(async (tx) => {
+      await withinCapacity(
+        tx,
+        scope.entitlements,
+        'webhooks',
+        orgId,
+        (exec) => countWebhooks(exec, orgId),
+        {
+          refused: planRefusal(
+            record,
+            builder,
+            'webhook.created',
+            null,
+            'webhooks',
+            scope.entitlements.plan,
+            { endpointHost, eventTypes: body.eventTypes },
+          ),
+        },
+      );
+
+      return createWebhook(tx, {
+        id,
+        orgId,
+        url: body.url,
+        description: body.description ?? null,
+        eventTypes: body.eventTypes,
+        secret: sealed,
+        createdBy: actingUserId(principal),
+      });
     });
 
     record(

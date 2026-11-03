@@ -10,6 +10,7 @@ export {
   hasAddon,
   hasFeature,
   checkLimit,
+  describeLimit,
   limitError,
   meteredUnitsOwed,
 } from './limits';

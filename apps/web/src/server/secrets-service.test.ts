@@ -27,6 +27,7 @@ import { createLogger } from './logging';
 import type { LogEntry } from './logging';
 import type { Bindings } from './bindings';
 import type { ServiceContext } from './context';
+import type { SecretCapacity } from './secrets-service';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -112,6 +113,12 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => {
 
 const { applySecretWrites, decryptEnvironment, decryptOne, secretWriter, writeSecretValue } =
   await import('./secrets-service');
+
+/**
+ * No plan ceiling. These tests are about the write path; the
+ * `secretsPerEnvironment` ceiling it runs is `plan-limits-routes.test.ts`'s.
+ */
+const UNLIMITED: SecretCapacity = () => Promise.resolve();
 
 interface Harness {
   services: ServiceContext;
@@ -282,6 +289,7 @@ async function rejection(run: () => Promise<unknown>): Promise<ApiError> {
 async function sealed(h: Harness): Promise<EncryptedValue> {
   await writeSecretValue(h.scope, h.services, {
     writer: { userId: USER_ID },
+    capacity: UNLIMITED,
     name: 'DATABASE_URL',
     value: PLAINTEXT,
   });
@@ -473,6 +481,7 @@ describe('the unwrapped environment key', () => {
       h.created.length = 0;
       await writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: `SECRET_${index}`,
         value: `value-${index}`,
       });
@@ -549,6 +558,7 @@ describe('the unchanged-value short circuit', () => {
 
     const result = await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       value: PLAINTEXT,
       existing: { secretId: SECRET_S, version: 4, valueHmac },
@@ -572,6 +582,7 @@ describe('the unchanged-value short circuit', () => {
 
     const result = await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       value: PLAINTEXT,
       existing: { secretId: SECRET_S, version: 1, valueHmac },
@@ -595,6 +606,7 @@ describe('the unchanged-value short circuit', () => {
 
     const result = await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       value: PLAINTEXT,
       existing: { secretId: SECRET_S, version: 1, valueHmac: null },
@@ -614,6 +626,7 @@ describe('size limits', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'HUGE',
         value: 'x'.repeat(MAX_SECRET_VALUE_BYTES + 1),
       }),
@@ -634,6 +647,7 @@ describe('size limits', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'HUGE',
         value: '€'.repeat(MAX_SECRET_VALUE_BYTES / 2),
       }),
@@ -662,6 +676,7 @@ describe('version assignment', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'DATABASE_URL',
         value: PLAINTEXT,
         existing: { secretId: SECRET_S, version: 1, valueHmac: null },
@@ -685,6 +700,7 @@ describe('dry run', () => {
 
     const results = await applySecretWrites(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       dryRun: true,
       writes: [
         { name: 'NEW_ONE', value: 'a' },
@@ -715,11 +731,85 @@ describe('dry run', () => {
     h.openEnvKey.mockClear();
 
     await expect(
-      applySecretWrites(h.scope, h.services, { writer: { userId: USER_ID }, writes: [] }),
+      applySecretWrites(h.scope, h.services, {
+        writer: { userId: USER_ID },
+        capacity: UNLIMITED,
+        writes: [],
+      }),
     ).resolves.toEqual([]);
 
     expect(h.openEnvKey).not.toHaveBeenCalled();
     expect(repository.loadEnvironmentKeyChain).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The plan's `secretsPerEnvironment` ceiling reaches this module as a hook the
+ * route supplies (`secretCapacity`). Every route passes one and the types
+ * require it; a write that would create without one is a wiring fault, and it
+ * fails closed — a 500, nothing written — rather than passing the ceiling by.
+ */
+describe('the capacity hook', () => {
+  const missing = undefined as unknown as SecretCapacity;
+
+  it('refuses a create that arrives without one, as a fault, writing nothing', async () => {
+    const h = await harness();
+
+    for (const dryRun of [false, true]) {
+      const error = await rejection(() =>
+        applySecretWrites(h.scope, h.services, {
+          writer: { userId: USER_ID },
+          capacity: missing,
+          dryRun,
+          writes: [{ name: 'NEW_ONE', value: 'a' }],
+        }),
+      );
+      expect(error.code).toBe('internal_error');
+    }
+    expect(repository.createSecret).not.toHaveBeenCalled();
+  });
+
+  it('is asked with the batch’s creates, by name, inside the write and before it', async () => {
+    const h = await harness();
+    const asked: unknown[] = [];
+    const capacity: SecretCapacity = async (_exec, change) => {
+      asked.push(change);
+      expect(repository.createSecret).not.toHaveBeenCalled();
+    };
+
+    await applySecretWrites(h.scope, h.services, {
+      writer: { userId: USER_ID },
+      capacity,
+      writes: [
+        { name: 'NEW_ONE', value: 'a' },
+        {
+          name: 'CHANGED',
+          value: 'b',
+          existing: { secretId: SECRET_S, version: 1, valueHmac: null },
+        },
+      ],
+    });
+
+    expect(asked).toEqual([{ creates: 1, names: ['NEW_ONE'], removals: [], inTransaction: true }]);
+    expect(repository.createSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not asked, and not needed, by a batch that creates nothing', async () => {
+    const h = await harness();
+
+    await applySecretWrites(h.scope, h.services, {
+      writer: { userId: USER_ID },
+      capacity: missing,
+      writes: [
+        {
+          name: 'CHANGED',
+          value: 'b',
+          existing: { secretId: SECRET_S, version: 1, valueHmac: null },
+        },
+      ],
+    });
+
+    expect(repository.addSecretVersion).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -747,6 +837,7 @@ describe('value types', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'PORT',
         value: 'three thousand',
         valueType: 'int',
@@ -765,6 +856,7 @@ describe('value types', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'CALLBACK_URL',
         value: 'example.com',
         valueType: 'url',
@@ -782,6 +874,7 @@ describe('value types', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'CONFIG',
         value: '{"token":"sk_live_51H8xR2abcdef"',
         valueType: 'json',
@@ -797,6 +890,7 @@ describe('value types', () => {
 
     await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'PORT',
       value: '5432',
       valueType: 'int',
@@ -810,6 +904,7 @@ describe('value types', () => {
 
     await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'OPAQUE',
       value: '<<<not json, not a url, not a number>>>',
     });
@@ -826,6 +921,7 @@ describe('value types', () => {
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         name: 'PORT',
         value: 'not-a-number',
         existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
@@ -841,6 +937,7 @@ describe('value types', () => {
 
     const result = await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'PORT',
       value: 'https://example.com',
       valueType: 'url',
@@ -862,6 +959,7 @@ describe('value types', () => {
 
     await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'PORT',
       value: '5433',
       existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
@@ -877,6 +975,7 @@ describe('value types', () => {
 
     await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'LEGACY',
       value: 'anything at all',
       existing: { secretId: SECRET_S, version: 1, valueHmac: null },
@@ -899,6 +998,7 @@ describe('value types', () => {
 
     const result = await writeSecretValue(h.scope, h.services, {
       writer: { userId: USER_ID },
+      capacity: UNLIMITED,
       name: 'PORT',
       value: '5432',
       valueType: 'int',
@@ -919,6 +1019,7 @@ describe('value types', () => {
     await rejection(() =>
       applySecretWrites(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         writes: [
           { name: 'GOOD_PORT', value: '5432', valueType: 'int' },
           { name: 'BAD_PORT', value: 'eighty', valueType: 'int' },
@@ -938,6 +1039,7 @@ describe('value types', () => {
     const error = await rejection(() =>
       applySecretWrites(h.scope, h.services, {
         writer: { userId: USER_ID },
+        capacity: UNLIMITED,
         dryRun: true,
         writes: [{ name: 'PORT', value: 'eighty', valueType: 'int' }],
       }),
@@ -953,6 +1055,7 @@ describe('service-token write attribution', () => {
 
     await writeSecretValue(h.scope, h.services, {
       writer: { serviceTokenId: TOKEN_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       value: PLAINTEXT,
     });

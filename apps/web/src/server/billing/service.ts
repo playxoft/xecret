@@ -270,8 +270,9 @@ export async function billingStatus(
   const { entitlements } = scope;
   const warnings: BillingWarning[] = [];
   // Seats against the ceiling invitations are actually refused at
-  // (`organizations.seat_limit`), which is not the plan's published number on
-  // Free — see `FREE_SEAT_LIMIT`. A per-seat plan has none to warn about.
+  // (`organizations.seat_limit`): Free's three (`FREE_SEAT_LIMIT`) unless
+  // support raised it, so read from the row rather than the plan. A per-seat
+  // plan has none to warn about.
   const seatLimit = scope.organization.seatLimit;
   const seatsUsed = counts.seatedMembers + counts.pendingInvitations;
   if (seatLimit < UNCAPPED_SEAT_LIMIT && seatLimit > 0 && seatsUsed / seatLimit >= WARN_AT) {

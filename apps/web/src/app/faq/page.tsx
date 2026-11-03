@@ -252,7 +252,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do I need a card to try it?',
         answer:
-          'No. While xecret is in pre-alpha every paid feature is switched on for everybody and no card is collected at all. The prices are published now anyway, so that nobody is surprised at 1.0.',
+          'No. While xecret is in pre-alpha no card is collected at all. Every organisation starts on Free, and each plan’s limits — Free’s included — apply now, as the pricing page states them. The prices are published now too, so that nobody is surprised at 1.0.',
         // Pre-alpha copy until this deployment takes real payments (P12).
         whenPaymentsLive: {
           question: 'Do I need a card to try it?',
