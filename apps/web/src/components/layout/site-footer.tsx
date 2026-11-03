@@ -91,7 +91,11 @@ export function SiteFooter({ gradientId }: { gradientId?: string | undefined }) 
           <div className="max-w-sm">
             <Link href="/" aria-label="xecret home" className="inline-flex items-center gap-2.5">
               <LogoMark className="size-9" gradientId={gradientId} />
-              <span className="text-fg text-lg font-semibold tracking-tight">xecret</span>
+              {/* A step up (owner's call, 2026-11-04): at `text-lg` the name sat
+                  visibly undersized against the 36px mark. `text-2xl` restores
+                  roughly the header Wordmark's 1.6:1 mark-to-word ratio
+                  (36:24 here, 24:15 there). */}
+              <span className="text-fg text-2xl font-semibold tracking-tight">xecret</span>
             </Link>
             <p className="text-fg-muted mt-4 text-sm leading-6">
               Open-source secret management for developers. Encrypted per environment, audited on
