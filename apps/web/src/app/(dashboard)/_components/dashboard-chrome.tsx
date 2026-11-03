@@ -20,7 +20,7 @@ import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
-import type { MeResponse } from './session';
+import type { MeResponse, VaultStatus } from './session';
 
 /**
  * The dashboard's frame: the session, the sidebar, and the breadcrumb trail.
@@ -88,16 +88,14 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     viewer,
   });
 
-  // The project the URL is inside, for the names in the breadcrumb trail. One
-  // request per project, not per page: the chrome outlives the navigations
-  // between a project's pages, and the path only changes with the project. It
-  // is the same `GET` the project and environment screens make, and no request
-  // at all anywhere else.
-  const trail = useApiResource<ProjectResponse>(
-    location.orgSlug === null || location.projectSlug === null
-      ? null
-      : apiPath.project(location.orgSlug, location.projectSlug),
-  );
+  // The project the URL is inside, for the names in the breadcrumb trail — see
+  // `trailPath` for when it is read. Screens that rename what it names re-read
+  // it through `SessionValue.refreshTrail`.
+  const trail = useApiResource<ProjectResponse>(trailPath(location, session.data?.vault));
+  const reloadTrail = trail.reload;
+  const refreshTrail = useCallback(() => {
+    void reloadTrail();
+  }, [reloadTrail]);
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from
@@ -248,6 +246,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         vault,
         lock,
         refresh: reloadSession,
+        refreshTrail,
         createOrganization: openCreateOrganization,
       }}
     >
@@ -284,6 +283,31 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       </VaultProvider>
     </SessionProvider>
   );
+}
+
+/**
+ * What the shell reads for the trail's names: the project the URL is inside, or
+ * nothing.
+ *
+ * One request per project, not per page — the chrome outlives the navigations
+ * between a project's pages, and the path only changes with the project. It is
+ * the same `GET` the project and environment screens make, and nothing at all
+ * is read outside a project.
+ *
+ * And only once the session is known to be unlocked. A cold load onto a locked
+ * vault used to spend the request on a refusal behind the lock screen, and
+ * nothing asked again after the unlock, because the path had not changed — so
+ * the trail kept its slugs until the next project. Withheld until then, the
+ * unlock *is* the change, and the trail is read the moment there is a screen
+ * under it.
+ */
+export function trailPath(
+  location: DashboardLocation,
+  vault: VaultStatus | undefined,
+): string | null {
+  if (vault?.configured !== true || !vault.unlocked) return null;
+  if (location.orgSlug === null || location.projectSlug === null) return null;
+  return apiPath.project(location.orgSlug, location.projectSlug);
 }
 
 /** The display names the trail can show, each `null` until it is known. */

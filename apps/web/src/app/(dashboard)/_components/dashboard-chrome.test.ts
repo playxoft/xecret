@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseDashboardPath } from '../_lib/paths';
-import { buildBreadcrumbs } from './dashboard-chrome';
+import { buildBreadcrumbs, trailPath } from './dashboard-chrome';
 
 /**
  * The breadcrumb trail: every crumb labelled with what the thing is called, and
@@ -43,5 +43,30 @@ describe('the breadcrumb trail', () => {
     expect(buildBreadcrumbs(parseDashboardPath('/app/settings/account'), NAMES)).toEqual([
       { label: 'Account' },
     ]);
+  });
+});
+
+describe('what the trail reads its names from', () => {
+  const unlocked = { configured: true, unlocked: true, unlockedUntil: null, autoLockMinutes: 0 };
+  const locked = { ...unlocked, unlocked: false };
+  const inProject = parseDashboardPath('/app/acme/payments-api/production');
+
+  it('is the project the URL is inside, once the vault is unlocked', () => {
+    expect(trailPath(inProject, unlocked)).toBe('/api/orgs/acme/projects/payments-api');
+  });
+
+  it('is nothing while the session is unknown or locked, so the unlock is what reads it', () => {
+    // A cold load onto a locked vault used to read the project behind the lock
+    // screen, be refused, and never ask again: the path had not changed. Held
+    // back until the unlock, the unlock is the change that reads it.
+    expect(trailPath(inProject, undefined)).toBeNull();
+    expect(trailPath(inProject, locked)).toBeNull();
+    expect(trailPath(inProject, { ...unlocked, configured: false })).toBeNull();
+  });
+
+  it('is nothing outside a project', () => {
+    expect(trailPath(parseDashboardPath('/app/acme'), unlocked)).toBeNull();
+    expect(trailPath(parseDashboardPath('/app/acme/members'), unlocked)).toBeNull();
+    expect(trailPath(parseDashboardPath('/app/settings/account'), unlocked)).toBeNull();
   });
 });
