@@ -5,10 +5,12 @@ import type { AuditRecord } from '@xecret/core/audit';
 import { capTokenExpiry } from '@xecret/core/policy';
 import {
   consumeCliAuthCodeByValue,
+  countLiveCliDevices,
   createCliToken,
   findOrganizationById,
   findUserById,
   loadAuthorizationContext,
+  loadEntitlements,
   loadOrgPolicies,
   revokeCliToken,
 } from '@xecret/db/repositories';
@@ -16,6 +18,7 @@ import { DatabaseAuditSink } from '@/server/audit-sink';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import { describeError } from '@/server/logging';
+import { withinCapacity } from '@/server/plan-capacity';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute, publicRoute } from '@/server/route';
 import type { ServiceContext } from '@/server/context';
@@ -89,30 +92,63 @@ export const POST = publicRoute(async ({ request, services }) => {
   const { tokens: tokenPolicy } = await loadOrgPolicies(services.db, grant.orgId);
   const expiresAt = capTokenExpiry(tokenPolicy, null, new Date());
 
-  // Minted with how the approving browser session signed in: the token acts as
-  // its user, and an organisation's `sso_required` judges it by that session.
-  const issued = await createCliToken(services.db, {
-    orgId: grant.orgId,
-    userId: grant.userId,
-    name: grant.deviceName,
-    signInMethod: grant.signInMethod,
-    ssoWorkosOrgId: grant.ssoWorkosOrgId,
-    ...(expiresAt === null ? {} : { expiresAt }),
-  });
-
   // Written directly rather than through the request recorder: `publicRoute`
   // has no principal to bind one to. Attributed to the user the token acts as.
+  const audit = createAuditBuilder({
+    orgId: grant.orgId,
+    actorType: 'user',
+    actorId: user.id,
+    actorLabel: user.email,
+    ipAddress: services.meta.ipAddress,
+    userAgent: services.meta.userAgent,
+    requestId: services.meta.requestId,
+  });
+
+  // ── The plan's `cliDevicesPerUser` ceiling (enforced from day one) ──
+  // Each login is a device. The consent screen refused this already if the
+  // person was at the ceiling, where they can revoke an old device; this is
+  // the count that decides, under the lock, inside the transaction that mints
+  // — two approvals exchanged at once cannot both take the last place. Devices
+  // already past the ceiling keep working; the refusal is filed.
+  const entitlements = await loadEntitlements(services.db, grant.orgId);
+  const issued = await services.db.transaction(async (tx) => {
+    await withinCapacity(
+      tx,
+      entitlements,
+      'cliDevicesPerUser',
+      `${grant.orgId}:${grant.userId}`,
+      (exec) => countLiveCliDevices(exec, grant.orgId, grant.userId),
+      {
+        refused: () =>
+          services.waitUntil(
+            writeEvents(services, [
+              audit.error('token.created', { type: 'token', id: null }, 'quotaExceeded', {
+                limitName: 'cliDevicesPerUser',
+                plan: entitlements.plan,
+                deviceName: grant.deviceName,
+                source: 'cli',
+              }),
+            ]),
+          ),
+      },
+    );
+
+    // Minted with how the approving browser session signed in: the token acts
+    // as its user, and an organisation's `sso_required` judges it by that
+    // session.
+    return createCliToken(tx, {
+      orgId: grant.orgId,
+      userId: grant.userId,
+      name: grant.deviceName,
+      signInMethod: grant.signInMethod,
+      ssoWorkosOrgId: grant.ssoWorkosOrgId,
+      ...(expiresAt === null ? {} : { expiresAt }),
+    });
+  });
+
   services.waitUntil(
     writeEvents(services, [
-      createAuditBuilder({
-        orgId: grant.orgId,
-        actorType: 'user',
-        actorId: user.id,
-        actorLabel: user.email,
-        ipAddress: services.meta.ipAddress,
-        userAgent: services.meta.userAgent,
-        requestId: services.meta.requestId,
-      }).success(
+      audit.success(
         'token.created',
         { type: 'token', id: issued.record.id },
         {

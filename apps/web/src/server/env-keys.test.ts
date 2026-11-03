@@ -13,6 +13,7 @@ import { createLogger } from './logging';
 import type { Bindings } from './bindings';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
+import type { SecretCapacity } from './secrets-service';
 import type { EnvironmentScope } from './tenancy';
 import {
   environmentKeyGrantsSchema,
@@ -128,6 +129,12 @@ const {
 const { reconcileMemberKeyAccess } = await import('./member-keys');
 
 const { applyClientSecretWrites, writeClientSecretValue } = await import('./secrets-service');
+
+/**
+ * No plan ceiling. These tests are about the write path; the
+ * `secretsPerEnvironment` ceiling it runs is `plan-limits-routes.test.ts`'s.
+ */
+const UNLIMITED: SecretCapacity = () => Promise.resolve();
 
 function services(): ServiceContext {
   return {
@@ -1357,6 +1364,7 @@ describe('the client write path', () => {
     // no reference to the key hierarchy, so no key chain is ever loaded.
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       secretId: NEW_SECRET_ID,
       expectedVersion: 1,
@@ -1383,6 +1391,7 @@ describe('the client write path', () => {
   it('detects a no-op write by HMAC equality, exactly as the server path does', async () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       // Deliberately not the stored id, and deliberately a version nobody could
       // be writing: a matching HMAC stores nothing, so there is no ciphertext
@@ -1407,6 +1416,7 @@ describe('the client write path', () => {
   it('appends when the HMAC differs', async () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
+      capacity: UNLIMITED,
       name: 'DATABASE_URL',
       secretId: '01930000-0000-7000-8000-0000000000e1',
       expectedVersion: 2,
@@ -1430,6 +1440,7 @@ describe('the client write path', () => {
     const error = await rejection(() =>
       writeClientSecretValue(scope(), services(), {
         writer: { userId: OWNER_ID },
+        capacity: UNLIMITED,
         name: 'DATABASE_URL',
         secretId: NEW_SECRET_ID,
         expectedVersion: 1,
@@ -1451,6 +1462,7 @@ describe('the client write path', () => {
     const error = await rejection(() =>
       writeClientSecretValue(scope(), services(), {
         writer: { userId: OWNER_ID },
+        capacity: UNLIMITED,
         name: 'DATABASE_URL',
         secretId: NEW_SECRET_ID,
         expectedVersion: 1,
@@ -1466,7 +1478,11 @@ describe('the client write path', () => {
 
   it('does not read the key state for an empty batch', async () => {
     await expect(
-      applyClientSecretWrites(scope(), services(), { writer: { userId: OWNER_ID }, writes: [] }),
+      applyClientSecretWrites(scope(), services(), {
+        writer: { userId: OWNER_ID },
+        capacity: UNLIMITED,
+        writes: [],
+      }),
     ).resolves.toEqual([]);
 
     expect(repository.loadEnvironmentKeyState).not.toHaveBeenCalled();
@@ -1475,6 +1491,7 @@ describe('the client write path', () => {
   it('decides every outcome on a dry run without writing anything', async () => {
     const results = await applyClientSecretWrites(scope(), services(), {
       writer: { userId: OWNER_ID },
+      capacity: UNLIMITED,
       dryRun: true,
       writes: [
         { name: 'NEW_ONE', secretId: NEW_SECRET_ID, expectedVersion: 1, value },
@@ -1512,6 +1529,7 @@ describe('the client write path', () => {
       const error = await rejection(() =>
         writeClientSecretValue(scope(), services(), {
           writer: { userId: OWNER_ID },
+          capacity: UNLIMITED,
           name: 'DATABASE_URL',
           secretId: '01930000-0000-7000-8000-0000000000e1',
           expectedVersion: 4,
@@ -1537,6 +1555,7 @@ describe('the client write path', () => {
       const error = await rejection(() =>
         applyClientSecretWrites(scope(), services(), {
           writer: { userId: OWNER_ID },
+          capacity: UNLIMITED,
           writes: [
             {
               name: 'DATABASE_URL',
@@ -1565,6 +1584,7 @@ describe('the client write path', () => {
       const error = await rejection(() =>
         applyClientSecretWrites(scope(), services(), {
           writer: { userId: OWNER_ID },
+          capacity: UNLIMITED,
           writes: [
             { name: 'GOOD', secretId: NEW_SECRET_ID, expectedVersion: 1, value },
             { name: 'BAD', secretId: NEW_SECRET_ID, expectedVersion: 3, value },
@@ -1581,6 +1601,7 @@ describe('the client write path', () => {
       // Refusing would turn a harmless re-submission into an error.
       const result = await writeClientSecretValue(scope(), services(), {
         writer: { userId: OWNER_ID },
+        capacity: UNLIMITED,
         name: 'DATABASE_URL',
         secretId: NEW_SECRET_ID,
         expectedVersion: 1,

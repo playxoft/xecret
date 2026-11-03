@@ -91,6 +91,10 @@ const repositories = vi.hoisted(() => ({
   listProductionEnvironmentsReferencing: vi.fn(),
   // P19 §6: the token policy, read at minting and by the listing. None set.
   loadOrgPolicies: vi.fn(),
+  // The plan ceilings: room for whatever these tests create. Enforcement itself
+  // is `plan-limits-routes.test.ts`'s, against a real database.
+  lockCapacity: vi.fn(async () => undefined),
+  countLiveServiceTokens: vi.fn(async () => 0),
 }));
 
 vi.mock('./context', () => context);

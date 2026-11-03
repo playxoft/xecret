@@ -2,11 +2,13 @@ import * as z from 'zod/mini';
 import { PKCE_CHALLENGE_PATTERN } from '@xecret/core/auth';
 import { AuthorizationError } from '@xecret/core/authz';
 import { slugReferenceSchema } from '@xecret/core/validation';
-import { createCliAuthCode } from '@xecret/db/repositories';
+import { countLiveCliDevices, createCliAuthCode } from '@xecret/db/repositories';
+import { requireCapacity } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
+import { planRefusal } from '@/server/template-writes';
 import { authorize, resolveOrg, usesOwnerSsoExemption } from '@/server/tenancy';
 
 /**
@@ -113,6 +115,27 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     }
     throw cause;
   }
+
+  // ── The plan's `cliDevicesPerUser` ceiling ──
+  // Asked here, in the browser, where somebody at the ceiling can revoke a
+  // device they no longer use and try again. Not the deciding count — the token
+  // exchange takes that under a lock, since two approvals can be open at once —
+  // but the one a person sees.
+  requireCapacity(
+    scope.entitlements,
+    'cliDevicesPerUser',
+    await countLiveCliDevices(services.db, orgId, principal.user.id),
+    1,
+    planRefusal(
+      record,
+      audit(orgId),
+      'token.authorized',
+      { type: 'token', id: null },
+      'cliDevicesPerUser',
+      scope.entitlements.plan,
+      { deviceName: body.deviceName, source: 'dashboard' },
+    ),
+  );
 
   // How this session signed in rides on the approval and then on the token, so
   // the device is held to an organisation's `sso_required` exactly as the

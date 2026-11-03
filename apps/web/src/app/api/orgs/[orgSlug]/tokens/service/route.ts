@@ -1,6 +1,7 @@
 import { auditingDenials, serviceTokenActionsAt } from '@xecret/core/authz';
 import { checkServiceTokenAgainstPolicy, tokenMeetsPolicy } from '@xecret/core/policy';
 import {
+  countLiveServiceTokens,
   createServiceToken,
   listEnvironmentsForOrganization,
   listServiceTokens,
@@ -9,6 +10,7 @@ import {
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { requireMembership, requireSessionPrincipal } from '@/server/members-service';
+import { withinCapacity } from '@/server/plan-capacity';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { assertTokenCanResolve } from '@/server/references-service';
 import { authenticatedRoute } from '@/server/route';
@@ -19,6 +21,7 @@ import {
   serviceTokenCreateSchema,
   toServiceToken,
 } from '@/server/schemas/tokens';
+import { planRefusal } from '@/server/template-writes';
 import {
   authorize,
   authorizeAny,
@@ -200,18 +203,53 @@ export const POST = authenticatedRoute<Params>(
       );
     }
 
-    const issued = await createServiceToken(services.db, {
-      orgId,
-      projectId: projectScope.project.id,
-      environmentId: environmentScope.environment.id,
-      name: body.name,
-      accessLevel,
-      ipAllowlist,
-      expiresAt,
-      createdBy: minter.user.id,
-      // The public half only. The private half is the token's key half, which
-      // the browser minted and this server must never see (spec §13.1).
-      publicKey: body.publicKey === undefined ? null : decodeTokenPublicKey(body.publicKey),
+    // ── The plan's `serviceTokens` ceiling (enforced from day one) ──
+    // Live tokens only — a revoked or expired one holds no place — counted under
+    // the organisation's capacity lock inside the transaction that mints, so
+    // two concurrent mints cannot both take the last place. Tokens already past
+    // the ceiling keep working; the refusal is filed as `quotaExceeded`.
+    const publicKey = body.publicKey === undefined ? null : decodeTokenPublicKey(body.publicKey);
+    const issued = await services.db.transaction(async (tx) => {
+      await withinCapacity(
+        tx,
+        scope.entitlements,
+        'serviceTokens',
+        orgId,
+        (exec) => countLiveServiceTokens(exec, orgId),
+        {
+          refused: planRefusal(
+            record,
+            audit(orgId),
+            'token.created',
+            {
+              type: 'token',
+              id: null,
+              projectId: projectScope.project.id,
+              environmentId: environmentScope.environment.id,
+            },
+            'serviceTokens',
+            scope.entitlements.plan,
+            {
+              projectSlug: projectScope.project.slug,
+              environmentSlug: environmentScope.environment.slug,
+            },
+          ),
+        },
+      );
+
+      return createServiceToken(tx, {
+        orgId,
+        projectId: projectScope.project.id,
+        environmentId: environmentScope.environment.id,
+        name: body.name,
+        accessLevel,
+        ipAllowlist,
+        expiresAt,
+        createdBy: minter.user.id,
+        // The public half only. The private half is the token's key half, which
+        // the browser minted and this server must never see (spec §13.1).
+        publicKey,
+      });
     });
 
     record(

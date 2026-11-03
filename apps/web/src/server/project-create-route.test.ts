@@ -52,6 +52,10 @@ const repositories = vi.hoisted(() => ({
   hasVault: vi.fn(),
   createProject: vi.fn(),
   createEnvironment: vi.fn(),
+  // The plan ceilings: room for whatever these tests create. Enforcement itself
+  // is `plan-limits-routes.test.ts`'s, against a real database.
+  lockCapacity: vi.fn(async () => undefined),
+  countLiveProjects: vi.fn(async () => 0),
 }));
 
 const rateLimit = vi.hoisted(() => ({ enforce: vi.fn() }));
