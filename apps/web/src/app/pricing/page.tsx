@@ -1784,15 +1784,15 @@ const FAQ: readonly PricingFaqItem[] = [
     // wrong in a way no test would catch, because the cards would still be
     // right. Stating the limit rather than the first value above it lets the
     // sentence read from `LIMITS` like everything else on the page.
-    answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.`,
-    // The answer above ends on pre-alpha, and was the one pre-alpha sentence
-    // the payments build left ungated. The live one says what is true then:
-    // the ceilings are still not enforced (docs/operations/billing.md §6), and
-    // fetches past the allowance cost something only on a paid plan — Free has
-    // no subscription to bill them to.
+    answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked.`,
+    // Both answers say the ceilings apply from the day they are published —
+    // the owner's decision (docs/operations/billing.md §6) — and that only
+    // the next creation past one is refused. The live one adds what fetches
+    // past the allowance cost, which is something only on a paid plan: Free
+    // has no subscription to bill them to.
     whenPaymentsLive: {
       question: 'What happens when I exceed the free tier?',
-      answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate. The plan ceilings themselves are not enforced yet, so for now there is no limit to exceed at all.`,
+      answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named, and an owner can move up from the billing page. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
     },
   },
   {

@@ -188,7 +188,32 @@ table into a denial-of-service surface against itself.
 | `GET` | `…/environments/{envSlug}/export?format=…` | The same data as `pull`, as a file download. |
 
 The dry run and the real import call the same planning function, so the preview
-cannot disagree with the outcome.
+cannot disagree with the outcome — including a refusal for the plan's limit on
+secrets per environment.
+
+## Plan limits
+
+Every plan's limits apply from the day they are published, and only to
+creating something. At a limit, the next one is refused with **403**
+`plan_limit`, whose `plan` block names the resource, the limit, your plan and
+the plan that would allow more:
+
+| Limit | Refused when you |
+|---|---|
+| `projects` | create a project |
+| `environmentsPerProject` | create an environment |
+| `secretsPerEnvironment` | create a secret, or import, promote or restore new names into an environment (a batch is weighed whole) |
+| `serviceTokens` | mint a service token |
+| `cliDevicesPerUser` | approve or complete an `xecret login` — revoke a device you no longer use to make room |
+| `webhooks` | add a webhook endpoint |
+
+Only live things count: deleting a project or environment, or revoking a token,
+frees its place, and an expired token holds none. Nothing you already have past
+a limit — after a downgrade, say — is deleted, locked or slowed: it stays
+readable and editable, and only adding more is refused. Creating an
+organisation past the account's limit, and inviting past the organisation's
+seats, answer **409** `conflict` instead, with the same information in the
+message.
 
 ## Environments and policies
 

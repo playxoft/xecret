@@ -179,6 +179,30 @@ boundary is and always was.
 and some refusals have no plan that would allow them. Never an amount of money: prices vary
 by currency and interval and belong on the pricing page.
 
+**Plan limits apply from the day they are published** (owner's decision, 2026-11), and only
+to creation. Each countable ceiling in `packages/core/src/entitlements/plans.ts` is counted —
+live rows only: a deleted project or environment, a revoked or expired token, holds no place —
+inside the transaction that creates, under a capacity lock (`lockCapacity`), and refused with
+`plan_limit` when the request would pass it. `upgradeTo` is the cheapest plan ranked above the
+organisation's that would hold the request; a refusal is audited as `error` / `quotaExceeded`
+with `limitName`. Owners are exempt from none of it. Nothing an organisation already holds past
+a ceiling is deleted, locked or refused a read or an edit — only the next one is refused.
+
+| Ceiling | Refused at |
+|---|---|
+| `projects` | `POST /api/orgs/{orgSlug}/projects` — which also weighs the default environments against `environmentsPerProject` |
+| `environmentsPerProject` | `POST …/projects/{projectSlug}/environments` |
+| `secretsPerEnvironment` | every write that can create a secret: `POST …/secrets`, `POST …/import` (weighed whole; the dry run answers the same), `POST …/promote` and `POST …/restore-point`, counted against what the environment holds after the batch's own removals. Updating, rotating, retyping or deleting an existing secret is never refused |
+| `serviceTokens` | `POST /api/orgs/{orgSlug}/tokens/service` |
+| `cliDevicesPerUser` | `POST /api/cli/authorize` (the consent screen, so the person can revoke an old device) and `POST /api/cli/token` (the count that decides) — per person, per organisation |
+| `webhooks` | `POST /api/orgs/{orgSlug}/webhooks` |
+
+Two ceilings keep their older answers. `organizations` is a **409** `conflict` from
+`POST /api/orgs`, counted under the account lock, whose message names the plan that holds
+more; `seats` is a **409** `conflict` from inviting (`assertSeatAvailable`, against
+`organizations.seat_limit` — Free's 3 since migration 0033), whose message names the seats
+held and the plan that does not limit them.
+
 **404 and 403 are not interchangeable.** 403 is only ever returned once membership in the
 organisation is already established, so it reveals nothing new. Everything else — wrong
 tenant, no grant, genuinely absent — is 404. A client that can distinguish these can
@@ -708,7 +732,7 @@ does not fix. All four answer with the same status under `sso`:
     "enabled": true,              // a WorkOS organisation exists and is linked
     "ssoRequired": false,
     "jitJoinEnabled": false,
-    "seatLimit": 5,
+    "seatLimit": 25,
     "addon": { "enabled": true },
     "connections": [{ "id": "conn_…", "type": "OktaSAML", "state": "active" }],  // null while off
     "domains": [{ "domain": "acme.example", "state": "verified" }],             // null while off

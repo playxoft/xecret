@@ -31,8 +31,8 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: pre-alpha status, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-10-12';
-const EFFECTIVE = '2026-10-26';
+const UPDATED = '2026-11-03';
+const EFFECTIVE = '2026-11-03';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -73,7 +73,7 @@ function summaryFor(paymentsLive: boolean): readonly string[] {
     'xecret is pre-alpha. No SLA, no warranty, breaking changes, and you should keep your own copy of anything you cannot rebuild.',
     paymentsLive
       ? 'Paid plans are bought by an organisation’s owner, at the checkout of Dodo Payments, our merchant of record. A declined card never stops a build.'
-      : 'Every paid feature is switched on for everybody right now and no card is collected. Nothing starts charging without telling you first.',
+      : 'No card is collected and nothing is charged. Each plan’s limits apply from the day they are published; nothing starts charging without telling you first.',
     'You are responsible for your account, your PIN and your tokens — including revoking one when a laptop or a CI system goes away.',
     'The server is AGPL-3.0 and the CLI is MIT. Running it yourself is governed by those licences, not by these terms, and we receive nothing from your deployment.',
     paymentsLive
@@ -87,7 +87,7 @@ function billingClauses(paymentsLive: boolean) {
   return {
     opening: paymentsLive
       ? 'Paid plans are bought from an organisation’s billing page, by one of its owners, at the checkout of Dodo Payments. Dodo is the merchant of record: it takes the payment, charges the tax your country requires and issues the invoice, and its own terms apply to the purchase. The prices below are the published ones; the checkout shows the price in your currency before you pay.'
-      : 'While xecret is in pre-alpha, every paid feature is switched on for everybody and no card is collected. The prices below are what they will be at 1.0.',
+      : 'While xecret is in pre-alpha no card is collected and nothing is charged. The limits of each plan below apply from the day they are published, and the prices are what they will be at 1.0.',
     billing: paymentsLive
       ? 'Paid plans are billed in advance, per member, for the term the owner chooses — monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges — it is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
       : 'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
@@ -290,8 +290,13 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           {paymentsLive
             ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way.'
             : ''}{' '}
-          We will not delete data because a plan lapsed: we will tell you what exceeds the Free
-          limits and give you a reasonable window to bring the organisation under them or export it.
+          A plan&rsquo;s limits apply from the day they are published, with no notice period: once
+          an organisation is at one, the next project, environment, secret, token, device or member
+          past it is refused, and the refusal names the plan that would allow it
+          {paymentsLive ? ' — which an owner can move to from the billing page' : ''}. Nothing
+          already there is deleted, locked or slowed by a limit, or by a plan lapsing: an
+          organisation over its plan&rsquo;s limits keeps reading, changing and exporting everything
+          it has, and simply cannot add more until it is under them or on a plan that allows them.
           The current numbers are on <LegalLink href="/pricing">the pricing page</LegalLink>, and if
           they ever disagree with this section, this section is the one you agreed to.
         </>,

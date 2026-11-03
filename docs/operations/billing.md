@@ -496,10 +496,14 @@ subscription ends lands on a row carrying Dodo ids, which the backfill leaves al
 - **Enterprise** is a contract and a manual Dodo invoice; it is set with `plan:set`, never
   through checkout.
 - **SCIM** is an Enterprise inclusion and is not sold.
-- **Plan ceilings are not enforced yet.** The entitlement engine (P11) can refuse the sixth
-  project on Free, but no route does: every organisation has been unlimited through pre-alpha,
-  and pricing-plan §5 promises thirty days' notice before any limit applies. Turning the
-  ceilings on is a separate decision with its own notice.
+- **Plan ceilings no longer wait for notice.** The owner's decision (2026-11) overrode the
+  thirty days pricing-plan §5 had promised — there were no customers yet whom an immediate
+  limit could surprise — so every countable ceiling is enforced at creation from the day it is
+  published: projects, environments per project, secrets per environment, service tokens, CLI
+  devices per person and webhooks, beside the organisation and seat ceilings that already
+  were (`docs/architecture/api.md` §3 lists where). Only creation is refused; nothing already
+  held past a ceiling is deleted, locked or refused a read, and a lapsed subscription changes
+  only what can be added next.
 - **No card or invoice UI.** Dodo's customer portal is it.
 - **A subscription ended here after fourteen days on hold is not cancelled at Dodo.** The alert
   says so; a human decides.
