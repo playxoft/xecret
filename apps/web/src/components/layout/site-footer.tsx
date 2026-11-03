@@ -91,7 +91,11 @@ export function SiteFooter({ gradientId }: { gradientId?: string | undefined }) 
           <div className="max-w-sm">
             <Link href="/" aria-label="xecret home" className="inline-flex items-center gap-2.5">
               <LogoMark className="size-9" gradientId={gradientId} />
-              <span className="text-fg text-lg font-semibold tracking-tight">xecret</span>
+              {/* A step up from the header's wordmark (owner's call, 2026-11-04):
+                  the brand column opens the footer's four-column block, and at
+                  `text-lg` the name sat visibly smaller than the 36px mark
+                  beside it. `text-2xl` squares with the mark's cap height. */}
+              <span className="text-fg text-2xl font-semibold tracking-tight">xecret</span>
             </Link>
             <p className="text-fg-muted mt-4 text-sm leading-6">
               Open-source secret management for developers. Encrypted per environment, audited on

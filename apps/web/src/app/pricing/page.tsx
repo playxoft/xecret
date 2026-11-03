@@ -2236,6 +2236,41 @@ async function resolveInitialCurrency(): Promise<CurrencyId> {
 }
 
 /**
+ * Whether this render should offer the currency menu at all.
+ *
+ * The owner's call (2026-11-04): the public page states one currency — the one
+ * `resolveInitialCurrency` picked from the visitor's country — and does not
+ * offer switching until multi-currency checkout has been rehearsed end to end.
+ * The menu itself keeps working, so it stays visible in local development,
+ * decided by the request's Host and not by an environment variable: "localhost
+ * only" is the rule as stated, and a rule read off the request cannot drift
+ * from it. Staging and every real domain — xecret.playxoft.com today, any
+ * xecret.dev or xecret.app tomorrow — get no menu without a code change.
+ *
+ * Fails closed: where the header cannot be read (a test render, a build-time
+ * pass), there is no menu, which is the right answer for every page a visitor
+ * could be served.
+ */
+async function currencyMenuShown(): Promise<boolean> {
+  try {
+    const host = ((await headers()).get('host') ?? '').toLowerCase();
+    // The hostname, with any port stripped — minding that an IPv6 literal
+    // carries colons of its own inside its brackets.
+    const name = host.startsWith('[')
+      ? host.slice(0, host.indexOf(']') + 1)
+      : (host.split(':')[0] ?? '');
+    return (
+      name === 'localhost' ||
+      name.endsWith('.localhost') ||
+      name === '127.0.0.1' ||
+      name === '[::1]'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The currency and billing-period control, rendered wherever a price is.
  *
  * ── Why this is a component and the radios are not in it ──
@@ -2251,7 +2286,7 @@ async function resolveInitialCurrency(): Promise<CurrencyId> {
  * attribute selectors in globals.css, so both instances light up together for
  * the same reason.
  */
-function PriceControls() {
+function PriceControls({ currencyMenu }: { currencyMenu: boolean }) {
   // Three columns so the period toggle is centred against the *row* rather than
   // against whatever sits beside it: an empty cell, the toggle, then the
   // currency menu pushed to the end. Centring with `justify-between` would put
@@ -2290,7 +2325,7 @@ function PriceControls() {
           {CURRENCIES.map((currency) => (
             <span
               key={currency.id}
-              className={`x-save x-save-${currency.id} text-fg-subtle text-xs font-normal`}
+              className={`x-save x-save-${currency.id} text-success-text text-xs font-normal`}
             >
               Save up to {YEARLY_SAVING[currency.id]}%
             </span>
@@ -2311,54 +2346,67 @@ function PriceControls() {
           keyboard operate, and this is the pointer affordance over them.
           `CurrencyMenu` adds dismissal — outside press, Escape, selection — and
           touches nothing else; without its script the menu still works and every
-          price still switches. */}
-      <CurrencyMenu className="x-currency relative sm:justify-self-end">
-        <summary
-          className={cn(
-            CONTROL_SHELL,
-            'x-currency-summary min-w-28 list-none justify-between gap-2 px-4',
-          )}
-        >
-          {/* Five names, one shown — the same mechanism as the prices, so the
-              trigger cannot disagree with the figures below it. */}
-          <span className="text-fg text-sm font-medium">
-            {CURRENCIES.map((currency) => (
-              <span key={currency.id} data-currency-name={currency.id} className="x-currency-name">
-                {currency.label}
-              </span>
-            ))}
-          </span>
-          <ChevronDownIcon className="x-currency-chevron text-fg-muted size-4 shrink-0" />
-        </summary>
+          price still switches.
 
-        <div
-          className={cn(
-            'x-currency-panel border-line bg-surface shadow-raised absolute top-full',
-            'right-0 z-20 mt-2 w-36 rounded-xl border p-1',
-          )}
-        >
-          {CURRENCIES.map((currency) => (
-            <label
-              key={currency.id}
-              htmlFor={`currency-${currency.id}`}
-              data-currency-option={currency.id}
-              className={cn(
-                'text-fg-muted hover:text-fg hover:bg-canvas-inset flex cursor-pointer',
-                'items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm',
-                'font-medium transition-colors',
-              )}
-            >
-              <span>
-                {currency.symbol} {currency.label}
-              </span>
-              {/* Hidden until this option is the checked one. The tick is what
+          Rendered only where `currencyMenuShown` said so — localhost, today.
+          Leaving the menu out removes the *affordance*, not the mechanism: the
+          radios above the page still exist with the server's pick checked, so
+          every price, chip and structured-data sheet keeps meaning the same
+          currency. The grid keeps its three columns either way, so the period
+          toggle does not drift when the menu is absent. */}
+      {currencyMenu && (
+        <CurrencyMenu className="x-currency relative sm:justify-self-end">
+          <summary
+            className={cn(
+              CONTROL_SHELL,
+              'x-currency-summary min-w-28 list-none justify-between gap-2 px-4',
+            )}
+          >
+            {/* Five names, one shown — the same mechanism as the prices, so the
+              trigger cannot disagree with the figures below it. */}
+            <span className="text-fg text-sm font-medium">
+              {CURRENCIES.map((currency) => (
+                <span
+                  key={currency.id}
+                  data-currency-name={currency.id}
+                  className="x-currency-name"
+                >
+                  {currency.label}
+                </span>
+              ))}
+            </span>
+            <ChevronDownIcon className="x-currency-chevron text-fg-muted size-4 shrink-0" />
+          </summary>
+
+          <div
+            className={cn(
+              'x-currency-panel border-line bg-surface shadow-raised absolute top-full',
+              'right-0 z-20 mt-2 w-36 rounded-xl border p-1',
+            )}
+          >
+            {CURRENCIES.map((currency) => (
+              <label
+                key={currency.id}
+                htmlFor={`currency-${currency.id}`}
+                data-currency-option={currency.id}
+                className={cn(
+                  'text-fg-muted hover:text-fg hover:bg-canvas-inset flex cursor-pointer',
+                  'items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm',
+                  'font-medium transition-colors',
+                )}
+              >
+                <span>
+                  {currency.symbol} {currency.label}
+                </span>
+                {/* Hidden until this option is the checked one. The tick is what
                   says "current" to a reader who cannot tell two shades of
                   foreground apart. */}
-              <CheckIcon className="x-currency-tick size-4 shrink-0" />
-            </label>
-          ))}
-        </div>
-      </CurrencyMenu>
+                <CheckIcon className="x-currency-tick size-4 shrink-0" />
+              </label>
+            ))}
+          </div>
+        </CurrencyMenu>
+      )}
     </div>
   );
 }
@@ -2366,6 +2414,7 @@ function PriceControls() {
 export default async function PricingPage() {
   const initialCurrency = await resolveInitialCurrency();
   const paymentsLive = await takesPayments();
+  const currencyMenu = await currencyMenuShown();
   const faq = faqFor(paymentsLive);
 
   return (
@@ -2501,7 +2550,7 @@ export default async function PricingPage() {
               Plans and prices
             </h2>
 
-            <PriceControls />
+            <PriceControls currencyMenu={currencyMenu} />
 
             {/* ── Four cards, and why the row no longer overhangs ──
                 At five columns inside an 80rem container each card had about
@@ -2659,45 +2708,53 @@ export default async function PricingPage() {
             What is true is that add-ons have no *yearly* rate, which is why the
             rule keys on currency alone and not on the period.
 
-            One column, not two. `sm:grid-cols-2` was right while SCIM sat here
-            at $249; with SCIM restored to an Enterprise inclusion there is a
-            single add-on, and a two-column grid rendered it at half width with
-            an empty column beside it. `sm:max-w-xl` keeps the one card from
-            running the full width of the section instead.
+            The full width of the section, laid out as the self-hosting band
+            below it — the name and price in a fixed column, the explanation
+            beside them. `sm:max-w-xl` used to cap the lone card instead, which
+            left the right half of the section empty and the band looking like
+            something had failed to load next to it (the owner's words,
+            2026-11-04: use the width or balance it). One card in a row reads as
+            a row; the half-width grid it replaced was only ever right while
+            SCIM made it two.
 
             The body text states what it costs us. That is deliberate — see the
             note on ADDONS — and it is the part of this page most likely to be
             trimmed by somebody tidying marketing copy. It should not be. */}
-            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:max-w-xl sm:p-7">
+            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:p-7">
               {ADDONS.map((addon) => (
-                <div key={addon.name}>
-                  {/* The chip carries the same word the matrix cells and the card
-                  bullets carry, for the same reason: this band publishes a
-                  price, and a price with no qualifier beside it is an offer. */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-fg text-base font-semibold">{addon.name}</h3>
-                    {addon.notYet ? (
-                      <span className="border-line text-fg-subtle rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium whitespace-nowrap">
-                        {NOT_YET}
-                      </span>
-                    ) : null}
+                <div
+                  key={addon.name}
+                  className="flex flex-col gap-6 lg:flex-row lg:items-center lg:gap-8"
+                >
+                  <div className="lg:w-64 lg:shrink-0">
+                    {/* The chip carries the same word the matrix cells and the card
+                    bullets carry, for the same reason: this band publishes a
+                    price, and a price with no qualifier beside it is an offer. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-fg text-base font-semibold">{addon.name}</h3>
+                      {addon.notYet ? (
+                        <span className="border-line text-fg-subtle rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium whitespace-nowrap">
+                          {NOT_YET}
+                        </span>
+                      ) : null}
+                    </div>
+                    {/* Five figures, one shown — the same radios the cards and the
+                        comparison table read, through a rule that keys on currency
+                        alone. An add-on has no yearly rate, so unlike every other
+                        price on the page this one must not follow the period half
+                        of the control: pairing it with `x-price-*-yearly` would
+                        have shown nothing at all whenever Yearly was selected. */}
+                    <p className="text-fg mt-2 text-2xl font-semibold tracking-[-0.02em]">
+                      {CURRENCIES.map((currency) => (
+                        <span key={currency.id} className={`x-addon-price x-addon-${currency.id}`}>
+                          {addon.prices[currency.id]}
+                        </span>
+                      ))}{' '}
+                      <span className="text-fg-subtle text-sm font-normal">{addon.unit}</span>
+                    </p>
+                    <p className="text-fg-subtle mt-1 text-sm">{addon.from}</p>
                   </div>
-                  {/* Five figures, one shown — the same radios the cards and the
-                      comparison table read, through a rule that keys on currency
-                      alone. An add-on has no yearly rate, so unlike every other
-                      price on the page this one must not follow the period half
-                      of the control: pairing it with `x-price-*-yearly` would
-                      have shown nothing at all whenever Yearly was selected. */}
-                  <p className="text-fg mt-2 text-2xl font-semibold tracking-[-0.02em]">
-                    {CURRENCIES.map((currency) => (
-                      <span key={currency.id} className={`x-addon-price x-addon-${currency.id}`}>
-                        {addon.prices[currency.id]}
-                      </span>
-                    ))}{' '}
-                    <span className="text-fg-subtle text-sm font-normal">{addon.unit}</span>
-                  </p>
-                  <p className="text-fg-subtle mt-1 text-sm">{addon.from}</p>
-                  <p className="text-fg-muted mt-3 text-sm leading-6">{addon.body}</p>
+                  <p className="text-fg-muted text-sm leading-6 lg:flex-1">{addon.body}</p>
                 </div>
               ))}
             </div>
@@ -2778,7 +2835,7 @@ export default async function PricingPage() {
                 not meet dollars again two screens down. Nothing keeps the two in
                 step; there is only one thing to keep. */}
             <div className="mt-8">
-              <PriceControls />
+              <PriceControls currencyMenu={currencyMenu} />
             </div>
 
             {/* The table is wider than a phone and always will be, so it scrolls
