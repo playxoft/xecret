@@ -32,7 +32,7 @@ import {
   toBytes,
   updateSecretMetadata,
 } from '@xecret/db/repositories';
-import type { SecretMaterial, SecretWriterRef } from '@xecret/db/repositories';
+import type { Executor, SecretMaterial, SecretWriterRef } from '@xecret/db/repositories';
 import { encodeBlob } from './schemas/vault';
 import { actorId } from './actor';
 import type { Principal } from './actor';
@@ -201,6 +201,36 @@ export interface SecretWriteResult {
 }
 
 /**
+ * What a batch of writes is about to do to an environment's secret count: how
+ * many secrets it creates, and which live ones it removes first.
+ */
+export interface SecretCapacityChange {
+  creates: number;
+  /** The names those creates take — so a name already taken can be told apart from a full environment. */
+  names: readonly string[];
+  removals: readonly string[];
+  /**
+   * Whether the executor is the write's own transaction. A dry run counts
+   * without locking: it writes nothing, so there is nothing to serialise.
+   */
+  inTransaction: boolean;
+}
+
+/**
+ * The plan's `secretsPerEnvironment` check, supplied by the caller and run here
+ * — inside the write's transaction, after the reference-graph lock and before
+ * any row is touched, or on its own for a dry run.
+ *
+ * A hook rather than an import, deliberately: this module serves every secret
+ * fetch, and no billing decision may be reachable from it (see
+ * `server/entitlements.ts`). The route builds the check (`secretCapacity` in
+ * `server/plan-capacity.ts`); this module only says when it runs. Required on
+ * every batch, so a route that forgets it does not compile, and a write that
+ * would create without one is refused rather than let through.
+ */
+export type SecretCapacity = (exec: Executor, change: SecretCapacityChange) => Promise<void>;
+
+/**
  * A batch of writes and how it should be executed.
  *
  * `dryRun` runs every decision — normalisation, the unchanged check, the version
@@ -213,6 +243,8 @@ export interface SecretWriteBatch {
   writer: SecretWriterRef;
   writes: readonly SecretWrite[];
   dryRun?: boolean | undefined;
+  /** The plan's ceiling on the environment's secrets. See `SecretCapacity`. */
+  capacity: SecretCapacity;
 }
 
 /** The unwrapped environment key, valid only for the duration of one callback. */
@@ -288,10 +320,10 @@ export async function decryptOne(
 export async function writeSecretValue(
   scope: EnvironmentScope,
   services: ServiceContext,
-  params: SecretWrite & { writer: SecretWriterRef },
+  params: SecretWrite & { writer: SecretWriterRef; capacity: SecretCapacity },
 ): Promise<SecretWriteResult> {
-  const { writer, ...write } = params;
-  const [result] = await applySecretWrites(scope, services, { writer, writes: [write] });
+  const { writer, capacity, ...write } = params;
+  const [result] = await applySecretWrites(scope, services, { writer, writes: [write], capacity });
 
   if (!result) {
     // Unreachable: one write in, one result out. A throw rather than a non-null
@@ -349,8 +381,13 @@ export async function applySecretWrites(
 
     // Stated as its own branch rather than left to fall out of `isPendingWrite`
     // returning nothing: "a dry run does not open a transaction" is a property
-    // worth reading in one line instead of inferring from a type predicate.
-    if (batch.dryRun === true) return results;
+    // worth reading in one line instead of inferring from a type predicate. The
+    // plan's ceiling is still asked, so a preview says what the write would
+    // refuse.
+    if (batch.dryRun === true) {
+      await checkCapacity(batch.capacity, services.db, prepared, [], false);
+      return results;
+    }
 
     const pending = prepared.filter(isPendingWrite);
 
@@ -363,7 +400,7 @@ export async function applySecretWrites(
 
     if (pending.length === 0 && retypeOnly.length === 0) return results;
 
-    await commitWrites(services, scope, key, batch.writer, pending, retypeOnly);
+    await commitWrites(services, scope, key, batch.writer, pending, retypeOnly, batch.capacity);
     return results;
   });
 }
@@ -475,6 +512,8 @@ export interface ClientSecretWriteBatch {
   writer: SecretWriterRef;
   writes: readonly ClientSecretWrite[];
   dryRun?: boolean | undefined;
+  /** The plan's ceiling on the environment's secrets. See `SecretCapacity`. */
+  capacity: SecretCapacity;
   /**
    * Secrets to soft-delete in the same transaction as the writes (P19 §3 and
    * §4): a promotion that removes what the source no longer has, a restore that
@@ -540,6 +579,7 @@ export async function applyClientSecretWrites(
   const results = prepared.map(toClientWriteResult);
   if (batch.dryRun === true) {
     await batch.guard?.(services.db);
+    await checkCapacity(batch.capacity, services.db, prepared, removals, false);
     return results;
   }
 
@@ -550,7 +590,10 @@ export async function applyClientSecretWrites(
 
   if (pending.length === 0 && noteOnly.length === 0 && removals.length === 0) return results;
 
-  await commitClientWrites(services, scope, batch.writer, prepared, removals, batch.guard);
+  await commitClientWrites(services, scope, batch.writer, prepared, removals, {
+    guard: batch.guard,
+    capacity: batch.capacity,
+  });
   return results;
 }
 
@@ -558,13 +601,18 @@ export async function applyClientSecretWrites(
 export async function writeClientSecretValue(
   scope: EnvironmentScope,
   services: ServiceContext,
-  params: ClientSecretWrite & { writer: SecretWriterRef; guard?: GraphGuard | undefined },
+  params: ClientSecretWrite & {
+    writer: SecretWriterRef;
+    guard?: GraphGuard | undefined;
+    capacity: SecretCapacity;
+  },
 ): Promise<SecretWriteResult> {
-  const { writer, guard, ...write } = params;
+  const { writer, guard, capacity, ...write } = params;
   const [result] = await applyClientSecretWrites(scope, services, {
     writer,
     writes: [write],
     guard,
+    capacity,
   });
 
   if (!result) {
@@ -759,14 +807,19 @@ async function commitClientWrites(
   scope: EnvironmentScope,
   writer: SecretWriterRef,
   writes: readonly PreparedClientWrite[],
-  removals: readonly string[] = [],
-  guard?: GraphGuard,
+  removals: readonly string[],
+  checks: { guard?: GraphGuard | undefined; capacity: SecretCapacity },
 ): Promise<void> {
   try {
     await services.db.transaction(async (tx) => {
       // The graph check first, under its lock, so what it read is what this
       // transaction commits into — see `ClientSecretWriteBatch.guard`.
-      await guard?.(tx);
+      await checks.guard?.(tx);
+
+      // Then the plan's ceiling, under its own lock and before any row is
+      // touched, weighing what the environment will hold once the removals
+      // below are applied. See `SecretCapacity`.
+      await checkCapacity(checks.capacity, tx, writes, removals, true);
 
       // Removals first, so a name a removal frees is free for a create in the
       // same transaction.
@@ -1068,6 +1121,27 @@ function isPendingWrite(write: PreparedWrite): write is PendingWrite {
   return write.kind !== 'unchanged' && write.encrypted !== undefined;
 }
 
+/**
+ * Runs the plan's ceiling for the writes of a batch that create a secret.
+ *
+ * Nothing created, nothing asked. A batch that would create with no check to
+ * run is a wiring fault — every route that can create passes one, and the
+ * types require it — and it is refused as a 500 rather than let past the
+ * ceiling: failing closed is the only safe reading of a missing limit check.
+ */
+async function checkCapacity(
+  capacity: SecretCapacity | undefined,
+  exec: Executor,
+  writes: readonly { kind: string; name: string }[],
+  removals: readonly string[],
+  inTransaction: boolean,
+): Promise<void> {
+  const names = writes.filter((write) => write.kind === 'create').map((write) => write.name);
+  if (names.length === 0) return;
+  if (capacity === undefined) throw errors.internal('secret create without a capacity check');
+  await capacity(exec, { creates: names.length, names, removals, inTransaction });
+}
+
 function toWriteResult(write: PreparedWrite): SecretWriteResult {
   const status: SecretWriteStatus =
     write.kind === 'unchanged' ? 'unchanged' : write.kind === 'create' ? 'created' : 'updated';
@@ -1215,9 +1289,15 @@ async function commitWrites(
   writer: SecretWriterRef,
   writes: readonly PendingWrite[],
   retypes: readonly UnchangedWrite[] = [],
+  capacity?: SecretCapacity,
 ): Promise<void> {
   try {
     await services.db.transaction(async (tx) => {
+      // The plan's ceiling first, under its lock, before any row is touched.
+      // Optional only for the restore of an earlier version, which appends and
+      // can never create — see `checkCapacity`.
+      await checkCapacity(capacity, tx, writes, [], true);
+
       for (const write of writes) {
         const payload = {
           mode: 'server' as const,

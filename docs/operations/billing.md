@@ -77,6 +77,7 @@ code is right** and the guide is out of date:
 | Localized prices for INR, JPY, AUD | Also **EUR** | The pricing page publishes a euro sheet (€9/€6 Pro, €21/€13 Team). Set fixed EUR prices on all four products, or remove the sheet. |
 | Prices from `pricing-plan.md` §4 | The pricing page's figures | Pro monthly $8 / yearly $60; Team $19 / $144 — check every currency against `apps/web/src/app/pricing/page.tsx`, which is what customers were shown. |
 | Meter with a **free threshold** per product (150 / 500 / 2,000 units) | **Free threshold 0** on every product | The code subtracts the allowance itself (`includedFetchesPerMonth` in `plans.ts`, plus any support override — Pro 200k, Team 1M). A Dodo threshold as well would give it twice. |
+| Meter attached to every paid product | Attached to the **Pro** products only ($0.01 per unit). The **Team** products are plain subscriptions with the 14-day trial and **no meter** | Dodo's dashboard cannot put a trial and a meter on one product — switching a product to usage-based billing silently drops its trial. The trial is the promise (product description, trial emails, §3's hard-gate check), so Team keeps it. Team overage past 1M fetches is still counted, warned about at 80%/100% and reported to Dodo, but Dodo bills nothing for it — a deliberate undercharge, revisited if Dodo ever supports both. |
 | `DODO_METER_SECRET_FETCH` | The meter's **event name** (e.g. `secret_fetch_kilo`) | Usage is reported by event name. `check:env` refuses an `mtr_…` id. |
 | Twelve subscribed webhook events | The twelve, **plus** `subscription.updated` and `subscription.past_due` | `subscription.updated` is how a cancellation scheduled for the period end arrives; without it the row learns of it only at the end. |
 | A SCIM add-on ($249) | Not sold | SCIM is an Enterprise inclusion since Scale went; nothing reads `DODO_ADDON_SCIM`. |
@@ -244,11 +245,22 @@ SELECT o.slug, s.plan, s.status, s.dodo_subscription_id, s.dodo_mode
     OR (s.dodo_mode IS NULL
         AND (s.dodo_subscription_id IS NOT NULL OR s.dodo_customer_id IS NOT NULL));
 
-UPDATE organizations SET seat_limit = 5, updated_at = now()
+-- Every test row returns to Free's default seats — the same rows the next
+-- statement resets. A paid one whatever its ceiling; a Free one only from the 5
+-- an ended subscription left it at, so a ceiling support raised is kept, as
+-- migration 0033 keeps it.
+UPDATE organizations SET seat_limit = 3, updated_at = now()
  WHERE id IN (SELECT org_id FROM org_subscriptions
-               WHERE plan <> 'free'
-                 AND (dodo_mode = 'test_mode'
-                      OR (dodo_mode IS NULL AND dodo_subscription_id IS NOT NULL)));
+               WHERE (dodo_mode = 'test_mode'
+                      OR (dodo_mode IS NULL
+                          AND (dodo_subscription_id IS NOT NULL OR dodo_customer_id IS NOT NULL)))
+                 AND plan <> 'free')
+    OR (seat_limit = 5
+        AND id IN (SELECT org_id FROM org_subscriptions
+                    WHERE (dodo_mode = 'test_mode'
+                           OR (dodo_mode IS NULL
+                               AND (dodo_subscription_id IS NOT NULL OR dodo_customer_id IS NOT NULL)))
+                      AND plan = 'free'));
 UPDATE org_subscriptions
    SET plan = 'free', billing_interval = NULL, status = 'active', seats = 1,
        dodo_subscription_id = NULL, dodo_customer_id = NULL, dodo_product_id = NULL,
@@ -477,6 +489,22 @@ the jobs, the membership changes, and the check behind deleting an organisation 
 phase run --env Production -- npm run db:migrate
 ```
 
+Migration **0033** (`0033_free_seat_limit.sql`): the Free plan seats three.
+`organizations.seat_limit` defaults to 3 instead of 5, and one backfill moves each live Free
+organisation from 5 to 3 — only one that carries nothing of a Dodo subscription (no
+subscription, customer, product, mode or applied event), has no support override, and whose
+seated members plus open invitations fit in three. Every live Free organisation left above 3
+— a 5 it declined to move, or any other ceiling somebody set, which it leaves as set — is
+reported as a `WARNING` naming it and the reason, which `npm run db:migrate` prints; once its
+members are sorted out, an operator can move one by hand with
+`UPDATE organizations SET seat_limit = 3, updated_at = now() WHERE id = '<id>';`. Nobody is
+removed and no invitation is withdrawn. Its order against the build does not matter: that build
+writes 3 wherever it returns an organisation to Free, and the 5 an older build writes when a
+subscription ends lands on a row carrying Dodo ids, which the backfill leaves alone. It sets
+`lock_timeout` to five seconds for itself: the `ALTER` needs `organizations` exclusively, and
+queued behind a long transaction it would hold every request that reads the table behind it.
+Past five seconds it fails and rolls back whole; run it again.
+
 ---
 
 ## 6. What this does not do
@@ -484,10 +512,16 @@ phase run --env Production -- npm run db:migrate
 - **Enterprise** is a contract and a manual Dodo invoice; it is set with `plan:set`, never
   through checkout.
 - **SCIM** is an Enterprise inclusion and is not sold.
-- **Plan ceilings are not enforced yet.** The entitlement engine (P11) can refuse the sixth
-  project on Free, but no route does: every organisation has been unlimited through pre-alpha,
-  and pricing-plan §5 promises thirty days' notice before any limit applies. Turning the
-  ceilings on is a separate decision with its own notice.
+- **Plan ceilings no longer wait for notice.** The owner's decision (2026-11) overrode the
+  thirty days pricing-plan §5 had promised — there were no customers yet whom an immediate
+  limit could surprise — so every countable ceiling is enforced at creation from the day it is
+  published: projects, environments per project, secrets per environment, service tokens, CLI
+  devices per person and webhooks, beside the organisation and seat ceilings that already
+  were (`docs/architecture/api.md` §3 lists where). Only creation is refused; nothing already
+  held past a ceiling is deleted or refused a read. The terms say exactly what a lower plan does
+  stop: webhook endpoints are paused on a plan that allows none; new-address read alerts stop
+  (nothing recorded, nothing sent) on a plan without them; and any other feature the plan lacks
+  keeps working as set but cannot be changed.
 - **No card or invoice UI.** Dodo's customer portal is it.
 - **A subscription ended here after fourteen days on hold is not cancelled at Dodo.** The alert
   says so; a human decides.

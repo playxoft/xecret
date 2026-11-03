@@ -11,7 +11,7 @@ import {
   slugify,
   SLUG_MAX_LENGTH,
 } from '@xecret/core/validation';
-import { FAIR_USE } from '@xecret/core/entitlements';
+import { cheapestPlanWithLimit, FAIR_USE, PLANS } from '@xecret/core/entitlements';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@xecret/db/repositories';
 import type {
   EnvironmentRecord,
@@ -471,28 +471,27 @@ export function assertSlugImmutable(
  * it is the only organisation they have, and the thing that lifts the ceiling is
  * a plan rather than a deletion.
  *
- * ── Why this is a 409 and not the `plan_limit` 403 this PR added ──
- * It is the only live entitlement refusal in the product, so it is a fair
- * question. Two reasons it stays a conflict.
+ * ── Why this is a 409 and not the `plan_limit` 403 every other ceiling answers ──
+ * Every other plan ceiling is now refused with `plan_limit` (see the header of
+ * `server/entitlements.ts`), so it is a fair question. It stays a conflict
+ * because the status is a wire contract: `conflict` is what the Go CLI and the
+ * dashboard already branch on for this refusal, and it predates the others.
+ * Moving it would change an answer clients in the field already handle, for a
+ * body field none of them read here. The sentence names the plan that lifts the
+ * ceiling instead — the same plan a `plan_limit` block would.
  *
- * The status is a wire contract. `conflict` is what the Go CLI and the dashboard
- * already branch on for this refusal, and 403 is the code both treat as "this
- * credential may not"; moving it would make a quota look like a permissions
- * failure to every client in the field, for a body field none of them read yet.
- *
- * And a `plan` block would be a promise the rest of the system does not keep.
- * `requireCapacity` and the `upgradeTo` resolution it feeds are deliberately
- * unwired until payments land — see the header of `server/entitlements.ts`. A
- * structured upgrade hint pointing at a plan with no checkout behind it is worse
- * than a sentence, because a sentence is plainly advice and a hint is plainly a
- * button. The sentence says what to do; the machine-readable version arrives
- * with the page that can act on it.
+ * The ceiling is an *account's*, resolved from the plans of the organisations
+ * it holds (`accountOrganizationCeiling`), so the plan named is the cheapest one
+ * that holds more than one — what an account holding only Free organisations
+ * would move one of them to.
  */
 export function organizationLimitReached(ceiling: number): ApiError {
   if (ceiling <= 1) {
+    const upgradeTo = cheapestPlanWithLimit('organizations', 2);
     return errors.conflict(
       'Your plan allows one organisation per account. ' +
-        'Upgrade to create another, or delete the one you have.',
+        `Upgrade to ${upgradeTo === null ? 'a paid plan' : PLANS[upgradeTo].name} to create ` +
+        'another, or delete the one you have.',
     );
   }
 

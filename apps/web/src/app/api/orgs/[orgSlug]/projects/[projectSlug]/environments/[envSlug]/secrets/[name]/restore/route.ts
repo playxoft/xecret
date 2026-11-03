@@ -2,6 +2,7 @@ import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
 import { emitSecretChanges } from '@/server/change-events';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
+import { secretCapacity } from '@/server/plan-capacity';
 import { authenticatedRoute } from '@/server/route';
 import {
   restoreClientSecretBody,
@@ -170,6 +171,8 @@ export const POST = authenticatedRoute<Params>(
               valueType: current.valueType,
               declaredReferences: current.declaredReferences,
             },
+            // A restore appends to a secret that exists; the ceiling never refuses it.
+            capacity: secretCapacity(scope),
           });
 
     record(

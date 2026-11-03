@@ -18,6 +18,7 @@ import {
   roleWithinAuthority,
   widensHolder,
 } from '@xecret/core/authz';
+import { checkLimit, describeLimit, PLANS } from '@xecret/core/entitlements';
 import type { Database, InvitationGrantSeed } from '@xecret/db';
 import {
   FieldConflictError,
@@ -409,6 +410,34 @@ export function mapMembershipError(cause: unknown): never {
     }
   }
   throw cause;
+}
+
+/**
+ * What an invitation refused for want of a seat says to the person inviting:
+ * how many seats the organisation holds, and — where its plan caps them — the
+ * plan that would hold one more.
+ *
+ * Still the `409 conflict` the dashboard and the CLI already branch on for this
+ * refusal (it is resolved by removing a member or revoking an invitation as
+ * often as by paying), but no longer a sentence that leaves the inviter to
+ * guess what the limit was. The number is the organisation's own
+ * `seat_limit` — Free's three unless support raised it — and the plan is read
+ * from the resolved entitlements, as every other refusal's is.
+ */
+export function seatsFullMessage(scope: OrgScope): string {
+  const held = scope.organization.seatLimit;
+  const verdict = checkLimit(scope.entitlements, 'seats', held);
+  const upgradeTo = verdict.kind === 'exceeded' ? verdict.upgradeTo : null;
+  const upgrade =
+    upgradeTo === null
+      ? ''
+      : PLANS[upgradeTo].limits.seats === null
+        ? `, or move to the ${PLANS[upgradeTo].name} plan, which does not limit members`
+        : `, or move to the ${PLANS[upgradeTo].name} plan`;
+  return (
+    `This organisation has no seats left: all ${describeLimit('seats', held)} it holds are ` +
+    `taken or promised to open invitations. Remove a member or revoke an invitation first${upgrade}.`
+  );
 }
 
 /** The audit reason each repository refusal is filed under. */

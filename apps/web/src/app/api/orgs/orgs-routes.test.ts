@@ -213,7 +213,7 @@ function provisioned() {
       id: uuidv7(),
       name: 'Acme',
       slug: 'acme',
-      seatLimit: 5,
+      seatLimit: 3,
       createdBy: USER_ID,
       createdAt: now,
       updatedAt: now,

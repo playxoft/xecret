@@ -2,31 +2,22 @@
 
 import { useMemo } from 'react';
 
-import { apiPath, appPath, withQuery } from '../_lib/paths';
-import { useApiResource } from '../_lib/use-api-resource';
+import { appPath } from '../_lib/paths';
 import { BoxIcon, FileTextIcon, SettingsIcon, TerminalIcon, UsersIcon } from '@/components/ui';
 import type { NavSection } from '@/components/layout';
-import type { ProjectListResponse } from '@/components/projects/types';
 import { canAdminister } from './session';
 import type { SessionOrganization } from './session';
 
 /**
  * The sidebar's contents.
  *
- * ── This one does fetch ──
- * The nav used to be derived from the URL alone, which made it correct on the
- * first paint of a cold navigation and cost nothing. It also meant the sidebar
- * could only ever show where you *are*, never where you could go — you had to
- * land on the projects page to discover a project existed.
- *
- * So it reads the project list. The trade is paid for deliberately:
- *
- *  - **One request, cached by the shell**, made once per organisation. Not one
- *    per project: a sidebar that fanned out over ten projects to fill in
- *    triangles nobody has clicked would spend ten round trips on decoration.
- *  - **The URL still wins on first paint.** Every item the URL implies is in the
- *    nav before the request resolves, so navigating never leaves the sidebar
- *    momentarily empty; the list fills in around what is already there.
+ * ── Derived from the URL, and nothing else ──
+ * Every item is known before any request has resolved, so the sidebar is right
+ * on the first paint of a cold navigation and costs nothing. It used to read the
+ * organisation's project list as well, to unfold "Projects" into one row per
+ * project; that list now lives only on the projects page, where it pages
+ * properly and every card carries its description. "Projects" is one row that
+ * goes there.
  *
  * ── The account area is not in here ──
  * `/app/settings/*` has no organisation in its path, and the nav used to react
@@ -39,21 +30,8 @@ import type { SessionOrganization } from './session';
  * already lives, and where account-shaped things belong — and the sidebar keeps
  * showing the organisation throughout. `orgSlug` falls back to the last
  * organisation the tab was in for exactly this case, resolved by the chrome;
- * nothing highlights, because "Projects" is an exact match and the account
- * routes are not beneath it.
- *
- * The project list is the one part that does *not* follow the fallback:
- * `projectsOrgSlug` carries the organisation the URL actually names, so a visit
- * to the account area spends no request filling in a tree nobody is looking at.
- *
- * ── Where environments went ──
- * The tree stops at projects. Environments were a third level that only ever
- * populated for the project you already had open, so the sidebar spent a request
- * and a nesting level restating what the screen in front of you was showing —
- * and a three-deep tree in a 240px column pushes every label into a truncation.
- * The project's own page lists its environments as cards, and the environment
- * screen carries a switcher for moving between them, which is where comparing
- * two environments actually happens.
+ * nothing highlights, because none of the account routes is beneath an
+ * organisation's path.
  */
 
 export interface DashboardNavParams {
@@ -68,21 +46,10 @@ export interface DashboardNavParams {
    */
   orgSlug: string | null;
   /**
-   * The organisation whose projects the tree lists, or `null` to list none.
-   *
-   * Separate from `orgSlug` because the fallback is good enough to *link* to
-   * and not good enough to *fetch*. The chrome passes the URL's organisation
-   * here, so the account area costs no request at all; the price is that
-   * "Projects" sits there without its children while you are in your own
-   * settings, which is the right way round — a request to fill in a list
-   * nobody navigated to is a worse trade than a collapsed one.
-   *
-   * Navigating back into an organisation does not flicker: `useApiResource`
-   * keeps the last result it received alongside the path it belongs to, so
-   * returning to a path it has already answered renders from that immediately
-   * while the refresh runs behind it.
+   * The project the URL is inside, or `null` on every other page — the
+   * projects index included. Read for one thing: "Projects" stays highlighted
+   * while you are inside one of them.
    */
-  projectsOrgSlug: string | null;
   projectSlug: string | null;
   /**
    * The viewer's membership of the current organisation — its authority is
@@ -94,20 +61,17 @@ export interface DashboardNavParams {
   viewer: SessionOrganization | null;
 }
 
-/** Enough projects for the sidebar; the projects page pages properly. */
-const PROJECT_LIMIT = 50;
-
-export function useDashboardNav({
+/** The nav itself, without the memo — what `useDashboardNav` renders. */
+export function dashboardNav({
   orgSlug,
-  projectsOrgSlug,
   projectSlug,
   viewer,
 }: DashboardNavParams): readonly NavSection[] {
-  const projects = useApiResource<ProjectListResponse>(
-    projectsOrgSlug === null
-      ? null
-      : withQuery(apiPath.projects(projectsOrgSlug), { limit: PROJECT_LIMIT }),
-  );
+  // Reachable only for an account with no memberships at all — which the
+  // shell answers with its own empty state rather than a sidebar. An empty nav
+  // rather than a placeholder section: there is genuinely nowhere to go, and
+  // the account area is reached from the user menu regardless.
+  if (orgSlug === null) return [];
 
   // Tokens and the audit log are rendered only for viewers whose authority can
   // open them — the usual rule: authority decides what is drawn, the server
@@ -117,89 +81,79 @@ export function useDashboardNav({
   const showTokens = canAdminister(viewer, 'token.create') || canAdminister(viewer, 'token.revoke');
   const showAudit = canAdminister(viewer, 'audit.read');
 
-  return useMemo(() => {
-    // Reachable only for an account with no memberships at all — which the
-    // shell answers with its own empty state rather than a sidebar. An empty
-    // nav rather than a placeholder section: there is genuinely nowhere to go,
-    // and the account area is reached from the user menu regardless.
-    if (orgSlug === null) return [];
+  return [
+    {
+      items: [
+        {
+          href: appPath.org(orgSlug),
+          label: 'Projects',
+          icon: <BoxIcon />,
+          // Chords are the initial of the label, which is the only mapping
+          // nobody has to memorise. They are unmodified single letters, so see
+          // `useNavShortcuts` for the (deliberately long) list of situations in
+          // which it declines to act on one — chiefly, any time the keystroke
+          // could have been meant for a text field.
+          shortcut: ['P'],
+          // The projects page, and every project and environment page beneath
+          // it — but not the organisation's other pages, which share its
+          // prefix: members, tokens, audit and settings all live at
+          // `/app/{org}/…` too. The URL has already said which kind of page
+          // this is, so outside a project the match is exact, and inside one
+          // the prefix is what keeps "Projects" lit.
+          exact: projectSlug === null,
+        },
+        {
+          href: appPath.members(orgSlug),
+          label: 'Members',
+          icon: <UsersIcon />,
+          shortcut: ['M'],
+        },
+        ...(showTokens
+          ? [
+              {
+                href: appPath.tokens(orgSlug),
+                label: 'Tokens',
+                icon: <TerminalIcon />,
+                shortcut: ['T'],
+              },
+            ]
+          : []),
+        ...(showAudit
+          ? [
+              {
+                href: appPath.audit(orgSlug),
+                label: 'Audit',
+                icon: <FileTextIcon />,
+                shortcut: ['A'],
+              },
+            ]
+          : []),
+        {
+          href: appPath.orgSettings(orgSlug),
+          // Named in full, because another "Settings" exists: the account
+          // area behind the avatar menu. Two entries that differ only by
+          // where they sit is how someone changes the wrong one.
+          label: 'Organisation settings',
+          icon: <SettingsIcon />,
+          // `S` rather than `O`: it is the initial of the word people
+          // actually say for this page, and `O` is nobody's mnemonic for
+          // "organisation settings".
+          shortcut: ['S'],
+        },
+      ],
+    },
+  ];
+}
 
-    const known = projects.data?.projects ?? [];
-
-    // The project in the URL, even when the list has not arrived — or does not
-    // contain it, which happens for a project created in another tab. Without
-    // this the sidebar would drop the project you are looking at.
-    const slugs = known.some((project) => project.slug === projectSlug)
-      ? known.map((project) => ({ slug: project.slug, name: project.name }))
-      : [
-          ...known.map((project) => ({ slug: project.slug, name: project.name })),
-          ...(projectSlug === null ? [] : [{ slug: projectSlug, name: projectSlug }]),
-        ];
-
-    return [
-      {
-        items: [
-          {
-            href: appPath.org(orgSlug),
-            label: 'Projects',
-            icon: <BoxIcon />,
-            // Chords are the initial of the label, which is the only mapping
-            // nobody has to memorise. They are unmodified single letters, so
-            // see `useNavShortcuts` for the (deliberately long) list of
-            // situations in which it declines to act on one — chiefly, any
-            // time the keystroke could have been meant for a text field.
-            shortcut: ['P'],
-            // Without this every page beneath `/app/{org}` would highlight
-            // "Projects", because they all share its prefix.
-            exact: true,
-            // `exact` is dropped with the third level: a project row is now the
-            // deepest thing under it, so it should stay highlighted while you
-            // are inside one of its environments.
-            children: slugs.map((project) => ({
-              href: appPath.project(orgSlug, project.slug),
-              label: project.name,
-            })),
-          },
-          {
-            href: appPath.members(orgSlug),
-            label: 'Members',
-            icon: <UsersIcon />,
-            shortcut: ['M'],
-          },
-          ...(showTokens
-            ? [
-                {
-                  href: appPath.tokens(orgSlug),
-                  label: 'Tokens',
-                  icon: <TerminalIcon />,
-                  shortcut: ['T'],
-                },
-              ]
-            : []),
-          ...(showAudit
-            ? [
-                {
-                  href: appPath.audit(orgSlug),
-                  label: 'Audit',
-                  icon: <FileTextIcon />,
-                  shortcut: ['A'],
-                },
-              ]
-            : []),
-          {
-            href: appPath.orgSettings(orgSlug),
-            // Named in full, because another "Settings" exists: the account
-            // area behind the avatar menu. Two entries that differ only by
-            // where they sit is how someone changes the wrong one.
-            label: 'Organisation settings',
-            icon: <SettingsIcon />,
-            // `S` rather than `O`: it is the initial of the word people
-            // actually say for this page, and `O` is nobody's mnemonic for
-            // "organisation settings".
-            shortcut: ['S'],
-          },
-        ],
-      },
-    ];
-  }, [orgSlug, projectSlug, projects.data, showTokens, showAudit]);
+export function useDashboardNav({
+  orgSlug,
+  projectSlug,
+  viewer,
+}: DashboardNavParams): readonly NavSection[] {
+  // Memoised because `useNavShortcuts` rebuilds its key map whenever the nav's
+  // identity changes, and the chrome re-renders on every navigation.
+  return useMemo(
+    () => dashboardNav({ orgSlug, projectSlug, viewer }),
+    [orgSlug, projectSlug, viewer],
+  );
 }

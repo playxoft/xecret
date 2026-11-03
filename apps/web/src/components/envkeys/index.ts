@@ -115,6 +115,7 @@ export {
 export type {
   ImportPolicyCheck,
   MetadataPatch,
+  MetadataWritten,
   PulledEnvironment,
   SecretIo,
   SecretIoContext,

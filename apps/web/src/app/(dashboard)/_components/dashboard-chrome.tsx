@@ -9,6 +9,7 @@ import { lockVault, VaultProvider } from '@/components/vault';
 import { AppShell, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
 import { CreateOrganizationDialog } from '@/components/organizations';
+import type { ProjectResponse } from '@/components/projects/types';
 import { Button, EmptyState, PlusIcon, Skeleton, UsersIcon } from '@/components/ui';
 import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
 import { useDashboardNav } from './dashboard-nav';
@@ -19,7 +20,7 @@ import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
-import type { MeResponse } from './session';
+import type { MeResponse, VaultStatus } from './session';
 
 /**
  * The dashboard's frame: the session, the sidebar, and the breadcrumb trail.
@@ -75,20 +76,26 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     null;
 
   // Built before the early returns below, because hooks cannot run
-  // conditionally. It issues no request until there is an organisation in the
-  // *URL* — `projectsOrgSlug`, not the resolved slug — so the loading and
-  // locked paths, and the account area, cost nothing extra. The membership is
-  // threaded in from the session resource because this runs above the
-  // SessionProvider, and is read for the same organisation the hrefs are built
-  // from, so the admin-only items can never describe one organisation's
-  // authority over another's links.
+  // conditionally. It issues no request: every item comes from the URL. The
+  // membership is threaded in from the session resource because this runs
+  // above the SessionProvider, and is read for the same organisation the hrefs
+  // are built from, so the admin-only items can never describe one
+  // organisation's authority over another's links.
   const viewer = memberships?.find((organization) => organization.slug === navOrgSlug) ?? null;
   const nav = useDashboardNav({
-    ...location,
     orgSlug: navOrgSlug,
-    projectsOrgSlug: location.orgSlug,
+    projectSlug: location.projectSlug,
     viewer,
   });
+
+  // The project the URL is inside, for the names in the breadcrumb trail — see
+  // `trailPath` for when it is read. Screens that rename what it names re-read
+  // it through `SessionValue.refreshTrail`.
+  const trail = useApiResource<ProjectResponse>(trailPath(location, session.data?.vault));
+  const reloadTrail = trail.reload;
+  const refreshTrail = useCallback(() => {
+    void reloadTrail();
+  }, [reloadTrail]);
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from
@@ -239,6 +246,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         vault,
         lock,
         refresh: reloadSession,
+        refreshTrail,
         createOrganization: openCreateOrganization,
       }}
     >
@@ -256,7 +264,13 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           user={{ name: user.displayName ?? user.email, email: user.email }}
           accountHref={appPath.account()}
           onLock={lock}
-          breadcrumbs={buildBreadcrumbs(location, currentOrg?.name ?? null)}
+          breadcrumbs={buildBreadcrumbs(location, {
+            org: currentOrg?.name ?? null,
+            project: trail.data?.project.name ?? null,
+            environment:
+              trail.data?.environments.find((environment) => environment.slug === location.envSlug)
+                ?.name ?? null,
+          })}
         >
           {children}
         </AppShell>
@@ -272,30 +286,73 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 }
 
 /**
+ * What the shell reads for the trail's names: the project the URL is inside, or
+ * nothing.
+ *
+ * One request per project, not per page — the chrome outlives the navigations
+ * between a project's pages, and the path only changes with the project. It is
+ * the same `GET` the project and environment screens make, and nothing at all
+ * is read outside a project.
+ *
+ * And only once the session is known to be unlocked. A cold load onto a locked
+ * vault used to spend the request on a refusal behind the lock screen, and
+ * nothing asked again after the unlock, because the path had not changed — so
+ * the trail kept its slugs until the next project. Withheld until then, the
+ * unlock *is* the change, and the trail is read the moment there is a screen
+ * under it.
+ */
+export function trailPath(
+  location: DashboardLocation,
+  vault: VaultStatus | undefined,
+): string | null {
+  if (vault?.configured !== true || !vault.unlocked) return null;
+  if (location.orgSlug === null || location.projectSlug === null) return null;
+  return apiPath.project(location.orgSlug, location.projectSlug);
+}
+
+/** The display names the trail can show, each `null` until it is known. */
+export interface TrailNames {
+  org: string | null;
+  project: string | null;
+  environment: string | null;
+}
+
+/**
  * The trail down the tenancy chain.
  *
  * It stops at the deepest resource in the URL rather than naming the page: each
  * screen's `<h1>` already does that, and a crumb repeating it would say the same
- * word twice in a row. The organisation appears under its display name because
- * that is the one label the shell already knows; everything below it is a slug,
- * for the same reason the sidebar uses slugs.
+ * word twice in a row.
+ *
+ * Every crumb is labelled with its display name — "Payments API", not
+ * `payments-api` — and links by slug, which is the identifier and belongs in
+ * the URL. The trail used to show the project and environment by slug, so the
+ * line above every project page named it by its identifier while the heading
+ * under it used its name. Until a name is known — the first moment of a cold
+ * load, or a project the viewer cannot read — the slug stands in.
  */
-function buildBreadcrumbs(
+export function buildBreadcrumbs(
   location: DashboardLocation,
-  orgName: string | null,
+  names: TrailNames,
 ): readonly BreadcrumbItem[] {
   const { orgSlug, projectSlug, envSlug, isAccountArea } = location;
 
   if (isAccountArea) return [{ label: 'Account' }];
   if (orgSlug === null) return [{ label: 'Organisations' }];
 
-  const crumbs: BreadcrumbItem[] = [{ label: orgName ?? orgSlug, href: appPath.org(orgSlug) }];
+  const crumbs: BreadcrumbItem[] = [{ label: names.org ?? orgSlug, href: appPath.org(orgSlug) }];
   if (projectSlug === null) return crumbs;
 
-  crumbs.push({ label: projectSlug, href: appPath.project(orgSlug, projectSlug) });
+  crumbs.push({
+    label: names.project ?? projectSlug,
+    href: appPath.project(orgSlug, projectSlug),
+  });
   if (envSlug === null) return crumbs;
 
-  crumbs.push({ label: envSlug, href: appPath.environment(orgSlug, projectSlug, envSlug) });
+  crumbs.push({
+    label: names.environment ?? envSlug,
+    href: appPath.environment(orgSlug, projectSlug, envSlug),
+  });
   return crumbs;
 }
 
