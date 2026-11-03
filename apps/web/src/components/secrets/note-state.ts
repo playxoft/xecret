@@ -44,3 +44,17 @@ export function stagedNote(
   if (stored.noteState === 'unreadable') return value;
   return value === (stored.note ?? '') ? null : value;
 }
+
+/**
+ * Said beside a note that opened only under a retired version of the
+ * environment's key.
+ *
+ * A note's ciphertext carries no key id, so a note sealed under an old key
+ * after the rotation that retired it — by somebody who held that key and has
+ * since lost access — opens exactly like one written before it. A value is
+ * protected from that by the key id it is checked against; a note is not, so
+ * the row says which key it opened under and leaves the judgement to the
+ * reader.
+ */
+export const RETIRED_KEY_NOTE_COPY =
+  'Sealed under an earlier version of this environment’s key, from before its last rotation. Anyone who held that key could have written it — check it says what you expect.';

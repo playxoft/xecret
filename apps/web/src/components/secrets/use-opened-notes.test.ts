@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { NOTE_STATE_COPY, noteEditable, stagedNote } from './note-state';
 import { pruneNotes, sealedNoteKey, unopenedNotes, withOpenedNotes } from './use-opened-notes';
-import type { OpenedNotes, WrittenNote, WrittenNotes } from './use-opened-notes';
+import type { OpenedNote, OpenedNotes, WrittenNote, WrittenNotes } from './use-opened-notes';
 import type { SecretSummary } from './types';
 
 /**
@@ -29,6 +29,11 @@ function row(name: string, encNote: string | null, note: string | null = null): 
   };
 }
 
+/** A note that opened, under the active key unless said otherwise. */
+function openedAs(note: string, underRetiredKey = false): OpenedNote {
+  return { note, underRetiredKey };
+}
+
 function writtenOf(...notes: WrittenNote[]): WrittenNotes {
   return new Map(notes.map((note) => [note.id, note]));
 }
@@ -42,7 +47,7 @@ describe('the opened notes', () => {
       row('D', null),
     ];
     const opened: OpenedNotes = new Map([
-      [sealedNoteKey(listing[0]!)!, 'first'],
+      [sealedNoteKey(listing[0]!)!, openedAs('first')],
       // One that would not open: remembered as such.
       [sealedNoteKey(listing[1]!)!, null],
     ]);
@@ -59,9 +64,24 @@ describe('the opened notes', () => {
     expect(unopenedNotes(listing, opened).map((secret) => secret.name)).toEqual(['C']);
   });
 
+  it('marks a note that opened only under a retired key, and no other', () => {
+    // A note carries no key id, so one sealed under a retired key after the
+    // rotation opens exactly like one written before it. The row says which.
+    const listing = [row('OLD', 'xk2.gcm.old'), row('NEW', 'xk2.gcm.new')];
+    const opened: OpenedNotes = new Map([
+      [sealedNoteKey(listing[0]!)!, openedAs('from before', true)],
+      [sealedNoteKey(listing[1]!)!, openedAs('from after')],
+    ]);
+
+    const [old, current] = withOpenedNotes(listing, opened);
+    expect(old).toMatchObject({ note: 'from before', noteUnderRetiredKey: true });
+    expect(current).toMatchObject({ note: 'from after' });
+    expect(current?.noteUnderRetiredKey).toBeUndefined();
+  });
+
   it('keeps a note across a re-read listing, and opens it again once it is rewritten', () => {
     const before = [row('A', 'xk2.gcm.one')];
-    const opened: OpenedNotes = new Map([[sealedNoteKey(before[0]!)!, 'one']]);
+    const opened: OpenedNotes = new Map([[sealedNoteKey(before[0]!)!, openedAs('one')]]);
 
     // The listing a save re-reads: a new array, the same sealed note.
     const reread = [row('A', 'xk2.gcm.one')];
@@ -81,7 +101,9 @@ describe('the opened notes', () => {
     // A server-mode listing, whose notes are already plaintext.
     const listing = [row('A', null, 'plain')];
     expect(withOpenedNotes(listing, new Map())).toBe(listing);
-    expect(withOpenedNotes(listing, new Map([['other\u0000xk2.gcm.x', 'x']]))).toBe(listing);
+    expect(withOpenedNotes(listing, new Map([['other\u0000xk2.gcm.x', openedAs('x')]]))).toBe(
+      listing,
+    );
     expect(unopenedNotes(listing, new Map())).toEqual([]);
   });
 });
@@ -127,11 +149,14 @@ describe('a note this screen has just written', () => {
     // The save has landed and dropped the staged note; the re-read has not.
     // Showing the listing here was the flicker back to the old note.
     const stale = [row('A', 'xk2.gcm.old')];
-    const opened: OpenedNotes = new Map([[sealedNoteKey(stale[0]!)!, 'the old one']]);
+    const opened: OpenedNotes = new Map([
+      [sealedNoteKey(stale[0]!)!, openedAs('the old one', true)],
+    ]);
 
-    expect(withOpenedNotes(stale, opened, writtenOf(mine))[0]).toMatchObject({
-      note: 'the new one',
-    });
+    const shown = withOpenedNotes(stale, opened, writtenOf(mine))[0];
+    expect(shown).toMatchObject({ note: 'the new one' });
+    // Sealed here, under the active key: the old one's provenance is not its.
+    expect(shown?.noteUnderRetiredKey).toBeUndefined();
   });
 
   it('shows at once in the listing that carries it, with nothing to decrypt', () => {
@@ -156,12 +181,12 @@ describe('what is kept between listings', () => {
   it('drops the plaintext of every note the listing no longer carries', () => {
     const listing = [row('A', 'xk2.gcm.current')];
     const state = {
-      opened: new Map<string, string | null>([
-        ['id-A\u0000xk2.gcm.current', 'current'],
+      opened: new Map<string, OpenedNote | null>([
+        ['id-A\u0000xk2.gcm.current', openedAs('current')],
         // Superseded by an edit.
-        ['id-A\u0000xk2.gcm.older', 'older'],
+        ['id-A\u0000xk2.gcm.older', openedAs('older')],
         // A row that is gone.
-        ['id-B\u0000xk2.gcm.b', 'deleted'],
+        ['id-B\u0000xk2.gcm.b', openedAs('deleted')],
       ]),
       written: writtenOf(),
     };
@@ -176,15 +201,15 @@ describe('what is kept between listings', () => {
       sealed: 'xk2.gcm.new',
       note: 'n',
     };
-    const state = { opened: new Map<string, string | null>(), written: writtenOf(mine) };
+    const state = { opened: new Map<string, OpenedNote | null>(), written: writtenOf(mine) };
 
     // Not caught up: kept, and nothing has changed.
     expect(pruneNotes(state, [row('A', 'xk2.gcm.old')])).toBe(state);
 
-    // Caught up: the plaintext is now simply an opened note.
+    // Caught up: the plaintext is now simply an opened note, sealed under the active key.
     const caught = pruneNotes(state, [row('A', 'xk2.gcm.new')]);
     expect(caught.written.size).toBe(0);
-    expect(caught.opened.get('id-A\u0000xk2.gcm.new')).toBe('n');
+    expect(caught.opened.get('id-A\u0000xk2.gcm.new')).toEqual(openedAs('n'));
 
     // Overtaken by somebody else's write: dropped, and nothing claimed for it.
     const overtaken = pruneNotes(state, [row('A', 'xk2.gcm.theirs')]);

@@ -33,8 +33,14 @@ import type { SecretSummary } from './types';
  * stored, and the row shows it throughout.
  */
 
-/** What each sealed note opened to: its plaintext, or `null` for one that did not open. */
-export type OpenedNotes = ReadonlyMap<string, string | null>;
+/** A sealed note that opened: its plaintext, and whether only a retired key opened it. */
+export interface OpenedNote {
+  note: string;
+  underRetiredKey: boolean;
+}
+
+/** What each sealed note opened to, or `null` for one that did not open. */
+export type OpenedNotes = ReadonlyMap<string, OpenedNote | null>;
 
 /**
  * A note this screen has just written, until the listing shows it.
@@ -102,17 +108,23 @@ export function withOpenedNotes(
     const mine = writtenFor(secret, written);
     if (mine !== undefined) {
       changed = true;
-      return { ...secret, note: mine.note, noteState: undefined };
+      // Sealed here, under the active key: nothing to say about where it came from.
+      return { ...secret, note: mine.note, noteState: undefined, noteUnderRetiredKey: undefined };
     }
 
     const key = sealedNoteKey(secret);
     if (key === null) return secret;
 
     changed = true;
-    const note = opened.get(key);
-    if (note === undefined) return { ...secret, note: null, noteState: 'sealed' };
-    if (note === null) return { ...secret, note: null, noteState: 'unreadable' };
-    return { ...secret, note, noteState: undefined };
+    const opening = opened.get(key);
+    if (opening === undefined) return { ...secret, note: null, noteState: 'sealed' };
+    if (opening === null) return { ...secret, note: null, noteState: 'unreadable' };
+    return {
+      ...secret,
+      note: opening.note,
+      noteState: undefined,
+      noteUnderRetiredKey: opening.underRetiredKey ? true : undefined,
+    };
   });
   return changed ? next : secrets;
 }
@@ -133,7 +145,7 @@ export function pruneNotes(
   const live = new Map(secrets.map((secret) => [secret.id, secret.encNote ?? null]));
   let changed = false;
 
-  const opened = new Map<string, string | null>();
+  const opened = new Map<string, OpenedNote | null>();
   for (const [key, note] of state.opened) {
     const separator = key.indexOf('\u0000');
     if (live.get(key.slice(0, separator)) === key.slice(separator + 1)) opened.set(key, note);
@@ -148,7 +160,9 @@ export function pruneNotes(
       continue;
     }
     changed = true;
-    if (blob === mine.sealed && blob !== null) opened.set(noteKey(mine.id, blob), mine.note);
+    if (blob === mine.sealed && blob !== null && mine.note !== null) {
+      opened.set(noteKey(mine.id, blob), { note: mine.note, underRetiredKey: false });
+    }
   }
 
   return changed ? { opened, written } : state;
@@ -223,7 +237,13 @@ export function useOpenedNotes(
           const next = new Map(previous.opened);
           for (const secret of results) {
             const key = sealedNoteKey(secret);
-            if (key !== null) next.set(key, secret.noteState === 'unreadable' ? null : secret.note);
+            if (key === null) continue;
+            next.set(
+              key,
+              secret.noteState === 'unreadable' || secret.note === null
+                ? null
+                : { note: secret.note, underRetiredKey: secret.noteUnderRetiredKey === true },
+            );
           }
           // Pruned against the listing now on screen, so a note superseded
           // while this was decrypting is not kept for it.

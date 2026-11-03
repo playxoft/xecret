@@ -29,7 +29,7 @@ import {
 import { policyProblem, valueWarning } from '@/components/policies/policy-checks';
 import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { Actor } from './actor';
-import { NOTE_STATE_COPY, noteEditable } from './note-state';
+import { NOTE_STATE_COPY, noteEditable, RETIRED_KEY_NOTE_COPY } from './note-state';
 import { TemplateReferenceList } from './template-reference-list';
 import type { NoteState, SecretSummary } from './types';
 
@@ -185,6 +185,8 @@ export interface ValueFieldProps {
    * write over a note that is still being opened. See `NoteState`.
    */
   noteState?: NoteState | undefined;
+  /** Whether the stored note shown opened only under a retired key — said beside it. */
+  noteFromRetiredKey?: boolean | undefined;
   /** Absent where notes cannot be changed from here. `null` clears the note. */
   onNoteChange?: ((note: string | null) => void | Promise<void>) | undefined;
   noteSaving?: boolean | undefined;
@@ -226,6 +228,7 @@ export function ValueField({
   saving = false,
   note,
   noteState,
+  noteFromRetiredKey = false,
   onNoteChange,
   noteSaving = false,
   noteError = null,
@@ -597,6 +600,7 @@ export function ValueField({
         {...(environment === undefined ? {} : { environmentName: environment.name })}
         note={note ?? null}
         noteState={noteState}
+        noteFromRetiredKey={noteFromRetiredKey}
         onNoteChange={onNoteChange}
         noteSaving={noteSaving}
         noteError={noteError}
@@ -1096,11 +1100,13 @@ function DetailsHint({
   secret,
   note,
   noteState,
+  noteFromRetiredKey,
   environmentName,
 }: {
   secret: SecretSummary;
   note: string | null;
   noteState: NoteState | undefined;
+  noteFromRetiredKey: boolean;
   environmentName?: string | undefined;
 }) {
   const hasNote = note !== null && note.length > 0;
@@ -1114,6 +1120,9 @@ function DetailsHint({
             ? note
             : 'No note on this key.'}
       </span>
+      {hasNote && noteFromRetiredKey ? (
+        <span className="text-warning-text block text-xs">{RETIRED_KEY_NOTE_COPY}</span>
+      ) : null}
 
       <span className="text-fg-subtle block text-xs">
         {/* The environment first, because in a stack of three cells that is
@@ -1165,6 +1174,7 @@ function FieldDetails({
   environmentName,
   note,
   noteState,
+  noteFromRetiredKey,
   onNoteChange,
   noteSaving,
   noteError,
@@ -1174,6 +1184,7 @@ function FieldDetails({
   environmentName?: string | undefined;
   note: string | null;
   noteState: NoteState | undefined;
+  noteFromRetiredKey: boolean;
   onNoteChange: (note: string | null) => void | Promise<void>;
   noteSaving: boolean;
   noteError: string | null;
@@ -1246,6 +1257,7 @@ function FieldDetails({
             secret={secret}
             note={note}
             noteState={noteState}
+            noteFromRetiredKey={noteFromRetiredKey}
             {...(environmentName === undefined ? {} : { environmentName })}
           />
         }
@@ -1348,6 +1360,12 @@ function FieldDetails({
                 : 'No note on this key.'}
           </p>
         )}
+
+        {!editingNote && hasNote && noteFromRetiredKey ? (
+          // Informational, in the warning's colour and not its weight: the
+          // note is shown, and only where it came from is in doubt.
+          <p className="text-warning-text mt-1 text-xs leading-5">{RETIRED_KEY_NOTE_COPY}</p>
+        ) : null}
 
         {noteError !== null && errorVisible ? (
           <p role="alert" className="text-danger-text mt-1.5 text-sm leading-5">

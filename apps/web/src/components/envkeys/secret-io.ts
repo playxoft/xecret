@@ -254,7 +254,9 @@ export interface SecretIo {
    * active one. One that opens under none of them comes back with
    * `noteState: 'unreadable'` rather than failing the listing — the row is
    * still a row, its name and value still work, and the table says why the
-   * note is not shown instead of showing it as absent.
+   * note is not shown instead of showing it as absent. One that opens only
+   * under a retired key comes back with `noteUnderRetiredKey: true`, because
+   * nothing in a note says it was sealed *before* that key was retired.
    */
   openNotes: (secrets: readonly SecretSummary[]) => Promise<SecretSummary[]>;
   restore: (secret: SecretRef, fromVersion: number) => Promise<SecretRestoreResponse>;
@@ -644,11 +646,13 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           }
 
           let note: string | null = null;
+          let openedBy: EnvKeyMaterial | null = null;
           for (const key of keys) {
             try {
               // Bound to the row's id and to no version (spec §4.2), which is
               // why the listing's id is all this needs.
               note = await decryptNote({ material: key, target: targetFor(secret.id), blob });
+              openedBy = key;
               break;
             } catch {
               // Not this key. Nothing from the failure is kept — it would
@@ -658,8 +662,16 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
 
           opened.push(
             note === null
-              ? { ...secret, note: null, noteState: 'unreadable' }
-              : { ...secret, note, noteState: undefined },
+              ? { ...secret, note: null, noteState: 'unreadable', noteUnderRetiredKey: undefined }
+              : {
+                  ...secret,
+                  note,
+                  noteState: undefined,
+                  // Said, not refused: a note opened only by a retired key may
+                  // have been sealed after the rotation, by somebody that
+                  // rotation was meant to shut out. See `noteUnderRetiredKey`.
+                  noteUnderRetiredKey: openedBy !== material,
+                },
           );
         }
         return opened;

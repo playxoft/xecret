@@ -59,6 +59,16 @@ export interface SecretSummary {
    */
   noteState?: NoteState | undefined;
   /**
+   * Set in the browser when the note opened only under a retired version of
+   * the environment's key, not the active one.
+   *
+   * Shown beside the note rather than acted on. A note's ciphertext names no
+   * key, so one sealed under an old key *after* the rotation that retired it —
+   * by somebody who held that key and has since lost access — opens exactly
+   * like one written before it. See `RETIRED_KEY_NOTE_COPY`.
+   */
+  noteUnderRetiredKey?: boolean | undefined;
+  /**
    * The declared shape of the value — one of `SECRET_VALUE_TYPES`.
    *
    * A plain `string` rather than the union, because a row written by a newer

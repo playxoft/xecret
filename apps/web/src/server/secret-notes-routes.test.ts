@@ -332,9 +332,11 @@ describe('a note on a secret, in an end-to-end encrypted environment', () => {
       valueType: 'string',
     });
 
-    // The rotation: a new key version is opened beside the old one, and the IO
-    // the screen re-opens with is built around the new one. Notes carry no key
-    // id, so this one has to be found by trying the keys there are.
+    // The rotation, as the server records it — the old key retired, a new one
+    // active — and the browser's side of it: the new key opened beside the old
+    // one, and the IO the screen re-opens with built around the new one. Notes
+    // carry no key id, so the old note has to be found by trying the keys
+    // there are.
     const after: EnvKeyMaterial = {
       environmentId: env.id,
       envDataKeyId: crypto.randomUUID(),
@@ -342,12 +344,35 @@ describe('a note on a secret, in an end-to-end encrypted environment', () => {
       edk: generateEnvironmentDataKey(),
       ehk: before.ehk,
     };
+    await t.pg.query(`update env_data_keys set status = 'retired' where id = $1`, [env.keyId]);
+    await t.pg.query(
+      `insert into env_data_keys (id, environment_id, version, status, created_by) values ($1, $2, 2, 'active', $3)`,
+      [after.envDataKeyId, env.id, org.owner.id],
+    );
     holdEnvKey(after);
     const rotated = clientSecretIo(ioContext(org), after);
 
-    const [opened] = await rotated.openNotes(await listing(org));
-    expect(opened).toMatchObject({ note: 'Signed by the payments team' });
-    expect(opened?.noteState).toBeUndefined();
+    // A note written after the rotation, under the key that is active now.
+    await rotated.create({
+      name: 'AFTER',
+      value: 'two',
+      note: 'written under the new key',
+      valueType: 'string',
+    });
+
+    const notes = new Map(
+      (await rotated.openNotes(await listing(org))).map((secret) => [secret.name, secret]),
+    );
+    expect(notes.get('WEBHOOK_SECRET')).toMatchObject({ note: 'Signed by the payments team' });
+    expect(notes.get('WEBHOOK_SECRET')?.noteState).toBeUndefined();
+    // …and says so: nothing in a note proves it was sealed before the key that
+    // opened it was retired, so somebody that rotation shut out could have
+    // written it since.
+    expect(notes.get('WEBHOOK_SECRET')?.noteUnderRetiredKey).toBe(true);
+    expect(notes.get('AFTER')).toMatchObject({
+      note: 'written under the new key',
+      noteUnderRetiredKey: false,
+    });
   });
 
   it('says a note will not open, rather than showing it as absent', async () => {

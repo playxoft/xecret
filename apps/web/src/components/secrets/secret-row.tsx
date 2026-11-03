@@ -24,7 +24,13 @@ import { nameWarning, policyProblem } from '@/components/policies/policy-checks'
 import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { ComparedValue } from './compared-value';
 import type { EnvironmentTarget } from './environment-target';
-import { NOTE_STATE_COPY, NOTE_STATE_LABEL, noteEditable, stagedNote } from './note-state';
+import {
+  NOTE_STATE_COPY,
+  NOTE_STATE_LABEL,
+  noteEditable,
+  RETIRED_KEY_NOTE_COPY,
+  stagedNote,
+} from './note-state';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import { crossesTemplateBoundary, TEMPLATE_RENAME_REFUSAL } from './template-references';
 import type { PendingEdit } from './staged-changes';
@@ -356,6 +362,8 @@ export function SecretRow({
    * A staged note is the user's own and needs no explaining, so it clears this.
    */
   const noteState = edit?.note === undefined ? secret.noteState : undefined;
+  /** Whether the stored note on screen opened only under a retired key — said beside it. */
+  const noteFromRetiredKey = edit?.note === undefined && secret.noteUnderRetiredKey === true;
 
   /**
    * Stages a note, or un-stages it when it is back to what is stored.
@@ -433,6 +441,7 @@ export function SecretRow({
           staged={staged}
           note={note}
           noteState={noteState}
+          noteFromRetiredKey={noteFromRetiredKey}
           onMetaChange={onMetaChange}
           onNoteChange={changeNote}
           onTypeChange={changeType}
@@ -479,6 +488,7 @@ export function SecretRow({
             onCommit={onCommit}
             note={note}
             noteState={noteState}
+            noteFromRetiredKey={noteFromRetiredKey}
             onNoteChange={changeNote}
             onHistory={() => onHistory(envSlug)}
             onDelete={onDelete}
@@ -567,6 +577,7 @@ function NameCell({
   staged,
   note,
   noteState,
+  noteFromRetiredKey,
   onMetaChange,
   onNoteChange,
   onTypeChange,
@@ -586,6 +597,8 @@ function NameCell({
   note: string | null;
   /** Why the stored note is not shown, where it is sealed and not opened. */
   noteState: NoteState | undefined;
+  /** Whether the stored note on screen opened only under a retired key. */
+  noteFromRetiredKey: boolean;
   onMetaChange: (patch: { name?: string | null; note?: string | null }) => void;
   /** Stages a note, or un-stages it when it is back to what is stored. */
   onNoteChange: (note: string | null) => void;
@@ -781,7 +794,20 @@ function NameCell({
 
             <Tooltip
               content={
-                noteState !== undefined ? NOTE_STATE_COPY[noteState] : hasNote ? note : 'Add a note'
+                noteState !== undefined ? (
+                  NOTE_STATE_COPY[noteState]
+                ) : hasNote ? (
+                  <>
+                    {note}
+                    {noteFromRetiredKey ? (
+                      <span className="text-warning-text mt-1 block text-xs">
+                        {RETIRED_KEY_NOTE_COPY}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  'Add a note'
+                )
               }
               open={descriptionTip && !describing}
             >
@@ -848,6 +874,12 @@ function NameCell({
         // Said where the note would have been, so an empty field is never
         // mistaken for an empty note.
         <p className="text-fg-subtle px-2 text-sm leading-5">{NOTE_STATE_COPY[noteState]}</p>
+      ) : null}
+
+      {describing && noteFromRetiredKey ? (
+        // Informational, in the warning's colour and not its weight: the note
+        // is shown, and only its provenance is in doubt.
+        <p className="text-warning-text px-2 text-xs leading-5">{RETIRED_KEY_NOTE_COPY}</p>
       ) : null}
 
       {describing ? (
