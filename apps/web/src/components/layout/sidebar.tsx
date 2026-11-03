@@ -149,56 +149,54 @@ function NavEntry({
   const active = isNavItemActive(pathname, item);
 
   return (
-    <li>
-      <div className="relative flex items-center">
-        <Link
-          href={item.href}
-          // Spread conditionally rather than passing `undefined`:
-          // `exactOptionalPropertyTypes` treats an explicit `undefined` as a
-          // different thing from an absent prop.
-          {...(onNavigate ? { onClick: onNavigate } : {})}
-          // `aria-current="page"` is the machine-readable half of the highlight.
-          // The colour alone tells a screen reader user nothing.
-          aria-current={active ? 'page' : undefined}
-          // …and this is the machine-readable half of the key caps, which are
-          // `aria-hidden`. See `ariaKeyShortcuts`.
-          aria-keyshortcuts={
-            item.shortcut && item.shortcut.length > 0 ? ariaKeyShortcuts(item.shortcut) : undefined
-          }
-          className={cn(
-            'x-nav-item relative flex h-9 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 text-sm transition-colors',
-            // `--surface-active` for the current page, `--surface-hover` for a
-            // row under the pointer. Sharing one fill made "you are here"
-            // reproducible by moving the mouse: every row became the current
-            // row on hover, and the only thing left telling them apart was the
-            // font weight. Deliberately no hover step on the active row — it
-            // already sits at the top of the neutral fill ramp, so anything a
-            // hover could add would have to come back *down* and collide with
-            // the hovered-inactive fill again.
-            active
-              ? 'bg-surface-active text-fg font-medium'
-              : 'text-fg-muted hover:bg-surface-hover hover:text-fg',
-          )}
-        >
-          {item.icon ? (
-            <span aria-hidden="true" className="grid size-4 shrink-0 place-items-center text-base">
-              {item.icon}
-            </span>
-          ) : null}
-          <span className="x-nav-label min-w-0 flex-1 truncate">{item.label}</span>
-          {item.badge ? <span className="x-sidebar-wide shrink-0">{item.badge}</span> : null}
-          {item.shortcut && item.shortcut.length > 0 ? (
-            // `x-sidebar-wide` hides it along with the label when the rail is
-            // collapsed: a column of bare key caps with nothing to name them
-            // is furniture, not a hint.
-            //
-            // Always visible rather than revealed on hover, because the whole
-            // point of the cap is to be read by somebody who was not looking
-            // for it — a hint you have to hover to find teaches nobody.
-            <Shortcut keys={item.shortcut} className="x-sidebar-wide" />
-          ) : null}
-        </Link>
-      </div>
+    <li className="flex">
+      <Link
+        href={item.href}
+        // Spread conditionally rather than passing `undefined`:
+        // `exactOptionalPropertyTypes` treats an explicit `undefined` as a
+        // different thing from an absent prop.
+        {...(onNavigate ? { onClick: onNavigate } : {})}
+        // `aria-current="page"` is the machine-readable half of the highlight.
+        // The colour alone tells a screen reader user nothing.
+        aria-current={active ? 'page' : undefined}
+        // …and this is the machine-readable half of the key caps, which are
+        // `aria-hidden`. See `ariaKeyShortcuts`.
+        aria-keyshortcuts={
+          item.shortcut && item.shortcut.length > 0 ? ariaKeyShortcuts(item.shortcut) : undefined
+        }
+        className={cn(
+          'x-nav-item relative flex h-9 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 text-sm transition-colors',
+          // `--surface-active` for the current page, `--surface-hover` for a
+          // row under the pointer. Sharing one fill made "you are here"
+          // reproducible by moving the mouse: every row became the current
+          // row on hover, and the only thing left telling them apart was the
+          // font weight. Deliberately no hover step on the active row — it
+          // already sits at the top of the neutral fill ramp, so anything a
+          // hover could add would have to come back *down* and collide with
+          // the hovered-inactive fill again.
+          active
+            ? 'bg-surface-active text-fg font-medium'
+            : 'text-fg-muted hover:bg-surface-hover hover:text-fg',
+        )}
+      >
+        {item.icon ? (
+          <span aria-hidden="true" className="grid size-4 shrink-0 place-items-center text-base">
+            {item.icon}
+          </span>
+        ) : null}
+        <span className="x-nav-label min-w-0 flex-1 truncate">{item.label}</span>
+        {item.badge ? <span className="x-sidebar-wide shrink-0">{item.badge}</span> : null}
+        {item.shortcut && item.shortcut.length > 0 ? (
+          // `x-sidebar-wide` hides it along with the label when the rail is
+          // collapsed: a column of bare key caps with nothing to name them
+          // is furniture, not a hint.
+          //
+          // Always visible rather than revealed on hover, because the whole
+          // point of the cap is to be read by somebody who was not looking
+          // for it — a hint you have to hover to find teaches nobody.
+          <Shortcut keys={item.shortcut} className="x-sidebar-wide" />
+        ) : null}
+      </Link>
     </li>
   );
 }
