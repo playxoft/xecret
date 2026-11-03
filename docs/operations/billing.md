@@ -244,11 +244,13 @@ SELECT o.slug, s.plan, s.status, s.dodo_subscription_id, s.dodo_mode
     OR (s.dodo_mode IS NULL
         AND (s.dodo_subscription_id IS NOT NULL OR s.dodo_customer_id IS NOT NULL));
 
+-- Every test row, Free ones included, returns to Free's default seats — the
+-- same rows the next statement resets.
 UPDATE organizations SET seat_limit = 3, updated_at = now()
  WHERE id IN (SELECT org_id FROM org_subscriptions
-               WHERE plan <> 'free'
-                 AND (dodo_mode = 'test_mode'
-                      OR (dodo_mode IS NULL AND dodo_subscription_id IS NOT NULL)));
+               WHERE dodo_mode = 'test_mode'
+                  OR (dodo_mode IS NULL
+                      AND (dodo_subscription_id IS NOT NULL OR dodo_customer_id IS NOT NULL)));
 UPDATE org_subscriptions
    SET plan = 'free', billing_interval = NULL, status = 'active', seats = 1,
        dodo_subscription_id = NULL, dodo_customer_id = NULL, dodo_product_id = NULL,
@@ -481,13 +483,17 @@ Migration **0033** (`0033_free_seat_limit.sql`): the Free plan seats three.
 `organizations.seat_limit` defaults to 3 instead of 5, and one backfill moves each live Free
 organisation from 5 to 3 — only one that carries nothing of a Dodo subscription (no
 subscription, customer, product, mode or applied event), has no support override, and whose
-seated members plus open invitations fit in three. Every Free organisation it leaves at 5 is
+seated members plus open invitations fit in three. Every live Free organisation left above 3
+— a 5 it declined to move, or any other ceiling somebody set, which it leaves as set — is
 reported as a `WARNING` naming it and the reason, which `npm run db:migrate` prints; once its
 members are sorted out, an operator can move one by hand with
 `UPDATE organizations SET seat_limit = 3, updated_at = now() WHERE id = '<id>';`. Nobody is
 removed and no invitation is withdrawn. Its order against the build does not matter: that build
 writes 3 wherever it returns an organisation to Free, and the 5 an older build writes when a
-subscription ends lands on a row carrying Dodo ids, which the backfill leaves alone.
+subscription ends lands on a row carrying Dodo ids, which the backfill leaves alone. It sets
+`lock_timeout` to five seconds for itself: the `ALTER` needs `organizations` exclusively, and
+queued behind a long transaction it would hold every request that reads the table behind it.
+Past five seconds it fails and rolls back whole; run it again.
 
 ---
 

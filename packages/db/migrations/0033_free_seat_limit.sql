@@ -36,21 +36,33 @@
 --     three or fewer. One already seating or promising more keeps 5, because
 --     lowering it would put the organisation over its own limit.
 --
--- Every Free organisation left at 5 for one of the last three reasons is
--- reported: one WARNING per organisation, naming it and saying why.
--- `npm run db:migrate` forwards warnings and drops notices (src/migrate.ts), so
--- they reach the operator's terminal. Once its members are sorted out, one can
--- be moved by hand:
+-- Every live Free organisation left holding more than 3 seats is reported: one
+-- WARNING per organisation, naming it and saying why — the 5s left for one of
+-- the last three reasons, and any other ceiling above 3, which somebody set by
+-- hand and this leaves as it is set. `npm run db:migrate` forwards warnings and
+-- drops notices (src/migrate.ts), so they reach the operator's terminal. Once
+-- its members are sorted out, one can be moved by hand:
 --   UPDATE organizations SET seat_limit = 3, updated_at = now() WHERE id = '<id>';
 --
 -- Nobody is removed and no invitation is withdrawn by any of this. A seat
 -- limit refuses the next invitation; it never touches a member already seated.
 --
--- ── Concurrency ──
--- Each candidate is locked first (`FOR UPDATE`, the lock every seat decision in
--- the application takes before it counts), and its seats are counted after, so
--- an invitation issued or accepted while this runs is either counted here or
--- waits for it.
+-- ── Locks ──
+-- The ALTER below takes ACCESS EXCLUSIVE on `organizations` and holds it until
+-- the migration's transaction commits, so no invitation can be issued or
+-- accepted — nothing can read the table at all — while the backfill counts.
+-- That lock is what serialises the backfill against the application; the
+-- `FOR UPDATE` on each candidate changes nothing under it, and is kept only so
+-- the block stays correct if it is ever run on its own.
+--
+-- Waiting for that lock is the risk, not holding it: queued behind a long
+-- transaction, the ALTER would hold every later query on `organizations` —
+-- every request that resolves an organisation — behind it for as long as it
+-- waited. `lock_timeout` bounds the wait at five seconds; past it the migration
+-- fails, rolls back whole, and is simply run again. `SET LOCAL`, and reset at
+-- the end, so later migrations applied in the same run are unaffected.
+
+SET LOCAL lock_timeout = '5s';--> statement-breakpoint
 
 ALTER TABLE "organizations" ALTER COLUMN "seat_limit" SET DEFAULT 3;--> statement-breakpoint
 
@@ -64,6 +76,7 @@ BEGIN
 		SELECT
 			o.id,
 			o.slug::text AS slug,
+			o.seat_limit,
 			(
 				s.dodo_subscription_id IS NOT NULL
 				OR s.dodo_customer_id IS NOT NULL
@@ -79,12 +92,20 @@ BEGIN
 			) AS overridden
 		FROM organizations o
 		LEFT JOIN org_subscriptions s ON s.org_id = o.id
-		WHERE o.seat_limit = 5
+		WHERE o.seat_limit > 3
 			AND o.deleted_at IS NULL
 			AND coalesce(s.plan::text, 'free') = 'free'
 		ORDER BY o.id
 		FOR UPDATE OF o
 	LOOP
+		-- Not the old default: a ceiling somebody or something chose — support,
+		-- the operator tool. Left as it is, and said.
+		IF candidate.seat_limit <> 5 THEN
+			RAISE WARNING 'migration 0033: organisation % (%) keeps seat_limit %: a ceiling above the Free plan''s 3 that the old default did not set, so it is left as set',
+				candidate.id, candidate.slug, candidate.seat_limit;
+			CONTINUE;
+		END IF;
+
 		IF candidate.carries_provider_ids THEN
 			RAISE WARNING 'migration 0033: organisation % (%) keeps seat_limit 5: it carries a Dodo subscription''s ids',
 				candidate.id, candidate.slug;
@@ -116,4 +137,6 @@ BEGIN
 		UPDATE organizations SET seat_limit = 3, updated_at = now() WHERE id = candidate.id;
 	END LOOP;
 END
-$$;
+$$;--> statement-breakpoint
+
+SET LOCAL lock_timeout TO DEFAULT;

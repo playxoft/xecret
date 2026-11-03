@@ -1006,8 +1006,9 @@ audit_logs — no FKs by design; references are soft
 0033  the Free plan seats three: organizations.seat_limit defaults to 3 (was 5), and a
       backfill moves live Free organisations from 5 to 3 — only those carrying no Dodo
       ids and no support override whose seated members plus open invitations fit in
-      three; each Free organisation it leaves at 5 is reported as a WARNING. No
-      column, no constraint; order against the build does not matter
+      three; every live Free organisation left above 3 is reported as a WARNING.
+      lock_timeout 5s for the ALTER's ACCESS EXCLUSIVE. No column, no constraint;
+      order against the build does not matter
 ```
 
 Migration 0033 changes a default and backfills one column, and the build beside it writes 3

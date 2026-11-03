@@ -12,11 +12,13 @@ import type { TestDatabase } from '../testing/pglite';
  * Migration 0033: the Free plan seats three — the column default, and the
  * backfill of the Free organisations still sitting on the old default of 5.
  *
- * Every migration has already run on this database, on no rows. The test seeds
- * organisations in each state the backfill has to tell apart, with the old
- * default written explicitly, and then runs the backfill's own statement, read
- * out of the migration file, so what is tested is what ships — warnings
- * captured, because the warnings are how an operator learns what was left.
+ * Every migration has already run on this database, on no rows. Each test seeds
+ * the organisations it asserts on, in the states the backfill has to tell
+ * apart, with the old default written explicitly, and then runs the backfill's
+ * own statement, read out of the migration file, so what is tested is what
+ * ships — warnings captured, because the warnings are how an operator learns
+ * what was left. No test reads a row another left behind, so any one of them
+ * runs alone.
  */
 
 const MIGRATION = fileURLToPath(
@@ -253,11 +255,20 @@ describe('migration 0033, the backfill', () => {
         dodo_mode: 'live_mode',
       },
     });
-    // A customer and nothing else.
-    const customer = await seedOrg({ subscription: { dodo_customer_id: `cus_${randomUUID()}` } });
+    // Each remaining provider column on its own: any one of them is enough.
+    const lone = await Promise.all(
+      [
+        { dodo_customer_id: `cus_${randomUUID()}` },
+        { dodo_product_id: 'pdt_pro_monthly' },
+        { dodo_event_id: `evt_${randomUUID()}` },
+        { dodo_scheduled_change_at: new Date() },
+        { dodo_mode: 'test_mode' },
+        { dodo_event_at: new Date() },
+      ].map((subscription) => seedOrg({ subscription })),
+    );
 
     const warnings = await backfill();
-    for (const orgId of [awaiting, ended, customer]) {
+    for (const orgId of [awaiting, ended, ...lone]) {
       expect(await seatLimitOf(orgId)).toBe(5);
       expect(warnedAbout(warnings, orgId)).toEqual([
         expect.stringMatching(/carries a Dodo subscription's ids/),
@@ -268,6 +279,13 @@ describe('migration 0033, the backfill', () => {
   it('leaves a Free organisation support has granted an override, and reports it', async () => {
     const overridden = await seedOrg({ subscription: { limit_overrides: { projects: 50 } } });
     const empty = await seedOrg({ subscription: { limit_overrides: {} } });
+    // A JSON `null` in the column — what a cleared override can leave — is no
+    // override either.
+    const jsonNull = await seedOrg();
+    await t.pg.query(
+      `update org_subscriptions set limit_overrides = 'null'::jsonb where org_id = $1`,
+      [jsonNull],
+    );
 
     const warnings = await backfill();
     expect(await seatLimitOf(overridden)).toBe(5);
@@ -276,62 +294,99 @@ describe('migration 0033, the backfill', () => {
     ]);
     // An empty override is no override.
     expect(await seatLimitOf(empty)).toBe(3);
+    expect(await seatLimitOf(jsonNull)).toBe(3);
+    expect(warnedAbout(warnings, jsonNull)).toEqual([]);
   });
 
-  it('never touches a paid plan, a raised ceiling or a deleted organisation, and reports none of them', async () => {
+  it('never touches a paid plan, a deleted organisation or one already at three, and reports none of them', async () => {
     const operatorGranted = await seedOrg({ plan: 'pro' });
     const billed = await seedOrg({
       plan: 'team',
       subscription: { dodo_subscription_id: `sub_${randomUUID()}`, dodo_product_id: 'pdt_team' },
     });
-    const raised = await seedOrg({ seatLimit: 10 });
     const alreadyThree = await seedOrg({ seatLimit: 3 });
     const deleted = await seedOrg({ deleted: true });
 
     const warnings = await backfill();
     expect(await seatLimitOf(operatorGranted)).toBe(5);
     expect(await seatLimitOf(billed)).toBe(5);
-    expect(await seatLimitOf(raised)).toBe(10);
     expect(await seatLimitOf(alreadyThree)).toBe(3);
     expect(await seatLimitOf(deleted)).toBe(5);
-    for (const orgId of [operatorGranted, billed, raised, alreadyThree, deleted]) {
+    for (const orgId of [operatorGranted, billed, alreadyThree, deleted]) {
       expect(warnedAbout(warnings, orgId)).toEqual([]);
     }
   });
 
   /**
+   * A ceiling above three that is not the old default was chosen by someone —
+   * support, the operator tool — and is left as it is. But it is still a Free
+   * organisation seating more than its plan publishes, so it is reported.
+   */
+  it('leaves any other Free ceiling above three as it is set, and reports it', async () => {
+    const raised = await seedOrg({ seatLimit: 10 });
+    const four = await seedOrg({ seatLimit: 4 });
+
+    const warnings = await backfill();
+    expect(await seatLimitOf(raised)).toBe(10);
+    expect(await seatLimitOf(four)).toBe(4);
+    expect(warnedAbout(warnings, raised)).toEqual([
+      expect.stringMatching(/keeps seat_limit 10: a ceiling above the Free plan's 3/),
+    ]);
+    expect(warnedAbout(warnings, four)).toEqual([expect.stringMatching(/keeps seat_limit 4/)]);
+  });
+
+  /**
    * The SQL restates the billing repository's predicates, because a migration
    * cannot call them. This holds the two together: across every subscription
-   * shape seeded above, nothing the backfill moved is a row those predicates
-   * say belongs to Dodo or to an operator.
+   * shape a Free row can take, the backfill moves exactly the rows those
+   * predicates say belong to nobody but the organisation.
    */
-  it('moves no row the billing repository says Dodo or an operator manages', async () => {
+  it('moves exactly the Free rows the billing repository says neither Dodo nor an operator manages', async () => {
+    const shapes: Record<string, unknown>[] = [
+      {},
+      { limit_overrides: {} },
+      { dodo_subscription_id: `sub_${randomUUID()}` },
+      { dodo_subscription_id: `sub_${randomUUID()}`, dodo_event_at: new Date() },
+      { dodo_customer_id: `cus_${randomUUID()}` },
+      { dodo_product_id: 'pdt_pro_monthly' },
+      { dodo_mode: 'live_mode' },
+      { dodo_event_id: `evt_${randomUUID()}` },
+      { dodo_scheduled_change_at: new Date() },
+    ];
+    const seeded = await Promise.all(shapes.map((subscription) => seedOrg({ subscription })));
+
     await backfill();
-    const moved = await t.pg.query<{ id: string }>(
-      `select o.id from organizations o
-        join org_subscriptions s on s.org_id = o.id
-       where o.slug like 'm33-%' and o.seat_limit = 3`,
-    );
-    expect(moved.rows.length).toBeGreaterThan(0);
-    for (const { id } of moved.rows) {
-      const row = await findSubscription(t.db, id);
-      expect(row, id).not.toBeNull();
-      expect(row!.plan).toBe('free');
-      expect(carriesProviderIds(row!)).toBe(false);
-      expect(billedByDodo(row!)).toBe(false);
-      expect(operatorManaged(row!)).toBe(false);
+
+    let moved = 0;
+    for (const orgId of seeded) {
+      const row = await findSubscription(t.db, orgId);
+      expect(row, orgId).not.toBeNull();
+      const ownOnly = !carriesProviderIds(row!) && !billedByDodo(row!) && !operatorManaged(row!);
+      expect(await seatLimitOf(orgId), orgId).toBe(ownOnly ? 3 : 5);
+      if (ownOnly) moved += 1;
     }
+    expect(moved).toBe(2);
   });
 
   it('changes nothing when run again', async () => {
+    const seeded = [
+      await seedOrg(),
+      await seedOrg({ seated: 4 }),
+      await seedOrg({ seatLimit: 10 }),
+      await seedOrg({ subscription: { dodo_customer_id: `cus_${randomUUID()}` } }),
+    ];
+    const rowsOf = async () =>
+      (
+        await t.pg.query(
+          `select id, seat_limit, updated_at from organizations where id = any($1) order by id`,
+          [seeded],
+        )
+      ).rows;
+
     await backfill();
-    const before = await t.pg.query(
-      `select id, seat_limit, updated_at from organizations order by id`,
-    );
+    const before = await rowsOf();
+    expect(before).toHaveLength(seeded.length);
     await backfill();
-    const after = await t.pg.query(
-      `select id, seat_limit, updated_at from organizations order by id`,
-    );
-    expect(after.rows).toEqual(before.rows);
+    expect(await rowsOf()).toEqual(before);
   });
 });
