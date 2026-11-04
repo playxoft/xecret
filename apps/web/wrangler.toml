@@ -251,6 +251,24 @@ DODO_PRODUCT_PRO_YEARLY = "pdt_0Nr9lHp6ZjaaAKZGyFMvY"
 DODO_PRODUCT_TEAM_MONTHLY = "pdt_0Nr9ljiLC9Wwl7g1Dc7k5"
 DODO_PRODUCT_TEAM_YEARLY = "pdt_0Nr9mAjSp6dVEJLEGh44o"
 DODO_METER_SECRET_FETCH = "secret_fetch_kilo"
+# Mail, as production states it: the billing rehearsal (billing.md §3) sends
+# real invitations and billing reminders, and 2026-11-04's preflight showed
+# staging had never declared the sender — mail was silently declined. The
+# token is a Worker secret like the rest; these three are not credentials.
+ZEPTOMAIL_FROM_ADDRESS = "no-reply-xecrets@mail.playxoft.com"
+ZEPTOMAIL_FROM_NAME = "Xecret (staging)"
+ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
+
+# The same Root KEK map production binds, because staging shares the
+# database: a vault wrapped under version "1" opens only with the same
+# store's key. Staging ran as a stub without it — tolerable while nothing on
+# staging decrypted anything, and over the moment the billing rehearsal signs
+# in and reads real rows. Discovered missing by `check:deploy staging`
+# (2026-11-04), which fails on it.
+[[env.staging.secrets_store_secrets]]
+binding = "XECRET_ROOT_KEYS"
+store_id = "73e054dfa82f45ddb60cd4781d8e64e3"
+secret_name = "XECRET_ROOT_KEYS"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NOT IN THIS FILE — credentials, and the two ways to hold them
