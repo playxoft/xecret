@@ -1455,7 +1455,7 @@ export async function billingCounts(
         where ${invitations.orgId} = ${orgId}
           and ${invitations.acceptedAt} is null
           and ${invitations.revokedAt} is null
-          and ${invitations.expiresAt} > ${now})`,
+          and ${invitations.expiresAt} > ${now.toISOString()}::timestamptz)`,
       projects: sql<number>`(select count(*)::int from ${projects}
         where ${projects.orgId} = ${orgId} and ${projects.deletedAt} is null)`,
       // Live tokens only — the count the `serviceTokens` ceiling refuses at
