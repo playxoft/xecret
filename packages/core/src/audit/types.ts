@@ -643,6 +643,8 @@ export type BillingDriftField =
   | 'status'
   | 'seats'
   | 'periodEnd'
+  /** When the trial ends, or ended — what the trial emails, the status and the meter follow. */
+  | 'trialEnd'
   | 'cancelAtPeriodEnd'
   | 'product'
   | 'addon'

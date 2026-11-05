@@ -721,6 +721,63 @@ describe('the nightly reconciler', () => {
     expect(dodo.changePlan).not.toHaveBeenCalled();
   });
 
+  it('compares the trial’s end, read from Dodo by the rule the webhook writes it by', async () => {
+    // Team monthly on a 14-day trial, three days in; an upgrade to yearly
+    // was declined an hour ago. Dodo kept everything; only its "last
+    // payment" moved, to the attempt.
+    const created = new Date(NOW.getTime() - 3 * DAY);
+    const bookedEnd = new Date(created.getTime() + 14 * DAY);
+    const attempted = new Date(NOW.getTime() - 3_600_000);
+    const unchanged = snapshotFor({
+      trial_period_days: 14,
+      created_at: created.toISOString(),
+      previous_billing_date: attempted.toISOString(),
+      next_billing_date: bookedEnd.toISOString(),
+    });
+    const trialing = (await findSubscription(
+      t.db,
+      await seedOrg({
+        status: 'trialing',
+        trial_ends_at: bookedEnd,
+        metered_from: bookedEnd,
+        current_period_start: created,
+        current_period_end: bookedEnd,
+      }),
+    ))!;
+    expect(driftBetween(trialing, unchanged, config, false, 3)).toEqual([]);
+
+    // The row as the earlier reading left it — the trial ended at the
+    // declined attempt. Dodo says `active` through a trial, so only the
+    // trial's end can show it.
+    const endedByTheDecline = { ...trialing, status: 'active' as const, trialEndsAt: attempted };
+    expect(driftBetween(endedByTheDecline, unchanged, config, false, 3)).toEqual(['trialEnd']);
+
+    // A paid upgrade the row never heard of: the trial ended at its payment.
+    const paid = snapshotFor({
+      product_id: 'pdt_team_y',
+      trial_period_days: 0,
+      created_at: created.toISOString(),
+      previous_billing_date: attempted.toISOString(),
+      next_billing_date: new Date(attempted.getTime() + 365 * DAY).toISOString(),
+    });
+    expect(driftBetween(trialing, paid, config, false, 3)).toEqual([
+      'product',
+      'interval',
+      'periodEnd',
+      'trialEnd',
+    ]);
+    // …and once the row has it, nothing.
+    const upgraded = {
+      ...trialing,
+      status: 'active' as const,
+      billingInterval: 'yearly' as const,
+      dodoProductId: 'pdt_team_y',
+      trialEndsAt: attempted,
+      currentPeriodEnd: new Date(attempted.getTime() + 365 * DAY),
+    };
+    expect(driftBetween(upgraded, paid, config, false, 3)).toEqual([]);
+  });
+
   it('compares Dodo’s quantity with the membership, not only with our row', async () => {
     const row = (await findSubscription(t.db, await seedOrg({}, 3)))!;
     // Our row and Dodo agree on three, but five people hold a seat: a push
