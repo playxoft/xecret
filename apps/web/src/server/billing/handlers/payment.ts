@@ -12,6 +12,7 @@ import type { DodoMode } from '../config';
 import type { HandlerOutcome } from '../effects';
 import type { DodoDispute, DodoLicenseKey, DodoPayment, DodoRefund } from '../payloads';
 import { paymentFailedOccasion } from '../reminders';
+import { TRIAL_OVER_MARGIN_MS } from '../snapshot';
 
 /**
  * Payments, refunds, disputes and licence keys.
@@ -85,6 +86,17 @@ export async function applyPaymentEvent(
     // from it: nothing was bought, and there is no subscription to speak of.
     const firstPayment = row.plan === 'free';
     const plan = firstPayment ? (input.checkoutPlan ?? row.plan) : row.plan;
+    // Declined with the trial more than a day from its end: not the trial's
+    // conversion, but a change charged at once — an upgrade, which Dodo makes
+    // only once it is paid. Nothing here changes the row: the subscription
+    // snapshot beside this payment says what Dodo kept, and `readTrial` keeps
+    // the trial running while Dodo's next charge is still its booked end.
+    // The owners are told that, not that a subscription is going on hold.
+    const trialRuns =
+      !firstPayment &&
+      row.status === 'trialing' &&
+      row.trialEndsAt !== null &&
+      row.trialEndsAt.getTime() - input.now.getTime() > TRIAL_OVER_MARGIN_MS;
     outcome.audit.push(
       audit.success('billing.payment_failed', resource, {
         billingEvent: input.eventType,
@@ -95,7 +107,12 @@ export async function applyPaymentEvent(
       kind: 'mail',
       orgId,
       occasion: paymentFailedOccasion(input.now),
-      reminder: { kind: 'payment_failed', plan, firstPayment },
+      reminder: {
+        kind: 'payment_failed',
+        plan,
+        firstPayment,
+        ...(trialRuns ? { trialEndsAt: row.trialEndsAt! } : {}),
+      },
     });
     return outcome;
   }

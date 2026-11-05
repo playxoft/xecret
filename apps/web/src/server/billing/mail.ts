@@ -34,6 +34,14 @@ export type BillingReminder =
        * there is no subscription to speak of, and nothing of the plan is lost.
        */
       firstPayment: boolean;
+      /**
+       * Declined while the trial still had more than a day to run, so not the
+       * trial's conversion — nothing is due before its end. Most often an
+       * upgrade's immediate charge, which Dodo makes only once it is paid
+       * (`prevent_change`): no dunning, no hold, and the trial goes on to this
+       * date, which is what the email says instead.
+       */
+      trialEndsAt?: Date;
     }
   | { kind: 'card_expiring'; expiresAfter: Date; renewsAt: Date | null }
   | {
@@ -106,6 +114,20 @@ function compose(reminder: BillingReminder, organization: string): Composed {
       };
     }
     case 'payment_failed':
+      if (!reminder.firstPayment && reminder.trialEndsAt !== undefined) {
+        return {
+          subject: `A payment for ${organization} didn't go through`,
+          lines: [
+            `A charge for ${organization} during its ${planName(reminder.plan)} trial was ` +
+              'declined. A change of plan is made only once it is paid, so the plan and the ' +
+              `trial are as they were: the trial still ends on ${formatDay(reminder.trialEndsAt)}.`,
+            BUILDS_UNAFFECTED,
+            'To try the change again, update the card from the billing page — "Manage billing" ' +
+              'opens the customer portal — and choose the plan again.',
+          ],
+          action: 'Open billing',
+        };
+      }
       return reminder.firstPayment
         ? {
             subject: `A payment for ${organization} didn't go through`,

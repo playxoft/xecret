@@ -1393,6 +1393,36 @@ describe('money events that change no access', () => {
     expect(mail.sent[0]!.text).toContain('Your builds are unaffected');
   });
 
+  it('a payment declined mid-trial tells the owners the trial goes on — not that anything is on hold', async () => {
+    const created = new Date(Date.now() - 3 * DAY);
+    const bookedEnd = new Date(created.getTime() + 14 * DAY);
+    const { orgId, subscriptionId, customerId } = await activeTeam({
+      trialDays: 14,
+      createdAt: created,
+      periodStart: created,
+      periodEnd: bookedEnd,
+    });
+    mail.sent = [];
+    await deliver({
+      type: 'payment.failed',
+      data: {
+        payment_id: `pay_${uniq()}`,
+        subscription_id: subscriptionId,
+        customer: { customer_id: customerId },
+        billing: { country: 'US' },
+        currency: 'USD',
+      },
+    });
+    const row = await rowOf(orgId);
+    expect(row).toMatchObject({ plan: 'team', status: 'trialing', trialEndsAt: bookedEnd });
+    expect(mail.sent).toHaveLength(1);
+    const [declined] = mail.sent;
+    expect(declined!.text).toContain('during its Team trial was declined');
+    expect(declined!.text).toMatch(/the trial still ends on \d{1,2} \w+ \d{4}/);
+    expect(declined!.text).toContain('Your builds are unaffected');
+    expect(declined!.text).not.toMatch(/on hold|try again over the next few days/);
+  });
+
   it('a refund and a dispute alert a human and leave access exactly as it was', async () => {
     const { orgId, customerId } = await activeTeam();
     const before = await rowOf(orgId);
