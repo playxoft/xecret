@@ -91,9 +91,19 @@ one, or when the charge fails, Dodo puts the subscription on hold, the plan keep
 after fourteen days on hold the hourly job moves the organisation to Free (§4). The trial
 emails say exactly that, so either choice is described truthfully. An owner who moves up during
 the trial (a higher plan, or monthly to yearly) is charged at once — Dodo's
-`prorated_immediately` ends the trial — and the row reads the trial as over from that payment:
-active, metered from then, and no more trial emails (§3 has the staging check — a hard gate
-before live mode).
+`prorated_immediately` ends the trial and starts a paid period. **The row reads a trial as over
+early only when Dodo's `next_billing_date` is later than the booked trial end (`created_at` plus
+`trial_period_days`) by more than a day** (`readTrial` in `snapshot.ts`): during an untouched
+trial the next charge *is* the booked end, and a paid upgrade moves it a month or a year past it.
+Then the trial ended at that payment: active, metered from it, and no more trial emails. A move
+whose charge is declined is not made (`prevent_change`), and Dodo keeps the subscription as it
+was — its next charge still the booked end — so the row keeps the trial too: trialing, the same
+end, the trial emails, nothing metered, and the owners' "didn't go through" email says the trial
+goes on rather than describing a hold. Nothing reads the trial from how Dodo stamps
+`previous_billing_date`, which a declined attempt moves too; it only dates the end of a trial
+already known to be over. When Dodo stops reporting `trial_period_days`, the row's own trial end
+stands in for the booked one. The reconciler compares each row's trial end with the same rule
+(`trialEnd` drift). §3 has the staging check — a hard gate before live mode.
 
 ### The variables
 
@@ -193,26 +203,57 @@ Round 2 adds what only Dodo itself can answer — record what it does:
 
 - [ ] **Upgrade during a trial — a HARD GATE before live payments. Do not switch
       `DODO_ENVIRONMENT` to `live_mode` (§2 step 6) until this check has passed and its answers
-      are written down here.** Start Team's trial, then change to Team yearly. Dodo should charge
-      at once (`prorated_immediately` "ends trial, charges immediately"); the billing screen shows
-      **active**, not trialing, and no trial emails follow. `GET` the subscription from Dodo's
-      API twice — during the trial, before the upgrade, and again after it — and note the two
-      things the code relies on: **whether Dodo resets `trial_period_days`** after the upgrade
-      (the code copes either way), and that **during the trial `previous_billing_date` equals
-      `created_at`** (to within a minute). The code reads a `previous_billing_date` more than a
-      minute after `created_at` (`PAYMENT_AFTER_CREATION_MS` in `snapshot.ts`) as a payment
-      taken, and so as the trial's end. That is an assumption about how Dodo stamps a field, not
-      something its documentation promises: if Dodo stamps a trial's `previous_billing_date` any
-      other way — a few minutes after `created_at`, say — a trial reads as over at once: no
-      trial emails, and its usage metered from its first day.
+      are written down here.**
 
-      **If the check fails**, implement the sturdier rule before going live: the trial is over
-      early only when Dodo's **`next_billing_date` is later than the booked trial end**
-      (`created_at` plus `trial_period_days`) **plus a margin** (a day). During an untouched trial
-      the next charge *is* the booked trial end; an upgrade that charges at once starts a paid
-      period, which moves the next charge a month or a year past it. It reads only the date Dodo
-      must get right to bill at all — not how it stamps the last payment — and replaces
-      `paidSinceCreated` in `decideSnapshot`. Then run this check again.
+      *What the code does.* A trial is over early only when Dodo's **`next_billing_date` is later
+      than the booked trial end** (`created_at` plus `trial_period_days`) **by more than a day**
+      (`TRIAL_OVER_MARGIN_MS`, `readTrial` in `snapshot.ts`) — the one date Dodo must get right to
+      bill at all. A paid upgrade starts a paid period and moves the next charge a month or a year
+      past the booked end; a declined one is not made and moves it not at all. The status, the
+      trial end, the period start, `metered_from`, the trial emails and the billing screen all
+      follow that one reading, and the reconciler checks rows against it (`trialEnd` drift).
+      (The first run of this check, 2026-11-05, failed the earlier rule, which read a
+      `previous_billing_date` later than `created_at` as a payment: a declined upgrade moves it
+      to the attempt, and the row ended a trial nobody had paid to end — active, metered from the
+      attempt, no more trial emails. That rule is gone.)
+
+      *What staging can rehearse: the declined upgrade.* Dodo's Indian test simulator cannot
+      take an off-session charge, so on staging **every** immediate upgrade charge fails,
+      whatever the test card. On a fresh throwaway organisation — the first run's row keeps
+      what the earlier rule wrote until Dodo next sends a snapshot of its subscription, which
+      this build reads correctly — start Team's trial (monthly, card mandate), then change to
+      Team yearly. The charge is declined. Check:
+      - Dodo's dashboard: the subscription unchanged — the monthly product, on trial, its
+        `next_billing_date` still the trial's booked end.
+      - The billing screen: still **Team · Trial**, monthly, "Trial ends" the same date as before.
+        The audit log has `billing.payment_failed`, and no `plan.changed` after the activation's.
+      - The owners' email: "A payment for … didn't go through", saying the trial still ends on
+        that date — nothing about a hold or retries.
+      - `SELECT status, trial_ends_at, metered_from, current_period_start, dodo_scheduled_change_at
+        FROM org_subscriptions WHERE org_id = '…'`: `trialing`, the booked end, the booked end,
+        the subscription's `created_at` (not the attempt), `NULL`. No `billing_seat_syncs` row.
+      - `GET` the subscription from Dodo's API after the decline and write down what moved —
+        `previous_billing_date` (expected: the attempt) and `trial_period_days` (the code copes
+        either way: a zeroed length falls back to the row's own trial end).
+      - The trial emails, the meter and the nightly reconcile **cannot be watched on staging**:
+        it has no Cron Triggers, and production's Worker, which runs the scheduled jobs against
+        the shared database, takes no payments yet — its billing jobs do nothing — and once it
+        does, leaves test-mode rows alone. All three read only the row checked above (`status`,
+        `trial_ends_at`, `metered_from`), and `trial-upgrade.test.ts` runs them over this very
+        sequence: the three-day email arrives, nothing is metered, and the reconcile reports no
+        drift.
+
+      *What staging cannot rehearse: the paid upgrade.* The test gateway never completes the
+      charge. That path is proven by the tests — `snapshot.test.ts` ("a trial, read from the date
+      Dodo charges next") and `trial-upgrade.test.ts`, which replays the whole sequence through
+      the checkout and change routes, the signed webhook, the hourly job and the reconciler, for
+      both outcomes and for an untouched trial converting at its end — and by the rule's
+      construction: a paid period moves the next charge by a whole month or year, a declined one
+      by nothing, and the margin is a day. The first real upgrade during a trial in live mode is
+      the remaining check: the screen shows **active** and yearly, no trial emails follow, and
+      the next reconcile reports no drift.
+
+      Write down the date of the run, the subscription id, and what Dodo's API showed.
 - [ ] **Yearly usage.** On Pro yearly, the billing screen's usage card says "this month" and
       starts on the billing date's day of this month, not on the year's start.
 - [ ] **A withdrawn downgrade.** Schedule Team → Pro for the period end, cancel the scheduled
@@ -293,7 +334,7 @@ stuck cause pages once, and a new subscription or product with the same cause pa
 
 | Message starts | Meaning | Do |
 |---|---|---|
-| "A subscription disagrees with Dodo" | The reconciler found drift (`billing.drift_detected` names the fields — `seats` includes the membership no longer matching Dodo's quantity) | Find out *why* before changing either side. Do not "fix" it with `plan:set`. |
+| "A subscription disagrees with Dodo" | The reconciler found drift (`billing.drift_detected` names the fields — `seats` includes the membership no longer matching Dodo's quantity; `trialEnd` is a row whose trial end is not the one Dodo's dates give by §2's rule) | Find out *why* before changing either side. Do not "fix" it with `plan:set`. |
 | "A second live Dodo subscription arrived" / "A checkout payment arrived for an organisation still waiting for the subscription another checkout's payment linked" | Two checkouts completed — the second perhaps before the first activated; the first one linked stands | Refund and cancel the newer one in Dodo. |
 | "A Dodo subscription event arrived for an organisation whose plan an operator set" / "A checkout payment arrived for an organisation whose plan an operator set by hand" | Somebody bought over a hand-made grant — or an old subscription's event reached a grant written over its id before `plan:set` detached such rows | If the subscription is live, refund it, or move the organisation onto it deliberately. If it was a late event of the old subscription, nothing to do; take the row off the id with `plan:set --over-dodo` and the grant's own flags. |
 | "A paid organisation follows a Dodo subscription id with no product recorded" | That same grant over an old subscription's id, found by the reconciler — once per subscription id. The hourly job leaves it alone (it is never ended, held or asked about) and the reconciler does not compare it | Check in Dodo that the subscription is not live, then take the row off the id with `plan:set --over-dodo` and the grant's own flags. |
@@ -402,9 +443,11 @@ never re-bills the last month of the old plan at the new plan's allowance, and c
 override never re-bills the months it covered. A month with no figure is never billed.
 
 Only periods the subscription paid for are metered: `metered_from` is its activation, or its
-trial's end when it had one — the booked end, or the first payment Dodo took before it (an
-upgrade during the trial is charged at once, and ends it) — and a counter row whose period began
-earlier — usage on Free, or during a trial — is never billed. Each thousand fetches past the allowance is reported hourly
+trial's end when it had one — the booked end, or the payment of an upgrade that ended it early
+(read from Dodo's next charge, §2; a declined upgrade ends nothing, and moves nothing) — and a
+counter row whose period began earlier — usage on Free, or during a trial — is never billed.
+While the trial is Dodo's current cycle the row's period is the trial, from the subscription's
+creation, so the usage month does not restart at a declined attempt. Each thousand fetches past the allowance is reported hourly
 as one Dodo event with the id `{orgId}:{periodStart}:{unitIndex}`; Dodo treats an event id as an
 idempotency key, so a retried run cannot bill twice. Dodo refuses an event stamped more than an
 hour ago, so units still owed for a period that has just ended are reported — once — into the

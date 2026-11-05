@@ -776,7 +776,8 @@ secret reaching a log or an audit row.
   month is billed against the allowance it opened with, recorded on its row and only ever
   raised, so no later downgrade or cleared override re-bills a past month. Only periods the
   subscription paid for are metered (`metered_from`: its activation, or its trial's end — the
-  booked end, or the first payment Dodo took before it) — usage on Free, or on trial, is
+  booked end, or the payment of an upgrade that ended it early, which only a next charge moved
+  past the booked end shows; a declined upgrade ends nothing) — usage on Free, or on trial, is
   never billed by the subscription that followed. A failed flush is dropped, not retried, so
   the meter can only under-count. Each overage unit has a deterministic event id, which Dodo
   treats as an idempotency key, and units are recorded as reported only after Dodo accepted
@@ -808,8 +809,10 @@ is still live at Dodo until a human cancels it. An owner's own session can cance
 the portal, as the person who pays. Whether `DODO_WEBHOOK_SECRET` is the secret of the endpoint
 in the deployment's own mode cannot be checked with an API key; a mismatch fails closed (every
 delivery 401) and is caught by the first delivery after a deploy. Reading an upgrade during a
-trial as the trial's end rests on Dodo's `previous_billing_date` staying at the subscription's
-creation until a payment — a staging check (docs/operations/billing.md §3).
+trial as the trial's end rests on Dodo moving `next_billing_date` past the booked trial end only
+when a paid period begins — the date it must get right to bill at all. Staging can rehearse only
+the declined path (its test gateway refuses every off-session charge); the paid path rests on the
+tests and on that rule until the first live upgrade (docs/operations/billing.md §3).
 
 ---
 
