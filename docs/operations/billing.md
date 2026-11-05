@@ -119,7 +119,7 @@ payment has moved the next charge more than a day past the booked end** — both
 
 When Dodo stops reporting `trial_period_days`, the row's own trial end for the same subscription
 stands in for the booked one — trusted only where a paid period could have begun at it (Dodo's
-next charge at least 27 days on); an end Dodo's dates contradict reads as a trial running to the
+next charge at least 25 days on); an end Dodo's dates contradict reads as a trial running to the
 next charge. The reconciler compares each row's trial end with the same rule (`trialEnd` drift).
 §3 has the staging check — a hard gate before live mode.
 
@@ -282,9 +282,14 @@ Round 2 adds what only Dodo itself can answer — record what it does:
       the checkout and change routes, the signed webhook, the hourly job and the reconciler, for
       both outcomes and for an untouched trial converting at its end — and by the rule's
       construction: a paid period moves the next charge by a whole month or year and stamps its
-      payment, a declined one moves the charge by nothing, and the margin is a day. The first real
-      upgrade during a trial in live mode is the remaining check: the screen shows **active** and
-      yearly, no trial emails follow, and the next reconcile reports no drift.
+      payment, a declined one moves the charge by nothing, and the margin is a day. Two live-mode
+      checks remain, because staging's gateway takes no off-session charge and so can never show a
+      *successful* one: the first real **upgrade during a trial** (the screen shows **active** and
+      yearly, no trial emails follow, the next reconcile reports no drift) and the first real
+      **natural conversion at a trial's end** (the row turns active at the conversion, is metered
+      from the booked end, and no trial emails re-anchor to a later date — the reading of a paid
+      period rests on Dodo stamping `previous_billing_date` for it, which only a live charge
+      proves).
 
       Write down the date of the run, the subscription id, and what Dodo's API showed.
 - [ ] **A seat added during a trial.** On another fresh organisation on Team's trial — no plan

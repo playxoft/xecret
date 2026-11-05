@@ -191,11 +191,13 @@ export const TRIAL_OVER_MARGIN_MS = DAY_MS;
 export const PAYMENT_AFTER_CREATION_MS = 60_000;
 
 /**
- * The shortest paid period, less a day: a February. A trial that ended at a
- * date began a paid period there, so Dodo's next charge is at least this far
- * past it.
+ * The shortest paid period, less a margin: a February is 28 days, and Dodo
+ * has been seen preserving the time of day — but a next charge stamped at a
+ * different hour (a midnight in another zone, say) can shave most of a day
+ * off the difference. 25 days keeps a whole February period on the paid side
+ * of the test with two days to spare, and nothing legitimate is shorter.
  */
-export const PAID_PERIOD_MIN_MS = 27 * DAY_MS;
+export const PAID_PERIOD_MIN_MS = 25 * DAY_MS;
 
 /** What a snapshot says of the subscription's trial. */
 export interface TrialReading {
