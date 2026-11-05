@@ -214,12 +214,54 @@ simple = { limit = 3, period = 60 }
 
 # ── staging ─────────────────────────────────────────────────────────────────
 #
-# A stub: no routes and no bindings, so a deploy of it produces a Worker with no
-# database and no root key. `lib/site.ts` names `scripts/deploy-web.sh <env>` in
-# its error message, and `staging` is the only other <env> — fill this in before
-# pointing anyone at it.
+# No longer the stub it shipped as. The billing rehearsal (billing.md §3) made
+# it a real deployment on 2026-11-04: the custom domain the Dodo webhook and
+# XECRET_PUBLIC_URL already named, the same Hyperdrive path as production —
+# staging runs against the SHARED database, which is why its root key binding
+# and XECRET_ROOT_KEY_VERSION match production's — and the rate-limit
+# bindings the middleware expects, in production's shape but under 2xxx
+# namespace ids so the two deployments never spend each other's budgets.
+#
+# Deliberately still absent: Cron Triggers. The scheduled jobs run against
+# the shared database from production's Worker; staging running them too
+# would double every dated reminder.
 [env.staging]
 name = "xecret-staging"
+routes = [{ pattern = "xecret-staging.playxoft.com", custom_domain = true }]
+hyperdrive = [{ binding = "HYPERDRIVE", id = "c9733ac7b6104546ac59ec53df58a948" }]
+
+[[env.staging.ratelimits]]
+name = "RL_LOGIN"
+namespace_id = "2001"
+simple = { limit = 10, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_CLI_TOKEN"
+namespace_id = "2002"
+simple = { limit = 10, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_INVITE"
+namespace_id = "2003"
+simple = { limit = 20, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_SECRET_READ"
+namespace_id = "2004"
+simple = { limit = 120, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_SERVICE"
+namespace_id = "2005"
+simple = { limit = 600, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_MUTATION"
+namespace_id = "2006"
+simple = { limit = 60, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_SLUG_CHECK"
+namespace_id = "2007"
+simple = { limit = 120, period = 60 }
+[[env.staging.ratelimits]]
+name = "RL_CONTACT"
+namespace_id = "2008"
+simple = { limit = 3, period = 60 }
 
 [env.staging.vars]
 XECRET_ENV = "staging"
