@@ -751,6 +751,25 @@ describe('the nightly reconciler', () => {
     // trial's end can show it.
     const endedByTheDecline = { ...trialing, status: 'active' as const, trialEndsAt: attempted };
     expect(driftBetween(endedByTheDecline, unchanged, config, false, 3)).toEqual(['trialEnd']);
+    // Nor does it agree with itself once Dodo stops reporting the trial's
+    // length: the row's end, fed back as the booked one, is checked against
+    // Dodo's next charge — two weeks after it, so no paid period began there.
+    expect(
+      driftBetween(endedByTheDecline, { ...unchanged, trial_period_days: 0 }, config, false, 3),
+    ).toEqual(['trialEnd']);
+
+    // A trial extended in Dodo — its next charge moved, nothing paid — runs to
+    // the new date: agreed once the row has followed it, drift until then.
+    const extendedTo = new Date(bookedEnd.getTime() + 10 * DAY);
+    const extension = snapshotFor({
+      trial_period_days: 14,
+      created_at: created.toISOString(),
+      previous_billing_date: created.toISOString(),
+      next_billing_date: extendedTo.toISOString(),
+    });
+    expect(driftBetween(trialing, extension, config, false, 3)).toEqual(['periodEnd', 'trialEnd']);
+    const followed = { ...trialing, trialEndsAt: extendedTo, currentPeriodEnd: extendedTo };
+    expect(driftBetween(followed, extension, config, false, 3)).toEqual([]);
 
     // A paid upgrade the row never heard of: the trial ended at its payment.
     const paid = snapshotFor({

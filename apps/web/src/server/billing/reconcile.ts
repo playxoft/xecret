@@ -107,6 +107,14 @@ export function driftBetween(
   // (`readTrial`). Dodo's status says `active` through a trial, so a row
   // whose trial was ended by a declined upgrade — or kept running after a
   // paid one — disagrees only here.
+  //
+  // The row's own end is an input only where Dodo no longer carries the fact:
+  // while a trial runs the reading is Dodo's alone (its length, its next
+  // charge); once one is over, the row's end is the history a renewal's dates
+  // no longer show; and where Dodo stops reporting the length, the row's end
+  // stands in for the booked one only if a paid period could have begun there
+  // — an end Dodo's next charge contradicts reads as a trial still running to
+  // it, and is reported here instead of agreeing with itself.
   const trialEnd = readTrial(dodo, row.trialEndsAt).endsAt;
   if (
     (trialEnd === null) !== (row.trialEndsAt === null) ||

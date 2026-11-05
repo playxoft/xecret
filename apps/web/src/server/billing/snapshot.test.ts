@@ -328,12 +328,146 @@ describe('decideSnapshot', () => {
         applied(decide(onTrial, trialSnapshot({ next_billing_date: stamped.toISOString() }))).patch
           .status,
       ).toBe('trialing');
-      // A month past it is a paid period, however Dodo stamped the last payment.
-      const month = new Date(bookedEnd.getTime() + 30 * DAY);
+      // A month past it, with a payment taken, is a paid period.
+      const paid = new Date(NOW.getTime() - 3_600_000);
+      const month = new Date(paid.getTime() + 30 * DAY);
       expect(
-        applied(decide(onTrial, trialSnapshot({ next_billing_date: month.toISOString() }))).patch
-          .status,
+        applied(
+          decide(
+            onTrial,
+            trialSnapshot({
+              previous_billing_date: paid.toISOString(),
+              next_billing_date: month.toISOString(),
+            }),
+          ),
+        ).patch.status,
       ).toBe('active');
+    });
+
+    it('reads a next charge moved with no payment as the trial extended to it — its emails and meter follow', () => {
+      // A pause and a resume, or a trial extended in Dodo: the next charge
+      // moved ten days on, and nothing has been paid.
+      const extendedTo = new Date(bookedEnd.getTime() + 10 * DAY);
+      const moved = trialSnapshot({ next_billing_date: extendedTo.toISOString() });
+      const decision = applied(decide(onTrial, moved));
+      expect(decision.patch).toMatchObject({
+        status: 'trialing',
+        // The trial emails are dated from this, so they follow it.
+        trialEndsAt: extendedTo,
+        meteredFrom: extendedTo,
+        currentPeriodStart: created,
+        currentPeriodEnd: extendedTo,
+      });
+      expect(readTrial(moved, bookedEnd)).toEqual({
+        endsAt: extendedTo,
+        running: true,
+        endedEarly: false,
+      });
+
+      const extended = row({ ...onTrial, trialEndsAt: extendedTo, meteredFrom: extendedTo });
+      // Converted at the new end: the trial ended there, not at the old one.
+      const converted = applied(
+        decide(
+          extended,
+          trialSnapshot({
+            previous_billing_date: extendedTo.toISOString(),
+            next_billing_date: new Date(extendedTo.getTime() + 30 * DAY).toISOString(),
+          }),
+          { now: extendedTo, eventAt: extendedTo },
+        ),
+      );
+      expect(converted.patch).toMatchObject({
+        status: 'active',
+        trialEndsAt: extendedTo,
+        meteredFrom: extendedTo,
+      });
+      // An upgrade paid between the old end and the new: ended at its payment.
+      const upgraded = new Date(bookedEnd.getTime() + 2 * DAY);
+      const early = applied(
+        decide(
+          extended,
+          trialSnapshot({
+            previous_billing_date: upgraded.toISOString(),
+            next_billing_date: new Date(upgraded.getTime() + 365 * DAY).toISOString(),
+          }),
+          { now: upgraded, eventAt: upgraded },
+        ),
+      );
+      expect(early.patch).toMatchObject({
+        status: 'active',
+        trialEndsAt: upgraded,
+        meteredFrom: upgraded,
+      });
+    });
+
+    it('keeps the end an upgrade’s payment recorded through the renewals after it', () => {
+      // Upgraded an hour ago; the trial ended, and metering began, at that payment.
+      const paid = new Date(NOW.getTime() - 3_600_000);
+      const upgraded = row({
+        ...onTrial,
+        status: 'active',
+        trialEndsAt: paid,
+        meteredFrom: paid,
+        currentPeriodStart: paid,
+      });
+      // The first renewals: a month on (a monthly plan), and a year on. Their
+      // payment dates no longer say when the trial ended — with or without
+      // Dodo still reporting its length — and the end, and the meter, stay.
+      for (const [label, renewal, next] of [
+        ['monthly', 30 * DAY, 60 * DAY],
+        ['yearly', 365 * DAY, 730 * DAY],
+      ] as const) {
+        for (const days of [14, 0]) {
+          const at = new Date(paid.getTime() + renewal);
+          const decision = applied(
+            decide(
+              upgraded,
+              trialSnapshot({
+                trial_period_days: days,
+                previous_billing_date: at.toISOString(),
+                next_billing_date: new Date(paid.getTime() + next).toISOString(),
+              }),
+              { now: at, eventAt: at },
+            ),
+          );
+          // Raising `metered_from` to the booked end would leave the first
+          // month's last units, still being reported, out of the meter.
+          expect(decision.patch, `${label}, ${days} days`).toMatchObject({
+            status: 'active',
+            trialEndsAt: paid,
+            meteredFrom: paid,
+            currentPeriodStart: at,
+          });
+        }
+      }
+    });
+
+    it('never trusts a trial end of its own that no paid period can have begun at', () => {
+      // The earlier rule's staging row — the trial ended at the declined
+      // attempt — and Dodo no longer reporting the trial's length: the row's
+      // end stands in for the booked one, and Dodo's next charge, two weeks
+      // after it, says no paid period began there.
+      const attempted = new Date(NOW.getTime() - 3_600_000);
+      const poisoned = row({
+        ...onTrial,
+        status: 'active',
+        trialEndsAt: attempted,
+        meteredFrom: attempted,
+      });
+      const kept = trialSnapshot({
+        trial_period_days: 0,
+        previous_billing_date: attempted.toISOString(),
+      });
+      expect(readTrial(kept, attempted)).toEqual({
+        endsAt: bookedEnd,
+        running: true,
+        endedEarly: false,
+      });
+      expect(applied(decide(poisoned, kept)).patch).toMatchObject({
+        status: 'trialing',
+        trialEndsAt: bookedEnd,
+        meteredFrom: bookedEnd,
+      });
     });
 
     it('converts an untouched trial at its booked end, metered from then', () => {
