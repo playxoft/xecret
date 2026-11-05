@@ -5,6 +5,7 @@ import {
   findOrgIdByDodoSubscription,
   lockSubscription,
   recordLicenseKey,
+  upgradeRequestedSince,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
 import { subscriptionResource } from '../audit';
@@ -12,7 +13,13 @@ import type { DodoMode } from '../config';
 import type { HandlerOutcome } from '../effects';
 import type { DodoDispute, DodoLicenseKey, DodoPayment, DodoRefund } from '../payloads';
 import { paymentFailedOccasion } from '../reminders';
-import { TRIAL_OVER_MARGIN_MS } from '../snapshot';
+
+/**
+ * How long after an owner asks for an upgrade a declined payment is read as
+ * that upgrade's charge. Dodo charges an upgrade when it is asked, and its
+ * `payment.failed` follows within minutes; an hour leaves its retries room.
+ */
+export const UPGRADE_CHARGE_WINDOW_MS = 60 * 60 * 1000;
 
 /**
  * Payments, refunds, disputes and licence keys.
@@ -86,17 +93,23 @@ export async function applyPaymentEvent(
     // from it: nothing was bought, and there is no subscription to speak of.
     const firstPayment = row.plan === 'free';
     const plan = firstPayment ? (input.checkoutPlan ?? row.plan) : row.plan;
-    // Declined with the trial more than a day from its end: not the trial's
-    // conversion, but a change charged at once — an upgrade, which Dodo makes
-    // only once it is paid. Nothing here changes the row: the subscription
-    // snapshot beside this payment says what Dodo kept, and `readTrial` keeps
-    // the trial running while Dodo's next charge is still its booked end.
-    // The owners are told that, not that a subscription is going on hold.
-    const trialRuns =
+    // Declined during a running trial right after an owner asked for an
+    // upgrade: most likely that upgrade's immediate charge, which Dodo makes
+    // only once it is paid. Picked by the cause — the request — not by how
+    // long the trial has left, and never from row state alone: the seat sync
+    // charges trialing subscriptions too, and a seat charge declined is a
+    // dunning matter. Nothing here changes the row: the snapshot beside this
+    // payment says what Dodo kept, and `readTrial` keeps the trial running
+    // while Dodo's next charge is still its end.
+    const declinedUpgrade =
       !firstPayment &&
       row.status === 'trialing' &&
       row.trialEndsAt !== null &&
-      row.trialEndsAt.getTime() - input.now.getTime() > TRIAL_OVER_MARGIN_MS;
+      row.trialEndsAt > input.now &&
+      (await upgradeRequestedSince(tx, {
+        orgId,
+        since: new Date(input.now.getTime() - UPGRADE_CHARGE_WINDOW_MS),
+      }));
     outcome.audit.push(
       audit.success('billing.payment_failed', resource, {
         billingEvent: input.eventType,
@@ -106,12 +119,12 @@ export async function applyPaymentEvent(
     outcome.effects.push({
       kind: 'mail',
       orgId,
-      occasion: paymentFailedOccasion(input.now),
+      occasion: paymentFailedOccasion(input.now, declinedUpgrade),
       reminder: {
         kind: 'payment_failed',
         plan,
         firstPayment,
-        ...(trialRuns ? { trialEndsAt: row.trialEndsAt! } : {}),
+        ...(declinedUpgrade ? { declinedUpgrade: { trialEndsAt: row.trialEndsAt! } } : {}),
       },
     });
     return outcome;

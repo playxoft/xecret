@@ -35,13 +35,17 @@ export type BillingReminder =
        */
       firstPayment: boolean;
       /**
-       * Declined while the trial still had more than a day to run, so not the
-       * trial's conversion — nothing is due before its end. Most often an
-       * upgrade's immediate charge, which Dodo makes only once it is paid
-       * (`prevent_change`): no dunning, no hold, and the trial goes on to this
-       * date, which is what the email says instead.
+       * Declined during a running trial, within the hour after an owner asked
+       * for an upgrade — most likely that upgrade's immediate charge, which
+       * Dodo makes only once it is paid (`prevent_change`): the email says the
+       * change has not happened and the trial still ends on this date, rather
+       * than describing dunning. It cannot know the charge was not something
+       * else (a seat added in the same hour), so it never says nothing else
+       * changed; and it is sent under an occasion of its own
+       * (`paymentFailedOccasion`), so a hold that follows still gets the
+       * day's dunning email.
        */
-      trialEndsAt?: Date;
+      declinedUpgrade?: { trialEndsAt: Date };
     }
   | { kind: 'card_expiring'; expiresAfter: Date; renewsAt: Date | null }
   | {
@@ -114,16 +118,19 @@ function compose(reminder: BillingReminder, organization: string): Composed {
       };
     }
     case 'payment_failed':
-      if (!reminder.firstPayment && reminder.trialEndsAt !== undefined) {
+      if (!reminder.firstPayment && reminder.declinedUpgrade !== undefined) {
+        const { trialEndsAt } = reminder.declinedUpgrade;
         return {
           subject: `A payment for ${organization} didn't go through`,
           lines: [
             `A charge for ${organization} during its ${planName(reminder.plan)} trial was ` +
-              'declined. A change of plan is made only once it is paid, so the plan and the ' +
-              `trial are as they were: the trial still ends on ${formatDay(reminder.trialEndsAt)}.`,
+              'declined — most likely for the change of plan just asked for, which is made only ' +
+              'once it is paid. That change has not happened, and the trial still ends on ' +
+              `${formatDay(trialEndsAt)}.`,
             BUILDS_UNAFFECTED,
             'To try the change again, update the card from the billing page — "Manage billing" ' +
-              'opens the customer portal — and choose the plan again.',
+              'opens the customer portal — and choose the plan again. If a payment is due for ' +
+              'anything else, we will email you about it separately.',
           ],
           action: 'Open billing',
         };

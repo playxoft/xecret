@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gt, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, gte, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
 import type { AnyColumn, SQL } from 'drizzle-orm';
 import {
   DEFAULT_PLAN,
@@ -1396,6 +1396,37 @@ export async function releaseBillingRequest(
         isNull(billingRequests.result),
       ),
     );
+}
+
+/**
+ * Whether an owner of the organisation asked for a plan change that takes
+ * effect at once — an upgrade, which Dodo charges the moment it is asked —
+ * since `since`: a request that answered `effective: 'now'`, or one whose
+ * answer never came (Dodo may have carried it out; its key stays claimed). A
+ * downgrade waits for the renewal and charges nothing now, so it does not
+ * count. What a payment failing right after it was most likely for.
+ *
+ * Only requests made with an idempotency key leave a row — the billing screen
+ * always sends one — so a change asked for without a key is not seen, and a
+ * payment failing after it is described as any other.
+ */
+export async function upgradeRequestedSince(
+  exec: Executor,
+  request: { orgId: string; since: Date },
+): Promise<boolean> {
+  const [found] = await exec
+    .select({ key: billingRequests.idempotencyKey })
+    .from(billingRequests)
+    .where(
+      and(
+        eq(billingRequests.orgId, request.orgId),
+        eq(billingRequests.kind, 'change'),
+        gte(billingRequests.createdAt, request.since),
+        or(isNull(billingRequests.result), sql`${billingRequests.result} ->> 'effective' = 'now'`),
+      ),
+    )
+    .limit(1);
+  return found !== undefined;
 }
 
 /** Housekeeping: forgets idempotency keys used before `before`. */

@@ -31,7 +31,8 @@ import type { BillingReminder } from './mail';
  * primary key: the occasion of a payment failure is the day
  * ({@link paymentFailedOccasion}), whatever the caller named. A
  * read-then-claim throttle let two failures arriving together both read "none
- * sent today" and both send.
+ * sent today" and both send. A declined upgrade's gentler email keeps a daily
+ * slot of its own, so it never stands in for the dunning one.
  *
  * ── Degrades to nothing but the dashboard ──
  * A deployment with no mail provider sends nothing and claims nothing; the
@@ -40,9 +41,14 @@ import type { BillingReminder } from './mail';
  * all suspended or deleted is told nothing either — there is nobody to tell.
  */
 
-/** The occasion every payment-failure email of a UTC day shares: at most one a day. */
-export function paymentFailedOccasion(now: Date): string {
-  return `day:${now.toISOString().slice(0, 10)}`;
+/**
+ * The occasion every payment-failure email of a UTC day shares: at most one a
+ * day. A declined upgrade's email (`declinedUpgrade`) has a slot of its own —
+ * at most one of those a day too — so it can never take the day's dunning
+ * slot: a hold that follows it still gets the email that says so.
+ */
+export function paymentFailedOccasion(now: Date, declinedUpgrade = false): string {
+  return `${declinedUpgrade ? 'upgrade-day' : 'day'}:${now.toISOString().slice(0, 10)}`;
 }
 
 export type ReminderOutcome = 'sent' | 'duplicate' | 'no-mailer' | 'no-recipients';
@@ -59,7 +65,9 @@ export async function sendBillingReminder(
 ): Promise<ReminderOutcome> {
   const { orgId, reminder } = params;
   const occasion =
-    reminder.kind === 'payment_failed' ? paymentFailedOccasion(new Date()) : params.occasion;
+    reminder.kind === 'payment_failed'
+      ? paymentFailedOccasion(new Date(), reminder.declinedUpgrade !== undefined)
+      : params.occasion;
   const log = services.log.at('sendBillingReminder');
 
   const mailer = mailerFrom(services.env);

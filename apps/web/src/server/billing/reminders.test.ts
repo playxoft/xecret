@@ -136,6 +136,33 @@ describe('sendBillingReminder', () => {
     );
   });
 
+  it('gives a declined upgrade’s email a daily slot of its own — it never takes the dunning one', async () => {
+    const { orgId } = await seedOrg();
+    const upgrade = {
+      kind: 'payment_failed' as const,
+      plan: 'team',
+      firstPayment: false,
+      declinedUpgrade: { trialEndsAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000) },
+    };
+    const dunning = { kind: 'payment_failed' as const, plan: 'team', firstPayment: false };
+
+    expect(
+      await sendBillingReminder(services(), { orgId, occasion: 'pay_u', reminder: upgrade }),
+    ).toBe('sent');
+    // A hold the same day — a seat charge, say — is still announced.
+    expect(
+      await sendBillingReminder(services(), { orgId, occasion: 'pay_s', reminder: dunning }),
+    ).toBe('sent');
+    // Each is still once a day.
+    expect(
+      await sendBillingReminder(services(), { orgId, occasion: 'pay_v', reminder: upgrade }),
+    ).toBe('duplicate');
+    expect(
+      await sendBillingReminder(services(), { orgId, occasion: 'pay_t', reminder: dunning }),
+    ).toBe('duplicate');
+    expect(sent.messages).toHaveLength(2);
+  });
+
   it('claims a payment failure before sending, so two arriving together send one email', async () => {
     const { orgId } = await seedOrg();
     const reminder = { kind: 'payment_failed' as const, plan: 'team', firstPayment: false };

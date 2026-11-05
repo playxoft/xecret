@@ -188,7 +188,7 @@ async function seedUser(): Promise<{ id: string; email: string }> {
 }
 
 /** A Free organisation of three — the owner and two developers — as the rehearsal's was. */
-async function seedOrg(): Promise<{ orgId: string; slug: string }> {
+async function seedOrg(): Promise<{ orgId: string; slug: string; ownerEmail: string }> {
   const owner = await seedUser();
   const orgId = randomUUID();
   const slug = `acme-${orgId.slice(0, 8)}`;
@@ -222,7 +222,7 @@ async function seedOrg(): Promise<{ orgId: string; slug: string }> {
     vaultAutoLockMinutes: null,
     signIn: { method: 'password', ssoWorkosOrgId: null },
   };
-  return { orgId, slug };
+  return { orgId, slug, ownerEmail: owner.email };
 }
 
 function services(): ServiceContext {
@@ -255,11 +255,12 @@ async function call(
   slug: string,
   path = '',
   body?: unknown,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const response = await handler(
     new Request(`${ORIGIN}/api/orgs/${slug}/billing${path}`, {
       method,
-      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      headers: { origin: ORIGIN, 'content-type': 'application/json', ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),
     { params: Promise.resolve({ orgSlug: slug }) },
@@ -310,6 +311,13 @@ async function auditActions(orgId: string): Promise<{ action: string; driftField
   }));
 }
 
+/** The subjects of the emails an organisation's owner was sent. */
+function subjectsFor(trial: { ownerEmail: string }): string[] {
+  return mail.sent
+    .filter((message) => message.to === trial.ownerEmail)
+    .map((message) => message.subject);
+}
+
 /** The meter events reported for an organisation, by the event ids it was sent. */
 function reportedFor(orgId: string): string[] {
   return dodo.ingestUsage.mock.calls.flatMap(([events]) =>
@@ -320,6 +328,7 @@ function reportedFor(orgId: string): string[] {
 interface Trial {
   orgId: string;
   slug: string;
+  ownerEmail: string;
   subscriptionId: string;
   created: Date;
   bookedEnd: Date;
@@ -332,7 +341,7 @@ interface Trial {
  * trial on a card mandate — nothing charged, the next charge the trial's end.
  */
 async function startTrial(): Promise<Trial> {
-  const { orgId, slug } = await seedOrg();
+  const { orgId, slug, ownerEmail } = await seedOrg();
   const sessionId = `cks_${randomUUID().slice(0, 12)}`;
   dodo.createCheckoutSession.mockResolvedValue({
     sessionId,
@@ -383,15 +392,23 @@ async function startTrial(): Promise<Trial> {
     trialEndsAt: bookedEnd,
     meteredFrom: bookedEnd,
   });
-  return { orgId, slug, subscriptionId, created, bookedEnd, dodoSays };
+  return { orgId, slug, ownerEmail, subscriptionId, created, bookedEnd, dodoSays };
 }
 
-/** Step 3: the owner moves to Team yearly; Dodo accepts the request and tries the charge. */
+/**
+ * Step 3: the owner moves to Team yearly from the billing screen — which sends
+ * an idempotency key with every decision — and Dodo accepts the request and
+ * tries the charge.
+ */
 async function moveToYearly(trial: Trial): Promise<void> {
-  const answer = await call(changeRoute.POST, 'POST', trial.slug, '/change', {
-    plan: 'team',
-    interval: 'yearly',
-  });
+  const answer = await call(
+    changeRoute.POST,
+    'POST',
+    trial.slug,
+    '/change',
+    { plan: 'team', interval: 'yearly' },
+    { 'idempotency-key': randomUUID() },
+  );
   expect(answer).toEqual({ status: 200, body: { requested: true, effective: 'now' } });
   expect(dodo.changePlan).toHaveBeenCalledWith(trial.subscriptionId, {
     productId: 'pdt_team_y',
@@ -472,12 +489,12 @@ describe('an upgrade during a trial — the staging rehearsal of 2026-11-05, rep
       renewsAt: trial.bookedEnd.toISOString(),
     });
 
-    // The owners were told the card was declined — and that the trial goes on.
-    expect(mail.sent.map((message) => message.subject)).toEqual([
-      "A payment for Acme didn't go through",
-    ]);
-    expect(mail.sent[0]!.text).toContain('the trial still ends on');
-    expect(mail.sent[0]!.text).not.toMatch(/on hold/);
+    // The owners were told the card was declined — and, the upgrade having
+    // just been asked for, that the trial goes on.
+    expect(subjectsFor(trial)).toEqual(["A payment for Acme didn't go through"]);
+    const declined = mail.sent.find((message) => message.to === trial.ownerEmail)!;
+    expect(declined.text).toContain('the trial still ends on');
+    expect(declined.text).not.toMatch(/on hold/);
 
     // Fetches made after the change: counted, never metered — it is a trial.
     await addFetchCounts(t.db, [{ orgId: trial.orgId, fetches: 5_000_000 }]);
@@ -486,9 +503,7 @@ describe('an upgrade during a trial — the staging rehearsal of 2026-11-05, rep
     // hourly meter reports nothing for the trial.
     mail.sent = [];
     await runHourlyBillingJob(services(), new Date(trial.bookedEnd.getTime() - 2 * DAY));
-    expect(mail.sent.map((message) => message.subject)).toContain(
-      'Your Team trial for Acme ends in 3 days',
-    );
+    expect(subjectsFor(trial)).toContain('Your Team trial for Acme ends in 3 days');
     expect(reportedFor(trial.orgId)).toEqual([]);
 
     // The nightly reconciler, asking Dodo for what it kept: nothing disagrees.
@@ -544,9 +559,7 @@ describe('an upgrade during a trial — the staging rehearsal of 2026-11-05, rep
       [0, 1, 2, 3, 4].map((unit) => `${trial.orgId}:${paid.toISOString()}:${unit}`),
     );
     // And no trial email: the trial is over.
-    expect(mail.sent.map((message) => message.subject)).not.toContain(
-      'Your Team trial for Acme ends in 3 days',
-    );
+    expect(subjectsFor(trial)).not.toContain('Your Team trial for Acme ends in 3 days');
 
     await reconcileSubscriptions(services());
     expect(

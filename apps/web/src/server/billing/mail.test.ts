@@ -57,7 +57,7 @@ describe('billingMail', () => {
     for (const reminder of [
       EXAMPLES.payment_failed,
       { ...EXAMPLES.payment_failed, firstPayment: true },
-      { ...EXAMPLES.payment_failed, trialEndsAt: new Date('2026-11-19') },
+      { ...EXAMPLES.payment_failed, declinedUpgrade: { trialEndsAt: new Date('2026-11-19') } },
       EXAMPLES.card_expiring,
       EXAMPLES.trial_ending_3d,
       EXAMPLES.trial_ending_1d,
@@ -125,14 +125,23 @@ describe('billingMail', () => {
     );
   });
 
-  it('says a charge declined mid-trial changed nothing — no hold, no retries, the trial’s end as booked', () => {
+  it('says a declined upgrade during a trial was not made, and the trial’s end — claiming nothing else', () => {
     const mail = billingMail(
-      { ...EXAMPLES.payment_failed, trialEndsAt: new Date('2026-11-19T10:00:00Z') },
+      {
+        ...EXAMPLES.payment_failed,
+        declinedUpgrade: { trialEndsAt: new Date('2026-11-19T10:00:00Z') },
+      },
       CONTEXT,
     );
     expect(mail.text).toContain('during its Team trial was declined');
+    expect(mail.text).toContain('most likely for the change of plan just asked for');
+    expect(mail.text).toContain('That change has not happened');
     expect(mail.text).toContain('the trial still ends on 19 November 2026');
     expect(mail.text).toContain('choose the plan again');
+    // A seat added in the same hour may have been charged too: never "nothing
+    // else changed", and a payment due for it is announced separately.
+    expect(mail.text).not.toMatch(/as they were|nothing else/i);
+    expect(mail.text).toContain('we will email you about it separately');
     // Not the dunning email: nothing goes on hold, and nobody retries an upgrade.
     expect(mail.text).not.toMatch(/on hold|try again over the next few days|moves to Free/);
   });
