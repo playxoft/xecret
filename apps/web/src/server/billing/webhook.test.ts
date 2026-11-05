@@ -748,7 +748,14 @@ describe('the subscription lifecycle', () => {
   });
 
   it('a trial is a trial, with its end recorded', async () => {
-    const { orgId } = await activeTeam({ trialDays: 14, createdAt: new Date(Date.now() - DAY) });
+    const created = new Date(Date.now() - DAY);
+    const { orgId } = await activeTeam({
+      trialDays: 14,
+      createdAt: created,
+      periodStart: created,
+      // An untouched trial's next charge is its end.
+      periodEnd: new Date(created.getTime() + 14 * DAY),
+    });
     const row = await rowOf(orgId);
     expect(row.status).toBe('trialing');
     expect(row.trialEndsAt!.getTime()).toBeGreaterThan(Date.now() + 12 * DAY);
@@ -760,6 +767,7 @@ describe('the subscription lifecycle', () => {
       trialDays: 14,
       createdAt: created,
       periodStart: created,
+      periodEnd: new Date(created.getTime() + 14 * DAY),
     });
     expect((await rowOf(orgId)).status).toBe('trialing');
 

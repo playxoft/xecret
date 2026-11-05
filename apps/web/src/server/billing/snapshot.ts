@@ -52,9 +52,9 @@ import type { DodoSubscription, DodoSubscriptionStatus } from './payloads';
  *     `cancel_at_period_end` for a cancellation that has not reached its end,
  *     when it went on hold, any plan change Dodo has scheduled, and the moment
  *     from which its usage may be billed (`metered_from`: the activation, or
- *     the trial's end). A trial ends at its booked date or at the first
- *     payment Dodo takes before it — an upgrade during the trial is charged at
- *     once — whichever is first.
+ *     the trial's end). A trial runs to its booked date unless Dodo's next
+ *     charge has moved past it — an upgrade during the trial that was paid
+ *     starts a paid period — and then ends at that payment (`readTrial`).
  *
  * ── Status, and why "cancelled" is not a status here until the end ──
  * A customer who cancels keeps the period they paid for (pricing FAQ). Dodo
@@ -173,11 +173,90 @@ export type SnapshotDecision =
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * How far past a trial's booked end Dodo's `next_billing_date` must be before
+ * the trial reads as over: a day, for the two being stamped apart. A paid
+ * period moves the next charge a month or a year past the booked end, so a
+ * day can only separate an untouched trial from one that was paid for.
+ */
+export const TRIAL_OVER_MARGIN_MS = DAY_MS;
+
+/**
  * How much later than the subscription's creation its `previous_billing_date`
- * must be to count as a payment taken since. A trial's is its creation (no
- * payment yet); the margin absorbs the two being stamped a moment apart.
+ * must be to name a payment, once a trial is known to be over — it says
+ * *when* the trial ended, never *whether*. A trial's is its creation, or the
+ * moment Dodo last *tried* to charge: a declined upgrade stamps it too
+ * (staging, 2026-11-05), which is why it decides nothing on its own.
  */
 export const PAYMENT_AFTER_CREATION_MS = 60_000;
+
+/** What a snapshot says of the subscription's trial. */
+export interface TrialReading {
+  /** When the trial ends, or ended; `null` for a subscription that never had one. */
+  endsAt: Date | null;
+  /**
+   * Dodo's current cycle is still the trial: its next charge is the booked
+   * end. Past that date with no charge yet it is still running — and no
+   * longer `trialing` by the clock.
+   */
+  running: boolean;
+  /** A payment before the booked end began a paid period: the trial ended at it. */
+  endedEarly: boolean;
+}
+
+/**
+ * Whether a subscription's trial is still running, and when it ends — the one
+ * statement of it: `decideSnapshot` writes the row's status, trial end, period
+ * start and `metered_from` by it, and the nightly reconciler compares the
+ * row's trial end with it.
+ *
+ * ── The rule ──
+ * The booked end is `created_at` plus `trial_period_days`. During an untouched
+ * trial Dodo's next charge **is** the booked end; a paid upgrade starts a paid
+ * period, which moves the next charge a month or a year past it. So the trial
+ * is over early only when `next_billing_date` is later than the booked end by
+ * more than {@link TRIAL_OVER_MARGIN_MS} — the one date Dodo must get right to
+ * bill at all. An upgrade whose charge was declined leaves the next charge at
+ * the booked end, and the trial running, whatever else Dodo stamped
+ * (`previous_billing_date` moves to the declined attempt).
+ *
+ * ── When Dodo stops reporting the length ──
+ * Dodo may zero `trial_period_days` once a trial ends early. The booked end is
+ * then the one the row already holds for this same subscription — `recorded`,
+ * its `trial_ends_at` — so a trial is never forgotten by the snapshot that
+ * ends it.
+ */
+export function readTrial(
+  snapshot: Pick<
+    DodoSubscription,
+    'created_at' | 'trial_period_days' | 'next_billing_date' | 'previous_billing_date'
+  >,
+  /** The trial end the row holds for this same subscription, or `null`. */
+  recorded: Date | null,
+): TrialReading {
+  const created = parseDate(snapshot.created_at);
+  const booked =
+    snapshot.trial_period_days > 0 && created !== null
+      ? new Date(created.getTime() + snapshot.trial_period_days * DAY_MS)
+      : recorded;
+  if (booked === null) return { endsAt: null, running: false, endedEarly: false };
+
+  const next = parseDate(snapshot.next_billing_date);
+  const over = next !== null && next.getTime() > booked.getTime() + TRIAL_OVER_MARGIN_MS;
+  if (!over) return { endsAt: booked, running: true, endedEarly: false };
+
+  // A paid period has begun. Dodo's last payment says when: before the booked
+  // end for an upgrade during the trial, at it for an ordinary conversion. One
+  // that does not look like a payment (no later than the creation) is not
+  // trusted with the date, and the booked end stands — never earlier, so no
+  // trial usage is ever billed for want of it.
+  const paid = parseDate(snapshot.previous_billing_date);
+  const endedEarly =
+    paid !== null &&
+    created !== null &&
+    paid.getTime() - created.getTime() > PAYMENT_AFTER_CREATION_MS &&
+    paid.getTime() < booked.getTime();
+  return { endsAt: endedEarly ? paid : booked, running: false, endedEarly };
+}
 
 function addMonths(date: Date, months: number): Date {
   const next = new Date(date.getTime());
@@ -346,56 +425,54 @@ export function decideSnapshot(input: {
 
   // 4b. Live.
   const activated = !sameSubscription || row.plan === 'free';
-  const created = parseDate(snapshot.created_at);
-  // Dodo has taken a payment since the subscription was created: its
-  // `previous_billing_date` is "the timestamp of the last payment", and a
-  // trial has none until it converts. An owner who moves to a higher plan
-  // during a trial is charged at once (`prorated_immediately` "ends trial,
-  // charges immediately"), whatever `trial_period_days` still says — so the
-  // trial is over from that payment, not from the date it was booked to end.
-  const paidSinceCreated =
-    created !== null &&
-    periodStart !== null &&
-    periodStart.getTime() - created.getTime() > PAYMENT_AFTER_CREATION_MS;
-  const bookedTrialEnd =
-    snapshot.trial_period_days > 0 && created
-      ? new Date(created.getTime() + snapshot.trial_period_days * DAY_MS)
-      : null;
-  const trialEndedEarly =
-    bookedTrialEnd !== null && paidSinceCreated && periodStart! < bookedTrialEnd;
-  const trialEndsAt = trialEndedEarly ? periodStart : bookedTrialEnd;
+  // The trial, by the one rule (`readTrial`): over early only when Dodo's next
+  // charge has moved past its booked end — never because Dodo stamped a
+  // payment date, which a declined upgrade stamps too. The row's own trial end
+  // is the booked end when Dodo stops reporting the length — for the
+  // subscription it follows, never for one it is only now attaching.
+  const trial = readTrial(snapshot, activated ? null : row.trialEndsAt);
+  const trialEndsAt = trial.endsAt;
 
   const status: SubscriptionStatus =
     snapshot.status === 'past_due'
       ? 'past_due'
       : snapshot.status === 'on_hold' || snapshot.status === 'paused'
         ? 'on_hold'
-        : trialEndsAt !== null && now < trialEndsAt
+        : trial.running && trialEndsAt !== null && now < trialEndsAt
           ? 'trialing'
           : 'active';
+
+  // While the trial is Dodo's current cycle, the period is the trial, from
+  // the subscription's creation: an attempt to charge — a declined upgrade —
+  // moves `previous_billing_date` without starting anything, and the usage
+  // month must not restart at it.
+  const currentPeriodStart = trial.running
+    ? (parseDate(snapshot.created_at) ?? periodStart)
+    : periodStart;
 
   // Usage is billable from the activation — or from the trial's end, if that
   // is later — and never from before it: what was fetched on Free, or on
   // trial, is not billed by the subscription that followed (`listMeterableUsage`).
   const meteredBase =
-    activated || row.meteredFrom === null ? (periodStart ?? now) : row.meteredFrom;
+    activated || row.meteredFrom === null ? (currentPeriodStart ?? now) : row.meteredFrom;
   let meteredFrom =
     trialEndsAt !== null && trialEndsAt.getTime() > meteredBase.getTime()
       ? trialEndsAt
       : meteredBase;
-  // A payment proves a paid period began by then: billing never starts later
-  // than it. The row's `metered_from` may still say a trial's booked end — an
-  // upgrade during the trial charged first, and Dodo may since have zeroed
-  // `trial_period_days` — and is moved back to the payment.
-  if (paidSinceCreated && meteredFrom.getTime() > periodStart!.getTime()) {
-    meteredFrom = periodStart!;
+  // A trial that ended early ended at a payment, and a payment proves a paid
+  // period began by then: billing never starts later than it. The row's
+  // `metered_from` still says the trial's booked end, and is moved back to
+  // the payment. Only then — a declined upgrade leaves the trial running, and
+  // `metered_from` where it was.
+  if (trial.endedEarly && meteredFrom.getTime() > trialEndsAt!.getTime()) {
+    meteredFrom = trialEndsAt!;
   }
 
   const patch: SubscriptionStatePatch = {
     plan: entry.plan,
     billingInterval: entry.interval,
     status,
-    currentPeriodStart: periodStart,
+    currentPeriodStart,
     currentPeriodEnd: periodEnd,
     trialEndsAt,
     cancelAtPeriodEnd: snapshot.cancel_at_next_billing_date || snapshot.status === 'cancelled',
