@@ -54,16 +54,18 @@ describe('billingMail', () => {
   });
 
   it('says "your builds are unaffected" in every email about a payment going wrong', () => {
-    for (const kind of [
-      'payment_failed',
-      'card_expiring',
-      'trial_ending_3d',
-      'trial_ending_1d',
-      'plan_ended_unpaid',
-    ] as const) {
-      const mail = billingMail(EXAMPLES[kind], CONTEXT);
-      expect(mail.text, kind).toContain(BUILDS_UNAFFECTED);
-      expect(mail.html, kind).toContain(BUILDS_UNAFFECTED.replace(/'/g, '&#39;'));
+    for (const reminder of [
+      EXAMPLES.payment_failed,
+      { ...EXAMPLES.payment_failed, firstPayment: true },
+      { ...EXAMPLES.payment_failed, declinedUpgrade: { trialEndsAt: new Date('2026-11-19') } },
+      EXAMPLES.card_expiring,
+      EXAMPLES.trial_ending_3d,
+      EXAMPLES.trial_ending_1d,
+      EXAMPLES.plan_ended_unpaid,
+    ]) {
+      const mail = billingMail(reminder, CONTEXT);
+      expect(mail.text, reminder.kind).toContain(BUILDS_UNAFFECTED);
+      expect(mail.html, reminder.kind).toContain(BUILDS_UNAFFECTED.replace(/'/g, '&#39;'));
     }
   });
 
@@ -121,6 +123,27 @@ describe('billingMail', () => {
     expect(billingMail(EXAMPLES.payment_failed, CONTEXT).text).toContain(
       'Team subscription was declined',
     );
+  });
+
+  it('says a declined upgrade during a trial was not made, and the trial’s end — claiming nothing else', () => {
+    const mail = billingMail(
+      {
+        ...EXAMPLES.payment_failed,
+        declinedUpgrade: { trialEndsAt: new Date('2026-11-19T10:00:00Z') },
+      },
+      CONTEXT,
+    );
+    expect(mail.text).toContain('during its Team trial was declined');
+    expect(mail.text).toContain('most likely for the change of plan just asked for');
+    expect(mail.text).toContain('That change has not happened');
+    expect(mail.text).toContain('the trial still ends on 19 November 2026');
+    expect(mail.text).toContain('choose the plan again');
+    // A seat added in the same hour may have been charged too: never "nothing
+    // else changed", and a payment due for it is announced separately.
+    expect(mail.text).not.toMatch(/as they were|nothing else/i);
+    expect(mail.text).toContain('we will email you about it separately');
+    // Not the dunning email: nothing goes on hold, and nobody retries an upgrade.
+    expect(mail.text).not.toMatch(/on hold|try again over the next few days|moves to Free/);
   });
 
   it('says what a trial’s end does — the card is charged, and an unpaid one holds for 14 days', () => {

@@ -16,11 +16,12 @@ import { billingProvider, DodoApiError } from './client';
 import { billingSetup, catalogEntryFor } from './config';
 import type { BillingConfig } from './config';
 import type { DodoSubscription } from './payloads';
+import { readTrial } from './snapshot';
 
 /**
  * The nightly reconciler (P12): every subscription Dodo bills, compared with
- * our row — plan, interval, product, status, seats, period end, cancellation,
- * add-on.
+ * our row — plan, interval, product, status, seats, period end, trial end,
+ * cancellation, add-on.
  *
  * **Alert-only.** A difference is recorded (`billing.drift_detected`, naming
  * the fields) and raised as an error line for a human. Nothing is corrected:
@@ -45,7 +46,7 @@ import type { DodoSubscription } from './payloads';
  * id and no product, `operatorManaged`): it is reported once, not nightly.
  */
 
-/** How far apart the two period ends may be before it is drift. */
+/** How far apart the two period ends — or trial ends — may be before it is drift. */
 const PERIOD_END_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 /** Subscriptions compared per run; at one Dodo call each. */
 const MAX_PER_RUN = 2_000;
@@ -100,6 +101,28 @@ export function driftBetween(
     Math.abs(row.currentPeriodEnd.getTime() - dodoEnd) > PERIOD_END_TOLERANCE_MS
   ) {
     drift.push('periodEnd');
+  }
+
+  // The trial, read from Dodo by the rule the webhook wrote the row by
+  // (`readTrial`). Dodo's status says `active` through a trial, so a row
+  // whose trial was ended by a declined upgrade — or kept running after a
+  // paid one — disagrees only here.
+  //
+  // The row's own end is an input only where Dodo no longer carries the fact:
+  // while a trial runs the reading is Dodo's alone (its length, its next
+  // charge); once one is over, the row's end is the history a renewal's dates
+  // no longer show; and where Dodo stops reporting the length, the row's end
+  // stands in for the booked one only if a paid period could have begun there
+  // — an end Dodo's next charge contradicts reads as a trial still running to
+  // it, and is reported here instead of agreeing with itself.
+  const trialEnd = readTrial(dodo, row.trialEndsAt).endsAt;
+  if (
+    (trialEnd === null) !== (row.trialEndsAt === null) ||
+    (trialEnd !== null &&
+      row.trialEndsAt !== null &&
+      Math.abs(row.trialEndsAt.getTime() - trialEnd.getTime()) > PERIOD_END_TOLERANCE_MS)
+  ) {
+    drift.push('trialEnd');
   }
 
   const dodoCancels = dodo.cancel_at_next_billing_date || dodo.status === 'cancelled';

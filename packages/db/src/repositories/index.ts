@@ -511,6 +511,7 @@ export {
   SEAT_SYNC_MAX_ATTEMPTS,
   seatedMemberCount,
   seatSyncGeneration,
+  upgradeRequestedSince,
   USAGE_PERIOD_START,
   writeSubscriptionState,
 } from './billing';

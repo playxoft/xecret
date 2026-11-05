@@ -51,6 +51,7 @@ import {
   reminderSentSince,
   seatedMemberCount,
   seatSyncGeneration,
+  upgradeRequestedSince,
   writeSubscriptionState,
 } from './billing';
 import { addMember as addOrgMember, removeMember } from './membership';
@@ -1640,6 +1641,50 @@ describe('ledgers', () => {
 
     await pruneBillingRequests(t.db, new Date(Date.now() + 1000));
     expect(await claimBillingRequest(t.db, request)).toEqual({ state: 'claimed' });
+  });
+
+  it('says whether an upgrade was asked for lately — not a downgrade, a checkout or another organisation’s', async () => {
+    const { orgId } = await seedOrg();
+    const other = await seedOrg();
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    const asked = (id = orgId) => upgradeRequestedSince(t.db, { orgId: id, since: hourAgo });
+    expect(await asked()).toBe(false);
+
+    // A checkout, and a downgrade (it charges nothing now): neither counts.
+    const checkout = {
+      orgId,
+      kind: 'checkout' as const,
+      key: randomUUID(),
+      fingerprint: 'team:monthly',
+    };
+    await claimBillingRequest(t.db, checkout);
+    await completeBillingRequest(t.db, { ...checkout, result: { url: 'https://pay.example/2' } });
+    const downgrade = {
+      orgId,
+      kind: 'change' as const,
+      key: randomUUID(),
+      fingerprint: 'pro:monthly',
+    };
+    await claimBillingRequest(t.db, downgrade);
+    await completeBillingRequest(t.db, { ...downgrade, result: { effective: 'renewal' } });
+    expect(await asked()).toBe(false);
+
+    // An upgrade whose answer never came might have been carried out: it counts.
+    const upgrade = {
+      orgId,
+      kind: 'change' as const,
+      key: randomUUID(),
+      fingerprint: 'team:yearly',
+    };
+    await claimBillingRequest(t.db, upgrade);
+    expect(await asked()).toBe(true);
+    await completeBillingRequest(t.db, { ...upgrade, result: { effective: 'now' } });
+    expect(await asked()).toBe(true);
+    expect(await asked(other.orgId)).toBe(false);
+    // Asked before the window: not lately.
+    expect(await upgradeRequestedSince(t.db, { orgId, since: new Date(Date.now() + 60_000) })).toBe(
+      false,
+    );
   });
 
   it('sends a reminder once per occasion', async () => {

@@ -140,7 +140,9 @@ export interface PlanChange {
    *    current cycle — credit scoped to the subscription, applied to its
    *    renewals — and charges a full cycle of the new plan, the cycle
    *    restarting that day. During a trial it ends the trial and charges at
-   *    once (`decideSnapshot` reads the trial as over from that payment).
+   *    once; `readTrial` reads the trial as over when that payment moves
+   *    Dodo's next charge past the trial's booked end — a declined charge
+   *    moves nothing.
    *
    * Not `difference_immediately`, which the seat sync used first: it charges
    * the whole price difference and **resets the billing cycle to the day of

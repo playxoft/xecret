@@ -34,6 +34,18 @@ export type BillingReminder =
        * there is no subscription to speak of, and nothing of the plan is lost.
        */
       firstPayment: boolean;
+      /**
+       * Declined during a running trial, within the hour after an owner asked
+       * for an upgrade — most likely that upgrade's immediate charge, which
+       * Dodo makes only once it is paid (`prevent_change`): the email says the
+       * change has not happened and the trial still ends on this date, rather
+       * than describing dunning. It cannot know the charge was not something
+       * else (a seat added in the same hour), so it never says nothing else
+       * changed; and it is sent under an occasion of its own
+       * (`paymentFailedOccasion`), so a hold that follows still gets the
+       * day's dunning email.
+       */
+      declinedUpgrade?: { trialEndsAt: Date };
     }
   | { kind: 'card_expiring'; expiresAfter: Date; renewsAt: Date | null }
   | {
@@ -106,6 +118,23 @@ function compose(reminder: BillingReminder, organization: string): Composed {
       };
     }
     case 'payment_failed':
+      if (!reminder.firstPayment && reminder.declinedUpgrade !== undefined) {
+        const { trialEndsAt } = reminder.declinedUpgrade;
+        return {
+          subject: `A payment for ${organization} didn't go through`,
+          lines: [
+            `A charge for ${organization} during its ${planName(reminder.plan)} trial was ` +
+              'declined — most likely for the change of plan just asked for, which is made only ' +
+              'once it is paid. That change has not happened, and the trial still ends on ' +
+              `${formatDay(trialEndsAt)}.`,
+            BUILDS_UNAFFECTED,
+            'To try the change again, update the card from the billing page — "Manage billing" ' +
+              'opens the customer portal — and choose the plan again. If a payment is due for ' +
+              'anything else, we will email you about it separately.',
+          ],
+          action: 'Open billing',
+        };
+      }
       return reminder.firstPayment
         ? {
             subject: `A payment for ${organization} didn't go through`,

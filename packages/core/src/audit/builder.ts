@@ -663,6 +663,7 @@ const DRIFT_FIELDS: ReadonlySet<string> = new Set<BillingDriftField>([
   'status',
   'seats',
   'periodEnd',
+  'trialEnd',
   'cancelAtPeriodEnd',
   'product',
   'addon',

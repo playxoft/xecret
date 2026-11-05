@@ -6,6 +6,8 @@ import { FREE_SEAT_LIMIT, isDataPlaneActive, UNCAPPED_SEAT_LIMIT } from '@xecret
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
 import {
+  claimBillingRequest,
+  completeBillingRequest,
   detachFromProvider,
   entitlementsFromRow,
   findSubscription,
@@ -748,7 +750,14 @@ describe('the subscription lifecycle', () => {
   });
 
   it('a trial is a trial, with its end recorded', async () => {
-    const { orgId } = await activeTeam({ trialDays: 14, createdAt: new Date(Date.now() - DAY) });
+    const created = new Date(Date.now() - DAY);
+    const { orgId } = await activeTeam({
+      trialDays: 14,
+      createdAt: created,
+      periodStart: created,
+      // An untouched trial's next charge is its end.
+      periodEnd: new Date(created.getTime() + 14 * DAY),
+    });
     const row = await rowOf(orgId);
     expect(row.status).toBe('trialing');
     expect(row.trialEndsAt!.getTime()).toBeGreaterThan(Date.now() + 12 * DAY);
@@ -760,6 +769,7 @@ describe('the subscription lifecycle', () => {
       trialDays: 14,
       createdAt: created,
       periodStart: created,
+      periodEnd: new Date(created.getTime() + 14 * DAY),
     });
     expect((await rowOf(orgId)).status).toBe('trialing');
 
@@ -1383,6 +1393,90 @@ describe('money events that change no access', () => {
     );
     expect(mail.sent).toHaveLength(1);
     expect(mail.sent[0]!.text).toContain('Your builds are unaffected');
+  });
+
+  describe('a payment declined mid-trial', () => {
+    async function onTrial() {
+      const created = new Date(Date.now() - 3 * DAY);
+      const bookedEnd = new Date(created.getTime() + 14 * DAY);
+      const trial = {
+        trialDays: 14,
+        createdAt: created,
+        periodStart: created,
+        periodEnd: bookedEnd,
+      };
+      const team = await activeTeam(trial);
+      mail.sent = [];
+      return { ...team, trial, bookedEnd };
+    }
+    const declined = (subscriptionId: string, customerId: string) =>
+      deliver({
+        type: 'payment.failed',
+        data: {
+          payment_id: `pay_${uniq()}`,
+          subscription_id: subscriptionId,
+          customer: { customer_id: customerId },
+          billing: { country: 'US' },
+          currency: 'USD',
+        },
+      });
+    /** Dodo putting the subscription on hold — what follows a charge it wants paid. */
+    const heldBy = (team: Awaited<ReturnType<typeof onTrial>>) =>
+      deliver({
+        type: 'subscription.on_hold',
+        data: subscriptionData({
+          subscriptionId: team.subscriptionId,
+          customerId: team.customerId,
+          orgId: team.orgId,
+          status: 'on_hold',
+          ...team.trial,
+        }),
+      });
+
+    it('right after an upgrade was asked for, says the trial goes on — and a hold that follows still gets its dunning email', async () => {
+      const team = await onTrial();
+      // The billing screen's request for Team yearly, answered "now".
+      const request = {
+        orgId: team.orgId,
+        kind: 'change' as const,
+        key: randomUUID(),
+        fingerprint: 'team:yearly',
+      };
+      await claimBillingRequest(t.db, request);
+      await completeBillingRequest(t.db, { ...request, result: { effective: 'now' } });
+
+      await declined(team.subscriptionId, team.customerId);
+      expect(await rowOf(team.orgId)).toMatchObject({
+        status: 'trialing',
+        trialEndsAt: team.bookedEnd,
+      });
+      expect(mail.sent).toHaveLength(1);
+      const [upgrade] = mail.sent;
+      expect(upgrade!.text).toContain('during its Team trial was declined');
+      expect(upgrade!.text).toMatch(/the trial still ends on \d{1,2} \w+ \d{4}/);
+      expect(upgrade!.text).toContain('Your builds are unaffected');
+      expect(upgrade!.text).not.toMatch(/on hold|try again over the next few days/);
+
+      // If Dodo then holds the subscription — the charge was something else
+      // too — the dunning email still goes: the gentle one has a slot of its own.
+      await heldBy(team);
+      expect((await rowOf(team.orgId)).status).toBe('on_hold');
+      expect(mail.sent).toHaveLength(2);
+      expect(mail.sent[1]!.text).toContain('Team subscription was declined');
+      expect(mail.sent[1]!.text).toContain('14 days on hold');
+    });
+
+    it('with no upgrade asked for — a seat charge — is dunning, once, whatever the trial has left', async () => {
+      const team = await onTrial();
+      await declined(team.subscriptionId, team.customerId);
+      expect(mail.sent).toHaveLength(1);
+      expect(mail.sent[0]!.text).toContain('Team subscription was declined');
+      expect(mail.sent[0]!.text).not.toContain('the trial still ends on');
+      // The hold that follows is the same day's dunning: not sent twice.
+      await heldBy(team);
+      expect((await rowOf(team.orgId)).status).toBe('on_hold');
+      expect(mail.sent).toHaveLength(1);
+    });
   });
 
   it('a refund and a dispute alert a human and leave access exactly as it was', async () => {

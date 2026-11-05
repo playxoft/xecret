@@ -95,8 +95,9 @@ export const orgSubscriptions = pgTable(
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
     /**
      * Start of the paid period — the provider's `previous_billing_date`
-     * (migration 0024). The usage counter is keyed by it, so the meter's
-     * period and the invoice's period are the same period.
+     * (migration 0024); during a trial, the subscription's creation, the
+     * trial being the period. The usage counter is keyed by it, so the
+     * meter's period and the invoice's period are the same period.
      */
     currentPeriodStart: timestamp('current_period_start', { withTimezone: true }),
     trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
