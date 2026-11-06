@@ -68,6 +68,17 @@ vi.mock('./client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./client')>()),
   billingProvider: () => dodo,
 }));
+// No product issues a licence key this deployment keeps until P22 sells the
+// self-host licences; a test that needs one names it here.
+const licensing = vi.hoisted(() => ({ products: new Set<string>() }));
+vi.mock('./config', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./config')>();
+  return {
+    ...original,
+    isLicensedProduct: (...args: Parameters<typeof original.isLicensedProduct>) =>
+      licensing.products.has(args[1]) || original.isLicensedProduct(...args),
+  };
+});
 
 const route = await import('@/app/api/billing/webhook/route');
 
@@ -101,6 +112,7 @@ beforeEach(() => {
   lines = [];
   deferred = [];
   mail.sent = [];
+  licensing.products.clear();
   env = { XECRET_PUBLIC_URL: ORIGIN, XECRET_ENV: 'production', ...BILLING_ENV };
 
   logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
@@ -355,6 +367,84 @@ async function activeTeam(
   });
   expect(answer.status).toBe(200);
   return { orgId, subscriptionId, customerId };
+}
+
+/**
+ * The money objects as Dodo's webhooks carry them — its `Refund`, its
+ * `Dispute` (a payment, and no customer at all) and its `LicenseKey` — with
+ * the fields this server never reads left in, as they arrive.
+ */
+function refundData(over: { paymentId: string; customerId: string; brand?: string }) {
+  return {
+    refund_id: `ref_${uniq()}`,
+    payment_id: over.paymentId,
+    business_id: 'bus_1',
+    brand_id: over.brand ?? 'brd_1',
+    created_at: new Date().toISOString(),
+    customer: { customer_id: over.customerId, email: 'buyer@example.com', name: 'Buyer Person' },
+    is_partial: false,
+    metadata: {},
+    status: 'succeeded',
+    amount: 900,
+    currency: 'USD',
+    reason: 'Requested by the customer',
+  };
+}
+
+function disputeData(paymentId: string) {
+  return {
+    dispute_id: `dsp_${uniq()}`,
+    payment_id: paymentId,
+    business_id: 'bus_1',
+    created_at: new Date().toISOString(),
+    amount: '900',
+    currency: 'USD',
+    dispute_stage: 'pre_dispute',
+    dispute_status: 'dispute_opened',
+    is_resolved_by_rdr: false,
+    remarks: null,
+  };
+}
+
+function licenceData(over: { productId: string; key: string; brand?: string }) {
+  return {
+    id: `lic_${uniq()}`,
+    key: over.key,
+    product_id: over.productId,
+    customer_id: `cus_${uniq()}`,
+    payment_id: `pay_${uniq()}`,
+    activations_limit: 3,
+    instances_count: 0,
+    expires_at: null,
+    created_at: new Date().toISOString(),
+    status: 'active',
+    source: 'auto',
+    business_id: 'bus_1',
+    brand_id: over.brand ?? 'brd_1',
+  };
+}
+
+/** A renewal's payment for a subscription of ours, delivered: its invoice email is our record of it. */
+async function paid(subscriptionId: string, customerId: string): Promise<string> {
+  const paymentId = `pay_${uniq()}`;
+  const answer = await deliver({
+    type: 'payment.succeeded',
+    data: {
+      payment_id: paymentId,
+      subscription_id: subscriptionId,
+      customer: { customer_id: customerId },
+      billing: { country: 'US' },
+      currency: 'USD',
+    },
+  });
+  expect(answer.status).toBe(200);
+  return paymentId;
+}
+
+/** Every audit row, of every organisation. */
+async function auditRowCount(): Promise<number> {
+  const result = await t.pg.query<{ n: number }>(`select count(*)::int as n from audit_logs`);
+  return result.rows[0]!.n;
 }
 
 /* ── the signature, the replay window, the headers ────────────────────────── */
@@ -1480,51 +1570,86 @@ describe('money events that change no access', () => {
   });
 
   it('a refund and a dispute alert a human and leave access exactly as it was', async () => {
-    const { orgId, customerId } = await activeTeam();
+    const { orgId, subscriptionId, customerId } = await activeTeam();
+    const paymentId = await paid(subscriptionId, customerId);
     const before = await rowOf(orgId);
+    lines = [];
 
-    await deliver({
-      type: 'refund.succeeded',
-      data: {
-        refund_id: `ref_${uniq()}`,
-        payment_id: `pay_${uniq()}`,
-        customer: { customer_id: customerId },
-        is_partial: false,
-      },
-    });
-    await deliver({
-      type: 'dispute.opened',
-      data: { dispute_id: `dsp_${uniq()}`, payment_id: `pay_${uniq()}`, amount: '5700' },
-    });
+    // The refund names our customer; the dispute only the payment we invoiced.
+    await deliver({ type: 'refund.succeeded', data: refundData({ paymentId, customerId }) });
+    await deliver({ type: 'dispute.opened', data: disputeData(paymentId) });
 
     const after = await rowOf(orgId);
     expect(after.plan).toBe(before.plan);
     expect(after.status).toBe(before.status);
-    expect((await auditOf(orgId)).some((entry) => entry.action === 'billing.refunded')).toBe(true);
-    const alerts = lines.filter((line) => line.level === 'error').map((line) => line.message);
-    expect(alerts.some((message) => /refunded a payment/.test(message))).toBe(true);
-    expect(alerts.some((message) => /dispute/.test(message))).toBe(true);
+    const actions = (await auditOf(orgId)).map((entry) => entry.action);
+    expect(actions).toContain('billing.refunded');
+    expect(actions).toContain('billing.dispute_opened');
+    const alerts = lines.filter((line) => line.level === 'error');
+    expect(alerts.find((line) => /refunded a payment/.test(line.message))?.orgId).toBe(orgId);
+    expect(alerts.find((line) => /dispute/.test(line.message))?.orgId).toBe(orgId);
+    expect(alerts.some((line) => /filed under no organisation/.test(line.message))).toBe(false);
+  });
+
+  it('a refund of our customer on a payment we never invoiced is raised, and filed in no organisation — it may be another product’s', async () => {
+    // Our checkouts make a customer per organisation; the other products' on
+    // the account let Dodo reuse one by email — ours, here.
+    const { orgId, customerId } = await activeTeam();
+    const auditBefore = await auditRowCount();
+    lines = [];
+    const id = `msg_${uniq()}`;
+
+    const answer = await deliver({
+      id,
+      type: 'refund.succeeded',
+      data: refundData({ paymentId: `pay_${uniq()}`, customerId, brand: 'brd_clikso' }),
+    });
+
+    expect(answer.status).toBe(200);
+    expect(await claims(id)).toBe(1);
+    const alerts = lines.filter((line) => line.level === 'error');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.message).toMatch(
+      /^Dodo refunded a payment\. Its customer is ours but the payment is not one we invoiced/,
+    );
+    expect(alerts[0]!.message).toMatch(/filed under no organisation/);
+    expect(alerts[0]!.orgId).toBeNull();
+    // Not one audit row, in any organisation — least of all the customer's,
+    // whose owners can read theirs.
+    expect(await auditRowCount()).toBe(auditBefore);
+    expect((await auditOf(orgId)).map((entry) => entry.action)).not.toContain('billing.refunded');
+  });
+
+  it('a refund is filed by the payment we invoiced, not by the customer it names', async () => {
+    const named = await activeTeam();
+    const invoiced = await activeTeam();
+    const paymentId = await paid(invoiced.subscriptionId, invoiced.customerId);
+    lines = [];
+
+    // A customer of one organisation, on a payment invoiced to another.
+    await deliver({
+      type: 'refund.succeeded',
+      data: refundData({ paymentId, customerId: named.customerId }),
+    });
+
+    expect((await auditOf(invoiced.orgId)).map((entry) => entry.action)).toContain(
+      'billing.refunded',
+    );
+    expect((await auditOf(named.orgId)).map((entry) => entry.action)).not.toContain(
+      'billing.refunded',
+    );
+    const alert = lines.find((line) => line.level === 'error');
+    expect(alert?.message).toMatch(/^Dodo refunded a payment\. Access is unchanged/);
+    expect(alert?.orgId).toBe(invoiced.orgId);
   });
 
   it('a licence key is recorded against its order, and the key itself is kept nowhere', async () => {
-    const licenseKeyId = `lic_${uniq()}`;
+    // A self-host licence, standing in for P22's: nothing is sold with one yet.
+    licensing.products.add('pdt_selfhost_50');
     const key = 'XECRET-EXAMPLE-NOT-A-REAL-KEY-LICENCE';
-    const answer = await deliver({
-      type: 'license_key.created',
-      data: {
-        id: licenseKeyId,
-        key,
-        product_id: 'pdt_selfhost_50',
-        customer_id: `cus_${uniq()}`,
-        activations_limit: 3,
-        created_at: new Date().toISOString(),
-        status: 'active',
-        instances_count: 0,
-        source: 'auto',
-        business_id: 'bus_1',
-        brand_id: 'brd_1',
-      },
-    });
+    const data = licenceData({ productId: 'pdt_selfhost_50', key });
+    const licenseKeyId = data.id;
+    const answer = await deliver({ type: 'license_key.created', data });
     expect(answer.status).toBe(200);
     const stored = await t.pg.query(
       `select * from billing_license_keys where license_key_id = $1`,
@@ -1551,6 +1676,96 @@ describe('money events that change no access', () => {
     });
     expect(answer.status).toBe(400);
     expect(await claims(id)).toBe(0);
+  });
+});
+
+/* ── the other products on the Dodo account ──────────────────────────────── */
+
+describe('another product’s events, on the Dodo account this one shares', () => {
+  // Dodo sends every endpoint every subscribed event type for every product on
+  // the account — the owner's other products' as well as ours. Each is
+  // acknowledged and claimed, and that is all: no alert, no audit row, no
+  // stored record, no email, no retry, and nothing logged above debug but the
+  // request's own completion line.
+  const CLIKSO = 'brd_clikso';
+
+  async function acknowledgedOnly(delivery: Omit<Delivery, 'id'>): Promise<void> {
+    const id = `msg_${uniq()}`;
+    const auditBefore = await auditRowCount();
+    lines = [];
+    mail.sent = [];
+    dodo.changePlan.mockClear();
+
+    const first = await deliver({ ...delivery, id });
+    // Delivered again, as Dodo does whenever it is unsure: a duplicate.
+    const again = await deliver({ ...delivery, id });
+
+    expect(first.status).toBe(200);
+    expect(again.status).toBe(200);
+    expect(await claims(id)).toBe(1);
+    expect(await auditRowCount()).toBe(auditBefore);
+    expect(mail.sent).toEqual([]);
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+    // One debug line per delivery names it, so it can be traced when debug is on.
+    const named = lines.filter((line) => line.webhookId === id);
+    expect(named.map((line) => line.level)).toEqual(['debug', 'debug']);
+    expect(named[0]!.message).toMatch(/places to nothing of ours/);
+    expect(named[1]!.message).toMatch(/delivered again/);
+    expect(lines.filter((line) => line.level !== 'debug' && line.fn !== 'request')).toEqual([]);
+    expect(lines.every((line) => line.level === 'debug' || line.level === 'info')).toBe(true);
+  }
+
+  it('a refund of a customer and a payment that are not ours', async () => {
+    await activeTeam(); // ours exist beside it; none is this one
+    await acknowledgedOnly({
+      type: 'refund.succeeded',
+      data: refundData({ paymentId: `pay_${uniq()}`, customerId: `cus_${uniq()}`, brand: CLIKSO }),
+    });
+  });
+
+  it('a chargeback on a payment we never took', async () => {
+    const { subscriptionId, customerId } = await activeTeam();
+    await paid(subscriptionId, customerId); // ours, invoiced; the dispute is not on it
+    await acknowledgedOnly({ type: 'dispute.opened', data: disputeData(`pay_${uniq()}`) });
+  });
+
+  it('a licence key for a product we do not sell — no row, and the key itself nowhere', async () => {
+    const key = 'CLIKSO-EXAMPLE-NOT-A-REAL-KEY-LICENCE';
+    const data = licenceData({ productId: 'pdt_clikso_lifetime', key, brand: CLIKSO });
+    await acknowledgedOnly({ type: 'license_key.created', data });
+    const stored = await t.pg.query(
+      `select 1 from billing_license_keys where license_key_id = $1`,
+      [data.id],
+    );
+    expect(stored.rows).toEqual([]);
+    expect(JSON.stringify(lines)).not.toContain(key);
+  });
+
+  it('a payment and a subscription of a product we do not sell', async () => {
+    const subscriptionId = `sub_${uniq()}`;
+    const customerId = `cus_${uniq()}`;
+    await acknowledgedOnly({
+      type: 'payment.succeeded',
+      data: {
+        payment_id: `pay_${uniq()}`,
+        subscription_id: subscriptionId,
+        checkout_session_id: `cks_${uniq()}`,
+        customer: { customer_id: customerId, email: 'buyer@example.com' },
+        billing: { country: 'IN' },
+        card_issuing_country: 'US',
+        currency: 'INR',
+        metadata: { clikso_workspace: 'ws_1' },
+        brand_id: CLIKSO,
+      },
+    });
+    await acknowledgedOnly({
+      type: 'subscription.active',
+      data: {
+        ...subscriptionData({ subscriptionId, customerId, orgId: null, product: 'pdt_clikso_pro' }),
+        metadata: { clikso_workspace: 'ws_1' },
+        brand_id: CLIKSO,
+      },
+    });
   });
 });
 

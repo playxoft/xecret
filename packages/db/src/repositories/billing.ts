@@ -83,12 +83,16 @@ export async function findOrgIdByDodoSubscription(
 
 /**
  * The organisation a provider customer id belongs to — **only when exactly one
- * does**.
+ * does**. Unused by the webhook since 2026-11-06, and it must stay that way:
+ * Dodo reuses a customer per email across every product on the shared
+ * account, so a customer id alone is NOT proof an event is xecret's, and
+ * nothing may be *filed* by it (`countOrgsWithDodoCustomer` answers the
+ * weaker "is this customer ours at all"). Kept for its test and for reads
+ * where ambiguity is acceptable.
  *
  * A customer at the payment provider is an email address, and one person can
- * own two organisations that each bought a plan. An event that can only be
- * placed by its customer is therefore placed only when the answer is
- * unambiguous; two matches answer `null`, and the caller does not guess.
+ * own two organisations that each bought a plan; two matches answer `null`,
+ * and the caller does not guess.
  */
 export async function findOrgIdByDodoCustomer(
   exec: Executor,
@@ -118,6 +122,43 @@ export async function countOrgsWithDodoCustomer(
     .from(orgSubscriptions)
     .where(eq(orgSubscriptions.dodoCustomerId, dodoCustomerId));
   return row?.value ?? 0;
+}
+
+/**
+ * The organisation whose invoice email named this provider payment — **only
+ * when exactly one does**, as with customers.
+ *
+ * No ledger of payments is kept. The `invoice_available` reminder, claimed once
+ * per successful payment under the organisation that payment was placed to and
+ * kept for the reminders' 400 days, is the one record that a payment was ours —
+ * what ties a refund or a dispute back to its organisation (a dispute names no
+ * customer, and a customer Dodo may have reused for another product proves
+ * nothing). It has holes: it is written as the email goes, after the payment's
+ * own commit, and only when there is a mailer and an owner to mail; it goes
+ * with an organisation that is hard-deleted; and it is pruned at 400 days. A
+ * payment missing from it was not necessarily somebody else's.
+ *
+ * A scan: the primary key leads with `org_id`, and this asks by kind and
+ * occasion. The table is a few rows per organisation per month and this runs
+ * for refunds and disputes only; a partial index on `occasion` where
+ * `kind = 'invoice_available'` is the follow-up if that stops being true.
+ */
+export async function findOrgIdByInvoicedPayment(
+  exec: Executor,
+  dodoPaymentId: string,
+): Promise<string | null> {
+  const rows = await exec
+    .select({ orgId: billingReminders.orgId })
+    .from(billingReminders)
+    .where(
+      and(
+        eq(billingReminders.kind, 'invoice_available'),
+        // As `claimReminder` stored it.
+        eq(billingReminders.occasion, dodoPaymentId.slice(0, 128)),
+      ),
+    )
+    .limit(2);
+  return rows.length === 1 ? (rows[0]?.orgId ?? null) : null;
 }
 
 /** Whether a live organisation has this id. Metadata names one; this checks it is real. */

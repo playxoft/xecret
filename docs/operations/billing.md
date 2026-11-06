@@ -57,6 +57,37 @@ organisation. A Dodo payment link with one of our organisation ids typed into it
 signed by Dodo like anything else; it carries no nonce, so it attaches to nothing and is
 raised. Attaching a subscription spends its checkout.
 
+**The Dodo account is shared with the owner's other products**, and Dodo sends every endpoint
+every subscribed event type for all of them — most of what reaches the webhook is not ours. An
+event that places to nothing of ours is claimed and answered 200, and that is all: no alert, no
+audit row, no stored record, no email, and one `debug` line naming the delivery (its row in
+`billing_webhook_events` is the trace). A licence key is ours by its product. A refund or a
+dispute is **filed** under an organisation only by its payment: the one our `invoice_available`
+email named, under the one organisation it named — the only record of a payment this deployment
+keeps. The one stranger's event still raised is the one wearing our metadata, above. Two gaps
+follow, both accepted:
+
+- **(a) The invoice ledger has holes.** No row is written when no email is claimed: no mailer
+  configured, or an organisation with no active owner to mail (both return before the claim),
+  or the email effect lost after the payment's own commit. Its rows cascade away with an
+  organisation that is hard-deleted. And they are pruned at 400 days, while a chargeback can
+  arrive up to 540 days after its payment. A refund on such a payment of ours is raised
+  unfiled if its customer is ours (b); a chargeback on one is always silent, because Dodo's
+  dispute webhook names no customer at all. Either way Dodo's dashboard still has it. A ledger row written with the payment itself,
+  independent of mail, is the follow-up.
+- **(b) A customer is not proof.** Our checkouts create a customer per organisation, but the
+  other products' checkouts let Dodo reuse a customer by email, so another product's refund can
+  carry our customer id. A refund whose customer is ours on a payment we never invoiced (Dodo's
+  dispute names no customer) is therefore never filed: it is raised with no organisation named
+  and no audit row — "its customer is ours but the payment is not one we invoiced" — for a human
+  to look at. An audit row in the wrong organisation is one its owners can read.
+
+**A known limit:** an event of a type this webhook handles that fails its strict schema is
+answered 400 with an error line and retried by Dodo — another product's included, instead of
+the quiet 200. Dodo's objects have one shape for every product on the account, so this needs
+Dodo to change a shape (which would break ours too); a permissive pre-parse that tells ours from
+theirs before the strict one is the follow-up.
+
 ---
 
 ## 2. Setting it up — test mode on staging first, live mode on production
@@ -81,7 +112,7 @@ code is right** and the guide is out of date:
 | `DODO_METER_SECRET_FETCH` | The meter's **event name** (e.g. `secret_fetch_kilo`) | Usage is reported by event name. `check:env` refuses an `mtr_…` id. |
 | Twelve subscribed webhook events | The twelve, **plus** `subscription.updated` and `subscription.past_due` | `subscription.updated` is how a cancellation scheduled for the period end arrives; without it the row learns of it only at the end. |
 | A SCIM add-on ($249) | Not sold | SCIM is an Enterprise inclusion since Scale went; nothing reads `DODO_ADDON_SCIM`. |
-| Self-host products in Phase | Not read by P12 | `license_key.created` is stored for any product; the licence page is P22. |
+| Self-host products in Phase | Not read by P12 | `license_key.created` is kept only for a product this deployment sells a licence for, and there is none until P22 (`licensedProducts` in `config.ts` is empty). Every licence key that arrives today is another product's on the shared Dodo account: acknowledged, never stored. The licence page is P22. |
 | Customer portal return URL `/app/settings/billing` | Set per session to `/app/{org}/settings/billing` | The portal session is created with its own return URL. Any default is fine. |
 
 **Trials are the owner's Dodo-side choice.** Team's 14-day trial is configured on the Dodo
@@ -408,10 +439,14 @@ stuck cause pages once, and a new subscription or product with the same cause pa
 | "A subscription was on hold for N days and has been ended here" | Fourteen days unpaid: the organisation is on Free | Cancel the subscription in Dodo, or leave it if the customer is about to pay (its next `active` event gives the plan back). |
 | "A Dodo subscription is on a product this deployment does not sell" | A `DODO_PRODUCT_*` is wrong, or a product was added in Dodo. From a webhook, per delivery; from the hourly job (a stale trial, a stranded checkout), once per subscription and product | Fix the variable; nothing was granted. The hourly job keeps asking, and applies the subscription on its first run after the fix. |
 | "Dodo reports a billing country … region-locked" / "billing country is not the country that issued its card" | The PPP guardrail (pricing-plan §4); raised once, when Dodo's report changes | Review the customer in Dodo. Nothing was changed automatically, deliberately. |
-| "Dodo refunded a payment" / "A cardholder opened a dispute" | Money moved back, or a chargeback | Respond in Dodo. Access is deliberately unchanged. |
+| "Dodo refunded a payment" / "A cardholder opened a dispute" | Money moved back, or a chargeback, on a payment we invoiced — filed under its organisation. "…its customer is ours but the payment is not one we invoiced" is filed nowhere: ours with a gap in the invoice ledger, or another product's wearing a customer Dodo reused (§1, gaps (a) and (b)). Another product's refunds and chargebacks otherwise raise nothing | Respond in Dodo. Access is deliberately unchanged. For the unfiled one, find the payment in Dodo first: if it is another product's, there is nothing to do here. |
 | "A seat change has failed to reach Dodo N times and is no longer retried" | Ten failures: the debt is dead-lettered, raised once | Check the subscription in Dodo; retry by hand (below) once fixed. |
 | "A subscription ended for an organisation that still holds the SAML add-on" | The add-on is never removed automatically | Decide; if removing, `plan:set --addon saml --off` and delete its WorkOS connection. |
 | "This deployment is missing the DODO_… binding" | Billing is half-configured (a malformed `whsec_` secret counts) | Set the missing variables (check:deploy names them). |
+
+Event types the webhook does not act on — our own `dispute.won`, `dispute.lost`,
+`refund.failed` and `payment.processing` among them — are claimed and logged at `debug` only,
+like every other product's events (§1). Dodo's dashboard is the record of those outcomes.
 
 ### Seat-sync debts
 

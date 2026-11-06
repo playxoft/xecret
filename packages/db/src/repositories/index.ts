@@ -484,6 +484,7 @@ export {
   findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
+  findOrgIdByInvoicedPayment,
   listAwaitingActivation,
   listDueSeatSyncs,
   listEndedCancellations,

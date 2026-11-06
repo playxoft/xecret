@@ -228,7 +228,23 @@ export async function applyPaymentEvent(
   return outcome;
 }
 
-/** `refund.succeeded`: recorded, and a human told. Access is untouched. */
+/**
+ * What an alert about a refund or a dispute says when no organisation is
+ * named: its customer is ours, its payment is not one we invoiced — so it may
+ * be another product's, wearing a customer Dodo reused by email.
+ */
+const UNFILED =
+  'Its customer is ours but the payment is not one we invoiced — possibly another ' +
+  'product’s on this shared Dodo account — so it was filed under no organisation. ';
+
+/**
+ * `refund.succeeded`: recorded, and a human told. Access is untouched.
+ *
+ * Only for a refund that is ours (`place` in `webhook.ts`): placed by the
+ * payment we invoiced, or `orgId` null when only its customer is ours — never
+ * filed then, only raised. Another product's refund on the shared Dodo account
+ * never reaches this.
+ */
 export function refundOutcome(
   orgId: string | null,
   refund: DodoRefund,
@@ -246,14 +262,17 @@ export function refundOutcome(
   outcome.effects.push({
     kind: 'alert',
     message:
-      'Dodo refunded a payment. Access is unchanged — if the refund ends the customer’s ' +
-      'subscription, Dodo’s subscription event will say so',
+      `Dodo refunded a payment. ${orgId === null ? UNFILED : ''}Access is unchanged — if the ` +
+      'refund ends the customer’s subscription, Dodo’s subscription event will say so',
     fields: { orgId, refundId: refund.refund_id, paymentId: refund.payment_id },
   });
   return outcome;
 }
 
-/** `dispute.opened`: recorded, and a human told. Never a reason to lock anybody out. */
+/**
+ * `dispute.opened`: recorded, and a human told. Never a reason to lock anybody
+ * out. Only for a dispute that is ours, as {@link refundOutcome}.
+ */
 export function disputeOutcome(
   orgId: string | null,
   dispute: DodoDispute,
@@ -270,8 +289,8 @@ export function disputeOutcome(
   outcome.effects.push({
     kind: 'alert',
     message:
-      'A cardholder opened a dispute (chargeback). Respond in the Dodo dashboard; access is ' +
-      'deliberately unchanged',
+      `A cardholder opened a dispute (chargeback). ${orgId === null ? UNFILED : ''}Respond in ` +
+      'the Dodo dashboard; access is deliberately unchanged',
     fields: { orgId, disputeId: dispute.dispute_id, paymentId: dispute.payment_id },
   });
   return outcome;
@@ -282,6 +301,9 @@ export function disputeOutcome(
  * order — product, payment, subscription, activations, expiry — and **never
  * the key itself**, which Dodo emails to the buyer and `dodoLicenseKeySchema`
  * drops before this sees it.
+ *
+ * Only for a product this deployment sells a licence for (`isLicensedProduct`)
+ * — none, until P22. Another product's licence key is never stored.
  */
 export async function applyLicenseKey(
   tx: Transaction,

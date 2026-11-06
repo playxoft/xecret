@@ -6,6 +6,7 @@ import {
   billingSetup,
   catalogEntryFor,
   DODO_BASE_URL,
+  isLicensedProduct,
   isWebhookSecret,
   productFor,
   REQUIRED_BILLING_VARIABLES,
@@ -62,6 +63,15 @@ describe('billingSetup', () => {
       productId: 'pdt_pro_m',
     });
     expect(catalogEntryFor(setup.config, 'pdt_selfhost_50')).toBeNull();
+  });
+
+  it('sells no licensed product yet — the self-host licences are P22', () => {
+    const setup = billingSetup(env(COMPLETE));
+    if (setup.state !== 'enabled') throw new Error('expected billing on');
+    expect(setup.config.licensedProducts).toEqual([]);
+    // Neither one of the four plans nor anything else issues a licence we keep.
+    expect(isLicensedProduct(setup.config, 'pdt_selfhost_50')).toBe(false);
+    expect(isLicensedProduct(setup.config, 'pdt_pro_m')).toBe(false);
   });
 
   it('points live mode at the live host', () => {

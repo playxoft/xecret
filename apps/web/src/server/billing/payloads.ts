@@ -97,10 +97,16 @@ export const dodoRefundSchema = z.object({
 });
 export type DodoRefund = z.infer<typeof dodoRefundSchema>;
 
-/** A dispute (`dispute.opened`). */
+/**
+ * A dispute (`dispute.opened`). Dodo's `Dispute` names its payment and no
+ * customer (`GET /disputes/{id}` adds one; the webhook does not), so a dispute
+ * is placed by its payment — and by its customer the way a refund is, should
+ * the webhook ever carry one.
+ */
 export const dodoDisputeSchema = z.object({
   dispute_id: id,
   payment_id: id,
+  customer: z.optional(z.object({ customer_id: id })),
 });
 export type DodoDispute = z.infer<typeof dodoDisputeSchema>;
 
