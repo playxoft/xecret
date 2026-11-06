@@ -98,25 +98,23 @@ ZEPTOMAIL_FROM_NAME = "Xecret"
 # about the omission on every run; an unanswered warning is one that eventually
 # gets read past.
 ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
-# Payments: Dodo (P12, apps/web/src/server/billing/config.ts). None of these
-# are credentials — the API key and the webhook secret are Worker secrets, at
-# the foot of this file. They stay commented because billing is all or
-# nothing: with none of them the deployment simply takes no payments, and with
-# some of them every billing route answers 503 — and the live API key is not
-# in the production Worker yet. Production takes LIVE mode only — the
-# test-mode rehearsal runs on staging (docs/operations/billing.md §2–3). The
-# ids below are the real live-mode catalogue, created 2025-11-03. Uncomment
-# the block ONLY together with putting DODO_API_KEY and DODO_WEBHOOK_SECRET
-# (live values) into the production Worker, and only after §3's "Upgrade
-# during a trial" staging check has passed — a hard gate
-# (docs/operations/billing.md). Then `npm run phase:check-deploy`.
-#
-#   DODO_ENVIRONMENT = "live_mode"
-#   DODO_PRODUCT_PRO_MONTHLY = "pdt_0Nr9ovFDYH8ipbTL5hkZc"
-#   DODO_PRODUCT_PRO_YEARLY = "pdt_0Nr9ov7sm8QAh2vFBszhc"
-#   DODO_PRODUCT_TEAM_MONTHLY = "pdt_0Nr9ovN3KKgBR2ImlY2ro"
-#   DODO_PRODUCT_TEAM_YEARLY = "pdt_0Nr9ovJncMPvrtHcOeRoZ"
-#   DODO_METER_SECRET_FETCH = "secret_fetch_kilo"
+# Payments: Dodo, LIVE mode (P12, apps/web/src/server/billing/config.ts).
+# None of these are credentials — the API key and the webhook secret are
+# Worker secrets, at the foot of this file, pushed by
+# `scripts/go-live-payments.ps1`. The gate that kept this block commented was
+# §3's "Upgrade during a trial" staging check (docs/operations/billing.md); it
+# passed on 2026-11-05, after the rehearsal caught and PR #146 fixed the
+# declined-upgrade trial bug it exists to catch. Billing stays all or
+# nothing: until the two secrets are on the Worker, every billing route and
+# the webhook answer 503 and nothing else changes — the go-live script puts
+# the secrets there before it deploys this table. The ids are the live-mode
+# catalogue, created 2026-11-03.
+DODO_ENVIRONMENT = "live_mode"
+DODO_PRODUCT_PRO_MONTHLY = "pdt_0Nr9ovFDYH8ipbTL5hkZc"
+DODO_PRODUCT_PRO_YEARLY = "pdt_0Nr9ov7sm8QAh2vFBszhc"
+DODO_PRODUCT_TEAM_MONTHLY = "pdt_0Nr9ovN3KKgBR2ImlY2ro"
+DODO_PRODUCT_TEAM_YEARLY = "pdt_0Nr9ovJncMPvrtHcOeRoZ"
+DODO_METER_SECRET_FETCH = "secret_fetch_kilo"
 
 # The scheduled jobs (`apps/web/worker.ts`, `src/server/scheduled.ts`, which
 # dispatches on the expression):
