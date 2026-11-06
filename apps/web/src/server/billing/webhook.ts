@@ -7,7 +7,6 @@ import {
   findCheckout,
   findCheckoutByNonce,
   findOpenCheckout,
-  findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
   findOrgIdByInvoicedPayment,
   liveOrganizationExists,
@@ -69,8 +68,9 @@ import {
  *     type for all of them. An event that places to nothing of ours — another
  *     product's payment, subscription, refund, chargeback or licence key — is
  *     claimed and answered 200, and that is all: no row, no alert, no email, a
- *     debug line. A refund or a dispute is ours by its customer or its payment
- *     (`place`), a licence key by its product.
+ *     debug line. A refund or a dispute is filed only by its payment; one
+ *     whose customer alone is ours is raised unfiled (`place`). A licence key
+ *     is ours by its product.
  *  5. **The claim**: `INSERT` into `billing_webhook_events`, whose primary key
  *     is `webhook-id`. A delivery already claimed answers 200 at once and
  *     changes nothing. This is a real unique constraint, not a SELECT before
@@ -114,10 +114,10 @@ type Placement =
    * place it; `foreign` when its metadata named one of our organisations
    * without a checkout of that organisation's to back it; `expired` when it
    * named that organisation's own checkout, unspent, past its window; `ours`
-   * when it is ours with no organisation to file it under — a refund of a
-   * customer two of ours share, a licence key for a product we sell — and
-   * still acted on. Anything else unplaced is somebody else's, and nothing is
-   * done with it.
+   * when it is ours, or may be, with no organisation to file it under — a
+   * refund of our customer on a payment we never invoiced, a licence key for
+   * a product we sell — and still acted on. Anything else unplaced is
+   * somebody else's, and nothing is done with it.
    */
   | { orgId: null; retry: boolean; foreign?: boolean; expired?: boolean; ours?: boolean };
 
@@ -487,29 +487,26 @@ async function place(
     }
     case 'refund':
     case 'dispute': {
-      // Ours only by our own records: the customer (a refund names one; Dodo's
-      // dispute does not) or the payment our invoice email named. Placed only
-      // when exactly one organisation answers — a guess would file it in
-      // somebody else's audit log.
+      // Filed only by its payment — the one our invoice email named, under the
+      // one organisation it named. An audit row in the wrong organisation is
+      // one its owners can read, so nothing weaker files anything.
       const { customer, payment_id: paymentId } =
         prepared.family === 'refund' ? prepared.refund : prepared.dispute;
-      const customerId = customer?.customer_id ?? null;
-      if (customerId !== null) {
-        const byCustomer = await findOrgIdByDodoCustomer(exec, customerId);
-        if (byCustomer) return { orgId: byCustomer, checkout: null, checkoutPlan: null };
-      }
       const byPayment = await findOrgIdByInvoicedPayment(exec, paymentId);
       if (byPayment) return { orgId: byPayment, checkout: null, checkoutPlan: null };
-      // Our customer, but held by more than one organisation: ours, and
-      // raised with no organisation named, for a human to sort out.
+      // A customer of ours on a payment we never invoiced is never filed: Dodo
+      // reuses a customer per email across the account's products (ours make
+      // one per organisation; theirs do not), so this may be another product's
+      // refund. Raised with no organisation named, for a human to look at.
+      // (A refund names its customer; Dodo's dispute names none.)
+      const customerId = customer?.customer_id ?? null;
       if (customerId !== null && (await countOrgsWithDodoCustomer(exec, customerId)) > 0) {
         return { orgId: null, retry: false, ours: true };
       }
-      // Neither: another product's refund or chargeback on the shared account.
-      // The cost, accepted: a chargeback on a payment of ours whose invoice
-      // email never went (no mail configured, or lost after its commit) is not
-      // raised here — Dodo, which handles chargebacks as merchant of record,
-      // still lists it in its dashboard.
+      // Neither: another product's refund or chargeback on the shared account —
+      // or one of ours the invoice ledger missed (docs/operations/billing.md
+      // §1, gap (a)), which Dodo, handling chargebacks as merchant of record,
+      // still lists in its dashboard.
       return { orgId: null, retry: false };
     }
     case 'license':

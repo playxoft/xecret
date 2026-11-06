@@ -230,18 +230,20 @@ export async function applyPaymentEvent(
 
 /**
  * What an alert about a refund or a dispute says when no organisation is
- * named: it is ours — its customer is — but more than one organisation holds
- * that customer, so it was filed under none.
+ * named: its customer is ours, its payment is not one we invoiced — so it may
+ * be another product's, wearing a customer Dodo reused by email.
  */
 const UNFILED =
-  'Its customer is held by more than one of our organisations, so it was filed under none. ';
+  'Its customer is ours but the payment is not one we invoiced — possibly another ' +
+  'product’s on this shared Dodo account — so it was filed under no organisation. ';
 
 /**
  * `refund.succeeded`: recorded, and a human told. Access is untouched.
  *
- * Only for a refund that is ours (`place` in `webhook.ts`): placed, or `orgId`
- * null when its customer is ours but shared. Another product's refund on the
- * shared Dodo account never reaches this.
+ * Only for a refund that is ours (`place` in `webhook.ts`): placed by the
+ * payment we invoiced, or `orgId` null when only its customer is ours — never
+ * filed then, only raised. Another product's refund on the shared Dodo account
+ * never reaches this.
  */
 export function refundOutcome(
   orgId: string | null,

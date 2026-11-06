@@ -127,10 +127,17 @@ export async function countOrgsWithDodoCustomer(
  * No ledger of payments is kept. The `invoice_available` reminder, claimed once
  * per successful payment under the organisation that payment was placed to and
  * kept for the reminders' 400 days, is the one record that a payment was ours —
- * what ties a refund or a dispute back to its organisation when the customer
- * cannot (a dispute names none). It is written as the email goes, after the
- * payment's own commit, by a deployment that sends mail: a payment missing
- * from it was not necessarily somebody else's.
+ * what ties a refund or a dispute back to its organisation (a dispute names no
+ * customer, and a customer Dodo may have reused for another product proves
+ * nothing). It has holes: it is written as the email goes, after the payment's
+ * own commit, and only when there is a mailer and an owner to mail; it goes
+ * with an organisation that is hard-deleted; and it is pruned at 400 days. A
+ * payment missing from it was not necessarily somebody else's.
+ *
+ * A scan: the primary key leads with `org_id`, and this asks by kind and
+ * occasion. The table is a few rows per organisation per month and this runs
+ * for refunds and disputes only; a partial index on `occasion` where
+ * `kind = 'invoice_available'` is the follow-up if that stops being true.
  */
 export async function findOrgIdByInvoicedPayment(
   exec: Executor,

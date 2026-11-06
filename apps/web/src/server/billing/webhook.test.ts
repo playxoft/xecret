@@ -1588,14 +1588,13 @@ describe('money events that change no access', () => {
     const alerts = lines.filter((line) => line.level === 'error');
     expect(alerts.find((line) => /refunded a payment/.test(line.message))?.orgId).toBe(orgId);
     expect(alerts.find((line) => /dispute/.test(line.message))?.orgId).toBe(orgId);
-    expect(alerts.some((line) => /filed under none/.test(line.message))).toBe(false);
+    expect(alerts.some((line) => /filed under no organisation/.test(line.message))).toBe(false);
   });
 
-  it('a refund of a customer two of our organisations share is still raised, filed under neither', async () => {
-    // A shared customer from before checkouts forced one per organisation.
-    const customerId = `cus_${uniq()}`;
-    const first = await activeTeam({ customerId });
-    const second = await activeTeam({ customerId });
+  it('a refund of our customer on a payment we never invoiced is raised, and filed in no organisation — it may be another product’s', async () => {
+    // Our checkouts make a customer per organisation; the other products' on
+    // the account let Dodo reuse one by email — ours, here.
+    const { orgId, customerId } = await activeTeam();
     const auditBefore = await auditRowCount();
     lines = [];
     const id = `msg_${uniq()}`;
@@ -1603,38 +1602,45 @@ describe('money events that change no access', () => {
     const answer = await deliver({
       id,
       type: 'refund.succeeded',
-      data: refundData({ paymentId: `pay_${uniq()}`, customerId }),
+      data: refundData({ paymentId: `pay_${uniq()}`, customerId, brand: 'brd_clikso' }),
     });
 
     expect(answer.status).toBe(200);
     expect(await claims(id)).toBe(1);
     const alerts = lines.filter((line) => line.level === 'error');
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]!.message).toMatch(/^Dodo refunded a payment\. .*filed under none/);
+    expect(alerts[0]!.message).toMatch(
+      /^Dodo refunded a payment\. Its customer is ours but the payment is not one we invoiced/,
+    );
+    expect(alerts[0]!.message).toMatch(/filed under no organisation/);
     expect(alerts[0]!.orgId).toBeNull();
-    // Nobody's audit log gets a guess.
+    // Not one audit row, in any organisation — least of all the customer's,
+    // whose owners can read theirs.
     expect(await auditRowCount()).toBe(auditBefore);
-    for (const { orgId } of [first, second]) {
-      expect((await auditOf(orgId)).map((entry) => entry.action)).not.toContain('billing.refunded');
-    }
+    expect((await auditOf(orgId)).map((entry) => entry.action)).not.toContain('billing.refunded');
   });
 
-  it('a refund of a payment we invoiced is filed with its organisation, though its customer is shared', async () => {
-    const customerId = `cus_${uniq()}`;
-    const { orgId, subscriptionId } = await activeTeam({ customerId });
-    const other = await activeTeam({ customerId });
-    const paymentId = await paid(subscriptionId, customerId);
+  it('a refund is filed by the payment we invoiced, not by the customer it names', async () => {
+    const named = await activeTeam();
+    const invoiced = await activeTeam();
+    const paymentId = await paid(invoiced.subscriptionId, invoiced.customerId);
     lines = [];
 
-    await deliver({ type: 'refund.succeeded', data: refundData({ paymentId, customerId }) });
+    // A customer of one organisation, on a payment invoiced to another.
+    await deliver({
+      type: 'refund.succeeded',
+      data: refundData({ paymentId, customerId: named.customerId }),
+    });
 
-    expect((await auditOf(orgId)).map((entry) => entry.action)).toContain('billing.refunded');
-    expect((await auditOf(other.orgId)).map((entry) => entry.action)).not.toContain(
+    expect((await auditOf(invoiced.orgId)).map((entry) => entry.action)).toContain(
+      'billing.refunded',
+    );
+    expect((await auditOf(named.orgId)).map((entry) => entry.action)).not.toContain(
       'billing.refunded',
     );
     const alert = lines.find((line) => line.level === 'error');
     expect(alert?.message).toMatch(/^Dodo refunded a payment\. Access is unchanged/);
-    expect(alert?.orgId).toBe(orgId);
+    expect(alert?.orgId).toBe(invoiced.orgId);
   });
 
   it('a licence key is recorded against its order, and the key itself is kept nowhere', async () => {
