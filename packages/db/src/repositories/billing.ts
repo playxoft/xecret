@@ -83,12 +83,16 @@ export async function findOrgIdByDodoSubscription(
 
 /**
  * The organisation a provider customer id belongs to — **only when exactly one
- * does**.
+ * does**. Unused by the webhook since 2026-11-06, and it must stay that way:
+ * Dodo reuses a customer per email across every product on the shared
+ * account, so a customer id alone is NOT proof an event is xecret's, and
+ * nothing may be *filed* by it (`countOrgsWithDodoCustomer` answers the
+ * weaker "is this customer ours at all"). Kept for its test and for reads
+ * where ambiguity is acceptable.
  *
  * A customer at the payment provider is an email address, and one person can
- * own two organisations that each bought a plan. An event that can only be
- * placed by its customer is therefore placed only when the answer is
- * unambiguous; two matches answer `null`, and the caller does not guess.
+ * own two organisations that each bought a plan; two matches answer `null`,
+ * and the caller does not guess.
  */
 export async function findOrgIdByDodoCustomer(
   exec: Executor,

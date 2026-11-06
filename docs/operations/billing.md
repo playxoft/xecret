@@ -71,9 +71,9 @@ follow, both accepted:
   configured, or an organisation with no active owner to mail (both return before the claim),
   or the email effect lost after the payment's own commit. Its rows cascade away with an
   organisation that is hard-deleted. And they are pruned at 400 days, while a chargeback can
-  arrive up to 540 days after its payment. A refund or chargeback on such a payment of ours is
-  raised unfiled if its customer is ours (b), and otherwise taken for another product's and
-  raised nowhere — Dodo's dashboard still has it. A ledger row written with the payment itself,
+  arrive up to 540 days after its payment. A refund on such a payment of ours is raised
+  unfiled if its customer is ours (b); a chargeback on one is always silent, because Dodo's
+  dispute webhook names no customer at all. Either way Dodo's dashboard still has it. A ledger row written with the payment itself,
   independent of mail, is the follow-up.
 - **(b) A customer is not proof.** Our checkouts create a customer per organisation, but the
   other products' checkouts let Dodo reuse a customer by email, so another product's refund can
