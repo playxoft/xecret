@@ -168,7 +168,7 @@ export function pruneNotes(
   return changed ? { opened, written } : state;
 }
 
-interface NotesState {
+export interface NotesState {
   /**
    * The IO these were opened with. A rotation re-opens the environment and
    * produces a new one — and a note opened under the retired key is not this
@@ -181,6 +181,26 @@ interface NotesState {
   listing: readonly SecretSummary[] | null;
   opened: OpenedNotes;
   written: WrittenNotes;
+}
+
+/**
+ * The state as it should read for this `io` and `secrets` — the pure step
+ * behind the hook's render-phase adjustment. A new IO (a rotation) drops
+ * everything held; a new listing keeps what it still carries. The fields are
+ * written out one by one, never by spreading the old state last: the old
+ * state carries `io` and `listing` too, and a spread that wins over the new
+ * values re-creates the loop this function exists to prevent.
+ */
+export function advanceNotes(
+  state: NotesState,
+  io: SecretIo | null,
+  secrets: readonly SecretSummary[] | null,
+): NotesState {
+  const base =
+    state.io === io ? state : { ...state, opened: NOTHING_OPENED, written: NOTHING_WRITTEN };
+  const kept =
+    secrets === null ? { opened: base.opened, written: base.written } : pruneNotes(base, secrets);
+  return { io, listing: secrets, opened: kept.opened, written: kept.written };
 }
 
 export interface OpenedListing {
@@ -210,15 +230,17 @@ export function useOpenedNotes(
   // an effect, which is React's documented way to follow a changed prop — and
   // the only one here that never paints a frame of a note the listing has
   // already moved past.
+  //
+  // `advanceNotes` must be a fixed point: feeding its result back with the
+  // same io and listing returns the SAME object, or this setState-in-render
+  // never settles and React stops the page with error #301 — which is exactly
+  // how the first version of this block took every environment screen down
+  // (2026-11-06): it spread the old state *over* the new `io` and `listing`
+  // while the listing was still null, so the condition never cleared.
+  // `advanceNotes` is pure and its idempotence is pinned by a test.
   let current = state;
   if (state.io !== io || state.listing !== secrets) {
-    const base =
-      state.io === io ? state : { ...state, opened: NOTHING_OPENED, written: NOTHING_WRITTEN };
-    current = {
-      io,
-      listing: secrets,
-      ...(secrets === null ? base : pruneNotes(base, secrets)),
-    };
+    current = advanceNotes(state, io, secrets);
     setState(current);
   }
   const { opened, written } = current;
