@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import { NOTE_STATE_COPY, noteEditable, stagedNote } from './note-state';
-import { pruneNotes, sealedNoteKey, unopenedNotes, withOpenedNotes } from './use-opened-notes';
-import type { OpenedNote, OpenedNotes, WrittenNote, WrittenNotes } from './use-opened-notes';
+import {
+  advanceNotes,
+  pruneNotes,
+  sealedNoteKey,
+  unopenedNotes,
+  withOpenedNotes,
+} from './use-opened-notes';
+import type {
+  NotesState,
+  OpenedNote,
+  OpenedNotes,
+  WrittenNote,
+  WrittenNotes,
+} from './use-opened-notes';
 import type { SecretSummary } from './types';
 
 /**
@@ -215,5 +227,52 @@ describe('what is kept between listings', () => {
     const overtaken = pruneNotes(state, [row('A', 'xk2.gcm.theirs')]);
     expect(overtaken.written.size).toBe(0);
     expect(overtaken.opened.size).toBe(0);
+  });
+});
+
+describe('advanceNotes settles', () => {
+  // The render-phase adjustment calls this until its inputs stop differing
+  // from the state. If the result does not carry exactly the io and listing
+  // it was given, the hook setStates on every render and React stops the page
+  // with error #301 — the 2026-11-06 outage: every environment screen crashed
+  // because the old state was spread over the new io while the listing was
+  // still loading.
+  const io = { tag: 'io-a' } as never;
+  const empty: NotesState = { io: null, listing: null, opened: new Map(), written: new Map() };
+
+  function settled(state: NotesState, nextIo: never | null, listing: SecretSummary[] | null) {
+    const once = advanceNotes(state, nextIo, listing);
+    expect(once.io).toBe(nextIo);
+    expect(once.listing).toBe(listing);
+    // A second pass with the same inputs changes nothing the hook compares.
+    const again = advanceNotes(once, nextIo, listing);
+    expect(again.io).toBe(nextIo);
+    expect(again.listing).toBe(listing);
+    return once;
+  }
+
+  it('when the io arrives before the listing — the outage shape', () => {
+    settled(empty, io, null);
+  });
+
+  it('when the listing arrives, with and before an io', () => {
+    const listing = [row('A', null)];
+    settled(empty, null, listing);
+    const withIo = settled(empty, io, null);
+    settled(withIo, io, listing);
+  });
+
+  it('when the listing goes back to null on a reload', () => {
+    const listing = [row('A', null)];
+    const loaded = settled(empty, io, listing);
+    settled(loaded, io, null);
+  });
+
+  it('a rotation drops what the old io opened', () => {
+    const listing = [row('A', 'xk2.gcm.blob')];
+    const loaded = advanceNotes(empty, io, listing);
+    const opened: OpenedNotes = new Map([['x', null]]);
+    const turned = settled({ ...loaded, opened }, { tag: 'io-b' } as never, listing);
+    expect(turned.opened.size).toBe(0);
   });
 });
