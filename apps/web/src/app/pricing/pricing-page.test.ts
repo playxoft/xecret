@@ -308,11 +308,22 @@ describe('the honesty rules this page is built on', () => {
     expect(SOURCE).toContain("const ADDON = 'Add-on'");
   });
 
-  it('publishes what the SAML add-on costs us, not only what it costs them', () => {
-    // The most likely line on this page to be trimmed by somebody tidying
-    // marketing copy, and the one that makes the "no SSO tax" claim checkable.
-    expect(SOURCE).toContain('$125 per connection per month');
+  it('prices the SAML add-on without publishing our own costs', () => {
+    // This test used to pin the opposite: the body once said what WorkOS
+    // charges us beside what we charge, as a show-the-receipt gesture. The
+    // owner withdrew that on 2026-11-06 — the rendered copy stays
+    // professional, so our supplier cost must appear nowhere a customer
+    // reads, while the price and the OIDC-included promise stay.
+    // Phrase-level pins, because SOURCE includes code comments that may
+    // legitimately discuss the cost: these exact sentences only ever lived in
+    // rendered copy.
+    expect(SOURCE).not.toContain('charges us $125');
+    expect(SOURCE).not.toContain('charge us $125');
+    expect(SOURCE).not.toContain('keep the difference');
+    expect(SOURCE).not.toContain('Brokered through WorkOS');
+    expect(SOURCE).toContain('Connect your SAML 2.0 identity provider');
     expect(SOURCE).toContain('$199');
+    expect(SOURCE).toContain('included from Team at no extra cost');
   });
 
   it('promises that billing never breaks a build', () => {
