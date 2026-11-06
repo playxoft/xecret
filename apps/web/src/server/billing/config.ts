@@ -74,6 +74,14 @@ export interface BillingConfig {
   readonly catalog: readonly CatalogEntry[];
   /** The SAML add-on's id, when this deployment sells it through Dodo. */
   readonly samlAddonId: string | null;
+  /**
+   * The products whose licence keys this deployment keeps: the self-host
+   * licences. **None yet** — they are sold from P22, which adds their
+   * `DODO_PRODUCT_SELFHOST_*` variables here. Until then every
+   * `license_key.created` that arrives is another product's on the shared
+   * Dodo account, and is acknowledged without being kept.
+   */
+  readonly licensedProducts: readonly string[];
 }
 
 export type BillingSetup =
@@ -198,6 +206,8 @@ export function billingSetup(env: Bindings): BillingSetup {
       meterEventName,
       catalog: Object.freeze(catalog),
       samlAddonId,
+      // P22 reads the self-host licence products into this. Nothing sells one yet.
+      licensedProducts: Object.freeze([]),
     }),
   };
 }
@@ -234,4 +244,12 @@ export function productFor(
 /** What a product sells, or `null` for a product this catalogue does not know. */
 export function catalogEntryFor(config: BillingConfig, productId: string): CatalogEntry | null {
   return config.catalog.find((item) => item.productId === productId) ?? null;
+}
+
+/**
+ * Whether a product's licence keys are this deployment's to keep. Never, until
+ * P22 sells the self-host licences — see `BillingConfig.licensedProducts`.
+ */
+export function isLicensedProduct(config: BillingConfig, productId: string): boolean {
+  return config.licensedProducts.includes(productId);
 }

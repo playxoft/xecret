@@ -3,18 +3,20 @@ import * as z from 'zod/mini';
 import {
   appendAuditEvents,
   claimWebhookEvent,
+  countOrgsWithDodoCustomer,
   findCheckout,
   findCheckoutByNonce,
   findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
+  findOrgIdByInvoicedPayment,
   liveOrganizationExists,
 } from '@xecret/db/repositories';
 import type { Executor } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
 import { errors } from '../errors';
 import { json, readRawBody } from '../http';
-import { catalogEntryFor, billingSetup, CHECKOUT_OPEN_MS } from './config';
+import { catalogEntryFor, billingSetup, CHECKOUT_OPEN_MS, isLicensedProduct } from './config';
 import type { BillingConfig } from './config';
 import { CHECKOUT_NONCE_METADATA_KEY, ORG_METADATA_KEY } from './client';
 import { systemAudit } from './audit';
@@ -61,6 +63,14 @@ import {
  *     an organisation id typed into its metadata, and Dodo would sign that
  *     too. Such an event is claimed, attached to nothing, and raised. Never
  *     from anything a browser sent.
+ *
+ *     **Most of what arrives is not ours.** The Dodo account is shared with
+ *     other products, and Dodo sends every endpoint every subscribed event
+ *     type for all of them. An event that places to nothing of ours — another
+ *     product's payment, subscription, refund, chargeback or licence key — is
+ *     claimed and answered 200, and that is all: no row, no alert, no email, a
+ *     debug line. A refund or a dispute is ours by its customer or its payment
+ *     (`place`), a licence key by its product.
  *  5. **The claim**: `INSERT` into `billing_webhook_events`, whose primary key
  *     is `webhook-id`. A delivery already claimed answers 200 at once and
  *     changes nothing. This is a real unique constraint, not a SELECT before
@@ -70,7 +80,8 @@ import {
  *  7. **The effects** — emails, alerts — after the commit, off the response.
  *
  * ── Answers ──
- *  - 200: applied, or a duplicate, or an event this server does not act on.
+ *  - 200: applied, or a duplicate, or an event this server does not act on —
+ *    another product's included.
  *  - 401: not from Dodo, or too old. Nothing is read, written or claimed.
  *  - 400: from Dodo, but not a shape we understand. Logged; not claimed.
  *  - 503: billing is off or half-configured, or the event is ours but cannot
@@ -102,9 +113,13 @@ type Placement =
    * Not placed; `retry` when the event is ours and a later delivery could
    * place it; `foreign` when its metadata named one of our organisations
    * without a checkout of that organisation's to back it; `expired` when it
-   * named that organisation's own checkout, unspent, past its window.
+   * named that organisation's own checkout, unspent, past its window; `ours`
+   * when it is ours with no organisation to file it under — a refund of a
+   * customer two of ours share, a licence key for a product we sell — and
+   * still acted on. Anything else unplaced is somebody else's, and nothing is
+   * done with it.
    */
-  | { orgId: null; retry: boolean; foreign?: boolean; expired?: boolean };
+  | { orgId: null; retry: boolean; foreign?: boolean; expired?: boolean; ours?: boolean };
 
 export async function receiveDodoWebhook(
   services: ServiceContext,
@@ -202,6 +217,11 @@ export async function receiveDodoWebhook(
     throw errors.unavailable('billing event not yet placeable');
   }
 
+  // Ours to act on: placed, or ours with no organisation to file it under.
+  // Anything else — but the `foreign` raise below — is another product's event
+  // on the shared Dodo account, or a type this server does not act on.
+  const ours = placement.orgId !== null || placement.ours === true;
+
   const result = await services.db.transaction(async (tx) => {
     const claimed = await claimWebhookEvent(tx, {
       webhookId,
@@ -257,14 +277,16 @@ export async function receiveDodoWebhook(
             });
           }
           break;
+        // Somebody else's refund, chargeback or licence key raises nothing and
+        // keeps nothing: these act only on what `place` found to be ours.
         case 'refund':
-          outcome = refundOutcome(placement.orgId, prepared.refund, audit);
+          if (ours) outcome = refundOutcome(placement.orgId, prepared.refund, audit);
           break;
         case 'dispute':
-          outcome = disputeOutcome(placement.orgId, prepared.dispute, audit);
+          if (ours) outcome = disputeOutcome(placement.orgId, prepared.dispute, audit);
           break;
         case 'license':
-          outcome = await applyLicenseKey(tx, prepared.licence);
+          if (ours) outcome = await applyLicenseKey(tx, prepared.licence);
           break;
       }
     }
@@ -272,6 +294,20 @@ export async function receiveDodoWebhook(
     if (outcome.audit.length > 0) await appendAuditEvents(tx, outcome.audit);
     return { duplicate: false as const, outcome };
   });
+
+  if (!ours && placement.foreign !== true) {
+    // Nothing was done, and nothing is said above debug: on a shared Dodo
+    // account this is most of the traffic. The claim is the record of it.
+    const what =
+      prepared === 'unhandled'
+        ? 'this server does not act on'
+        : 'that places to nothing of ours — most likely another product’s on the shared Dodo account';
+    log.debug(
+      `Acknowledged a ${eventType} webhook ${what}${result.duplicate ? ', delivered again' : ''}`,
+      { webhookId, eventType },
+    );
+    return json({ received: true });
+  }
 
   if (result.duplicate) {
     log.info(`A ${eventType} webhook was delivered again; it was already handled`, {
@@ -281,18 +317,11 @@ export async function receiveDodoWebhook(
     return json({ received: true });
   }
 
-  if (prepared === 'unhandled') {
-    log.info(`Received a ${eventType} webhook this server does not act on`, {
-      webhookId,
-      eventType,
-    });
-  } else {
-    log.info(`Handled a ${eventType} webhook`, {
-      webhookId,
-      eventType,
-      orgId: placement.orgId,
-    });
-  }
+  log.info(`Handled a ${eventType} webhook`, {
+    webhookId,
+    eventType,
+    orgId: placement.orgId,
+  });
 
   if (result.outcome.effects.length > 0) {
     services.waitUntil(runBillingEffects(services, result.outcome.effects));
@@ -424,9 +453,9 @@ async function place(
       // by metadata alone — its payment links it by session, or a human does.
       if (byMetadata.kind === 'expired') return { orgId: null, retry: true, expired: true };
       // Not placed. Ours (a product we sell) is worth retrying for — its first
-      // payment may yet link it; anything else — a self-host licence
-      // subscription — never belonged to an organisation and is claimed and
-      // left alone.
+      // payment may yet link it; anything else — another product's
+      // subscription on the shared Dodo account — never belonged to an
+      // organisation and is claimed and left alone.
       return { orgId: null, retry: catalogEntryFor(config, subscription.product_id) !== null };
     }
     case 'payment': {
@@ -457,15 +486,39 @@ async function place(
       return { orgId: null, retry: false, foreign: byMetadata.kind === 'foreign' };
     }
     case 'refund':
-    case 'dispute':
-    case 'license':
-      // Placed only when exactly one organisation holds the customer — a
-      // refund or a dispute is an alert either way, and a guess would file it
-      // in somebody else's audit log.
-      if (prepared.family === 'refund' && prepared.refund.customer) {
-        const orgId = await findOrgIdByDodoCustomer(exec, prepared.refund.customer.customer_id);
-        if (orgId) return { orgId, checkout: null, checkoutPlan: null };
+    case 'dispute': {
+      // Ours only by our own records: the customer (a refund names one; Dodo's
+      // dispute does not) or the payment our invoice email named. Placed only
+      // when exactly one organisation answers — a guess would file it in
+      // somebody else's audit log.
+      const { customer, payment_id: paymentId } =
+        prepared.family === 'refund' ? prepared.refund : prepared.dispute;
+      const customerId = customer?.customer_id ?? null;
+      if (customerId !== null) {
+        const byCustomer = await findOrgIdByDodoCustomer(exec, customerId);
+        if (byCustomer) return { orgId: byCustomer, checkout: null, checkoutPlan: null };
       }
+      const byPayment = await findOrgIdByInvoicedPayment(exec, paymentId);
+      if (byPayment) return { orgId: byPayment, checkout: null, checkoutPlan: null };
+      // Our customer, but held by more than one organisation: ours, and
+      // raised with no organisation named, for a human to sort out.
+      if (customerId !== null && (await countOrgsWithDodoCustomer(exec, customerId)) > 0) {
+        return { orgId: null, retry: false, ours: true };
+      }
+      // Neither: another product's refund or chargeback on the shared account.
+      // The cost, accepted: a chargeback on a payment of ours whose invoice
+      // email never went (no mail configured, or lost after its commit) is not
+      // raised here — Dodo, which handles chargebacks as merchant of record,
+      // still lists it in its dashboard.
       return { orgId: null, retry: false };
+    }
+    case 'license':
+      // A licence key belongs to no organisation; it is ours when its product
+      // is — none is until P22 sells the self-host licences.
+      return {
+        orgId: null,
+        retry: false,
+        ours: isLicensedProduct(config, prepared.licence.product_id),
+      };
   }
 }
