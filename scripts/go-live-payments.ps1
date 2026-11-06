@@ -33,10 +33,15 @@ $repo = Split-Path -Parent $PSScriptRoot
 Push-Location $repo
 
 $workerTouched = $false
+$deployed = $false
+trap { Fail "unexpected error: $_" }
 function Fail($msg) {
   Write-Host ""
   Write-Host "STOP: $msg" -ForegroundColor Red
-  if ($script:workerTouched) {
+  if ($script:deployed) {
+    Write-Host "The deploy already ran. The undo for a broken deployment is a rollback:" -ForegroundColor Yellow
+    Write-Host "  cd apps\web; npx wrangler rollback --env production" -ForegroundColor Yellow
+  } elseif ($script:workerTouched) {
     Write-Host "The production Worker already holds the Dodo secret(s)." -ForegroundColor Yellow
     Write-Host "Finish by re-running this script, or undo with:" -ForegroundColor Yellow
     Write-Host "  cd apps\web" -ForegroundColor Yellow
@@ -48,7 +53,7 @@ function Fail($msg) {
 }
 
 Write-Host "== 1/5 Sanity =="
-$dirty = git status --porcelain
+$dirty = git status --porcelain --untracked-files=no
 if ($LASTEXITCODE -ne 0) { Fail "not a git checkout" }
 if ($dirty) { Fail "the tree has uncommitted changes -- commit or stash them first" }
 git switch main | Out-Null
@@ -95,6 +100,15 @@ function Put-PhaseSecret($name, $value) {
   Write-Host "  $name -> Phase Production: ok"
 }
 
+# The six non-secret vars, read from the same wrangler.toml the deploy will
+# assert, so the copies start identical -- check:env needs them in the
+# environment, and nothing compares them later (check:deploy only compares
+# WORKOS_CLIENT_ID between Phase and the toml), so starting from the toml is
+# the one guard against drift. Read BEFORE anything is written anywhere: a
+# toml read failure then leaves Phase exactly as it was.
+$varLines = node -e "const{unstable_readConfig}=require('wrangler');const c=unstable_readConfig({config:'apps/web/wrangler.toml',env:'production'});for(const k of['DODO_ENVIRONMENT','DODO_PRODUCT_PRO_MONTHLY','DODO_PRODUCT_PRO_YEARLY','DODO_PRODUCT_TEAM_MONTHLY','DODO_PRODUCT_TEAM_YEARLY','DODO_METER_SECRET_FETCH']){if(!c.vars[k])process.exit(2);console.log(k+'='+c.vars[k])}"
+if ($LASTEXITCODE -ne 0) { Fail "could not read the DODO_* vars out of wrangler.toml" }
+
 $apiKey = Read-Secret "DODO_API_KEY (live)"
 if ($apiKey.Length -lt 20) { Fail "that API key looks too short" }
 $whSecret = Read-Secret "DODO_WEBHOOK_SECRET (starts with whsec_)"
@@ -106,12 +120,6 @@ try {
 
 Put-PhaseSecret 'DODO_API_KEY' $apiKey
 Put-PhaseSecret 'DODO_WEBHOOK_SECRET' $whSecret
-
-# The six non-secret vars, read from the same wrangler.toml the deploy will
-# assert, so Phase can never drift from it. check:env needs them in the
-# environment, and check:deploy compares the two copies.
-$varLines = node -e "const{unstable_readConfig}=require('wrangler');const c=unstable_readConfig({config:'apps/web/wrangler.toml',env:'production'});for(const k of['DODO_ENVIRONMENT','DODO_PRODUCT_PRO_MONTHLY','DODO_PRODUCT_PRO_YEARLY','DODO_PRODUCT_TEAM_MONTHLY','DODO_PRODUCT_TEAM_YEARLY','DODO_METER_SECRET_FETCH']){if(!c.vars[k])process.exit(2);console.log(k+'='+c.vars[k])}"
-if ($LASTEXITCODE -ne 0) { Fail "could not read the DODO_* vars out of wrangler.toml" }
 foreach ($line in $varLines) {
   $name, $value = $line -split '=', 2
   Put-PhaseSecret $name $value
@@ -120,7 +128,7 @@ foreach ($line in $varLines) {
 Write-Host ""
 Write-Host "== 3/5 check:env against Phase Production (production untouched so far) =="
 npm run phase:check-env:production
-if ($LASTEXITCODE -ne 0) { Fail "check:env refused the configuration -- read its lines above; production is unchanged" }
+if ($LASTEXITCODE -ne 0) { Fail "check:env refused the configuration -- read its lines above. The Worker is unchanged, but Phase Production now holds all eight DODO_* values, so routine check:deploy will fail until go-live finishes (or phase secrets delete removes them)" }
 
 Write-Host ""
 Write-Host "== 4/5 The two secrets onto the production Worker =="
@@ -139,9 +147,10 @@ npm run phase:check-deploy
 if ($LASTEXITCODE -ne 0) { Fail "check:deploy found failures -- never deploy over them" }
 npm run phase:deploy
 if ($LASTEXITCODE -ne 0) { Fail "the deploy itself failed" }
+$deployed = $true
 
 Start-Sleep -Seconds 15
-$head = (git rev-parse --short HEAD).Trim()
+$head = (git rev-parse --short=7 HEAD).Trim()
 $version = Invoke-RestMethod -UseBasicParsing "https://xecret.playxoft.com/api/version"
 Write-Host "  version: $($version.commit) built $($version.builtAt)"
 if (-not ($version.commit -match [regex]::Escape($head))) {

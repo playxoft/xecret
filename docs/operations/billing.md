@@ -223,7 +223,7 @@ Round 2 adds what only Dodo itself can answer — record what it does:
       `DODO_ENVIRONMENT` to `live_mode` (§2 step 6) until this check has passed and its answers
       are written down here.**
 
-      **Passed 2026-11-05** on `sub_0NrIFRFuxlB34vvOYZG33` (test mode, org `rnithin133-2`). The
+      **Passed 2026-11-05** on `sub_0NrIFRFuxlB34vvOYZG33` (test mode, the rehearsal organisation). The
       first run FAILED exactly as this check predicts — the declined immediate charge
       (₹15,926.46, `pay_0NrIG0…`) left Dodo on the monthly trial but flipped the row to
       active/metered — and PR #146 implemented the rule below. Re-run under the fix: the row
