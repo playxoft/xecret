@@ -120,6 +120,36 @@ export async function countOrgsWithDodoCustomer(
   return row?.value ?? 0;
 }
 
+/**
+ * The organisation whose invoice email named this provider payment — **only
+ * when exactly one does**, as with customers.
+ *
+ * No ledger of payments is kept. The `invoice_available` reminder, claimed once
+ * per successful payment under the organisation that payment was placed to and
+ * kept for the reminders' 400 days, is the one record that a payment was ours —
+ * what ties a refund or a dispute back to its organisation when the customer
+ * cannot (a dispute names none). It is written as the email goes, after the
+ * payment's own commit, by a deployment that sends mail: a payment missing
+ * from it was not necessarily somebody else's.
+ */
+export async function findOrgIdByInvoicedPayment(
+  exec: Executor,
+  dodoPaymentId: string,
+): Promise<string | null> {
+  const rows = await exec
+    .select({ orgId: billingReminders.orgId })
+    .from(billingReminders)
+    .where(
+      and(
+        eq(billingReminders.kind, 'invoice_available'),
+        // As `claimReminder` stored it.
+        eq(billingReminders.occasion, dodoPaymentId.slice(0, 128)),
+      ),
+    )
+    .limit(2);
+  return rows.length === 1 ? (rows[0]?.orgId ?? null) : null;
+}
+
 /** Whether a live organisation has this id. Metadata names one; this checks it is real. */
 export async function liveOrganizationExists(exec: Executor, orgId: string): Promise<boolean> {
   const [row] = await exec

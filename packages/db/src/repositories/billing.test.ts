@@ -27,6 +27,7 @@ import {
   findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
+  findOrgIdByInvoicedPayment,
   listAwaitingActivation,
   listDueSeatSyncs,
   listEndedCancellations,
@@ -458,6 +459,26 @@ describe('locating an organisation from an event', () => {
     // One person can own two organisations that each bought a plan: ambiguous,
     // so nobody is guessed.
     expect(await findOrgIdByDodoCustomer(t.db, shared)).toBeNull();
+  });
+
+  it('places an event by payment only through the invoice email that named it, for one organisation', async () => {
+    const { orgId } = await seedOrg();
+    const invoiced = `pay_${uniq()}`;
+    await claimReminder(t.db, { orgId, kind: 'invoice_available', occasion: invoiced });
+    expect(await findOrgIdByInvoicedPayment(t.db, invoiced)).toBe(orgId);
+
+    // A payment nobody invoiced — another product's, on the same Dodo account.
+    expect(await findOrgIdByInvoicedPayment(t.db, `pay_${uniq()}`)).toBeNull();
+    // Only the invoice email names a payment; another reminder's occasion is not one.
+    const period = `pay_${uniq()}`;
+    await claimReminder(t.db, { orgId, kind: 'usage_80', occasion: period });
+    expect(await findOrgIdByInvoicedPayment(t.db, period)).toBeNull();
+    // Two organisations invoiced for one payment: ambiguous, so nobody is guessed.
+    const twice = `pay_${uniq()}`;
+    await claimReminder(t.db, { orgId, kind: 'invoice_available', occasion: twice });
+    const other = await seedOrg();
+    await claimReminder(t.db, { orgId: other.orgId, kind: 'invoice_available', occasion: twice });
+    expect(await findOrgIdByInvoicedPayment(t.db, twice)).toBeNull();
   });
 
   it('confirms an organisation named in metadata exists and is live', async () => {
