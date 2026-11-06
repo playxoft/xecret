@@ -219,9 +219,21 @@ On `xecret-staging.playxoft.com`, with a Dodo test card, on a throwaway organisa
 
 Round 2 adds what only Dodo itself can answer — record what it does:
 
-- [ ] **Upgrade during a trial — a HARD GATE before live payments. Do not switch
+- [x] **Upgrade during a trial — a HARD GATE before live payments. Do not switch
       `DODO_ENVIRONMENT` to `live_mode` (§2 step 6) until this check has passed and its answers
       are written down here.**
+
+      **Passed 2026-11-05** on `sub_0NrIFRFuxlB34vvOYZG33` (test mode, org `rnithin133-2`). The
+      first run FAILED exactly as this check predicts — the declined immediate charge
+      (₹15,926.46, `pay_0NrIG0…`) left Dodo on the monthly trial but flipped the row to
+      active/metered — and PR #146 implemented the rule below. Re-run under the fix: the row
+      stayed trialing through a second declined attempt, and the broken row healed from a fresh
+      snapshot (Team · Trial, end restored to the booked Nov 19, `metered_from` back at the
+      start). Dodo's `GET` confirmed the premises: `next_billing_date` = `created_at` + 14 days
+      (+71 s), `previous_billing_date` stamped by the *failed* attempt, `trial_period_days`
+      still 14, status `active` throughout the trial. The gateway artifact stands: the Indian
+      test simulator declines every off-session charge, so the paid path is covered by
+      `trial-upgrade.test.ts` and the two first-live-charge checks below.
 
       *What the code does* (§2, "How the row reads a trial"). A trial is over only when a payment
       has moved Dodo's **`next_billing_date` more than a day past the booked trial end**

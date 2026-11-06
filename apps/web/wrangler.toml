@@ -106,9 +106,11 @@ ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 # passed on 2026-11-05, after the rehearsal caught and PR #146 fixed the
 # declined-upgrade trial bug it exists to catch. Billing stays all or
 # nothing: until the two secrets are on the Worker, every billing route and
-# the webhook answer 503 and nothing else changes — the go-live script puts
-# the secrets there before it deploys this table. The ids are the live-mode
-# catalogue, created 2026-11-03.
+# the webhook answer 503 — and half-configured is a degraded state, not a
+# dormant one: membership changes queue seat-sync debts and the hourly job
+# logs errors until the secrets land. The go-live script puts them on the
+# Worker before it deploys this table, so that state lasts minutes, not
+# days. The ids are the live-mode catalogue, created 2026-11-03.
 DODO_ENVIRONMENT = "live_mode"
 DODO_PRODUCT_PRO_MONTHLY = "pdt_0Nr9ovFDYH8ipbTL5hkZc"
 DODO_PRODUCT_PRO_YEARLY = "pdt_0Nr9ov7sm8QAh2vFBszhc"
@@ -276,7 +278,7 @@ WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
 XECRET_ROOT_KEY_VERSION = "1"
 # Payments: Dodo TEST mode — the rehearsal environment for P12
 # (docs/operations/billing.md §2–3). These name the test-mode catalogue
-# created 2025-11-03; the credentials (DODO_API_KEY, DODO_WEBHOOK_SECRET,
+# created 2026-11-03; the credentials (DODO_API_KEY, DODO_WEBHOOK_SECRET,
 # test-mode values) are Worker secrets, set like the rest at the foot of this
 # file. The meter variable is the meter's EVENT NAME, not its mtr_… id —
 # usage is reported by event name and `check:env` refuses an id here. The
