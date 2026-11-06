@@ -1032,7 +1032,7 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
 /**
  * The two capabilities that are bought rather than reached by moving tier.
  *
- * ── Why these are add-ons and why the page says what they cost us ──
+ * ── Why these are add-ons ──
  * Each is one WorkOS connection, and WorkOS bills us $125 a month for each one
  * whether or not anybody signs in through it. A connection is a connection
  * there: SAML and OIDC cost the same. That is the whole reason OIDC single
@@ -1040,10 +1040,12 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
  * ourselves, it costs us nothing per customer, and charging for it would be
  * the SSO tax this pricing is positioned against.
  *
- * Publishing our own cost beside the price is deliberate. It is the same
- * instinct as the trust-model note in the README: the honest version of a thing
- * a reader could otherwise discover later and feel misled by. A vendor that
- * shows the receipt is making a claim that can be checked.
+ * The page used to publish that $125 beside the $199 ("show the receipt").
+ * The owner withdrew it on 2026-11-06 — the rendered copy stays professional
+ * and names no supplier costs or margins. The reasoning above is for THIS
+ * file only; keep it out of `body` and out of the FAQ answer. The rule that
+ * OIDC will ship included stays public, because that is a promise to buyers,
+ * not a cost disclosure.
  */
 /**
  * The add-ons, and the tier each one starts from.
@@ -1096,7 +1098,7 @@ const ADDONS = [
     // inclusion, which is the mirror of how SCIM works one entry below.
     from: 'Team only — included with Enterprise',
     notYet: true,
-    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. Enterprise contracts include it rather than paying per connection. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
+    body: 'Connect your SAML 2.0 identity provider — Okta, Microsoft Entra ID, OneLogin, PingFederate and the rest. Each connection is set up together with your identity team and comes with priority support for it. Enterprise plans include SAML connections. OIDC single sign-on will be included from Team at no extra cost — neither is built yet.',
   },
 ] as const;
 
@@ -1774,7 +1776,7 @@ const FAQ: readonly PricingFaqItem[] = [
     // republishes every answer as `FAQPage` structured data — so an answer
     // nobody reads back is still an answer Google indexes and quotes.
     answer:
-      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately — we are building it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is the exception and will be a $199 per connection add-on from Team, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not; Enterprise includes it, because the contract floor already covers the connection. Directory sync is included with Enterprise on the same reasoning and is not sold below it. None of this is available today, on any plan. Self-hosted deployments will bring their own identity provider and pay nothing for any of it.',
+      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately. SAML is the exception: each SAML connection is provisioned and supported individually, so it will be a $199 per connection per month add-on from Team, and Enterprise plans include it. Directory sync is included with Enterprise and is not sold below it. None of this is available today, on any plan. Self-hosted deployments bring their own identity provider and pay nothing for any of it.',
   },
   {
     question: 'What happens when I exceed the free tier?',
