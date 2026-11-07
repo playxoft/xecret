@@ -66,6 +66,14 @@ export type {
 } from './sessions';
 
 export {
+  clearSignInFailures,
+  findSignInFailures,
+  pruneSignInFailures,
+  recordSignInFailure,
+} from './sign-in-failures';
+export type { SignInFailureState } from './sign-in-failures';
+
+export {
   findRetainedRecoveryWrap,
   listRetainedVaults,
   loadRetainedVault,
