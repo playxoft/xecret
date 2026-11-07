@@ -92,7 +92,7 @@ export function RetainedVaultsCard() {
         {retained.map((entry) => (
           <div
             key={entry.id}
-            className="border-border flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between"
+            className="border-line flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="flex flex-col gap-1 text-sm">
               <span className="text-fg font-medium">

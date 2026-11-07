@@ -43,6 +43,12 @@ describe('vaultArchiveMail', () => {
     expect(mail.text).toContain('xecret vault open-archive');
   });
 
+  it('says where in a project "Import archive" is: its Manage menu', () => {
+    const mail = vaultArchiveMail(params);
+    expect(mail.text).toContain('open a project and choose "Import archive" in its Manage menu');
+    expect(mail.html).toContain('open a project and choose “Import archive” in its Manage menu');
+  });
+
   it('attaches the zip and nothing else', () => {
     expect(vaultArchiveMail(params).attachments).toEqual([
       { name: file.fileName, mimeType: 'application/zip', content: file.bytes },
