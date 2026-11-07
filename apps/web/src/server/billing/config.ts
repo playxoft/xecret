@@ -230,6 +230,24 @@ export function takesLivePayments(env: Bindings): boolean {
   }
 }
 
+/**
+ * Whether this deployment can start a checkout at all: billing fully
+ * configured, in **either** of Dodo's modes — exactly what the billing routes
+ * report as `enabled`. What the in-app plans page keys on, where
+ * `takesLivePayments` would be the wrong question: a staging rehearsal in test
+ * mode must still reach checkout from it (the page says "test mode" itself),
+ * while a deployment with no payment provider shows the plans without a price
+ * or a button. Never throws: a half-configured deployment answers `false`, as
+ * its billing routes answer 503.
+ */
+export function billingConfigured(env: Bindings): boolean {
+  try {
+    return billingSetup(env).state === 'enabled';
+  } catch {
+    return false;
+  }
+}
+
 /** The product that sells `plan` at `interval`. Every pair has one when billing is on. */
 export function productFor(
   config: BillingConfig,

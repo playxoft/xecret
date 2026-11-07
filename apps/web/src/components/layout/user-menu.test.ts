@@ -49,12 +49,12 @@ describe('UserMenu', () => {
       createElement(UserMenu, {
         user: USER,
         accountHref: '/app/settings/account',
-        upgradeHref: '/app/acme/upgrade',
+        upgradeHref: '/app/acme/settings/plans',
       }),
     );
 
     expect(html).toContain('Upgrade plan');
-    expect(html).toContain('href="/app/acme/upgrade"');
+    expect(html).toContain('href="/app/acme/settings/plans"');
     // Beside the account item, above the theme — near the top, where it is seen.
     expect(html.indexOf('Account settings')).toBeLessThan(html.indexOf('Upgrade plan'));
     expect(html.indexOf('Upgrade plan')).toBeLessThan(html.indexOf('Theme'));
@@ -66,6 +66,6 @@ describe('UserMenu', () => {
     );
 
     expect(html).not.toContain('Upgrade plan');
-    expect(html).not.toContain('/upgrade');
+    expect(html).not.toContain('/settings/plans');
   });
 });

@@ -62,20 +62,16 @@ describe('withQuery', () => {
 });
 
 /**
- * The plans page sits where a project slug would, at `/app/{org}/upgrade`.
- *
- * Read as a project, the shell would ask the API for a project called
- * `upgrade`, draw it in the breadcrumb trail and light "Projects" in the
- * sidebar — on a page that has nothing to do with any project. `upgrade` is on
- * the reserved slug list for the same reason (`slug.test.ts` pins that half).
+ * The plans page lives under the organisation's `settings`, which is already
+ * reserved — so it shadows no project, whatever projects already exist.
  */
-describe('the plans page is an organisation page', () => {
-  it('lives at /app/{org}/upgrade', () => {
-    expect(appPath.upgrade('acme')).toBe('/app/acme/upgrade');
+describe('the plans page', () => {
+  it('sits under settings, beside billing', () => {
+    expect(appPath.orgPlans('acme')).toBe('/app/acme/settings/plans');
   });
 
-  it('is not read as a project', () => {
-    expect(parseDashboardPath(appPath.upgrade('acme'))).toEqual({
+  it('is read as an organisation page, not a project', () => {
+    expect(parseDashboardPath(appPath.orgPlans('acme'))).toEqual({
       orgSlug: 'acme',
       projectSlug: null,
       envSlug: null,

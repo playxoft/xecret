@@ -122,7 +122,13 @@ export function AppShell({
   // the switcher names, so "Upgrade plan" can never open another tenant's.
   // Built here rather than handed down, because this is where that slug
   // already lives; omitted when there is none to describe.
-  const upgradeHref = currentOrgSlug === '' ? undefined : appPath.upgrade(currentOrgSlug);
+  //
+  // Offered whether or not this installation takes payments. The shell cannot
+  // know that (it is server configuration), and it does not need to: the page
+  // asks for itself, and on an installation that sells nothing it compares the
+  // plans without a price or a button and says why. A link to an honest page
+  // is not a promise of a purchase.
+  const upgradeHref = currentOrgSlug === '' ? undefined : appPath.orgPlans(currentOrgSlug);
 
   /**
    * The switcher, built per placement rather than once.

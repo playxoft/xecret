@@ -36,7 +36,7 @@ export const PLANS_HREF = '/pricing';
 export function plansHref(pathname: string | null): string {
   if (pathname === null) return PLANS_HREF;
   const { orgSlug } = parseDashboardPath(pathname);
-  return orgSlug === null ? PLANS_HREF : appPath.upgrade(orgSlug);
+  return orgSlug === null ? PLANS_HREF : appPath.orgPlans(orgSlug);
 }
 
 function usePlansHref(): string {

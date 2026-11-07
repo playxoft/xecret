@@ -88,10 +88,23 @@ function fails(error: unknown): void {
   resource.current = { data: null, error, loading: false };
 }
 
-function render(role: OrgRole, returnedFromCheckout = false): string {
+/** `OVERAGE_RATE_TEXT`, as the server component hands it down. */
+const RATE = '$0.01 per 1,000 secret fetches past the allowance ($1 per 100,000)';
+
+function render(
+  role: OrgRole,
+  {
+    returnedFromCheckout = false,
+    taken = true,
+  }: { returnedFromCheckout?: boolean; taken?: boolean } = {},
+): string {
   viewer.organization = organization(role);
   return renderToStaticMarkup(
-    createElement(UpgradeScreen, { orgSlug: 'acme', returnedFromCheckout }),
+    createElement(UpgradeScreen, {
+      orgSlug: 'acme',
+      returnedFromCheckout,
+      payments: { taken, overageRate: RATE },
+    }),
   );
 }
 
@@ -123,7 +136,19 @@ describe('UpgradeScreen, for an owner', () => {
     expect(html).toContain('Billed from 3 members up');
   });
 
-  it('sends a subscriber to the billing screen to switch, rather than to a second checkout', () => {
+  it('says what a fetch past the allowance costs, beside the allowance', () => {
+    const html = render('owner');
+
+    expect(html).toContain('200,000 secret fetches a month included');
+    expect(html).toContain(`Fetches past it keep working, and are billed at ${RATE}.`);
+    expect(html).toContain('Fetches past it keep working, and are not billed.');
+    // And the reassurance says the same, rather than that machines cost nothing.
+    expect(html).toContain('Machines never take a seat');
+    expect(html).toContain(`on a paid plan it is billed at ${RATE}`);
+    expect(html).not.toContain('never add to the bill');
+  });
+
+  it('sends a subscriber to the billing screen to switch, with the period chosen here', () => {
     answers(
       billing({
         plan: 'pro',
@@ -136,7 +161,8 @@ describe('UpgradeScreen, for an owner', () => {
 
     expect(html).not.toContain('Upgrade to');
     expect(html).toContain('Switch to Team');
-    expect(html).toContain('href="/app/acme/settings/billing"');
+    // Yearly is what the page opens on, so yearly is what the link carries.
+    expect(html).toContain('href="/app/acme/settings/billing?plan=team&amp;interval=yearly"');
     expect(html).toContain('On Pro');
     // Pro is the current card, and only it says so.
     expect(html.match(/Your current plan/g)).toHaveLength(1);
@@ -148,6 +174,17 @@ describe('UpgradeScreen, for an owner', () => {
 
     expect(html).toContain('Acme is close to a limit');
     expect(html).toContain('5 projects of 5. Pro allows 25.');
+  });
+
+  it('measures a raised ceiling against the plans that would actually lift it', () => {
+    // Support allowed this Free organisation 40 projects; Pro's 25 is fewer.
+    answers(
+      billing({ warnings: [{ resource: 'projects', limit: 40, current: 40, atLimit: true }] }),
+    );
+    const html = render('owner');
+
+    expect(html).toContain('40 projects of 40. Team allows 100.');
+    expect(html).not.toContain('Pro allows 25');
   });
 
   it('offers nothing to buy on a plan support manages', () => {
@@ -180,7 +217,7 @@ describe('UpgradeScreen, for an owner', () => {
   });
 
   it('points a return from checkout at the billing screen, which watches for the payment', () => {
-    const html = render('owner', true);
+    const html = render('owner', { returnedFromCheckout: true });
 
     expect(html).toContain('Finishing your upgrade');
     expect(html).toContain('href="/app/acme/settings/billing?checkout=returned"');
@@ -202,6 +239,41 @@ describe('UpgradeScreen, for an owner', () => {
   it('promises no trial, as the pricing page offers none', () => {
     expect(render('owner')).not.toMatch(/\btrial\b/i);
   });
+
+  it('sells per-environment access nowhere, and custom roles only where they are gated', () => {
+    const html = render('owner');
+
+    // Nothing enforces the per-environment gate, so nothing here sells it.
+    expect(html).not.toMatch(/per-environment (access|grants)/i);
+    expect(html).not.toContain('everyone can read every environment');
+    // Custom roles are refused below Enterprise, so they are named there.
+    expect(html).toContain('Custom roles, no ceiling on projects');
+  });
+});
+
+describe('UpgradeScreen, where the installation takes no payments', () => {
+  it.each(['owner', 'developer'] as const)(
+    'compares the plans for a %s with no price, button or owner to ask',
+    (role) => {
+      const html = render(role, { taken: false });
+
+      // Nothing is sold, so nothing is asked about the plan.
+      expect(resource.paths).toEqual([null]);
+      expect(html).toContain('This installation does not take payments');
+      expect(html).toContain('Plans for Acme');
+      expect(html).toContain('What each plan unlocks');
+      expect(html).toContain('200,000 secret fetches a month included');
+      // No figure, saving, seat floor, button, or person to ask.
+      expect(html).not.toMatch(/\$\d/);
+      expect(html).not.toContain('Save up to');
+      expect(html).not.toContain('Billed from');
+      expect(html).not.toContain('billed at');
+      expect(html).not.toContain('Upgrade to');
+      expect(html).not.toContain('Talk to us');
+      expect(html).not.toContain('Recommended');
+      expect(html).not.toContain(ASK_AN_OWNER);
+    },
+  );
 });
 
 describe('UpgradeScreen, for everybody else', () => {

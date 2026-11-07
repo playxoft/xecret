@@ -285,7 +285,9 @@ const eslintConfig = defineConfig([
       // missing — a rename that never reaches the breadcrumb, a listing whose
       // notes are never opened. `upgrade-plans.test.ts` reads the pricing page,
       // which cannot export its price sheets, to prove the in-app plans page
-      // quotes the same dollars, the same saving and nothing it marks unbuilt.
+      // quotes the same dollars, the same saving and nothing it marks unbuilt —
+      // and reads the route handlers, to prove every capability the page
+      // sells has a `requireFeature` behind it.
       //
       // Stated as the narrower rule rather than as `'off'`, for the reason
       // spelled out above: ESLint replaces a rule's configuration wholesale,

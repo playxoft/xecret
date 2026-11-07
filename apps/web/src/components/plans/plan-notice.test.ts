@@ -23,10 +23,13 @@ beforeEach(() => {
 
 describe('plansHref', () => {
   it.each([
-    ['/app/acme', '/app/acme/upgrade'],
-    ['/app/acme/payments-api/production', '/app/acme/upgrade'],
-    ['/app/acme/payments-api/production/settings', '/app/acme/upgrade'],
-    ['/app/acme/settings', '/app/acme/upgrade'],
+    ['/app/acme', '/app/acme/settings/plans'],
+    ['/app/acme/payments-api/production', '/app/acme/settings/plans'],
+    ['/app/acme/payments-api/production/settings', '/app/acme/settings/plans'],
+    ['/app/acme/settings', '/app/acme/settings/plans'],
+    ['/app/acme/settings/plans', '/app/acme/settings/plans'],
+    // A project that happens to be called `upgrade` is just a project.
+    ['/app/acme/upgrade/production', '/app/acme/settings/plans'],
   ])('sends %s to its organisation’s plans', (pathname, expected) => {
     expect(plansHref(pathname)).toBe(expected);
   });
@@ -51,7 +54,7 @@ describe('the notices link there', () => {
     );
 
     expect(html).toContain('Disabling plaintext export needs the Team plan.');
-    expect(html).toContain('href="/app/acme/upgrade"');
+    expect(html).toContain('href="/app/acme/settings/plans"');
   });
 
   it('ChangeError, for a plan refusal', () => {
@@ -72,7 +75,7 @@ describe('the notices link there', () => {
     const html = renderToStaticMarkup(createElement(ChangeError, { error }));
 
     expect(html).toContain('Available on the Pro plan');
-    expect(html).toContain('href="/app/acme/upgrade"');
+    expect(html).toContain('href="/app/acme/settings/plans"');
   });
 
   it('the pricing page, where there is no organisation', () => {

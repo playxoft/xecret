@@ -79,9 +79,16 @@ const CONFIRMATION_POLLS = 20;
 export function BillingScreen({
   orgSlug,
   returnedFromCheckout,
+  initialChoice = {},
 }: {
   orgSlug: string;
   returnedFromCheckout: boolean;
+  /**
+   * The plan and period the plans page's "Switch to …" was pressed for, so the
+   * change form opens on that choice rather than on the subscription's own.
+   * Only where to start: nothing is previewed or changed until the owner asks.
+   */
+  initialChoice?: { plan?: Plan; interval?: Interval };
 }) {
   const membership = useOrganization(orgSlug);
   const isOwner = canAdminister(membership, 'billing.manage');
@@ -127,6 +134,7 @@ export function BillingScreen({
           orgSlug={orgSlug}
           billing={billing}
           waitingForPayment={waitingForPayment}
+          initialChoice={initialChoice}
           onChanged={() => void resource.reload()}
         />
       ) : null}
@@ -138,11 +146,13 @@ function BillingDetails({
   orgSlug,
   billing,
   waitingForPayment,
+  initialChoice,
   onChanged,
 }: {
   orgSlug: string;
   billing: Billing;
   waitingForPayment: boolean;
+  initialChoice: { plan?: Plan; interval?: Interval };
   onChanged: () => void;
 }) {
   const failing = billing.status === 'past_due' || billing.status === 'on_hold';
@@ -205,7 +215,7 @@ function BillingDetails({
           </ul>
           <p className="mt-2">
             A secret fetch is never refused over a limit.{' '}
-            <Link href={appPath.upgrade(orgSlug)}>Compare plans</Link>.
+            <Link href={appPath.orgPlans(orgSlug)}>Compare plans</Link>.
           </p>
         </Alert>
       ) : null}
@@ -218,7 +228,12 @@ function BillingDetails({
           </p>
         </Alert>
       ) : billing.actions.checkout || billing.actions.changePlan ? (
-        <ChoosePlan orgSlug={orgSlug} billing={billing} onChanged={onChanged} />
+        <ChoosePlan
+          orgSlug={orgSlug}
+          billing={billing}
+          initialChoice={initialChoice}
+          onChanged={onChanged}
+        />
       ) : null}
 
       {billing.actions.portal ? (
@@ -396,18 +411,25 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
 function ChoosePlan({
   orgSlug,
   billing,
+  initialChoice,
   onChanged,
 }: {
   orgSlug: string;
   billing: Billing;
+  initialChoice: { plan?: Plan; interval?: Interval };
   onChanged: () => void;
 }) {
   const { toast } = useToast();
   const subscribed = billing.actions.changePlan;
-  // Opens on the next rung up for a subscriber, and on Team, yearly — the
-  // pricing page's own default — for everybody else.
-  const [plan, setPlan] = useState<Plan>(billing.plan === 'team' ? 'pro' : 'team');
-  const [interval, setBillingInterval] = useState<Interval>(billing.interval ?? 'yearly');
+  // Opens on what the plans page asked for, when it asked; otherwise on the
+  // next rung up for a subscriber, and on Team, yearly — the pricing page's
+  // own default — for everybody else.
+  const [plan, setPlan] = useState<Plan>(
+    initialChoice.plan ?? (billing.plan === 'team' ? 'pro' : 'team'),
+  );
+  const [interval, setBillingInterval] = useState<Interval>(
+    initialChoice.interval ?? billing.interval ?? 'yearly',
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [preview, setPreview] = useState<{

@@ -1,6 +1,8 @@
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 import type { PlanFeatures } from '@xecret/core/entitlements';
 
+import { appPath, withQuery } from '../_lib/paths';
+
 /**
  * What the in-app plans page says about each plan.
  *
@@ -18,16 +20,37 @@ import type { PlanFeatures } from '@xecret/core/entitlements';
  * pricing page's source and fails if the two ever disagree — figure, unit,
  * yearly total and the "save up to" percentage alike. Dollars only: checkout
  * prices in the buyer's own currency, and the pricing page is where every
- * sheet is published.
+ * sheet is published. The overage rate is not restated at all: the page
+ * receives `OVERAGE_RATE_TEXT` from its server component, the constant the
+ * billing screen and the usage emails print.
  *
  * ── What is never said here ──
- * Anything the pricing page marks "Coming soon". The engine already carries
- * flags for capabilities that are not built (approvals, break-glass, GitHub
- * federation, scheduled secrets, single sign-on), and a page whose job is to
- * persuade is exactly where one of those would quietly gain a tick. So the
- * capabilities below are a list of *shipped* flags, and the test pins that
- * none of the unbuilt ones is on it. Nor is a trial: the pricing page offers
- * none, so this page does not either.
+ * A capability the server does not enforce. A flag in `PLANS` is not enough:
+ * the engine carries flags for things nobody has built (approvals, break-glass,
+ * GitHub federation, scheduled secrets, single sign-on), and one for a thing
+ * that is built and not gated — see `perEnvironmentGrants` below. A page whose
+ * job is to persuade is exactly where either would quietly gain a tick, so the
+ * capabilities listed are the flags with a `requireFeature` behind them, and
+ * the test reads the server to prove each one has. Nor is a trial offered: the
+ * pricing page offers none, so this page does not either.
+ *
+ * ── Per-environment access: a discrepancy, and an open decision ──
+ * `PLANS` gives `perEnvironmentGrants` to Team, and `/pricing` sells "Roles and
+ * per-environment access" as a Team feature with a dash under Free and Pro. But
+ * nothing checks the flag: the grants routes write per-environment grants on
+ * every plan. Selling it here, beside a checkout button, would charge people
+ * for something they already have. Whether to enforce the gate or reword the
+ * pricing page is the owner's decision and is still pending; until it is made,
+ * this page claims per-environment access nowhere — not as a Team bullet, not
+ * as a table row, and not by implication ("everyone on Pro can read every
+ * environment", or a Pro audience line about keeping people out of
+ * production). Revisit this note when the decision lands.
+ *
+ * Custom roles are the gate that does exist (`requireFeature(…,
+ * 'customRoles')` on the roles routes and on assigning one) — at Enterprise,
+ * per `PLANS`, so that is where this page names them. `/pricing` still marks
+ * them "Coming soon" there, which the code no longer bears out; that page is
+ * left for the same decision.
  */
 
 export type PaidPlanId = 'pro' | 'team';
@@ -147,20 +170,19 @@ export interface PlanOffer {
   readonly name: string;
   /** One line answering "is this me?" before the list is read. */
   readonly audience: string;
+  /** Ticked bullets. The fetch allowance is not among them — see `includedFetches`. */
   readonly features: readonly string[];
+  /**
+   * Secret fetches included a month. Its own field, because the line it renders
+   * carries a condition no other bullet has: what happens past it, which on a
+   * paid plan is a charge and has to be said beside the number, as `/pricing`
+   * says "Billed, never blocked".
+   */
+  readonly includedFetches: number;
   /** A condition on the price, rendered under it. */
   readonly caveat: string | null;
   readonly recommended: boolean;
 }
-
-const proMembers =
-  LIMITS.pro.seats === null
-    ? // Uncapped on purpose: the gate to Team is per-environment access, not
-      // headcount — so the sentence says what the absence of that gate means.
-      PLANS.pro.features.perEnvironmentGrants
-      ? 'Unlimited members'
-      : 'Unlimited members — everyone can read every environment'
-    : many(LIMITS.pro.seats, 'member', 'members');
 
 export const PLAN_OFFERS: readonly PlanOffer[] = [
   {
@@ -172,43 +194,48 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       `${many(LIMITS.free.environmentsPerProject, 'environment', 'environments')} per project`,
       many(LIMITS.free.seats, 'member', 'members'),
       `${many(LIMITS.free.serviceTokens, 'service token', 'service tokens')} for CI`,
-      `${formatCount(LIMITS.free.includedFetchesPerMonth)} secret fetches a month`,
       `${formatRetention(LIMITS.free.auditRetentionDays)} of audit history`,
     ],
+    includedFetches: LIMITS.free.includedFetchesPerMonth,
     caveat: seatFloor(MINIMUM_SEATS.free),
     recommended: false,
   },
   {
     id: 'pro',
     name: PLANS.pro.name,
-    audience:
-      'For a small team that has outgrown the free limits and does not yet need to keep anyone out of production.',
+    // Not the pricing page's line, which describes Pro by a team that "does not
+    // yet need to keep anyone out of production" — the unenforced gate above.
+    audience: 'For a small team that has outgrown the free limits.',
     features: [
       `${many(LIMITS.pro.projects, 'project', 'projects')} across ${many(LIMITS.pro.organizations, 'organisation', 'organisations')}`,
       `${many(LIMITS.pro.environmentsPerProject, 'environment', 'environments')} per project, ${many(LIMITS.pro.secretsPerEnvironment, 'secret', 'secrets')} in each`,
-      proMembers,
+      // Just the count. It said "everyone can read every environment", which
+      // is the unenforced per-environment gate stated from the other side.
+      LIMITS.pro.seats === null ? 'Unlimited members' : many(LIMITS.pro.seats, 'member', 'members'),
       `${many(LIMITS.pro.serviceTokens, 'service token', 'service tokens')} for CI, all free`,
-      `${formatCount(LIMITS.pro.includedFetchesPerMonth)} secret fetches a month`,
       `${formatRetention(LIMITS.pro.auditRetentionDays)} of audit history`,
       'Secret referencing, overrides, promotion and point-in-time restore',
     ],
+    includedFetches: LIMITS.pro.includedFetchesPerMonth,
     caveat: seatFloor(MINIMUM_SEATS.pro),
     recommended: false,
   },
   {
     id: 'team',
     name: PLANS.team.name,
+    // Not the pricing page's "somebody who must not see production" either —
+    // what Team adds that the server enforces is room and policy.
     audience:
-      'For a team with somebody who must not see production — a contractor, a junior, an auditor.',
+      'For a team that needs room to grow, and a say in how its secrets are named and exported.',
     features: [
       'Everything in Pro',
-      'Roles and per-environment access',
       `${many(LIMITS.team.projects, 'project', 'projects')}, ${many(LIMITS.team.secretsPerEnvironment, 'secret', 'secrets')} per environment`,
       `${many(LIMITS.team.serviceTokens, 'service token', 'service tokens')} for CI`,
-      `${formatCount(LIMITS.team.includedFetchesPerMonth)} secret fetches a month`,
       `${formatRetention(LIMITS.team.auditRetentionDays)} of audit history`,
-      'A secret policy, and plaintext export switched off where you choose',
+      'A secret policy for names and values',
+      'Plaintext export switched off per environment',
     ],
+    includedFetches: LIMITS.team.includedFetchesPerMonth,
     caveat: seatFloor(MINIMUM_SEATS.team),
     recommended: true,
   },
@@ -217,16 +244,35 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
 /** The Enterprise row's condition on the (unpublished) price. */
 export const ENTERPRISE_CAVEAT = seatFloor(MINIMUM_SEATS.enterprise);
 
+/**
+ * What happens past a plan's fetch allowance, as the line under it says it.
+ *
+ * Free is never billed for usage; a paid plan is, at the metered rate, and
+ * says so — `/pricing`'s "Billed, never blocked" with the rate attached. On an
+ * installation that takes no payments nothing is billed on any plan, so only
+ * the part that is true everywhere is said: nothing stops.
+ */
+export function pastTheAllowance(
+  plan: OfferPlanId,
+  payments: { taken: boolean; overageRate: string },
+): string {
+  if (!payments.taken) return 'Fetches past it keep working.';
+  if (plan === 'free') return 'Fetches past it keep working, and are not billed.';
+  return `Fetches past it keep working, and are billed at ${payments.overageRate}.`;
+}
+
 /* ── What each plan unlocks ────────────────────────────────────────────────── */
 
 /**
- * The capabilities a paid plan adds that are built and enforced today, in the
- * order a reader meets them.
+ * The capabilities a paid plan adds that are built *and* enforced today, in
+ * the order a reader meets them.
  *
  * Keyed by the engine's own flag, so the ticks in the table are read from
  * `PLANS` rather than written here: move a capability to another plan in
- * `plans.ts` and the table follows. What is written here is only *which* flags
- * are shipped — see the note at the top of this file.
+ * `plans.ts` and the table follows. What is written here is only *which*
+ * flags have a gate behind them — `upgrade-plans.test.ts` finds the
+ * `requireFeature` call for every one. `perEnvironmentGrants` is deliberately
+ * absent; the note at the top of this file says why.
  */
 export const SHIPPED_CAPABILITIES: readonly {
   readonly feature: keyof PlanFeatures;
@@ -264,11 +310,6 @@ export const SHIPPED_CAPABILITIES: readonly {
     hint: 'Owners and admins get an email the first time an environment is read from somewhere new.',
   },
   {
-    feature: 'perEnvironmentGrants',
-    label: 'Roles and per-environment access',
-    hint: 'Give somebody staging without giving them production.',
-  },
-  {
     feature: 'secretPolicy',
     label: 'A secret policy for names and values',
     hint: 'Hold new secrets to a naming rule, a minimum strength and words they must not contain.',
@@ -286,6 +327,9 @@ export interface CapabilityRow {
   readonly on: Readonly<Record<OfferPlanId, boolean>>;
 }
 
+/** The label of the one row that is a limit rather than a flag. */
+export const WEBHOOKS_ROW = 'Webhooks on secret change';
+
 /**
  * The table under the cards: one row per shipped capability, plus webhooks —
  * a limit rather than a flag, carried by every plan whose ceiling is above
@@ -294,7 +338,7 @@ export interface CapabilityRow {
 export const CAPABILITY_ROWS: readonly CapabilityRow[] = [
   ...SHIPPED_CAPABILITIES.slice(0, 5).map((capability) => rowFor(capability)),
   {
-    label: 'Webhooks on secret change',
+    label: WEBHOOKS_ROW,
     hint: 'Notify your own systems when a value changes.',
     on: {
       free: (LIMITS.free.webhooks ?? 1) > 0,
@@ -317,29 +361,70 @@ function rowFor(capability: (typeof SHIPPED_CAPABILITIES)[number]): CapabilityRo
   };
 }
 
+/* ── Ceilings, and the plan that lifts one ─────────────────────────────────── */
+
+const ABOVE: Readonly<Record<OfferPlanId | 'enterprise', readonly PaidPlanId[]>> = {
+  free: ['pro', 'team'],
+  pro: ['team'],
+  team: [],
+  enterprise: [],
+};
+
 /**
- * What a ceiling the organisation is near becomes on the plan above it — the
- * line under a "close to a limit" warning. `null` when there is no plan above
- * to name, or it would not raise the ceiling.
+ * The cheapest self-serve plan whose ceiling on `resource` is higher than the
+ * one the organisation is near — the line under a "close to a limit" warning —
+ * or `null` when no plan would lift it.
+ *
+ * `ceiling` is the limit the server actually warned at, which is not always
+ * the plan's default: support can raise one for an organisation (a
+ * `limitOverrides` entry, a raised seat limit). Comparing against the default
+ * would tell an organisation allowed 40 projects that Pro "allows 25" as
+ * though that were more.
  */
 export function nextCeiling(
   current: OfferPlanId | 'enterprise',
   resource: 'seats' | 'projects' | 'serviceTokens',
+  ceiling: number,
 ): { plan: PaidPlanId; sentence: string } | null {
-  const next: PaidPlanId | null = current === 'free' ? 'pro' : current === 'pro' ? 'team' : null;
-  if (next === null) return null;
-  const now = PLANS[current].limits[resource];
-  const then = PLANS[next].limits[resource];
-  if (then !== null && now !== null && then <= now) return null;
-
   const noun = { seats: 'members', projects: 'projects', serviceTokens: 'service tokens' }[
     resource
   ];
+  for (const plan of ABOVE[current]) {
+    const limit = PLANS[plan].limits[resource];
+    if (limit === null) return { plan, sentence: `${PLANS[plan].name} has no limit on ${noun}.` };
+    if (limit > ceiling) {
+      return { plan, sentence: `${PLANS[plan].name} allows ${limit.toLocaleString('en-GB')}.` };
+    }
+  }
+  return null;
+}
+
+/* ── The billing screen's starting choice ──────────────────────────────────── */
+
+/**
+ * Where the plans page's "Switch to …" sends a subscriber: the billing screen,
+ * opened on the plan and the period that were showing when it was pressed.
+ */
+export function switchPlanHref(org: string, plan: PaidPlanId, period: BillingPeriod): string {
+  return withQuery(appPath.orgBilling(org), { plan, interval: period });
+}
+
+/**
+ * The billing screen's half of `switchPlanHref`: its query, validated against
+ * the two plans and two periods anybody can buy. Anything else — absent,
+ * repeated, hand-typed — is dropped, and the form opens as it always has.
+ *
+ * Here rather than beside the billing screen because the page that calls it is
+ * a server component, and a `'use client'` module's functions cannot be called
+ * from one.
+ */
+export function billingChoiceFromQuery(
+  query: Readonly<Record<string, string | string[] | undefined>>,
+): { plan?: PaidPlanId; interval?: BillingPeriod } {
+  const plan = query['plan'];
+  const interval = query['interval'];
   return {
-    plan: next,
-    sentence:
-      then === null
-        ? `${PLANS[next].name} has no limit on ${noun}.`
-        : `${PLANS[next].name} allows ${then.toLocaleString('en-GB')}.`,
+    ...(plan === 'pro' || plan === 'team' ? { plan } : {}),
+    ...(interval === 'monthly' || interval === 'yearly' ? { interval } : {}),
   };
 }

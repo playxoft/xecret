@@ -66,8 +66,13 @@ export const appPath = {
    * The plans, inside the app. Every member may read it; only an owner is
    * offered a checkout from it. Where the account menu's "Upgrade plan" and
    * every in-app "Compare plans" link go.
+   *
+   * Under `settings`, beside billing, rather than at `/app/{org}/upgrade`: that
+   * is the slot a project slug takes, and claiming it would shadow any project
+   * already called `upgrade` — its overview, and every control that lives only
+   * there. `settings` is already reserved, so this path shadows nothing.
    */
-  upgrade: (org: string): string => `/app/${segment(org)}/upgrade`,
+  orgPlans: (org: string): string => `/app/${segment(org)}/settings/plans`,
   members: (org: string): string => `/app/${segment(org)}/members`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,
@@ -295,15 +300,11 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   if (root !== 'app' || first === undefined) return empty;
   if (first === 'settings') return { ...empty, isAccountArea: true };
 
-  // Org-level pages that occupy the slot a project slug would. All five names
-  // are in the reserved slug list, so no new project can shadow one — which is
+  // Org-level pages that occupy the slot a project slug would. All four names
+  // are in the reserved slug list, so no project can ever shadow one — which is
   // what makes this a lookup rather than a guess.
   const orgPage =
-    second === 'settings' ||
-    second === 'members' ||
-    second === 'tokens' ||
-    second === 'audit' ||
-    second === 'upgrade';
+    second === 'settings' || second === 'members' || second === 'tokens' || second === 'audit';
 
   return {
     orgSlug: decodeURIComponent(first),
