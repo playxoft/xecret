@@ -134,6 +134,27 @@ export function CardGridSkeleton({ count = 6 }: { count?: number }) {
   );
 }
 
+/** The same, for screens that list one row per item. */
+export function RowListSkeleton({ count = 6 }: { count?: number }) {
+  return (
+    <div aria-busy="true" aria-label="Loading" className="flex flex-col gap-2">
+      {Array.from({ length: count }, (_, index) => (
+        <div
+          key={index}
+          className="border-line bg-surface flex items-center gap-4 rounded-xl border px-4 py-3.5"
+        >
+          <div className="min-w-0 flex-1">
+            <Skeleton className="h-4 w-40 max-w-full" />
+            <Skeleton className="mt-2 h-3 w-24" />
+          </div>
+          <Skeleton className="hidden h-3 w-28 lg:block" />
+          <Skeleton className="hidden h-3 w-36 lg:block" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function FormSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading" className="max-w-xl space-y-6">

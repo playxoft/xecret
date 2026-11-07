@@ -451,3 +451,31 @@ export const ColumnsIcon = (props: IconProps) => (
     <path d="M12 4.5v15" />
   </Icon>
 );
+
+/**
+ * A layout of cards. Four tiles rather than nine: at 16px the gutters between
+ * three-by-three close up under the stroke and the glyph reads as a mesh.
+ */
+export const GridIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="4" y="4" width="6" height="6" rx="1.5" />
+    <rect x="14" y="4" width="6" height="6" rx="1.5" />
+    <rect x="4" y="14" width="6" height="6" rx="1.5" />
+    <rect x="14" y="14" width="6" height="6" rx="1.5" />
+  </Icon>
+);
+
+/**
+ * A layout of rows. The bullets are what keep it from being `MenuIcon`: three
+ * bare lines already mean "open the navigation".
+ */
+export const ListIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="5" cy="6" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="5" cy="18" r="1.2" fill="currentColor" stroke="none" />
+    <path d="M9.5 6H20" />
+    <path d="M9.5 12H20" />
+    <path d="M9.5 18H20" />
+  </Icon>
+);

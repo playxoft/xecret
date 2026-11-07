@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+import { PROJECT_VIEW_STORAGE_KEY } from '@/components/projects/project-listing';
+import { SIDEBAR_STORAGE_KEY, THEME_STORAGE_KEY } from '@/lib/theme';
 
 /**
  * The prose pages against the engine, and against each other.
@@ -568,5 +570,28 @@ describe('the add-ons are described the same way everywhere', () => {
         /\$\d|per[- ]connection|add-on/i,
       );
     }
+  });
+});
+
+describe('the privacy policy names every preference kept in localStorage', () => {
+  // Not a number from the engine, but the same failure: a sentence written by
+  // hand about something the code decides. The policy names each key outright
+  // and counts them in words, and both halves go stale silently — a key
+  // renamed in code leaves the page disclosing one that no longer exists, and
+  // a preference added without the sentence moving leaves the page miscounting
+  // what it keeps on somebody's device. This cannot discover a new key by
+  // itself: whoever adds one adds it here, and the count follows.
+  const PREFERENCE_KEYS = [THEME_STORAGE_KEY, SIDEBAR_STORAGE_KEY, PROJECT_VIEW_STORAGE_KEY];
+  const COUNT_WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six'];
+  const privacy = (PROSE.get('privacy') ?? '').replace(/\s+/g, ' ');
+
+  it.each(PREFERENCE_KEYS)('names %s', (key) => {
+    expect(privacy).toContain(`>${key}</code>`);
+  });
+
+  it('counts them in words', () => {
+    const word = COUNT_WORDS[PREFERENCE_KEYS.length];
+    expect(word, 'extend COUNT_WORDS').toBeDefined();
+    expect(privacy).toContain(`${word} preferences live in`);
   });
 });

@@ -22,10 +22,12 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * document earns.
  *
  * The data categories in section 2 are deliberately specific — column names,
- * cookie names, the two `localStorage` keys — because "we collect certain
- * information to provide and improve our services" is not a disclosure. That
- * specificity is also the maintenance burden: change the session table or add a
- * fourth cookie and this page is wrong until it is edited.
+ * cookie names, the three `localStorage` preferences — because "we collect
+ * certain information to provide and improve our services" is not a
+ * disclosure. That specificity is also the maintenance burden: change the
+ * session table or add a fourth cookie and this page is wrong until it is
+ * edited. The preferences, at least, are pinned: `marketing-pages.test.ts`
+ * fails when one of their keys is renamed and this page is not.
  */
 
 const TITLE = 'Privacy policy';
@@ -33,8 +35,8 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-10-20';
-const EFFECTIVE = '2026-10-26';
+const UPDATED = '2026-11-07';
+const EFFECTIVE = '2026-11-07';
 
 const CANONICAL = absoluteUrl('/privacy');
 
@@ -461,11 +463,14 @@ const SECTIONS: readonly LegalSection[] = [
       ],
       'The sign-in page itself is served by WorkOS, and whatever it stores in your browser is governed by WorkOS’s own policy rather than this one.',
       <>
-        Two preferences live in <code className="text-fg font-mono text-[0.9em]">localStorage</code>{' '}
-        on your own device and are never sent to us:{' '}
-        <code className="text-fg font-mono text-[0.9em]">xecret.theme</code> (light, dark or system)
-        and <code className="text-fg font-mono text-[0.9em]">xecret.sidebar</code> (whether the
-        dashboard sidebar is collapsed).
+        Three preferences live in{' '}
+        <code className="text-fg font-mono text-[0.9em]">localStorage</code> on your own device and
+        are never sent to us: <code className="text-fg font-mono text-[0.9em]">xecret.theme</code>{' '}
+        (light, dark or system),{' '}
+        <code className="text-fg font-mono text-[0.9em]">xecret.sidebar</code> (whether the
+        dashboard sidebar is collapsed) and{' '}
+        <code className="text-fg font-mono text-[0.9em]">xecret.projects.view</code> (whether the
+        projects page shows a grid or a list).
       </>,
       'There is no advertising cookie, no analytics cookie and no third-party tag on this site. That is why there is no cookie banner: there is nothing to ask you about. If we ever add analytics, this section will say so, and we will ask first where the law requires it.',
     ],
