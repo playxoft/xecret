@@ -62,6 +62,17 @@ export const appPath = {
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
   /** The billing screen (P12). Owners only; Dodo's checkout and portal return here. */
   orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
+  /**
+   * The plans, inside the app. Every member may read it; only an owner is
+   * offered a checkout from it. Where the account menu's "Upgrade plan" and
+   * every in-app "Compare plans" link go.
+   *
+   * Under `settings`, beside billing, rather than at `/app/{org}/upgrade`: that
+   * is the slot a project slug takes, and claiming it would shadow any project
+   * already called `upgrade` — its overview, and every control that lives only
+   * there. `settings` is already reserved, so this path shadows nothing.
+   */
+  orgPlans: (org: string): string => `/app/${segment(org)}/settings/plans`,
   members: (org: string): string => `/app/${segment(org)}/members`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,

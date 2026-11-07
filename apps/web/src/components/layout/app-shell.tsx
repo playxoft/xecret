@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 
+import { appPath } from '@/app/(dashboard)/_lib/paths';
 import { MenuIcon } from '@/components/ui';
 import { isLeaveGuardArmed } from '@/components/ui/leave-guard';
 import { Breadcrumbs } from './breadcrumbs';
@@ -119,6 +120,18 @@ export function AppShell({
     setDrawerOpen(false);
   }
 
+  // The plans page of the organisation the shell is describing — the same one
+  // the switcher names, so "Upgrade plan" can never open another tenant's.
+  // Built here rather than handed down, because this is where that slug
+  // already lives; omitted when there is none to describe.
+  //
+  // Offered whether or not this installation takes payments. The shell cannot
+  // know that (it is server configuration), and it does not need to: the page
+  // asks for itself, and on an installation that sells nothing it compares the
+  // plans without a price or a button and says why. A link to an honest page
+  // is not a promise of a purchase.
+  const upgradeHref = currentOrgSlug === '' ? undefined : appPath.orgPlans(currentOrgSlug);
+
   /**
    * The switcher, built per placement rather than once.
    *
@@ -204,6 +217,7 @@ export function AppShell({
             <UserMenu
               user={user}
               {...(accountHref === undefined ? {} : { accountHref })}
+              {...(upgradeHref === undefined ? {} : { upgradeHref })}
               {...(onLock === undefined ? {} : { onLock })}
             />
           </div>

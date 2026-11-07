@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
+import { MINIMUM_SEATS } from '@xecret/core/entitlements';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
@@ -21,6 +22,7 @@ import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
+import { Segmented } from './segmented';
 import { canAdminister, useOrganization } from './session';
 
 /**
@@ -78,9 +80,16 @@ const CONFIRMATION_POLLS = 20;
 export function BillingScreen({
   orgSlug,
   returnedFromCheckout,
+  initialChoice = {},
 }: {
   orgSlug: string;
   returnedFromCheckout: boolean;
+  /**
+   * The plan and period the plans page's "Switch to …" was pressed for, so the
+   * change form opens on that choice rather than on the subscription's own.
+   * Only where to start: nothing is previewed or changed until the owner asks.
+   */
+  initialChoice?: { plan?: Plan; interval?: Interval };
 }) {
   const membership = useOrganization(orgSlug);
   const isOwner = canAdminister(membership, 'billing.manage');
@@ -126,6 +135,7 @@ export function BillingScreen({
           orgSlug={orgSlug}
           billing={billing}
           waitingForPayment={waitingForPayment}
+          initialChoice={initialChoice}
           onChanged={() => void resource.reload()}
         />
       ) : null}
@@ -137,11 +147,13 @@ function BillingDetails({
   orgSlug,
   billing,
   waitingForPayment,
+  initialChoice,
   onChanged,
 }: {
   orgSlug: string;
   billing: Billing;
   waitingForPayment: boolean;
+  initialChoice: { plan?: Plan; interval?: Interval };
   onChanged: () => void;
 }) {
   const failing = billing.status === 'past_due' || billing.status === 'on_hold';
@@ -203,8 +215,8 @@ function BillingDetails({
             ))}
           </ul>
           <p className="mt-2">
-            A secret fetch is never refused over a limit. <Link href="/pricing">Compare plans</Link>
-            .
+            A secret fetch is never refused over a limit.{' '}
+            <Link href={appPath.orgPlans(orgSlug)}>Compare plans</Link>.
           </p>
         </Alert>
       ) : null}
@@ -217,7 +229,12 @@ function BillingDetails({
           </p>
         </Alert>
       ) : billing.actions.checkout || billing.actions.changePlan ? (
-        <ChoosePlan orgSlug={orgSlug} billing={billing} onChanged={onChanged} />
+        <ChoosePlan
+          orgSlug={orgSlug}
+          billing={billing}
+          initialChoice={initialChoice}
+          onChanged={onChanged}
+        />
       ) : null}
 
       {billing.actions.portal ? (
@@ -392,56 +409,28 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
   );
 }
 
-function Segmented<T extends string>({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string;
-  options: readonly { value: T; label: string }[];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className="border-line bg-canvas-inset inline-flex rounded-full border p-1"
-    >
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={option.value === value}
-          onClick={() => onChange(option.value)}
-          className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-            option.value === value ? 'bg-surface text-fg shadow-sm' : 'text-fg-muted hover:text-fg'
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function ChoosePlan({
   orgSlug,
   billing,
+  initialChoice,
   onChanged,
 }: {
   orgSlug: string;
   billing: Billing;
+  initialChoice: { plan?: Plan; interval?: Interval };
   onChanged: () => void;
 }) {
   const { toast } = useToast();
   const subscribed = billing.actions.changePlan;
-  // Opens on the next rung up for a subscriber, and on Team, yearly — the
-  // pricing page's own default — for everybody else.
-  const [plan, setPlan] = useState<Plan>(billing.plan === 'team' ? 'pro' : 'team');
-  const [interval, setBillingInterval] = useState<Interval>(billing.interval ?? 'yearly');
+  // Opens on what the plans page asked for, when it asked; otherwise on the
+  // next rung up for a subscriber, and on Team, yearly — the pricing page's
+  // own default — for everybody else.
+  const [plan, setPlan] = useState<Plan>(
+    initialChoice.plan ?? (billing.plan === 'team' ? 'pro' : 'team'),
+  );
+  const [interval, setBillingInterval] = useState<Interval>(
+    initialChoice.interval ?? billing.interval ?? 'yearly',
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [preview, setPreview] = useState<{
@@ -525,7 +514,7 @@ function ChoosePlan({
       <CardHeader>
         <CardTitle>{subscribed ? 'Change plan' : 'Choose a plan'}</CardTitle>
         <CardDescription>
-          Per member, with a lower yearly rate. Service tokens and CI never cost anything. Prices in
+          Per member, with a lower yearly rate. Service tokens and CI never take a seat. Prices in
           every currency are on the <Link href="/pricing">pricing page</Link>; checkout shows yours
           before you pay. Enterprise is <Link href="/contact">arranged with us</Link>.
         </CardDescription>
@@ -552,14 +541,19 @@ function ChoosePlan({
           />
         </div>
 
+        {/* The billing floor and nothing else. These used to sell Team on roles
+            and per-environment access, and Pro by its absence ("every member
+            can read every environment") — but custom roles are Enterprise's,
+            and no plan gates per-environment access at all. The note at the top
+            of `upgrade-plans.ts` has the open decision. Team's floor is read
+            from the one checkout enforces, as the plans page's card reads it,
+            so raising it in `plans.ts` cannot leave this sentence behind. */}
         {plan === 'team' ? (
           <p className="text-fg-subtle text-sm">
-            Team adds roles and per-environment access, and is billed from 3 members up.
+            Team is billed from {MINIMUM_SEATS.team} members up.
           </p>
         ) : (
-          <p className="text-fg-subtle text-sm">
-            On Pro every member can read every environment, production included.
-          </p>
+          <p className="text-fg-subtle text-sm">Pro has no seat minimum.</p>
         )}
 
         {preview ? (

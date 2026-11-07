@@ -75,6 +75,20 @@ describe('a rename reaches the breadcrumb trail', () => {
   });
 });
 
+describe('the account menu offers the plans of the organisation on screen', () => {
+  // The shell builds the link from the slug the switcher names — so "Upgrade
+  // plan" can never open another tenant's plans — and hands it to the menu
+  // only when there is one. Deleting either line leaves both components
+  // working and the item gone, or pointing at `/app//settings/plans`.
+  it('built from the switcher’s slug, and only when there is one', () => {
+    const shell = source('../../../components/layout/app-shell.tsx');
+    expect(shell).toMatch(
+      /const upgradeHref = currentOrgSlug === '' \? undefined : appPath\.orgPlans\(currentOrgSlug\);/,
+    );
+    expect(shell.slice(shell.indexOf('<UserMenu'))).toContain('{ upgradeHref }');
+  });
+});
+
 describe('the shell catches up with a lock through its coordinator', () => {
   // `lock-catch-up.ts` decides when the shell re-reads the session, and its own
   // tests pin how. What they cannot see is the shell actually using it — armed

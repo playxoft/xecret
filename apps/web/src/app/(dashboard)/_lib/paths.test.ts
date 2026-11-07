@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { apiPath, withQuery } from './paths';
+import { apiPath, appPath, parseDashboardPath, withQuery } from './paths';
 
 /**
  * The query builder every paginated screen composes its requests with.
@@ -58,5 +58,24 @@ describe('withQuery', () => {
     expect(withQuery('/api/orgs/acme/audit?action=secret.read', { cursor: 'a b&c' })).toBe(
       '/api/orgs/acme/audit?action=secret.read&cursor=a+b%26c',
     );
+  });
+});
+
+/**
+ * The plans page lives under the organisation's `settings`, which is already
+ * reserved — so it shadows no project, whatever projects already exist.
+ */
+describe('the plans page', () => {
+  it('sits under settings, beside billing', () => {
+    expect(appPath.orgPlans('acme')).toBe('/app/acme/settings/plans');
+  });
+
+  it('is read as an organisation page, not a project', () => {
+    expect(parseDashboardPath(appPath.orgPlans('acme'))).toEqual({
+      orgSlug: 'acme',
+      projectSlug: null,
+      envSlug: null,
+      isAccountArea: false,
+    });
   });
 });
