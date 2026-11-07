@@ -5,7 +5,9 @@ import {
   createProjectViewStore,
   DEFAULT_PROJECT_SORT,
   DEFAULT_PROJECT_VIEW,
+  describeLoadWindow,
   describeProjectCount,
+  isFiltering,
   isProjectSort,
   isProjectView,
   matchesProjectQuery,
@@ -215,14 +217,69 @@ describe('describeProjectCount', () => {
     );
   });
 
-  it('says which projects arrived when the API held some back', () => {
-    // Never "200 projects": there are more, and a search covers only these.
+  it('says, when the API held some back, that only the newest arrived', () => {
+    // Never a bare "200 projects": there are more, and a search covers only these.
     expect(describeProjectCount({ shown: 200, total: 200, hasMore: true, filtering: false })).toBe(
-      'The 200 most recently created projects',
+      '200 projects — only the most recently created are loaded',
     );
     expect(describeProjectCount({ shown: 3, total: 200, hasMore: true, filtering: true })).toBe(
-      '3 of the 200 most recently created projects shown',
+      '3 of 200 projects shown — only the most recently created are loaded',
     );
+  });
+
+  it('counts what arrived, which access can make far fewer than the page size', () => {
+    // The route pages first and drops what the viewer cannot open afterwards,
+    // so one readable project can arrive with `hasMore`. The old wording put
+    // that as "The 1 most recently created projects", above a note saying 200.
+    expect(describeProjectCount({ shown: 1, total: 1, hasMore: true, filtering: false })).toBe(
+      '1 project — only the most recently created are loaded',
+    );
+    expect(describeProjectCount({ shown: 0, total: 1, hasMore: true, filtering: true })).toBe(
+      '0 of 1 project shown — only the most recently created are loaded',
+    );
+  });
+
+  it('never names the page size, which is the note’s job', () => {
+    for (const hasMore of [true, false]) {
+      for (const filtering of [true, false]) {
+        expect(describeProjectCount({ shown: 3, total: 7, hasMore, filtering })).not.toContain(
+          '200',
+        );
+      }
+    }
+  });
+});
+
+describe('describeLoadWindow', () => {
+  it('says how the loaded projects were chosen, and what that leaves out', () => {
+    expect(describeLoadWindow(200)).toBe(
+      'Only the organisation’s 200 most recently created projects are loaded, and of those, the ones you can open are listed. Search and sort cover only these.',
+    );
+  });
+
+  it('agrees in number with a window of one', () => {
+    expect(describeLoadWindow(1)).toContain('1 most recently created project is loaded');
+  });
+});
+
+describe('isFiltering', () => {
+  // The screen's own test cannot type into the field — a static render has no
+  // DOM — so the rule the screen uses is pinned here, and the screen asks this
+  // function rather than restating it.
+  it('is anything but whitespace', () => {
+    expect(isFiltering('api')).toBe(true);
+    expect(isFiltering('  api  ')).toBe(true);
+    expect(isFiltering('')).toBe(false);
+    expect(isFiltering('   ')).toBe(false);
+    expect(isFiltering('\t\n')).toBe(false);
+  });
+
+  it('agrees with what the search matches: not filtering means nothing is hidden', () => {
+    const bare = project({ slug: 'bare', name: 'Bare', description: null });
+    for (const query of ['', '   ', '\t']) {
+      expect(isFiltering(query)).toBe(false);
+      expect(matchesProjectQuery(bare, query)).toBe(true);
+    }
   });
 });
 

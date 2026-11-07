@@ -67,8 +67,18 @@ export function ProjectCards({ orgSlug, projects }: ProjectCardsProps) {
  * because the sidebar arrives at `md` and leaves too little room beside it.
  * The description joins at `xl`, on one line, where it has room to say
  * something before it is cut off.
+ *
+ * Except while a search is narrowing the list (`revealDescriptions`): the
+ * search matches descriptions, and a row that matched on its description alone
+ * would otherwise stand there with no visible reason for being in the results.
+ * So below `xl` the description, where there is one, comes back under the slug
+ * — one line, cut off like the column it stands in for.
  */
-export function ProjectRows({ orgSlug, projects }: ProjectCardsProps) {
+export function ProjectRows({
+  orgSlug,
+  projects,
+  revealDescriptions = false,
+}: ProjectCardsProps & { revealDescriptions?: boolean }) {
   return (
     <ul className="flex flex-col gap-2">
       {projects.map((project) => (
@@ -82,6 +92,11 @@ export function ProjectRows({ orgSlug, projects }: ProjectCardsProps) {
               <span className="text-fg-subtle block truncate font-mono text-sm">
                 {project.slug}
               </span>
+              {revealDescriptions && project.description !== null ? (
+                <span className="text-fg-muted block truncate text-sm xl:hidden">
+                  {project.description}
+                </span>
+              ) : null}
             </span>
 
             <span className="text-fg-muted hidden min-w-0 flex-1 truncate text-sm xl:block">

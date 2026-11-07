@@ -9,9 +9,10 @@ import type { ProjectListItem } from './types';
  * term, no sort key, one fixed order (newest first by creation). The screen asks
  * for the largest page the API allows, 200, so filtering and ordering what
  * arrived is instant and costs no request per keystroke. The caveat is stated
- * where it applies: when the response says `hasMore`, a search covers the 200
- * most recently created projects and no others, and the screen says so rather
- * than letting "nothing matches" pass for a fact about the whole organisation.
+ * where it applies: when the response says `hasMore`, a search covers what
+ * arrived — the projects the viewer can open among the organisation's 200 most
+ * recently created — and no others, and the screen says so rather than letting
+ * "nothing matches" pass for a fact about the whole organisation.
  *
  * Kept free of React so the rules are tested as functions, not through markup.
  */
@@ -128,11 +129,26 @@ export function arrangeProjects(
 }
 
 /**
- * The count line above the listing, which is also its polite live region.
+ * Whether the search box is narrowing the list: anything but whitespace.
  *
- * When the API held some projects back, the line says which ones arrived — the
- * most recently created, because that is the API's only order — so "3 of …
- * shown" is never read as three matches in the whole organisation.
+ * The same rule `matchesProjectQuery` applies, so "filtering" and "something
+ * could be hidden" are one fact. The screen asks this rather than restating the
+ * expression, which is what lets a test without a DOM pin what it decides.
+ */
+export function isFiltering(query: string): boolean {
+  return query.trim().length > 0;
+}
+
+/**
+ * The count line above the listing.
+ *
+ * When the API held some projects back, the line says so in the same breath,
+ * so "3 of 12 projects shown" is never read as three matches in the whole
+ * organisation. It names no window size: what arrives is the projects the
+ * viewer can open *among* the organisation's most recently created
+ * ({@link describeLoadWindow}), and how many that is depends on their access,
+ * not on the page size — so the count is the only number here, and it is the
+ * one that arrived.
  */
 export function describeProjectCount({
   shown,
@@ -146,14 +162,28 @@ export function describeProjectCount({
   total: number;
   /** Whether the API held more back. */
   hasMore: boolean;
-  /** Whether a search is narrowing the list. */
+  /** Whether a search is narrowing the list — {@link isFiltering}. */
   filtering: boolean;
 }): string {
-  if (!filtering) {
-    return hasMore ? `The ${total} most recently created projects` : pluralize(total, 'project');
-  }
-  const of = hasMore ? `the ${total} most recently created projects` : pluralize(total, 'project');
-  return `${shown} of ${of} shown`;
+  const count = filtering
+    ? `${shown.toLocaleString('en')} of ${pluralize(total, 'project')} shown`
+    : pluralize(total, 'project');
+  return hasMore ? `${count} — only the most recently created are loaded` : count;
+}
+
+/**
+ * The note under a listing the API cut short: which projects the page holds,
+ * and what that means for searching it.
+ *
+ * The server reads the organisation's newest `pageSize` projects and then drops
+ * the ones the viewer cannot open (the projects route filters after paging), so
+ * the page holds *at most* this many — which is why this says how they were
+ * chosen and leaves the counting to {@link describeProjectCount}.
+ */
+export function describeLoadWindow(pageSize: number): string {
+  const newest = pluralize(pageSize, 'most recently created project');
+  const are = pageSize === 1 ? 'is' : 'are';
+  return `Only the organisation’s ${newest} ${are} loaded, and of those, the ones you can open are listed. Search and sort cover only these.`;
 }
 
 /* ───────────────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { PageHeader } from '@/components/layout';
 import {
@@ -25,7 +25,9 @@ import { ProjectCards, ProjectRows } from '@/components/projects/project-cards';
 import {
   arrangeProjects,
   DEFAULT_PROJECT_SORT,
+  describeLoadWindow,
   describeProjectCount,
+  isFiltering,
   isProjectSort,
   PROJECT_SORT_LABELS,
   PROJECT_SORTS,
@@ -63,7 +65,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
     () => arrangeProjects(projects.data?.projects ?? [], query, sort),
     [projects.data, query, sort],
   );
-  const filtering = query.trim().length > 0;
+  const filtering = isFiltering(query);
 
   // Drawn for an owner or admin whose authority includes `project.create`.
   // Hiding the button for anyone else is a courtesy that keeps the screen
@@ -169,15 +171,14 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
             <ViewToggle view={view} onChange={projectViewStore.set} />
           </div>
 
-          {/* The count, announced politely as the search narrows it. */}
-          <p role="status" aria-live="polite" className="text-fg-subtle text-sm">
-            {describeProjectCount({
+          <ProjectCount
+            text={describeProjectCount({
               shown: visible.length,
               total: projects.data.projects.length,
               hasMore: projects.data.hasMore,
               filtering,
             })}
-          </p>
+          />
 
           {visible.length === 0 ? (
             <EmptyState
@@ -185,7 +186,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
               title={`Nothing matches “${query.trim()}”`}
               description={
                 projects.data.hasMore
-                  ? `Only the ${projects.data.projects.length} most recently created projects are searched here.`
+                  ? 'Only the most recently created projects are loaded, so an older one is not searched.'
                   : undefined
               }
               action={
@@ -203,7 +204,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
               }
             />
           ) : view === 'list' ? (
-            <ProjectRows orgSlug={orgSlug} projects={visible} />
+            <ProjectRows orgSlug={orgSlug} projects={visible} revealDescriptions={filtering} />
           ) : (
             <ProjectCards orgSlug={orgSlug} projects={visible} />
           )}
@@ -211,11 +212,9 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
           {projects.data.hasMore ? (
             // "The first 200" stopped meaning anything once the listing could
             // be re-sorted: first by name? This names the API's own order,
-            // which is what decides which 200 arrived.
-            <p className="text-fg-subtle text-sm">
-              Showing the {PAGE_SIZE} most recently created projects. Search and sort cover these
-              only.
-            </p>
+            // which is what decides which projects arrived — and leaves the
+            // counting to the line above, which knows how many did.
+            <p className="text-fg-subtle text-sm">{describeLoadWindow(PAGE_SIZE)}</p>
           ) : null}
         </>
       ) : null}
@@ -231,6 +230,54 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
       <CreateProjectDialog orgSlug={orgSlug} open={creating} onOpenChange={setCreating} />
     </div>
   );
+}
+
+/**
+ * How long the count must hold still before a screen reader hears it — the
+ * conventional pause, long enough to span the gap between keystrokes.
+ */
+const ANNOUNCE_AFTER_MS = 500;
+
+/**
+ * The count line, drawn at once and announced once typing pauses.
+ *
+ * Two elements saying one thing, because the two audiences want it at
+ * different speeds. The visible line follows every keystroke, as the list
+ * under it does. The live region waits for a pause: announced per keystroke,
+ * "api" would be read out as three counts, each interrupting the last and the
+ * letters being echoed. The visible copy is hidden from assistive technology
+ * so that reading the page does not meet the same sentence twice; the region
+ * is the one that is read, and it says what the screen says as soon as the
+ * typing stops.
+ *
+ * Mounted only once the projects have arrived, so the region starts out
+ * holding the count rather than filling with it — a polite region announces
+ * changes, and arriving on the page is not one.
+ */
+function ProjectCount({ text }: { text: string }) {
+  const settled = useDebouncedValue(text, ANNOUNCE_AFTER_MS);
+  return (
+    <>
+      <p aria-hidden="true" className="text-fg-subtle text-sm">
+        {text}
+      </p>
+      <p role="status" aria-live="polite" className="sr-only">
+        {settled}
+      </p>
+    </>
+  );
+}
+
+/** `value`, but only after it has held still for `delayMs` — as in `passphrase-fields.tsx`. */
+function useDebouncedValue(value: string, delayMs: number): string {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+
+  return debounced;
 }
 
 const VIEWS: readonly { value: ProjectView; label: string; Icon: typeof GridIcon }[] = [

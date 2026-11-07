@@ -1,9 +1,12 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 import { PROJECT_VIEW_STORAGE_KEY } from '@/components/projects/project-listing';
+import { DEVICE_PIN_WRAP_KEY } from '@/components/vault/device-pin';
+import { VAULT_SESSION_MIRROR_KEY } from '@/components/vault/session-mirror';
+import { UNLOCK_NUDGE_KEY } from '@/components/vault/unlock-nudge';
 import { SIDEBAR_STORAGE_KEY, THEME_STORAGE_KEY } from '@/lib/theme';
 
 /**
@@ -490,49 +493,12 @@ describe('the add-ons are described the same way everywhere', () => {
     }
   });
 
-  it('gives the notice the legal pages promise before a change takes effect', () => {
-    // §Changes: "for a material change we will give notice … before it takes
-    // effect, 30 days ahead where we reasonably can".
-    //
-    // The date has been wrong in both directions. It once stayed at the old
-    // value, so a customer got no signal that the prices binding them had
-    // changed; then it moved to the publish date, so the page promised advance
-    // notice and gave none — and fed `datePublished`, claiming the new table was
-    // in force before it was written. So a dated version must take effect at or
-    // after it was written.
-    //
-    // A version may instead take effect on publication (`EFFECTIVE = null`):
-    // the deploy is its date, which the source cannot know. That is a change
-    // made *without* the notice §Changes promises, so §Changes itself has to
-    // say so — checked against that section's own text, not anywhere in the
-    // file, where a comment would satisfy it.
-    for (const page of ['terms', 'privacy'] as const) {
-      const source = SOURCES.get(page) ?? '';
-      const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
-      const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
-      const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
-
-      expect(updated, `${page} has no UPDATED date`).toBeDefined();
-      if (onPublication) {
-        const start = source.indexOf("id: 'changes'");
-        expect(start, `${page} takes effect on publication but has no §Changes`).toBeGreaterThan(
-          -1,
-        );
-        const rest = source.slice(start + 1);
-        const next = rest.search(/id: '[a-z-]+'/);
-        const changes = (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
-        expect(changes, `${page} takes effect on publication without §Changes saying so`).toContain(
-          'This version is a change made without that notice, and it takes effect on publication.',
-        );
-        continue;
-      }
-      expect(effective, `${page} has no EFFECTIVE date`).toBeDefined();
-      expect(
-        Date.parse(effective as string),
-        `${page} takes effect before it was published`,
-      ).toBeGreaterThanOrEqual(Date.parse(updated as string));
-    }
-  });
+  it.each(['terms', 'privacy'] as const)(
+    'gives the notice %s promises before a change takes effect',
+    (page) => {
+      expect(legalDatesProblem(page, SOURCES.get(page) ?? '')).toBeNull();
+    },
+  );
 
   /**
    * The version these terms replace promised something this one withdraws for
@@ -573,25 +539,335 @@ describe('the add-ons are described the same way everywhere', () => {
   });
 });
 
-describe('the privacy policy names every preference kept in localStorage', () => {
-  // Not a number from the engine, but the same failure: a sentence written by
-  // hand about something the code decides. The policy names each key outright
-  // and counts them in words, and both halves go stale silently — a key
-  // renamed in code leaves the page disclosing one that no longer exists, and
-  // a preference added without the sentence moving leaves the page miscounting
-  // what it keeps on somebody's device. This cannot discover a new key by
-  // itself: whoever adds one adds it here, and the count follows.
-  const PREFERENCE_KEYS = [THEME_STORAGE_KEY, SIDEBAR_STORAGE_KEY, PROJECT_VIEW_STORAGE_KEY];
-  const COUNT_WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six'];
-  const privacy = (PROSE.get('privacy') ?? '').replace(/\s+/g, ' ');
+/* ── When a legal page binds ──────────────────────────────────────────────── */
 
-  it.each(PREFERENCE_KEYS)('names %s', (key) => {
-    expect(privacy).toContain(`>${key}</code>`);
+/** How `LegalPage` writes a date out, so §Changes can be checked against it. */
+const LEGAL_DATE = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+
+const WITHOUT_NOTICE =
+  'This version is a change made without that notice, and it takes effect on publication.';
+
+const NOT_MATERIAL = /The version of (\d{1,2} [A-Z][a-z]+ \d{4}) is not a material change\./g;
+
+/**
+ * §Changes as published: that section's own text, comments removed, whitespace
+ * collapsed — so that neither a note in the source nor a sentence in another
+ * section can satisfy a check that is about what §Changes says. `null` when
+ * there is no §Changes.
+ */
+function changesSection(source: string): string | null {
+  const prose = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const start = prose.indexOf("id: 'changes'");
+  if (start < 0) return null;
+  const rest = prose.slice(start + 1);
+  const next = rest.search(/id: '[a-z-]+'/);
+  return (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
+}
+
+/**
+ * Why a legal page's dates misstate when it binds, or `null` when they do not.
+ *
+ * §Changes promises: "for a material change we will give notice … before it
+ * takes effect". The date has been wrong in both directions. It once stayed at
+ * the old value, so a customer got no signal that the prices binding them had
+ * changed; then it moved to the publish date, so the page promised advance
+ * notice and gave none — and fed `datePublished`, claiming the new table was in
+ * force before it was written. Three states are honest, and nothing else is:
+ *
+ *  1. **Notice given** — `EFFECTIVE` a date after `UPDATED`.
+ *  2. **On publication, without notice** — `EFFECTIVE = null`: the deploy is its
+ *     date, which the source cannot know. A change made without the notice
+ *     §Changes promises, so §Changes has to say so.
+ *  3. **Not material** — `EFFECTIVE` equal to `UPDATED`. Taking effect the day
+ *     it was written gives no notice, and a deploy that lands days later would
+ *     have the page claim it bound people before they could read it. That is
+ *     honest only for a version with nothing to give notice of, so §Changes has
+ *     to say this version — by its date — is not material.
+ *
+ * The non-material sentence names its version's date so that it cannot
+ * outlive it: a later version that moves `UPDATED` and keeps the sentence would
+ * otherwise go on telling readers that nothing material changed.
+ *
+ * Checked against §Changes's own text, never anywhere in the file, where a
+ * comment would satisfy it. The cases under "the legal-date guard" below are
+ * the dishonest states, each shown to be refused.
+ */
+function legalDatesProblem(page: string, source: string): string | null {
+  const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
+  const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
+  const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
+  if (updated === undefined) return `${page} has no UPDATED date`;
+
+  const changes = changesSection(source);
+  const thisVersion = LEGAL_DATE.format(new Date(updated));
+  const notMaterial = [...(changes ?? '').matchAll(NOT_MATERIAL)].map((match) => match[1]);
+  const stale = notMaterial.find((date) => date !== thisVersion);
+  if (stale !== undefined) {
+    return `${page} §Changes calls the version of ${stale} not material, but this one is of ${thisVersion}`;
+  }
+
+  if (onPublication) {
+    if (changes === null) return `${page} takes effect on publication but has no §Changes`;
+    if (!changes.includes(WITHOUT_NOTICE)) {
+      return `${page} takes effect on publication without §Changes saying so`;
+    }
+    return null;
+  }
+
+  if (effective === undefined) return `${page} has no EFFECTIVE date`;
+  if (Date.parse(effective) < Date.parse(updated)) {
+    return `${page} takes effect before it was published`;
+  }
+  if (effective === updated && !notMaterial.includes(thisVersion)) {
+    return `${page} takes effect the day it was written, with no notice, and §Changes does not say the version of ${thisVersion} is not material`;
+  }
+  return null;
+}
+
+describe('the legal-date guard', () => {
+  /** A legal page's source, reduced to what the guard reads. */
+  function page({
+    updated = '2026-11-07',
+    effective,
+    changes = [],
+    elsewhere = [],
+  }: {
+    updated?: string | null;
+    /** A date, `null` for on publication, `undefined` for no constant at all. */
+    effective?: string | null;
+    /** Paragraphs of §Changes, as source text. */
+    changes?: string[];
+    /** Paragraphs of another section, as source text. */
+    elsewhere?: string[];
+  }): string {
+    return [
+      updated === null ? '' : `const UPDATED = '${updated}';`,
+      effective === undefined
+        ? ''
+        : effective === null
+          ? 'const EFFECTIVE: string | null = null;'
+          : `const EFFECTIVE = '${effective}';`,
+      'const SECTIONS = [',
+      `  { id: 'cookies', paragraphs: [${elsewhere.join(', ')}] },`,
+      `  { id: 'changes', paragraphs: [${changes.join(', ')}] },`,
+      "  { id: 'contact', paragraphs: [] },",
+      '];',
+    ].join('\n');
+  }
+
+  const said = (text: string) => JSON.stringify(text);
+  const NOT_MATERIAL_NOV_7 = said('The version of 7 November 2026 is not a material change.');
+
+  describe('accepts the three honest states', () => {
+    it('notice given: effective after it was written', () => {
+      expect(legalDatesProblem('p', page({ updated: '2026-09-26', effective: '2026-10-26' }))).toBe(
+        null,
+      );
+    });
+
+    it('on publication, with §Changes saying it came without notice', () => {
+      expect(
+        legalDatesProblem('p', page({ effective: null, changes: [said(WITHOUT_NOTICE)] })),
+      ).toBe(null);
+    });
+
+    it('not material: effective the day it was written, with §Changes saying so of this version', () => {
+      expect(
+        legalDatesProblem('p', page({ effective: '2026-11-07', changes: [NOT_MATERIAL_NOV_7] })),
+      ).toBe(null);
+    });
+
+    it('reads the sentence however the source wraps it', () => {
+      const wrapped = '<>\n  The version of 7 November 2026 is not a\n  material change.\n</>';
+      expect(legalDatesProblem('p', page({ effective: '2026-11-07', changes: [wrapped] }))).toBe(
+        null,
+      );
+    });
   });
 
-  it('counts them in words', () => {
-    const word = COUNT_WORDS[PREFERENCE_KEYS.length];
-    expect(word, 'extend COUNT_WORDS').toBeDefined();
-    expect(privacy).toContain(`${word} preferences live in`);
+  describe('refuses every dishonest one', () => {
+    // Each with the reason it must be refused for, so a case cannot pass by
+    // tripping some other rule first.
+    const NO_NOTICE = 'takes effect the day it was written, with no notice';
+    it.each([
+      ['no UPDATED date', page({ updated: null, effective: '2026-11-07' }), 'has no UPDATED date'],
+      ['no EFFECTIVE date at all', page({}), 'has no EFFECTIVE date'],
+      [
+        'effective before it was written, even when called not material',
+        page({ effective: '2026-10-26', changes: [NOT_MATERIAL_NOV_7] }),
+        'takes effect before it was published',
+      ],
+      [
+        'effective the day it was written, with nothing said',
+        page({ effective: '2026-11-07' }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, called not material only in a comment',
+        page({
+          effective: '2026-11-07',
+          changes: ['/* The version of 7 November 2026 is not a material change. */'],
+        }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, called not material in another section',
+        page({ effective: '2026-11-07', elsewhere: [NOT_MATERIAL_NOV_7] }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, with the sentence left from an older version',
+        page({
+          effective: '2026-11-07',
+          changes: [said('The version of 20 October 2026 is not a material change.')],
+        }),
+        'calls the version of 20 October 2026 not material',
+      ],
+      [
+        'notice given, but an older version’s "not material" left standing',
+        page({ updated: '2026-12-01', effective: '2027-01-01', changes: [NOT_MATERIAL_NOV_7] }),
+        'calls the version of 7 November 2026 not material',
+      ],
+      [
+        'on publication with nothing said',
+        page({ effective: null }),
+        'takes effect on publication without §Changes saying so',
+      ],
+      [
+        'on publication, said only in a comment',
+        page({ effective: null, changes: [`/* ${WITHOUT_NOTICE} */`] }),
+        'takes effect on publication without §Changes saying so',
+      ],
+    ])('%s', (_, source, reason) => {
+      expect(legalDatesProblem('p', source)).toContain(reason);
+    });
+  });
+});
+
+/* ── Browser storage, against the code that writes it ──────────────────────── */
+
+type StorageKind = 'localStorage' | 'sessionStorage';
+
+interface StorageWriter {
+  /** Relative to `src/`. */
+  file: string;
+  kind: StorageKind | 'both' | null;
+  keys: string[];
+}
+
+/**
+ * Every source file that reaches for browser storage or declares a key for it.
+ *
+ * Found by reading the code rather than from a list, because a list is what
+ * went stale: the policy named two keys while the app wrote eight.
+ * The rules it reads by are deliberately plain, and the test below fails when
+ * code steps outside them rather than letting a write go unseen:
+ *
+ *  - A file *uses* a storage when, comments aside, it says
+ *    `window.localStorage` / `window.sessionStorage` or assigns one
+ *    (`s=localStorage`, as the theme's inline bootstrap does).
+ *  - A file *declares* a key as a `const …KEY = 'xecret.…'`, which is how all of
+ *    them are written today.
+ */
+function storageWriters(): StorageWriter[] {
+  const src = join(import.meta.dirname, '..');
+  const files = readdirSync(src, { recursive: true })
+    .map(String)
+    .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+    .filter((file) => !file.endsWith('.d.ts'));
+
+  const writers: StorageWriter[] = [];
+  for (const file of files) {
+    const code = readFileSync(join(src, file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+    const local = /\bwindow\.localStorage\b|=\s*localStorage\b/.test(code);
+    const session = /\bwindow\.sessionStorage\b|=\s*sessionStorage\b/.test(code);
+    const keys = [...code.matchAll(/const\s+[A-Z_]*KEY\s*=\s*'(xecret\.[^']+)'/g)].map(
+      (match) => match[1] ?? '',
+    );
+    if (!local && !session && keys.length === 0) continue;
+    const kind =
+      local && session ? 'both' : local ? 'localStorage' : session ? 'sessionStorage' : null;
+    writers.push({ file: file.replace(/\\/g, '/'), kind, keys });
+  }
+  return writers;
+}
+
+/** The part of the privacy policy's storage section that lists one kind of storage. */
+function disclosedUnder(kind: StorageKind): string {
+  const prose = (PROSE.get('privacy') ?? '').replace(/\s+/g, ' ');
+  const start = prose.indexOf("id: 'cookies'");
+  const rest = prose.slice(start + 1);
+  const end = rest.search(/id: '[a-z-]+'/);
+  const section = end < 0 ? rest : rest.slice(0, end);
+
+  const local = section.search(/In <code[^>]*>localStorage<\/code>/);
+  const session = section.search(/In <code[^>]*>sessionStorage<\/code>/);
+  if (local < 0 || session < 0 || session < local) return '';
+  return kind === 'localStorage' ? section.slice(local, session) : section.slice(session);
+}
+
+describe('the privacy policy names everything the app keeps in browser storage', () => {
+  // Not a number from the engine, but the same failure: a sentence written by
+  // hand about something the code decides. On a product whose vault keys can
+  // sit in a tab's storage, "what is kept on your device" is the disclosure a
+  // security reviewer reads first, and the one that went stale.
+  const writers = storageWriters();
+
+  it('finds the keys the app exports, so a broken scan cannot pass for an empty one', () => {
+    const found = writers.flatMap((writer) => writer.keys);
+    for (const key of [
+      THEME_STORAGE_KEY,
+      SIDEBAR_STORAGE_KEY,
+      PROJECT_VIEW_STORAGE_KEY,
+      UNLOCK_NUDGE_KEY,
+      DEVICE_PIN_WRAP_KEY,
+      VAULT_SESSION_MIRROR_KEY,
+    ]) {
+      expect(found, `the scan missed ${key}`).toContain(key);
+    }
+  });
+
+  it('can tell, for every file, which storage its keys are in', () => {
+    for (const writer of writers) {
+      expect(writer.kind, `${writer.file} declares a storage key but touches no storage`).not.toBe(
+        null,
+      );
+      expect(
+        writer.kind,
+        `${writer.file} uses both storages; split it, or teach this test`,
+      ).not.toBe('both');
+      expect(
+        writer.keys.length,
+        `${writer.file} uses storage under no key constant`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('names every key, under the storage it is kept in', () => {
+    const local = disclosedUnder('localStorage');
+    const session = disclosedUnder('sessionStorage');
+    expect(local, 'no "In localStorage" list before an "In sessionStorage" one').not.toBe('');
+    expect(session, 'no "In sessionStorage" list').not.toBe('');
+
+    for (const writer of writers) {
+      for (const key of writer.keys) {
+        const right = writer.kind === 'sessionStorage' ? session : local;
+        const wrong = writer.kind === 'sessionStorage' ? local : session;
+        expect(
+          right,
+          `${writer.file} writes ${key}, which the policy does not name there`,
+        ).toContain(`>${key}</code>`);
+        expect(wrong, `the policy lists ${key} under the wrong storage`).not.toContain(
+          `>${key}</code>`,
+        );
+      }
+    }
   });
 });

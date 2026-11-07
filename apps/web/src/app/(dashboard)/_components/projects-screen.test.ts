@@ -9,11 +9,20 @@ import type { SessionOrganization } from './session';
 
 /**
  * The Projects page, rendered to static markup with what the API would answer
- * handed to the data hook — a server render runs no effects, so nothing can be
- * typed into the search here. What the search and the sort *do* is pinned in
+ * handed to the data hook. What the search and the sort *do* is pinned in
  * `project-listing.test.ts`; this pins what is drawn: the toolbar, which layout
- * is lit, the order the cards arrive in, and the notice when the API held
- * projects back.
+ * is lit, the order the cards arrive in, the count, and the notice when the API
+ * held projects back.
+ *
+ * ── The gap, stated ──
+ * Nothing can be typed into the search here. A server render runs no effects
+ * and fires no events, and this suite has no DOM (no jsdom, no testing
+ * library), so the screen is only ever seen with an empty query. What a query
+ * changes is covered one level down instead: whether the screen counts as
+ * filtering is `isFiltering`, which the screen calls rather than restating and
+ * which is tested there, and what a filtering list row draws is rendered below
+ * through `ProjectRows` directly with `revealDescriptions`, the prop the screen
+ * passes `filtering` to.
  */
 
 const viewer = vi.hoisted(() => ({ organization: null as SessionOrganization | null }));
@@ -52,6 +61,7 @@ vi.mock('@/components/projects/project-listing', async (importOriginal) => {
 
 const { Toaster, TooltipProvider } = await import('@/components/ui');
 const { ProjectsScreen } = await import('./projects-screen');
+const { ProjectRows } = await import('@/components/projects/project-cards');
 
 function organization(role: OrgRole): SessionOrganization {
   return {
@@ -141,13 +151,42 @@ describe('ProjectsScreen', () => {
   });
 
   it('says which projects arrived, and what a search covers, when the API held some back', () => {
+    // Three readable projects with `hasMore`: the route pages, then drops what
+    // the viewer cannot open, so far fewer than 200 can arrive. The count and
+    // the note must agree — the count says how many, the note how they were
+    // chosen — where they once read "The 3 most recently created projects"
+    // above "Showing the 200 most recently created projects".
     listing.current = { ...LISTING, hasMore: true };
     const html = render();
 
-    expect(html).toContain('The 3 most recently created projects');
-    expect(html).toContain('Showing the 200 most recently created projects.');
-    expect(html).toContain('Search and sort cover these only.');
-    expect(html).not.toContain('Showing the first 200');
+    expect(html).toContain('3 projects — only the most recently created are loaded');
+    expect(html).toContain(
+      'Only the organisation’s 200 most recently created projects are loaded, and of those, the ones you can open are listed. Search and sort cover only these.',
+    );
+    expect(html).not.toContain('The 3 most recently created');
+    expect(html).not.toContain('Showing the');
+  });
+
+  it('draws the count at once and hands screen readers the same words in a live region', () => {
+    const html = render();
+
+    // Visible, and hidden from assistive technology so it is not read twice…
+    expect(html).toContain('<p aria-hidden="true" class="text-fg-subtle text-sm">3 projects</p>');
+    // …while the polite region — debounced while typing — starts out holding it.
+    expect(html).toContain('<p role="status" aria-live="polite" class="sr-only">3 projects</p>');
+  });
+
+  it('keeps the list rows to name and slug below `xl` while nothing is searched', () => {
+    remembered.view = 'list';
+    listing.current = {
+      ...LISTING,
+      projects: [{ ...project('web', '2026-03-01T00:00:00.000Z'), description: 'Storefront' }],
+    };
+    const html = render();
+
+    // The `xl` column only; no line under the slug with no search to explain.
+    expect(html.match(/Storefront/g)).toHaveLength(1);
+    expect(html).not.toContain('xl:hidden');
   });
 
   it('keeps the first-project welcome, and no toolbar, for an empty organisation', () => {
@@ -157,5 +196,41 @@ describe('ProjectsScreen', () => {
     expect(html).toContain('Start with your first project');
     expect(html).not.toContain('aria-label="Filter projects"');
     expect(html).not.toContain('aria-label="Layout"');
+  });
+});
+
+describe('ProjectRows while a search is narrowing the list', () => {
+  // What the screen draws in the list once `isFiltering(query)` is true — the
+  // value it passes as `revealDescriptions`.
+  function rows(revealDescriptions: boolean): string {
+    return renderToStaticMarkup(
+      createElement(ProjectRows, {
+        orgSlug: 'acme',
+        revealDescriptions,
+        projects: [
+          { ...project('web', '2026-03-01T00:00:00.000Z'), description: 'Storefront and checkout' },
+          project('api', '2026-02-01T00:00:00.000Z'),
+        ],
+      }),
+    );
+  }
+
+  it('shows each description under its slug below `xl`, so a description-only match has a visible reason', () => {
+    const html = rows(true);
+
+    expect(html).toContain(
+      '<span class="text-fg-muted block truncate text-sm xl:hidden">Storefront and checkout</span>',
+    );
+  });
+
+  it('adds nothing for a project with no description — the placeholder explains no match', () => {
+    const html = rows(true);
+
+    // One line under a slug, for the one project that has a description.
+    expect(html.match(/xl:hidden/g)).toHaveLength(1);
+  });
+
+  it('leaves the rows alone when nothing is searched', () => {
+    expect(rows(false)).not.toContain('xl:hidden');
   });
 });
