@@ -97,6 +97,24 @@ export type {
 } from './oauth-state';
 
 export {
+  clearedEmailVerificationCookie,
+  deriveEmailVerificationKey,
+  EMAIL_VERIFICATION_COOKIE_NAME,
+  EMAIL_VERIFICATION_TTL_SECONDS,
+  emailVerificationCookie,
+  isSameVerificationAddress,
+  MAX_SEALED_EMAIL_LENGTH,
+  MAX_SEALED_PENDING_TOKEN_LENGTH,
+  openEmailVerification,
+  sealEmailVerification,
+} from './email-verification';
+export type {
+  EmailVerification,
+  EmailVerificationRejection,
+  EmailVerificationResult,
+} from './email-verification';
+
+export {
   clearedSignInConfirmationCookie,
   deriveSignInConfirmationKey,
   generateConfirmationNonce,
