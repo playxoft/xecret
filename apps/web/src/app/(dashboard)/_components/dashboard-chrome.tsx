@@ -133,11 +133,16 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // there is nothing to re-read.
   const vaultState = session.data?.vault;
   const unlockedShell = vaultState?.configured === true && vaultState.unlocked;
+  // Whether the unlocked branch below mounts a `VaultProvider` — every case but
+  // the one with no organisations. Only a provider restores this tab's mirror or
+  // asks another tab for keys, so only under one is "no keys yet" a state that
+  // ends; the keyless grace period runs there and nowhere else.
+  const keysObtainable = unlockedShell && (memberships?.length ?? 0) > 0;
 
   useEffect(() => {
     if (!unlockedShell) return;
-    return lockCatchUp.arm();
-  }, [unlockedShell, lockCatchUp]);
+    return lockCatchUp.arm({ awaitKeys: keysObtainable });
+  }, [unlockedShell, keysObtainable, lockCatchUp]);
 
   // The idle lock. Armed only while there is an unlock to lose; the interval
   // comes from the account's setting on the security page, `0` disarms it.

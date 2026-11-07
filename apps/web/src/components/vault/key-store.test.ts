@@ -203,8 +203,8 @@ describe('the session mirror', () => {
   });
 
   it('refuses a mirror belonging to another account', () => {
-    // An expired session is a redirect to sign-in with no lock in between, so
-    // the blob outlives its own account inside one tab.
+    // A session can end with no lock in between, and a tab taken to the sign-in
+    // page without a refused request keeps the blob past its own account.
     const storage = fakeStorage();
     setMirrorStorage(storage);
     holdVaultKeys(material(11));

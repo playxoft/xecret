@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { beginLeavingPage, beginSignInRedirect, stayOnPage } from '@/lib/page-exit';
 import {
   armLeaveGuard,
   askBeforeLeaving,
+  asksBeforeUnload,
   interceptedHref,
   isLeaveGuardArmed,
   isPlainLeftClick,
@@ -108,6 +110,31 @@ describe('interceptedHref', () => {
 
   it('lets an unparseable href through rather than guessing', () => {
     expect(interceptedHref(anchor({ href: 'http://[' }), HERE)).toBeNull();
+  });
+});
+
+describe('asksBeforeUnload', () => {
+  afterEach(() => stayOnPage());
+
+  it('asks the browser to confirm leaving staged work', () => {
+    expect(asksBeforeUnload(false)).toBe(true);
+  });
+
+  it('does not ask twice when the guard is the one navigating', () => {
+    expect(asksBeforeUnload(true)).toBe(false);
+  });
+
+  it('does not ask during a sign-out, which has already made the work unsaveable', () => {
+    // Asking there offered a "Stay" that stranded the page: session revoked,
+    // keys released, and every redirect and every lock switched off.
+    beginLeavingPage();
+    expect(asksBeforeUnload(false)).toBe(false);
+  });
+
+  it('still asks on a redirect to sign in, which nobody chose', () => {
+    // The last chance to copy out a staged value that cannot be fetched again.
+    beginSignInRedirect();
+    expect(asksBeforeUnload(false)).toBe(true);
   });
 });
 

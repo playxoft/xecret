@@ -17,6 +17,8 @@
  * file, and importing a `.tsx` one from it drags JSX into transforms that do not
  * expect it.
  */
+import { isLeavingOnPurpose } from '@/lib/page-exit';
+
 let armedGuard: ((href: string) => void) | null = null;
 
 const listeners = new Set<() => void>();
@@ -79,6 +81,23 @@ export function askBeforeLeaving(href: string): boolean {
  */
 export function isLeaveGuardArmed(): boolean {
   return armedGuard !== null;
+}
+
+/**
+ * Whether the browser's "Leave site?" prompt should be raised for staged work.
+ *
+ * Not when the guard itself is the one navigating — `unwinding` — since
+ * answering "leave and lose them" and then being asked "leave site?" is the same
+ * question twice, and the second one is the one nobody can act on.
+ *
+ * And not during a sign-out. The session is revoked before the navigation
+ * starts, so staying saves nothing, and a "Stay" would strand the page with
+ * every redirect and every lock switched off (`lib/page-exit.ts`). A 401's
+ * redirect to sign in still asks: nobody chose that one, and the prompt is the
+ * last chance to copy out a value that cannot be fetched again.
+ */
+export function asksBeforeUnload(unwinding: boolean): boolean {
+  return !unwinding && !isLeavingOnPurpose();
 }
 
 /**

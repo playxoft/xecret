@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@/lib/api';
-import { beginLeavingPage, stayOnPage } from '@/lib/page-exit';
+import { beginLeavingPage, beginSignInRedirect, stayOnPage } from '@/lib/page-exit';
 import { announceSessionLocked } from '@/lib/session-locked';
 import { armLeaveGuard } from '@/components/ui/leave-guard';
 import { holdVaultKeys, releaseVaultKeys } from '@/components/vault/key-store';
@@ -47,12 +47,15 @@ async function flush(): Promise<void> {
 const coordinators: (() => void)[] = [];
 const guards: (() => void)[] = [];
 
-/** A coordinator armed as the shell arms it while the unlocked dashboard is drawn. */
-function armed(options: { lockVault?: () => Promise<unknown> } = {}) {
+/**
+ * A coordinator armed as the shell arms it while the unlocked dashboard is drawn
+ * — under a `VaultProvider`, unless `awaitKeys` says otherwise.
+ */
+function armed(options: { lockVault?: () => Promise<unknown>; awaitKeys?: boolean } = {}) {
   const reload = vi.fn(async () => {});
   const lockVault = vi.fn(options.lockVault ?? (async () => 1));
   const catchUp = createLockCatchUp({ reload, lockVault });
-  const disarm = catchUp.arm();
+  const disarm = catchUp.arm({ awaitKeys: options.awaitKeys ?? true });
   coordinators.push(disarm);
   return { catchUp, reload, lockVault, disarm };
 }
@@ -315,6 +318,34 @@ describe('a tab with an unlocked session and no keys', () => {
     expect(lockVault).not.toHaveBeenCalled();
   });
 
+  it('never runs where nothing could obtain keys — the screen with no organisations', async () => {
+    // No provider is mounted there, so no mirror is restored and no other tab is
+    // asked: the tab is keyless by construction, and locking the session for it
+    // would lock every other tab of the account as well.
+    vi.useFakeTimers();
+    const { lockVault } = armed({ awaitKeys: false });
+
+    vi.advanceTimersByTime(KEYLESS_GRACE_MS * 4);
+    await flush();
+
+    expect(lockVault).not.toHaveBeenCalled();
+  });
+
+  it('does not start there after a release either, though it still catches up', async () => {
+    vi.useFakeTimers();
+    holdVaultKeys(material());
+    const { catchUp, reload, lockVault } = armed({ awaitKeys: false });
+
+    releaseVaultKeys();
+    await flush();
+    catchUp.answered();
+    vi.advanceTimersByTime(KEYLESS_GRACE_MS * 4);
+    await flush();
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(lockVault).not.toHaveBeenCalled();
+  });
+
   it('never runs once the lock screen is drawn', async () => {
     vi.useFakeTimers();
     const { lockVault, disarm } = armed();
@@ -406,6 +437,19 @@ describe('a page that is leaving on purpose', () => {
 
     beginLeavingPage();
     announceSessionLocked();
+    await flush();
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('re-reads nothing once a 401 has started the redirect to sign in', async () => {
+    // That redirect releases the keys on its way out; a re-read of a session
+    // that has ended would only be one more 401.
+    holdVaultKeys(material());
+    const { reload } = armed();
+
+    beginSignInRedirect();
+    releaseVaultKeys();
     await flush();
 
     expect(reload).not.toHaveBeenCalled();

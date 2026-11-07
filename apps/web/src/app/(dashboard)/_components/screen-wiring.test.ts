@@ -84,7 +84,16 @@ describe('the shell catches up with a lock through its coordinator', () => {
   const chrome = source('./dashboard-chrome.tsx');
 
   it('is armed while the unlocked dashboard is drawn, and hears every answer', () => {
-    expect(chrome).toMatch(/if \(!unlockedShell\) return;\s*return lockCatchUp\.arm\(\);/);
+    expect(chrome).toMatch(
+      /if \(!unlockedShell\) return;\s*return lockCatchUp\.arm\(\{ awaitKeys: keysObtainable \}\);/,
+    );
+    // Keys are awaited only where a `VaultProvider` is mounted: the unlocked
+    // branch with organisations. The screen with none mounts no provider, and a
+    // grace period there locked the whole account's session on every cold load.
+    expect(chrome).toMatch(
+      /const keysObtainable = unlockedShell && \(memberships\?\.length \?\? 0\) > 0;/,
+    );
+    expect(chrome).toMatch(/if \(organizations\.length === 0\) \{/);
     expect(chrome).toMatch(
       /lockCatchUp\.answered\(\);\s*\}, \[lockCatchUp, session\.data, session\.error\]\);/,
     );

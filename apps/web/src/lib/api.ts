@@ -21,7 +21,8 @@
  *     can show the lock screen (`lib/session-locked.ts`).
  */
 
-import { isLeavingPage } from './page-exit';
+import { releaseVaultKeys } from '@/components/vault/key-store';
+import { beginSignInRedirect, isLeavingPage } from './page-exit';
 import { CSRF_COOKIE_NAME, POST_SIGN_IN_PATH, readCookie, SIGN_IN_PATH } from './session-hint';
 import { announceSessionLocked } from './session-locked';
 
@@ -308,14 +309,27 @@ async function toApiError(response: Response): Promise<ApiError> {
 
 function redirectToSignIn(): void {
   if (typeof window === 'undefined') return;
-  // Already leaving on purpose — signing out, through WorkOS's logout. The 401s
-  // that follow a revoked session are expected, and a redirect here would
-  // replace that navigation before it is sent (`lib/page-exit.ts`).
+  // Already on the way out: a sign-out heading through WorkOS's logout, whose
+  // navigation a redirect here would replace before it is sent, or an earlier
+  // 401's redirect — one is enough (`lib/page-exit.ts`).
   if (isLeavingPage()) return;
   const { pathname, search, hash } = window.location;
   // Already on an auth screen: a redirect here would loop and would discard
   // whatever the user had typed.
   if (pathname.startsWith(SIGN_IN_PATH) || pathname === '/sign-up') return;
+
+  // Raised first, so that nothing the release below sets off — the shell
+  // re-reading a session that is gone, which is one more 401 — starts a
+  // navigation of its own.
+  beginSignInRedirect();
+  // The session these keys were unlocked under has ended — expired, revoked, or
+  // signed out from another device — and no lock happened on the way. Without
+  // this the tab arrived on the sign-in page still holding the User Key and
+  // both private keys, in memory and in the `sessionStorage` mirror, for
+  // whoever signs in next in it. The release clears the mirror unconditionally,
+  // held keys or not, and its broadcast locks this account's other tabs, whose
+  // session this was too.
+  releaseVaultKeys();
 
   const next = encodeURIComponent(`${pathname}${search}${hash}`);
   // A full document load rather than `router.push`, deliberately. The session
@@ -482,9 +496,8 @@ export function signOutDestination(logoutUrl: unknown): string {
  * is the same refusal with the vault still open — the keys were swapped under
  * the operation — where the remedy is a retry, and "unlock" would be an
  * instruction nobody can follow. Neither error's own message is read; each
- * sentence is fixed here, like the fallback. Recognised by `name` rather than by
- * class, as `override-crypto.ts` does: the classes live with the key store, and
- * this module must not import the vault to describe it.
+ * sentence is fixed here, like the fallback. Recognised by `name`, the way
+ * `override-crypto.ts` recognises them.
  */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error && error.name === 'VaultLockedError') return VAULT_LOCKED_MESSAGE;

@@ -43,9 +43,23 @@ import { subscribeVaultKeys, vaultKeysHeld } from '@/components/vault/key-store'
  *   vault is locked. Not keyed on holding keys: an end-to-end encrypted
  *   environment cannot be opened without them, so nothing in one can be staged,
  *   but a server-encrypted environment can be edited by a tab holding none, and
- *   its staged values are as much somebody's work. A key release does not wait:
- *   that is a lock, and a lock has always discarded staged edits — the keys that
- *   would have saved them are already gone.
+ *   its staged values are as much somebody's work.
+ *
+ *   A key release does not wait, and that is a choice with a cost. It means the
+ *   vault was locked — here, in another tab, or by the eight-hour ceiling — and
+ *   the session with it. Before this catch-up existed, a lock from another tab
+ *   left this dashboard standing over keys it no longer had, staged edits and
+ *   all, and those edits could still have been saved after an unlock somewhere
+ *   else — a server-encrypted environment's at once, an end-to-end encrypted
+ *   one's once that unlock handed the keys back. Now the lock screen takes over
+ *   at once and the staged edits are discarded, as a lock pressed in this tab
+ *   discards them.
+ *
+ *   Nor does the grace period run where no `VaultProvider` is mounted — the
+ *   screen for an account with no organisations. Nothing there restores a mirror
+ *   or asks another tab for keys, so a tab drawing it is keyless by
+ *   construction, and locking the session for it would lock every other tab of
+ *   the account too.
  * - **Start a navigation while the page is leaving.** Signing out releases the
  *   keys on its way to WorkOS's logout, and a re-read then would be a 401 whose
  *   sign-in redirect replaces that navigation (`lib/page-exit.ts`).
@@ -86,11 +100,13 @@ export interface LockCatchUp {
   /** The shell has committed a new session answer. Lowers the guard. */
   answered: () => void;
   /**
-   * Listens while the shell is drawing an unlocked dashboard, and starts the
-   * keyless grace period if there is nothing to decrypt with. Returns the
+   * Listens while the shell is drawing an unlocked dashboard. Returns the
    * disarm, which forgets anything deferred.
+   *
+   * `awaitKeys` says a `VaultProvider` is mounted to restore or be handed keys,
+   * and only then does the keyless grace period run.
    */
-  arm: () => () => void;
+  arm: (options: { awaitKeys: boolean }) => () => void;
 }
 
 /** Whether a lock request's failure is the server saying it is already locked. */
@@ -102,6 +118,8 @@ export function createLockCatchUp(options: LockCatchUpOptions): LockCatchUp {
   const graceMs = options.graceMs ?? KEYLESS_GRACE_MS;
 
   let armed = false;
+  /** Whether this arming has a `VaultProvider` to obtain keys through. */
+  let awaitingKeys = false;
   /** Whether a re-read is under way whose answer has not been committed. */
   let reloading = false;
   /** Counts re-reads, so a lock can tell one that predates it from its own. */
@@ -161,7 +179,7 @@ export function createLockCatchUp(options: LockCatchUpOptions): LockCatchUp {
   };
 
   const startGrace = (): void => {
-    if (!armed || graceTimer !== null || vaultKeysHeld()) return;
+    if (!armed || !awaitingKeys || graceTimer !== null || vaultKeysHeld()) return;
     graceTimer = setTimeout(graceExpired, graceMs);
   };
 
@@ -211,8 +229,9 @@ export function createLockCatchUp(options: LockCatchUpOptions): LockCatchUp {
     answered: () => {
       reloading = false;
     },
-    arm: () => {
+    arm: ({ awaitKeys }) => {
       armed = true;
+      awaitingKeys = awaitKeys;
       const stops = [
         subscribeSessionLocked(refused),
         subscribeVaultKeys(keysChanged),
@@ -222,6 +241,7 @@ export function createLockCatchUp(options: LockCatchUpOptions): LockCatchUp {
 
       return () => {
         armed = false;
+        awaitingKeys = false;
         for (const stop of stops) stop();
         cancelGrace();
         deferredCatchUp = false;

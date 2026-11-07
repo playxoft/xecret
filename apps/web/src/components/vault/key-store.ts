@@ -242,8 +242,10 @@ export function holdVaultKeys(keys: VaultKeyMaterial): void {
  *
  * ── Why this is a separate function and not something `readVaultKeys` does ──
  * Because it needs to know *whose* keys are expected, and the store deliberately
- * does not: a session that expires is a redirect to sign-in with no lock in
- * between, so the mirror can outlive its own account inside one tab. The caller
+ * does not: a session can end with no lock in between. The API client's
+ * redirect to sign in releases the keys on a 401, but a tab that is simply
+ * taken to the sign-in page makes no request to be refused, so the mirror can
+ * still outlive its own account inside one tab. The caller
  * — `VaultProvider`, which always mounts below a resolved session — is the first
  * place that knows the answer, and passing it in is what turns "there is a blob
  * here" into "there is *your* blob here".
@@ -254,10 +256,11 @@ export function holdVaultKeys(keys: VaultKeyMaterial): void {
  * caller that wants to know whether to ask other tabs instead.
  *
  * ── Why the held set is checked against the same id as the mirror ──
- * Because the store is a module singleton and the account is not. Signing out
- * and back in as somebody else never unmounts the page — an expired session is a
- * redirect with no lock in between — so the keys resident here can belong to the
- * previous account while this provider mounts for the next one. Answering `true`
+ * Because the store is a module singleton and the account is not. A session can
+ * end without a lock, and not every way of reaching the sign-in page passes
+ * through the release the API client does on a 401 — so the keys resident here
+ * can belong to the previous account while this provider mounts for the next
+ * one. Answering `true`
  * on the strength of "something is held" would render the new account's
  * dashboard against the old account's User Key: every decrypt fails, and the
  * ones that do not are the previous person's data. A mismatch is released, not
