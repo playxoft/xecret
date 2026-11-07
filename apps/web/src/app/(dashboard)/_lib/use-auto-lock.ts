@@ -35,7 +35,7 @@ import { useEffect, useRef } from 'react';
  * Returning to a tab that idled past its allowance while hidden locks it on
  * the next tick; the `visibilitychange` listener makes that immediate.
  */
-export function useAutoLock(minutes: number, enabled: boolean, onLock: () => void) {
+export function useAutoLock(minutes: number, enabled: boolean, onLock: () => Promise<void> | void) {
   // The latest callback without making it a dependency: re-arming the timer
   // because a parent re-rendered would quietly reset nothing — the timestamp
   // survives — but tearing down listeners per render is churn for no gain.
@@ -58,7 +58,12 @@ export function useAutoLock(minutes: number, enabled: boolean, onLock: () => voi
     const fire = () => {
       if (fired) return;
       fired = true;
-      lock.current();
+      // A rejection is caught and dropped, not left floating. By the time it
+      // arrives the keys are already gone — the lock releases them whatever its
+      // request did — and the shell has re-read the session, which is what
+      // shows the outcome. There is nobody at the keyboard to tell anything
+      // more; that is why this fired.
+      void Promise.resolve(lock.current()).catch(() => undefined);
     };
 
     const check = () => {

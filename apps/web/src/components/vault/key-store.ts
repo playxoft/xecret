@@ -121,6 +121,34 @@ export class VaultLockedError extends Error {
   }
 }
 
+/**
+ * Refused because the material this operation captured was replaced, while the
+ * vault stayed open.
+ *
+ * The same refusal as {@link VaultLockedError} — the bytes it was handed are not
+ * the ones the store holds — with the opposite remedy. A passphrase change, a
+ * recovery or a handoff from another tab swaps the vault keys; a revoked grant
+ * drops an environment's. Nothing is locked, so telling somebody to unlock sends
+ * them looking for a lock screen that is not there, when trying again would
+ * simply work.
+ */
+export class VaultKeysChangedError extends Error {
+  constructor(message = 'The vault keys changed before this finished. Try again.') {
+    super(message);
+    this.name = 'VaultKeysChangedError';
+  }
+}
+
+/**
+ * The refusal for an operation whose material is no longer current: locked if
+ * this browser now holds no vault keys at all, changed if it holds different
+ * ones. Read at the moment of refusal, which is the only moment the answer is
+ * true.
+ */
+export function staleKeyError(): VaultLockedError | VaultKeysChangedError {
+  return held === null ? new VaultLockedError() : new VaultKeysChangedError();
+}
+
 let inFlight = 0;
 let lockPending = false;
 const deferredWipes: (() => void)[] = [];
@@ -134,7 +162,10 @@ const deferredWipes: (() => void)[] = [];
  * would mean running it against material that no longer exists.
  */
 export function acquireCryptoLease(): CryptoLease {
-  if (lockPending) throw new VaultLockedError();
+  // A pending wipe is a lock only when nothing is held. Superseded keys — a
+  // passphrase change, a handoff — and a revoked environment key wait on the
+  // same counter while the vault stays open.
+  if (lockPending) throw staleKeyError();
 
   inFlight += 1;
   let released = false;
@@ -211,8 +242,10 @@ export function holdVaultKeys(keys: VaultKeyMaterial): void {
  *
  * ── Why this is a separate function and not something `readVaultKeys` does ──
  * Because it needs to know *whose* keys are expected, and the store deliberately
- * does not: a session that expires is a redirect to sign-in with no lock in
- * between, so the mirror can outlive its own account inside one tab. The caller
+ * does not: a session can end with no lock in between. The API client's
+ * redirect to sign in releases the keys on a 401, but a tab that is simply
+ * taken to the sign-in page makes no request to be refused, so the mirror can
+ * still outlive its own account inside one tab. The caller
  * — `VaultProvider`, which always mounts below a resolved session — is the first
  * place that knows the answer, and passing it in is what turns "there is a blob
  * here" into "there is *your* blob here".
@@ -223,10 +256,11 @@ export function holdVaultKeys(keys: VaultKeyMaterial): void {
  * caller that wants to know whether to ask other tabs instead.
  *
  * ── Why the held set is checked against the same id as the mirror ──
- * Because the store is a module singleton and the account is not. Signing out
- * and back in as somebody else never unmounts the page — an expired session is a
- * redirect with no lock in between — so the keys resident here can belong to the
- * previous account while this provider mounts for the next one. Answering `true`
+ * Because the store is a module singleton and the account is not. A session can
+ * end without a lock, and not every way of reaching the sign-in page passes
+ * through the release the API client does on a 401 — so the keys resident here
+ * can belong to the previous account while this provider mounts for the next
+ * one. Answering `true`
  * on the strength of "something is held" would render the new account's
  * dashboard against the old account's User Key: every decrypt fails, and the
  * ones that do not are the previous person's data. A mismatch is released, not
@@ -348,7 +382,7 @@ function wipe(keys: VaultKeyMaterial): void {
 export async function withVaultKeys<T>(keys: VaultKeyMaterial, run: () => Promise<T>): Promise<T> {
   const lease = acquireCryptoLease();
   try {
-    if (held !== keys) throw new VaultLockedError();
+    if (held !== keys) throw staleKeyError();
     return await run();
   } finally {
     lease.release();

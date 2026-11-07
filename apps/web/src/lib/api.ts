@@ -16,10 +16,15 @@
  *     an exception whose message was built from one.
  *  3. **A 401 ends the session, visibly.** Leaving a signed-out user staring
  *     at a dashboard of stale data invites them to retry an action that has
- *     already failed silently.
+ *     already failed silently. A 403 `session_locked` is the same lesson one
+ *     step short of it: the session survives, and the dashboard is told so it
+ *     can show the lock screen (`lib/session-locked.ts`).
  */
 
+import { releaseVaultKeys } from '@/components/vault/key-store';
+import { beginSignInRedirect, isLeavingPage } from './page-exit';
 import { CSRF_COOKIE_NAME, POST_SIGN_IN_PATH, readCookie, SIGN_IN_PATH } from './session-hint';
+import { announceSessionLocked } from './session-locked';
 
 // Re-exported rather than declared, so the callers that have always imported
 // them from here keep working. They live in `lib/session-hint.ts` because the
@@ -244,6 +249,10 @@ const ERROR_CODES = new Set<string>([
 
 const FALLBACK_MESSAGE = 'Something went wrong. Please try again.';
 
+const VAULT_LOCKED_MESSAGE = 'Your vault is locked. Unlock it to continue.';
+
+const VAULT_KEYS_CHANGED_MESSAGE = 'Your vault keys changed. Try again.';
+
 /**
  * Turns a non-2xx response into an `ApiError`.
  *
@@ -300,10 +309,28 @@ async function toApiError(response: Response): Promise<ApiError> {
 
 function redirectToSignIn(): void {
   if (typeof window === 'undefined') return;
+  // Already on the way out: a sign-out heading through WorkOS's logout, whose
+  // navigation a redirect here would replace before it is sent, or an earlier
+  // 401's redirect — one is enough (`lib/page-exit.ts`).
+  if (isLeavingPage()) return;
   const { pathname, search, hash } = window.location;
   // Already on an auth screen: a redirect here would loop and would discard
   // whatever the user had typed.
   if (pathname.startsWith(SIGN_IN_PATH) || pathname === '/sign-up') return;
+
+  // Raised first, so that nothing the release below sets off — the shell
+  // re-reading a session that is gone, which is one more 401 — starts a
+  // navigation of its own.
+  beginSignInRedirect();
+  // The session these keys were unlocked under has ended — expired, revoked, or
+  // signed out from another device — and no lock happened on the way. Without
+  // this the tab arrived on the sign-in page still holding the User Key and
+  // both private keys, in memory and in the `sessionStorage` mirror, for
+  // whoever signs in next in it. The release clears the mirror unconditionally,
+  // held keys or not. When this tab held keys, its broadcast also locks this
+  // account's other tabs, whose session this was too; a tab holding none
+  // broadcasts nothing, and the others release on their own 401s.
+  releaseVaultKeys();
 
   const next = encodeURIComponent(`${pathname}${search}${hash}`);
   // A full document load rather than `router.push`, deliberately. The session
@@ -372,6 +399,11 @@ async function request<T>(
     if (error.status === 401 && options.redirectOnUnauthenticated !== false) {
       redirectToSignIn();
     }
+    // Announced and still thrown. The caller's own handling has to run — a
+    // `finally` that releases keys, a spinner that has to stop — and the shell's
+    // answer is a re-read of `/api/auth/me`, which is exempt from the lock gate
+    // and so cannot raise this again.
+    if (error.code === 'session_locked') announceSessionLocked();
     throw error;
   }
 
@@ -457,8 +489,22 @@ export function signOutDestination(logoutUrl: unknown): string {
  * So when there are field problems, they *are* the message. Each is a fixed
  * string from a schema (`parseWith` discards zod's `input` precisely so no
  * rejected value is echoed), so nothing user-supplied can travel this way.
+ *
+ * ── Why the two key-store refusals are the non-`ApiError`s with a sentence ──
+ * Every operation that needs key material throws `VaultLockedError` once the
+ * vault has locked, and collapsing that to "Something went wrong" tells somebody
+ * whose only remedy is to unlock that something is broken. `VaultKeysChangedError`
+ * is the same refusal with the vault still open — the keys were swapped under
+ * the operation — where the remedy is a retry, and "unlock" would be an
+ * instruction nobody can follow. Neither error's own message is read; each
+ * sentence is fixed here, like the fallback. Recognised by `name`, the way
+ * `override-crypto.ts` recognises them.
  */
 export function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'VaultLockedError') return VAULT_LOCKED_MESSAGE;
+  if (error instanceof Error && error.name === 'VaultKeysChangedError') {
+    return VAULT_KEYS_CHANGED_MESSAGE;
+  }
   if (!isApiError(error)) return FALLBACK_MESSAGE;
   if (error.code !== 'validation_failed' || error.fields.length === 0) return error.message;
 
