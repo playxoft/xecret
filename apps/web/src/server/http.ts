@@ -275,6 +275,26 @@ export function isSameOrigin(request: Request, expectedOrigin: string): boolean 
 }
 
 /**
+ * Same origin for a POST, failing closed — the opposite of `isSameOrigin`,
+ * which lets a missing `Origin` through for the CLI. For the unauthenticated
+ * POSTs that start or finish a sign-in, which nothing but this site's own
+ * pages ever sends: a browser sends `Origin` on every POST, form or `fetch`,
+ * so its absence is a client that is not a browser on our page, and
+ * `Sec-Fetch-Site`, where sent, must say `same-origin` — never a sibling
+ * subdomain.
+ *
+ * This is the login-CSRF defence for those routes. Without it, a page on
+ * another site could post *its owner's* credentials to the sign-in routes from
+ * a victim's browser and leave the victim signed in to the attacker's account
+ * — storing their secrets there next.
+ */
+export function isSameOriginPost(request: Request, expectedOrigin: string): boolean {
+  if (request.headers.get('origin') !== expectedOrigin) return false;
+  const site = request.headers.get('sec-fetch-site');
+  return site === null || site === 'same-origin';
+}
+
+/**
  * Whether a top-level `GET` navigation came from a page on this origin — the
  * question `isSameOrigin` cannot answer, because a browser sends no `Origin`
  * on a GET navigation. Fails *closed*, the opposite of `isSameOrigin`: it

@@ -127,10 +127,12 @@ type NextRouteArgs<Params> = { params?: Promise<Params> | undefined } | undefine
 /**
  * Wraps a handler that does not require a credential.
  *
- * Used by the sign-in routes — `GET /api/auth/login` and `GET /api/auth/callback`,
- * which *establish* authentication rather than presenting it — and by the
- * logout route, which must succeed even when the session it is clearing is
- * already invalid.
+ * Used by the sign-in routes — `GET /api/auth/login`, `GET /api/auth/callback`
+ * and the in-app `POST /api/auth/sign-in/…` routes, which *establish*
+ * authentication rather than presenting it (and check their own origin, failing
+ * closed, in place of the CSRF pair they cannot have yet) — and by the logout
+ * route, which must succeed even when the session it is clearing is already
+ * invalid.
  */
 export function publicRoute<Params = Record<string, never>>(
   handler: Handler<PublicRouteContext<Params>>,

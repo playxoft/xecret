@@ -21,10 +21,20 @@ import { isSameOriginNavigation, parseCookies } from '@/server/http';
 import { consume, rateLimitKey } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
 import { oauthStateKey, ssoContinueKey } from '@/server/sign-in';
+import { seeOther, signInErrorPath } from '@/server/sign-in-responses';
 import { workosProvider } from '@/server/workos';
 
 /**
- * Starts a sign-in: sends the browser to AuthKit.
+ * Starts a sign-in that leaves the site: Google, an organisation's single
+ * sign-on, or — for the re-authentication flows only — AuthKit's hosted page.
+ *
+ * A password or an emailed code never comes here: the sign-in page takes those
+ * itself (`server/in-app-sign-in.ts`), and nothing a person can click on the
+ * sign-in or sign-up pages leads to AuthKit's hosted page any more. The hosted
+ * page stays a capability of this route — a request with no `provider` and no
+ * `org` still builds its URL — for `reauth=1` (the vault reset's first lock,
+ * the security settings, the SSO setup portal's step-up) and for any old link
+ * still in somebody's history.
  *
  * `GET`, and reached by a plain link from the sign-in page, because the whole
  * flow is navigations — nothing about it needs script, and nothing about it is
@@ -42,15 +52,25 @@ import { workosProvider } from '@/server/workos';
  *  - `next` — a same-origin path that is not an API route, nor one of the
  *    sign-in screens a finished sign-in has no business landing on
  *    (`safePostSignInPath`). Anything else falls back to `/app`.
- *  - `hint=sign-up` — open AuthKit on its sign-up screen.
+ *  - `provider=google` — "Continue with Google": WorkOS's authorization URL
+ *    for Google OAuth, which WorkOS answers with a redirect straight to Google,
+ *    and Google back to the callback. The same state cookie and PKCE as every
+ *    other flow, and the callback is unchanged. Ignored beside `org=` and on a
+ *    re-authentication, both of which say where the person must sign in.
+ *  - `hint=sign-up` — open AuthKit on its sign-up screen. Nothing links here
+ *    with it any more; kept for links already out there.
  *  - `org=<slug>` — an SSO deep link: start that organisation's single sign-on
- *    directly. An organisation without SSO, or one that does not exist, falls
- *    through to the ordinary screen. The redirect does reveal the WorkOS
+ *    directly. Upper-case letters and surrounding spaces are forgiven — the
+ *    sign-in page's "Sign in with single sign-on" asks a person to type the
+ *    address — and anything that is still not a slug, an organisation without
+ *    SSO, or one that does not exist, is sent back to the sign-in page's
+ *    `sso-not-found` error rather than on to AuthKit's hosted page, which
+ *    nobody signing in should see. The redirect does reveal the WorkOS
  *    organisation id of a slug that has SSO — it has to, to deep-link — so the
- *    lookups are rate limited per address, and over the limit the parameter is
- *    silently ignored rather than refused (a refusal would be its own oracle).
- *    Ignored on a re-authentication, which is about this account, not an
- *    organisation.
+ *    lookups are rate limited per address, and over the limit the answer is
+ *    the same `sso-not-found` as for a slug without SSO: no second oracle
+ *    beside the one the deep link itself is. Ignored on a re-authentication,
+ *    which is about this account, not an organisation.
  *
  *    **Honoured only with the warning page's `continue` token** (review round
  *    2). Anything else — a link on another site, an email, a bookmark, and a
@@ -103,7 +123,12 @@ export const GET = publicRoute(async ({ request, services }) => {
   const next = safePostSignInPath(url.searchParams.get('next'), POST_SIGN_IN_PATH);
   const purpose: OAuthPurpose = url.searchParams.get('reauth') === '1' ? 'reauth' : 'sign-in';
   const screenHint = url.searchParams.get('hint') === 'sign-up' ? 'sign-up' : undefined;
-  const orgSlug = purpose === 'reauth' ? null : wellFormedSlug(url.searchParams.get('org'));
+  const orgParam = purpose === 'reauth' ? null : url.searchParams.get('org');
+  const orgSlug = wellFormedSlug(orgParam);
+  const oauthProvider =
+    purpose === 'sign-in' && orgParam === null && url.searchParams.get('provider') === 'google'
+      ? ('GoogleOAuth' as const)
+      : undefined;
   const cookies = parseCookies(request.headers.get('cookie'));
   const extraCookies: string[] = [];
 
@@ -130,6 +155,13 @@ export const GET = publicRoute(async ({ request, services }) => {
       status: 303,
       headers: { location: `${SIGN_IN_PATH}?${target.toString()}`, 'cache-control': 'no-store' },
     });
+  }
+
+  // An `org=` that is not a slug at all — mistyped into "Sign in with single
+  // sign-on" — goes back to the sign-in page's error, never on to AuthKit.
+  // Nothing is looked up and nothing is minted.
+  if (orgParam !== null && orgSlug === null) {
+    return seeOther(signInErrorPath('sso-not-found', next), []);
   }
 
   // An SSO deep link is honoured only when the person chose it on the warning
@@ -170,6 +202,12 @@ export const GET = publicRoute(async ({ request, services }) => {
 
   const organizationId =
     orgSlug === null ? undefined : await ssoOrganization(services, orgSlug, provider.clientId);
+  if (orgSlug !== null && organizationId === undefined) {
+    // Chosen, and nothing to sign in through: no such organisation, no single
+    // sign-on, another WorkOS environment's link, or this address over its
+    // lookups — one answer for all of them. The binding is still cleared.
+    return seeOther(signInErrorPath('sso-not-found', next), extraCookies);
+  }
 
   const { state, verifier } = generateOAuthSecrets();
   const cookie = await sealOAuthState(key, {
@@ -189,6 +227,7 @@ export const GET = publicRoute(async ({ request, services }) => {
     state,
     codeChallenge: await computePkceChallenge(verifier),
     organizationId,
+    provider: oauthProvider,
     // A re-authentication is a sign-in, never a sign-up.
     screenHint: purpose === 'reauth' ? undefined : screenHint,
     maxAge: purpose === 'reauth' ? 0 : undefined,
@@ -235,8 +274,14 @@ async function ssoOrganization(
   return found.organization.workosOrgId ?? undefined;
 }
 
-/** `org=` as a slug, or `null` for anything that is not one — which is then ignored. */
+/**
+ * `org=` as a slug, or `null` for anything that is not one. Surrounding spaces
+ * and ASCII capitals are forgiven, because a person types this one; nothing
+ * else is — a non-ASCII letter is not folded into a slug it might resemble.
+ */
 function wellFormedSlug(value: string | null): string | null {
-  if (value === null || value.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(value)) return null;
-  return value;
+  if (value === null) return null;
+  const slug = value.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  if (slug.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(slug)) return null;
+  return slug;
 }

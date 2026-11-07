@@ -268,6 +268,7 @@ const eslintConfig = defineConfig([
       'src/server/bindings.test.ts',
       'src/app/(dashboard)/_components/screen-wiring.test.ts',
       'src/app/(dashboard)/_components/upgrade-plans.test.ts',
+      'src/app/(auth)/auth-pages.test.ts',
     ],
     rules: {
       // Same reasoning as the block above, one step further out: these files
@@ -287,7 +288,11 @@ const eslintConfig = defineConfig([
       // which cannot export its price sheets, to prove the in-app plans page
       // quotes the same dollars, the same saving and nothing it marks unbuilt —
       // and reads the route handlers, to prove every capability the page
-      // sells has a `requireFeature` behind it.
+      // sells has a `requireFeature` behind it. `auth-pages.test.ts` reads the
+      // sign-in panel's code step, which no static render reaches, to pin that
+      // its field is a one-time code and that the panel never logs or stores,
+      // and the invitation screen's links into sign-in, which it renders only
+      // after a fetch.
       //
       // Stated as the narrower rule rather than as `'off'`, for the reason
       // spelled out above: ESLint replaces a rule's configuration wholesale,

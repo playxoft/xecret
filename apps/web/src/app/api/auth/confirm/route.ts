@@ -18,7 +18,7 @@ import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import { publicOrigin } from '@/server/bindings';
 import type { ServiceContext } from '@/server/context';
-import { parseCookies } from '@/server/http';
+import { isSameOriginPost, parseCookies } from '@/server/http';
 import { describeError } from '@/server/logging';
 import { attemptKey, consume } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
@@ -219,17 +219,6 @@ async function declined(
     return seeOther(landing, cleared);
   }
   return seeOther(logout, cleared);
-}
-
-/**
- * Same origin for a POST, failing closed — the opposite of `isSameOrigin`,
- * which lets a missing `Origin` through for the CLI. Nothing but our own page
- * ever posts here.
- */
-function isSameOriginPost(request: Request, expectedOrigin: string): boolean {
-  if (request.headers.get('origin') !== expectedOrigin) return false;
-  const site = request.headers.get('sec-fetch-site');
-  return site === null || site === 'same-origin';
 }
 
 /** The urlencoded form, bounded, or `null` for anything that is not one. */

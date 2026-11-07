@@ -96,6 +96,21 @@ describe('request descriptions', () => {
     expect(sentence('GET', '/api/auth/callback', 303)).toBe(
       'Completed a sign-in callback from the identity provider',
     );
+    // Neutral, like the callback: a 200 may be a session, a held-back sign-in
+    // or a verification step, and `signInOutcome` says which.
+    expect(sentence('POST', '/api/auth/sign-in/password', 200)).toBe('Checked a password sign-in');
+    expect(sentence('POST', '/api/auth/sign-in/password', 400)).toBe(
+      'Rejected a request to check a password sign-in',
+    );
+    expect(sentence('POST', '/api/auth/sign-in/code', 204)).toBe(
+      'Requested an emailed sign-in code',
+    );
+    expect(sentence('POST', '/api/auth/sign-in/code/verify', 200)).toBe(
+      'Checked an emailed sign-in code',
+    );
+    expect(sentence('POST', '/api/auth/sign-in/verify-email', 200)).toBe(
+      'Checked an email-verification code to finish a sign-in',
+    );
     expect(sentence('POST', '/api/auth/reauth/start', 204)).toBe(
       'Emailed a re-authentication code for the vault reset',
     );

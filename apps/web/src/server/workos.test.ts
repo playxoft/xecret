@@ -89,6 +89,25 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
       refreshToken: 'rt',
       authenticationMethod: 'MagicAuth',
     })),
+    authenticateWithPassword: vi.fn(async () => ({
+      user: user(),
+      accessToken: 'at',
+      refreshToken: 'rt',
+      authenticationMethod: 'Password',
+    })),
+    authenticateWithEmailVerification: vi.fn(async () => ({
+      user: user(),
+      accessToken: 'at',
+      refreshToken: 'rt',
+      authenticationMethod: 'Password',
+    })),
+    authenticateWithOrganizationSelection: vi.fn(async () => ({
+      user: user(),
+      accessToken: 'at',
+      refreshToken: 'rt',
+      organizationId: 'org_01FIRST',
+      authenticationMethod: 'Password',
+    })),
     challengeFactor: vi.fn(async () => ({
       object: 'authentication_challenge',
       id: 'auth_challenge_01',
@@ -114,6 +133,9 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
       createMagicAuth: calls.createMagicAuth,
       authenticateWithMagicAuth: calls.authenticateWithMagicAuth,
       authenticateWithTotp: calls.authenticateWithTotp,
+      authenticateWithPassword: calls.authenticateWithPassword,
+      authenticateWithEmailVerification: calls.authenticateWithEmailVerification,
+      authenticateWithOrganizationSelection: calls.authenticateWithOrganizationSelection,
     },
     multiFactorAuth: { challengeFactor: calls.challengeFactor },
     organizations: { getOrganization: calls.getOrganization, createOrganization: vi.fn() },
@@ -190,6 +212,40 @@ describe('the authorization URL', () => {
     );
 
     expect(query.get('screen_hint')).toBe('sign-up');
+  });
+
+  it('goes straight to Google when asked — WorkOS’s Google OAuth, not AuthKit, and no screen hint', () => {
+    const { provider } = stubApi();
+
+    const url = provider.authorizationUrl({
+      state: 's',
+      codeChallenge: challenge,
+      provider: 'GoogleOAuth',
+      screenHint: 'sign-up',
+    });
+    const query = params(url);
+
+    expect(new URL(url).origin).toBe('https://api.workos.com');
+    expect(query.get('provider')).toBe('GoogleOAuth');
+    expect(query.get('code_challenge_method')).toBe('S256');
+    expect(query.has('screen_hint')).toBe(false);
+    expect(url).not.toContain('authkit');
+  });
+
+  it('lets an organisation deep link win over a provider', () => {
+    const { provider } = stubApi();
+
+    const query = params(
+      provider.authorizationUrl({
+        state: 's',
+        codeChallenge: challenge,
+        organizationId: 'org_01BIGCORP',
+        provider: 'GoogleOAuth',
+      }),
+    );
+
+    expect(query.get('organization_id')).toBe('org_01BIGCORP');
+    expect(query.has('provider')).toBe(false);
   });
 
   it('derives the redirect from the public origin, so the two cannot drift', () => {
@@ -654,6 +710,231 @@ describe('Magic Auth', () => {
       ),
     ).rejects.toMatchObject({ reason: 'invalid_one_time_code' });
   });
+});
+
+describe('signing in on xecret’s own page (headless)', () => {
+  const REQUEST = { ipAddress: '203.0.113.5', userAgent: 'vitest' };
+
+  it('checks a password and answers the same exchange a code would have, minted here', async () => {
+    const { provider, calls } = stubApi({
+      authenticateWithPassword: vi.fn(async () => ({
+        user: user(),
+        accessToken: accessToken({ sid: 'session_01HEADLESS', auth_time: 1_790_000_000 }),
+        refreshToken: 'rt',
+        authenticationMethod: 'Password',
+      })),
+    });
+
+    const exchange = await provider.signInWithPassword(
+      { email: 'alice@bigcorp.example', password: 'hunter2 hunter2' },
+      REQUEST,
+    );
+
+    expect(isWorkosIdentity(exchange.identity)).toBe(true);
+    expect(exchange.identity).toMatchObject({ subject: 'user_01HZXK9P3Q', emailVerified: true });
+    expect(exchange.authenticationMethod).toBe('Password');
+    expect(exchange.authenticatedAt).toBe(1_790_000_000);
+    expect(exchange.providerSessionId).toBe('session_01HEADLESS');
+    expect(calls.authenticateWithPassword).toHaveBeenCalledWith({
+      clientId: CONFIG.clientId,
+      email: 'alice@bigcorp.example',
+      password: 'hunter2 hunter2',
+      ipAddress: '203.0.113.5',
+      userAgent: 'vitest',
+    });
+  });
+
+  it.each([
+    ['an empty password', { email: 'a@b.example', password: '' }],
+    ['a password longer than any', { email: 'a@b.example', password: 'x'.repeat(1025) }],
+    ['an address that is not one', { email: 'nobody', password: 'pw' }],
+    ['an address with spaces', { email: 'a b@c.example', password: 'pw' }],
+  ])('refuses %s on shape, before asking WorkOS', async (_label, params) => {
+    const { provider, calls } = stubApi();
+
+    await expect(provider.signInWithPassword(params, REQUEST)).rejects.toBeInstanceOf(
+      IdentityVerificationError,
+    );
+    expect(calls.authenticateWithPassword).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a 400 naming the credential', failure(400, { code: 'invalid_credentials' })],
+    ['a 403 naming the credential', failure(403, { code: 'invalid_credentials' })],
+  ])('reads %s as the person’s mistake, not our key', async (_label, cause) => {
+    const { provider } = stubApi({
+      authenticateWithPassword: vi.fn(async () => Promise.reject(cause)),
+    });
+
+    const error = await provider
+      .signInWithPassword({ email: 'a@b.example', password: 'wrong' }, REQUEST)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(IdentityVerificationError);
+    expect(error).not.toBeInstanceOf(AuthenticationStepRequired);
+    expect(error).toMatchObject({ reason: 'invalid_credentials' });
+  });
+
+  it.each([
+    ['a bare 401 (the SDK keeps no reason)', failure(401), 'misconfigured'],
+    ['a bare 403', failure(403), 'misconfigured'],
+    ['a 503', failure(503), 'unreachable'],
+  ])('still reads %s as the service’s trouble', async (_label, cause, reason) => {
+    const { provider } = stubApi({
+      authenticateWithPassword: vi.fn(async () => Promise.reject(cause)),
+    });
+
+    const error = await provider
+      .signInWithPassword({ email: 'a@b.example', password: 'pw' }, REQUEST)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(IdentityProviderUnavailableError);
+    expect(error).toMatchObject({ reason });
+  });
+
+  it('keeps a 403 with a reason as misconfiguration everywhere but a credential check', () => {
+    expect(providerFailure(failure(403, { code: 'invalid_credentials' }))).toBeInstanceOf(
+      IdentityProviderUnavailableError,
+    );
+  });
+
+  it('hands email_verification_required up as a step, with the pending token', async () => {
+    const { provider } = stubApi({
+      authenticateWithPassword: vi.fn(async () =>
+        Promise.reject(
+          Object.assign(new Error('verify'), {
+            status: 403,
+            code: 'email_verification_required',
+            rawData: { pending_authentication_token: 'pending_01', email: 'a@b.example' },
+          }),
+        ),
+      ),
+    });
+
+    const error = await provider
+      .signInWithPassword({ email: 'a@b.example', password: 'pw' }, REQUEST)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AuthenticationStepRequired);
+    expect(error).toMatchObject({
+      code: 'email_verification_required',
+      pendingAuthenticationToken: 'pending_01',
+    });
+  });
+
+  it('finishes organisation selection with the first organisation WorkOS listed', async () => {
+    const { provider, calls } = stubApi({
+      authenticateWithPassword: vi.fn(async () =>
+        Promise.reject(
+          Object.assign(new Error('pick'), {
+            status: 403,
+            code: 'organization_selection_required',
+            rawData: {
+              pending_authentication_token: 'pending_org',
+              organizations: [
+                { id: 'org_01FIRST', name: 'First' },
+                { id: 'org_01SECOND', name: 'Second' },
+              ],
+            },
+          }),
+        ),
+      ),
+    });
+
+    const exchange = await provider.signInWithPassword(
+      { email: 'a@b.example', password: 'pw' },
+      REQUEST,
+    );
+
+    expect(calls.authenticateWithOrganizationSelection).toHaveBeenCalledWith({
+      clientId: CONFIG.clientId,
+      pendingAuthenticationToken: 'pending_org',
+      organizationId: 'org_01FIRST',
+      ipAddress: '203.0.113.5',
+      userAgent: 'vitest',
+    });
+    expect(exchange.organizationId).toBe('org_01FIRST');
+  });
+
+  it('gives up on organisation selection that names no organisation, as a step', async () => {
+    const { provider, calls } = stubApi({
+      authenticateWithPassword: vi.fn(async () =>
+        Promise.reject(
+          Object.assign(new Error('pick'), {
+            status: 403,
+            code: 'organization_selection_required',
+            rawData: { pending_authentication_token: 'pending_org', organizations: [] },
+          }),
+        ),
+      ),
+    });
+
+    await expect(
+      provider.signInWithPassword({ email: 'a@b.example', password: 'pw' }, REQUEST),
+    ).rejects.toMatchObject({ code: 'organization_selection_required' });
+    expect(calls.authenticateWithOrganizationSelection).not.toHaveBeenCalled();
+  });
+
+  it('signs in with an emailed code, answering the whole exchange', async () => {
+    const { provider, calls } = stubApi();
+
+    const exchange = await provider.signInWithMagicAuth(
+      { email: 'alice@bigcorp.example', code: '123456' },
+      REQUEST,
+    );
+
+    expect(exchange.authenticationMethod).toBe('MagicAuth');
+    expect(isWorkosIdentity(exchange.identity)).toBe(true);
+    expect(calls.authenticateWithMagicAuth).toHaveBeenCalledWith({
+      clientId: CONFIG.clientId,
+      code: '123456',
+      email: 'alice@bigcorp.example',
+      ipAddress: '203.0.113.5',
+      userAgent: 'vitest',
+    });
+  });
+
+  it('refuses a malformed emailed code before asking WorkOS', async () => {
+    const { provider, calls } = stubApi();
+
+    await expect(
+      provider.signInWithMagicAuth({ email: 'a@b.example', code: '12345' }, REQUEST),
+    ).rejects.toBeInstanceOf(IdentityVerificationError);
+    expect(calls.authenticateWithMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it('finishes an email verification with the code and the pending token', async () => {
+    const { provider, calls } = stubApi();
+
+    const exchange = await provider.completeEmailVerification(
+      { code: '654321', pendingAuthenticationToken: 'pending_01' },
+      REQUEST,
+    );
+
+    expect(exchange.identity.emailVerified).toBe(true);
+    expect(calls.authenticateWithEmailVerification).toHaveBeenCalledWith({
+      clientId: CONFIG.clientId,
+      code: '654321',
+      pendingAuthenticationToken: 'pending_01',
+      ipAddress: '203.0.113.5',
+      userAgent: 'vitest',
+    });
+  });
+
+  it.each([[''], ['has a space'], ['x'.repeat(2049)], ['ünicode']])(
+    'refuses the pending token %j before asking WorkOS',
+    async (token) => {
+      const { provider, calls } = stubApi();
+
+      await expect(
+        provider.completeEmailVerification(
+          { code: '654321', pendingAuthenticationToken: token },
+          REQUEST,
+        ),
+      ).rejects.toBeInstanceOf(IdentityVerificationError);
+      expect(calls.authenticateWithEmailVerification).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('verified domains', () => {

@@ -158,6 +158,29 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
     );
   }
 
+  if (first === 'sign-in') {
+    // Neutral, like the callback's: a 200 is a session, a held-back sign-in
+    // or an email-verification step, and `signInOutcome` on the same line
+    // says which.
+    switch (second) {
+      case 'password':
+        return action('auth.sign_in_password', 'Checked', 'check', 'a password sign-in');
+      case 'code':
+        return rest[2] === 'verify'
+          ? action('auth.sign_in_code_verify', 'Checked', 'check', 'an emailed sign-in code')
+          : action('auth.sign_in_code_send', 'Requested', 'request', 'an emailed sign-in code');
+      case 'verify-email':
+        return action(
+          'auth.sign_in_verify_email',
+          'Checked',
+          'check',
+          'an email-verification code to finish a sign-in',
+        );
+      default:
+        break;
+    }
+  }
+
   if (first === 'callback') {
     // Neutral on purpose. The callback answers 303 whether it signed somebody
     // in or refused them, so a sentence derived from the status would call

@@ -71,6 +71,7 @@ const auditSink = vi.hoisted(() => ({ write: vi.fn() }));
 const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
 const workos = vi.hoisted(() => ({
   authenticateWithCode: vi.fn(),
+  authenticateWithOrganizationSelection: vi.fn(),
   getOrganization: vi.fn(),
 }));
 
@@ -93,6 +94,7 @@ vi.mock('./workos', async (importOriginal) => {
         options: Parameters<WorkOS['userManagement']['getAuthorizationUrl']>[0],
       ) => sdk.userManagement.getAuthorizationUrl(options),
       authenticateWithCode: workos.authenticateWithCode,
+      authenticateWithOrganizationSelection: workos.authenticateWithOrganizationSelection,
       createMagicAuth: vi.fn(),
       authenticateWithMagicAuth: vi.fn(),
       // Built locally by the real SDK, as in production: no call is made.
@@ -152,6 +154,7 @@ beforeEach(() => {
   // exchange leaves its queued answer unconsumed, and the next test would be
   // handed somebody else's user.
   workos.authenticateWithCode.mockReset();
+  workos.authenticateWithOrganizationSelection.mockReset();
   t.reset();
   lines = [];
   audit = [];
@@ -680,7 +683,7 @@ describe('starting a sign-in', () => {
     expect(flow.location.searchParams.get('screen_hint')).toBe('sign-up');
   });
 
-  it('deep-links an organisation’s SSO by slug, and falls through for one without', async () => {
+  it('deep-links an organisation’s SSO by slug, and sends one without back to the sign-in page — never to AuthKit', async () => {
     const workosOrgId = unique('org_01');
     const orgId = await seedOrg({ workosOrgId });
     const slug = await slugOf(orgId);
@@ -690,10 +693,37 @@ describe('starting a sign-in', () => {
     expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
     expect(deep.location.searchParams.has('provider')).toBe(false);
 
-    const none = await deepLink('no-such-org');
-    const plain = await startSignIn(none.query, none.headers);
-    expect(plain.location.searchParams.has('organization_id')).toBe(false);
-    expect(plain.location.searchParams.get('provider')).toBe('authkit');
+    for (const missing of ['no-such-org', await slugOf(await seedOrg())]) {
+      const none = await deepLink(missing);
+      const response = await login(
+        new Request(`${ORIGIN}/api/auth/login${none.query}&next=%2Fapp%2Facme`, {
+          headers: none.headers,
+        }),
+      );
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(
+        '/sign-in?error=sso-not-found&next=%2Fapp%2Facme',
+      );
+      // No flow was started, and the binding was spent like any followed link.
+      expect(setCookieValue(response, OAUTH_STATE_COOKIE_NAME)).toBeNull();
+      expect(response.headers.getSetCookie()).toContain(
+        `${SSO_CONTINUE_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
+      );
+    }
+  });
+
+  it('forgives capitals and spaces in a typed org=, and nothing else', async () => {
+    const slug = await slugOf(await seedOrg({ workosOrgId: unique('org_01') }));
+
+    const response = await login(
+      new Request(`${ORIGIN}/api/auth/login?org=${encodeURIComponent(` ${slug.toUpperCase()} `)}`, {
+        headers: FROM_THIS_SITE,
+      }),
+    );
+
+    // To the warning page, under the slug itself.
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}`);
   });
 
   it('clears the binding once a deep link is followed, so the same link a second time goes back to the page', async () => {
@@ -852,11 +882,14 @@ describe('starting a sign-in', () => {
     expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
   });
 
-  it('ignores a malformed org= rather than sending it anywhere', async () => {
-    const flow = await startSignIn('?org=%3Cscript%3E');
+  it('sends a malformed org= back to the sign-in page’s error, not anywhere else', async () => {
+    for (const malformed of ['%3Cscript%3E', 'acme%20corp', '', '-acme']) {
+      const response = await login(new Request(`${ORIGIN}/api/auth/login?org=${malformed}`));
 
-    expect(flow.status).toBe(307);
-    expect(flow.location.searchParams.has('organization_id')).toBe(false);
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe('/sign-in?error=sso-not-found');
+      expect(response.headers.getSetCookie()).toEqual([]);
+    }
   });
 
   it('sends the browser to the sign-in page’s "unavailable" error rather than signing state with a weak or missing key', async () => {
@@ -891,7 +924,7 @@ describe('starting a sign-in', () => {
     }
   });
 
-  it('stops resolving org= for an address that has looked up too many, silently', async () => {
+  it('stops resolving org= for an address that has looked up too many, with the answer a slug without SSO gets', async () => {
     const workosOrgId = unique('org_01');
     const slug = await slugOf(await seedOrg({ workosOrgId }));
     const keys: string[] = [];
@@ -903,11 +936,64 @@ describe('starting a sign-in', () => {
     };
 
     const link = await deepLink(slug);
-    const flow = await startSignIn(link.query, link.headers);
+    const response = await login(
+      new Request(`${ORIGIN}/api/auth/login${link.query}`, { headers: link.headers }),
+    );
+
+    // Indistinguishable from `no-such-org`: no second oracle beside the deep link itself.
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe('/sign-in?error=sso-not-found');
+    expect(setCookieValue(response, OAUTH_STATE_COOKIE_NAME)).toBeNull();
+    expect(keys.some((k) => k.startsWith('login_org'))).toBe(true);
+  });
+
+  it('goes straight to Google for "Continue with Google": WorkOS’s Google OAuth, never AuthKit', async () => {
+    const flow = await startSignIn('?provider=google&next=%2Finvite%2Fabc');
 
     expect(flow.status).toBe(307);
-    expect(flow.location.searchParams.has('organization_id')).toBe(false);
-    expect(keys.some((k) => k.startsWith('login_org'))).toBe(true);
+    expect(flow.location.origin).toBe('https://api.workos.com');
+    expect(flow.location.searchParams.get('provider')).toBe('GoogleOAuth');
+    expect(flow.location.searchParams.get('client_id')).toBe(CLIENT_ID);
+    expect(flow.location.searchParams.get('redirect_uri')).toBe(`${ORIGIN}/api/auth/callback`);
+    expect(flow.location.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(flow.location.searchParams.has('screen_hint')).toBe(false);
+    expect(flow.location.toString()).not.toContain('authkit');
+    // The same state cookie as every flow, carrying `next` for the callback.
+    expect(flow.setCookie.startsWith(`${OAUTH_STATE_COOKIE_NAME}=v1.`)).toBe(true);
+    const opened = await openOAuthState(
+      await deriveOAuthStateKey(COOKIE_PASSWORD),
+      flow.cookie,
+      flow.state,
+      new Date(),
+    );
+    expect(opened.ok && opened.value.next).toBe('/invite/abc');
+    expect(opened.ok && opened.value.organizationId).toBeNull();
+  });
+
+  it('keeps a re-authentication and an SSO deep link where they were asked to go, whatever provider= says', async () => {
+    const reauth = await startSignIn('?reauth=1&provider=google');
+    expect(reauth.location.searchParams.get('provider')).toBe('authkit');
+    expect(reauth.location.searchParams.get('max_age')).toBe('0');
+
+    const workosOrgId = unique('org_01');
+    const slug = await slugOf(await seedOrg({ workosOrgId }));
+    const link = await deepLink(slug);
+    const deep = await startSignIn(`${link.query}&provider=google`, link.headers);
+    expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
+    expect(deep.location.searchParams.has('provider')).toBe(false);
+  });
+
+  it('signs in a Google sign-in through the unchanged callback', async () => {
+    const flow = await startSignIn('?provider=google');
+    const who = workosUser();
+    workosAnswers({ user: who, authenticationMethod: 'GoogleOAuth' });
+
+    const result = await finishSignIn(flow);
+
+    expect(result.status).toBe(303);
+    expect(result.location).toBe('/app');
+    expect(sessionCookieIssued(result)).toBe(true);
+    expect(audit.find((e) => e.action === 'auth.signup')?.metadata.signInMethod).toBe('oauth');
   });
 });
 
@@ -1407,6 +1493,84 @@ describe('the provider’s answer', () => {
     const result = await finishSignIn(flow);
 
     expect(result.error).toBe(code);
+    expect(sessionCookieIssued(result)).toBe(false);
+  });
+
+  it.each([
+    ['mfa_challenge', 'authenticator-required'],
+    ['mfa_enrollment', 'authenticator-required'],
+    ['radar_email_challenge', 'extra-check'],
+    ['email_verification_required', 'verify-email'],
+  ])(
+    'refuses a code exchange WorkOS answers with %s as %s, not as an expired attempt',
+    async (step, code) => {
+      const flow = await startSignIn('?provider=google');
+      workos.authenticateWithCode.mockRejectedValueOnce(
+        Object.assign(new Error('step'), {
+          name: 'AuthenticationException',
+          status: 403,
+          code: step,
+          rawData: { code: step, pending_authentication_token: 'pending' },
+        }),
+      );
+
+      const result = await finishSignIn(flow);
+
+      expect(result.error).toBe(code);
+      expect(sessionCookieIssued(result)).toBe(false);
+    },
+  );
+
+  it('refuses a code exchange WorkOS answers with sso_required as sso-required', async () => {
+    const flow = await startSignIn('?provider=google');
+    workos.authenticateWithCode.mockRejectedValueOnce(
+      Object.assign(new Error('step'), { status: 400, error: 'sso_required' }),
+    );
+
+    expect((await finishSignIn(flow)).error).toBe('sso-required');
+  });
+
+  it('finishes WorkOS’s organisation selection itself, and holds the sign-in back for the person to confirm', async () => {
+    // Direct to Google there is no AuthKit page to pick on. The pick is never
+    // read by anything that grants — the method is not SSO — and the
+    // organisation it names was not asked for, so the person confirms.
+    const flow = await startSignIn('?provider=google');
+    const who = workosUser();
+    workos.authenticateWithCode.mockRejectedValueOnce(
+      Object.assign(new Error('step'), {
+        name: 'AuthenticationException',
+        status: 403,
+        code: 'organization_selection_required',
+        rawData: {
+          code: 'organization_selection_required',
+          pending_authentication_token: 'pending-org',
+          organizations: [
+            { id: 'org_01FIRST', name: 'First' },
+            { id: 'org_01SECOND', name: 'Second' },
+          ],
+        },
+      }),
+    );
+    workos.authenticateWithOrganizationSelection.mockResolvedValueOnce({
+      user: who,
+      organizationId: 'org_01FIRST',
+      authenticationMethod: 'GoogleOAuth',
+      accessToken: accessTokenAuthenticatedAt(Math.floor(Date.now() / 1000)),
+      refreshToken: 'r',
+    });
+
+    const result = await finishSignIn(flow);
+
+    expect(workos.authenticateWithOrganizationSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingAuthenticationToken: 'pending-org',
+        organizationId: 'org_01FIRST',
+        clientId: CLIENT_ID,
+      }),
+    );
+    expect(result.location).toBe('/sign-in/confirm');
+    expect(result.parked).not.toBeNull();
+    expect((await parkedValue(result.parked!)).reason).toBe('organization');
     expect(sessionCookieIssued(result)).toBe(false);
   });
 
