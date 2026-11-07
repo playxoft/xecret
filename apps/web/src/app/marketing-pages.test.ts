@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
@@ -493,13 +494,6 @@ describe('the add-ons are described the same way everywhere', () => {
     }
   });
 
-  it.each(['terms', 'privacy'] as const)(
-    'gives the notice %s promises before a change takes effect',
-    (page) => {
-      expect(legalDatesProblem(page, SOURCES.get(page) ?? '')).toBeNull();
-    },
-  );
-
   /**
    * The version these terms replace promised something this one withdraws for
    * the limits it introduces, and counsel reads the two side by side: §Changes
@@ -542,14 +536,26 @@ describe('the add-ons are described the same way everywhere', () => {
 /* ── Reading source as published ──────────────────────────────────────────── */
 
 /**
- * Source with its comments taken out: block comments, whole-line `//`
- * comments, and a `//` comment trailing code on its own line — the last of
- * which `PROSE` leaves in, and which let a sentence that exists only as a note
- * after a string satisfy a check about what a page says. A `//` straight after
- * a colon or a quote is kept, so `https://…` and `'//'` survive.
+ * A legal page's source with its comments taken out, for reading its prose —
+ * the JSX text, which is what the reader sees.
+ *
+ * Block comments, whole-line `//` comments, and a `//` comment trailing code
+ * on its line: the last is one `PROSE` leaves in, and it let a sentence that
+ * existed only as a note after a string satisfy a check about what a page
+ * says. A `//` straight after a colon or a quote is kept, so `https://…` and
+ * `'//'` survive.
+ *
+ * **One pass**, so whichever comment *starts* first wins. Two passes — blocks
+ * first — let a `/*` inside a line comment ("the account area, `/app/settings/*`")
+ * open a block that ran on to the next `*\/` and swallowed the code between.
+ *
+ * Only for prose. The storage guard below reads code through the TypeScript
+ * parser instead, where comments never reach the tree at all.
  */
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+  return source.replace(/\/\*[\s\S]*?\*\/|(^|[^:'"`\\])\/\/.*$/gm, (comment, before?: string) =>
+    comment.startsWith('/*') ? '' : (before ?? ''),
+  );
 }
 
 /** One section of a legal page's source, from its `id` to the next one, whitespace collapsed. */
@@ -794,9 +800,48 @@ describe('the legal-date guard', () => {
         page({ effective: null, changes: [`${said('Nothing else.')} // ${WITHOUT_NOTICE}`] }),
         UNSAID,
       ],
+      [
+        'a stale "not material" behind a line comment holding `/*`',
+        // Read blocks-first, the `/*` in the note opened a block that ran to
+        // the doc comment's close and hid the stale sentence between them.
+        page({
+          effective: '2026-11-07',
+          changes: [
+            NOT_MATERIAL_NOV_7,
+            '// see /app/settings/* for where this is shown',
+            said('The version of 20 October 2026 is not a material change.'),
+            '/** a note further down */ said',
+          ],
+        }),
+        'calls the version of 20 October 2026 not material',
+      ],
     ])('%s', (_, source, reason) => {
       expect(legalDatesProblem('p', source, TODAY)).toContain(reason);
     });
+  });
+
+  describe('reads comments one at a time, whichever starts first', () => {
+    it('keeps the code after a line comment that holds `/*`', () => {
+      const source = "// see /app/settings/* for more\nconst kept = 'yes';\n/** a doc */\n";
+      expect(stripComments(source)).toContain("const kept = 'yes';");
+    });
+
+    it('still removes a block comment that holds `//`', () => {
+      expect(stripComments("/* a // b */ const kept = 'yes';")).toBe(" const kept = 'yes';");
+    });
+
+    it('keeps a URL', () => {
+      expect(stripComments("const url = 'https://example.com';")).toContain('https://example.com');
+    });
+  });
+
+  describe('the real pages', () => {
+    it.each(['terms', 'privacy'] as const)(
+      'gives the notice %s promises before a change takes effect',
+      (name) => {
+        expect(legalDatesProblem(name, SOURCES.get(name) ?? '')).toBeNull();
+      },
+    );
   });
 });
 
@@ -836,20 +881,133 @@ function readSources(): Source[] {
     }));
 }
 
+/** What one file's code says about browser storage. */
+interface FileScan {
+  /** The storage it reaches for, or `'both'`, or `null` when neither. */
+  kind: StorageKind | 'both' | null;
+  /** Keys declared as `const …KEY = 'xecret.…'`. */
+  declared: string[];
+  /** Every string in the code that begins `xecret.`, however it is used. */
+  literals: string[];
+}
+
+const STORAGE_NAMES: ReadonlySet<string> = new Set<StorageKind>(['localStorage', 'sessionStorage']);
+const GLOBAL_OBJECTS: ReadonlySet<string> = new Set(['window', 'globalThis', 'self']);
+
+/** A string's text when it begins `xecret.` — a template's with `${…}` for each hole. */
+function xecretText(node: ts.Node): string | null {
+  if (ts.isStringLiteralLike(node)) return node.text.startsWith('xecret.') ? node.text : null;
+  if (ts.isTemplateExpression(node) && node.head.text.startsWith('xecret.')) {
+    return node.head.text + node.templateSpans.map((span) => `\${…}${span.literal.text}`).join('');
+  }
+  return null;
+}
+
 /**
- * Which storage a file uses, read from its code with comments out:
- * `window.localStorage`, an assignment of it (`s=localStorage`, as the theme's
- * inline bootstrap has), or a bare `localStorage.getItem(…)`-style call — and
- * the same for `sessionStorage`.
+ * The storage an identifier reaches for, or `null` when it only *names*
+ * something called that: a key in an object literal, a declaration, a type.
+ * `window.localStorage` (or `globalThis.` / `self.`) counts, and so does the
+ * bare global however it is used — `localStorage.setItem(…)`, `s = localStorage`.
  */
-function storageUsedBy(code: string): StorageKind | 'both' | null {
-  const uses = (name: StorageKind) =>
-    new RegExp(
-      `\\bwindow\\.${name}\\b|=\\s*${name}\\b|(?<![\\w.])${name}\\s*\\.\\s*(?:getItem|setItem|removeItem|clear|key)\\b`,
-    ).test(code);
-  const local = uses('localStorage');
-  const session = uses('sessionStorage');
-  return local && session ? 'both' : local ? 'localStorage' : session ? 'sessionStorage' : null;
+function storageReachedBy(node: ts.Identifier): StorageKind | null {
+  if (!STORAGE_NAMES.has(node.text)) return null;
+  const name = node.text as StorageKind;
+  const parent = node.parent;
+
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+    return ts.isIdentifier(parent.expression) && GLOBAL_OBJECTS.has(parent.expression.text)
+      ? name
+      : null;
+  }
+  const declares =
+    ts.isPropertyAssignment(parent) ||
+    ts.isPropertySignature(parent) ||
+    ts.isPropertyDeclaration(parent) ||
+    ts.isMethodDeclaration(parent) ||
+    ts.isVariableDeclaration(parent) ||
+    ts.isParameter(parent) ||
+    ts.isBindingElement(parent) ||
+    ts.isImportSpecifier(parent) ||
+    ts.isExportSpecifier(parent);
+  if (declares && (parent as { name?: ts.Node }).name === node) return null;
+  if (ts.isQualifiedName(parent) || ts.isTypeReferenceNode(parent)) return null;
+  return name;
+}
+
+const SCANS = new WeakMap<Source, FileScan>();
+
+/**
+ * One file, read through the TypeScript parser.
+ *
+ * Not through regular expressions over the text, which this guard used to do:
+ * deciding what is a comment from the outside went wrong in a way that hid
+ * two hundred lines of `dashboard-chrome.tsx` — a `/*` inside a `//` comment
+ * opened a "block" that ran to the next `*\/`, and a storage write planted in
+ * between passed. Comments never reach the syntax tree, so there is nothing
+ * here to get wrong about them.
+ *
+ * Cached per source object: the probes below re-check the whole tree with one
+ * file added or changed, and the unchanged files are the same objects.
+ */
+function scanFile(source: Source): FileScan {
+  const cached = SCANS.get(source);
+  if (cached !== undefined) return cached;
+
+  const tree = ts.createSourceFile(
+    source.file,
+    source.text,
+    ts.ScriptTarget.Latest,
+    true,
+    source.file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const reached = new Set<StorageKind>();
+  const declared: string[] = [];
+  const literals: string[] = [];
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const storage = storageReachedBy(node);
+      if (storage !== null) reached.add(storage);
+    } else if (
+      // `window['localStorage']`.
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      GLOBAL_OBJECTS.has(node.expression.text) &&
+      ts.isStringLiteralLike(node.argumentExpression) &&
+      STORAGE_NAMES.has(node.argumentExpression.text)
+    ) {
+      reached.add(node.argumentExpression.text as StorageKind);
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      let value = node.initializer;
+      while (
+        value !== undefined &&
+        (ts.isAsExpression(value) ||
+          ts.isSatisfiesExpression(value) ||
+          ts.isParenthesizedExpression(value))
+      ) {
+        value = value.expression;
+      }
+      const key = value === undefined ? null : xecretText(value);
+      if (key !== null && /^[A-Z_]*KEY$/.test(node.name.text)) declared.push(key);
+    }
+
+    const text = xecretText(node);
+    if (text !== null) literals.push(text);
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+
+  const kind =
+    reached.size === 2
+      ? 'both'
+      : reached.has('localStorage')
+        ? 'localStorage'
+        : reached.has('sessionStorage')
+          ? 'sessionStorage'
+          : null;
+  const scan: FileScan = { kind, declared, literals };
+  SCANS.set(source, scan);
+  return scan;
 }
 
 /**
@@ -883,12 +1041,9 @@ function storageDisclosureProblems(sources: readonly Source[], privacySource: st
   const named = (key: string, where: string) => where.includes(`>${key}</code>`);
 
   const literals = new Map<string, string>();
-  for (const { file, text } of sources) {
-    const code = stripComments(text);
-    const kind = storageUsedBy(code);
-    const declared = [
-      ...code.matchAll(/const\s+[A-Z_]*KEY\s*=\s*['"`](xecret\.[^'"`]+)['"`]/g),
-    ].map((match) => match[1] ?? '');
+  for (const source of sources) {
+    const { file } = source;
+    const { kind, declared, literals: found } = scanFile(source);
 
     // The first net: declared keys, in the list for the storage their file uses.
     if (kind === 'both') problems.push(`${file} uses both storages; split it, or teach this test`);
@@ -911,8 +1066,7 @@ function storageDisclosureProblems(sources: readonly Source[], privacySource: st
     }
 
     // The second net: every `xecret.` string, however it is used.
-    for (const match of code.matchAll(/['"`](xecret\.[^'"`\s]*)/g)) {
-      const literal = match[1] ?? '';
+    for (const literal of found) {
       if (!literals.has(literal)) literals.set(literal, file);
     }
   }
@@ -1011,6 +1165,42 @@ describe('the privacy policy names everything the app keeps in browser storage',
             `${text}\nexport function setContrast(high: boolean) {\n  window.localStorage.setItem('xecret.theme.contrast', String(high));\n}\n`,
         ),
         "the string 'xecret.theme.contrast', which the policy does not name",
+      ],
+      [
+        'a write after a line comment holding `/*`, with a block comment further down',
+        withSource(
+          'components/layout/chrome-probe.tsx',
+          [
+            '// The account area — `/app/settings/*` — has no organisation in its path.',
+            'export function remember() {',
+            "  window.localStorage.setItem('xecret.chrome.probe', '1');",
+            '}',
+            '/** A later doc comment, whose close once ended the "block" opened above. */',
+            'export const later = 1;',
+            '',
+          ].join('\n'),
+        ),
+        "the string 'xecret.chrome.probe', which the policy does not name",
+      ],
+      [
+        'the same shape planted in dashboard-chrome.tsx itself, where it once hid 200 lines',
+        replacing('app/(dashboard)/_components/dashboard-chrome.tsx', (text) => {
+          const planted = text.replace(
+            /^(.*\/app\/settings\/\*.*)$/m,
+            "$1\n  function planted() { window.localStorage.setItem('xecret.chrome.probe', '1'); }",
+          );
+          if (planted === text) throw new Error('the `/app/settings/*` comment has moved');
+          return planted;
+        }),
+        "the string 'xecret.chrome.probe', which the policy does not name",
+      ],
+      [
+        'a key written through `window[…]`, under no key constant',
+        withSource(
+          'components/layout/indexed.ts',
+          "const key = ['xecret', 'panels'].join('.');\nexport const remember = () => window['localStorage'].setItem(key, '1');\n",
+        ),
+        'components/layout/indexed.ts uses localStorage under no key constant',
       ],
       [
         'a key whose file moves it to the other storage',
