@@ -10,6 +10,8 @@ import {
   CONNECTION_PAGE_LIMIT,
   CONNECTION_PAGE_SIZE,
   IdentityProviderUnavailableError,
+  INTERACTIVE_TIMEOUT_MS,
+  workosClientOptions,
   lastActiveAuthentication,
   MAX_CODE_LENGTH,
   providerFailure,
@@ -696,6 +698,21 @@ describe('Magic Auth', () => {
     },
   );
 
+  it('reads a 403 that names a reason, when asked for a code, as about the address — a bare one as our key', async () => {
+    const named = stubApi({
+      createMagicAuth: vi.fn(async () => Promise.reject(failure(403, { code: 'user_blocked' }))),
+    });
+    const bare = stubApi({ createMagicAuth: vi.fn(async () => Promise.reject(failure(403))) });
+    const context = { ipAddress: null, userAgent: null };
+
+    await expect(named.provider.createMagicAuth('a@b.example', context)).rejects.toMatchObject({
+      reason: 'user_blocked',
+    });
+    await expect(bare.provider.createMagicAuth('a@b.example', context)).rejects.toBeInstanceOf(
+      IdentityProviderUnavailableError,
+    );
+  });
+
   it('reports a wrong code as a verification failure', async () => {
     const { provider } = stubApi({
       authenticateWithMagicAuth: vi.fn(async () =>
@@ -1197,4 +1214,45 @@ describe('construction from the bindings', () => {
 
     expect(query.get('client_id')).toBe('client_OTHER');
   });
+
+  it('gives a call a person waits on ten seconds and no retry, and leaves the rest on the SDK’s defaults', () => {
+    expect(workosClientOptions('client_X', 'interactive')).toEqual({
+      clientId: 'client_X',
+      timeout: INTERACTIVE_TIMEOUT_MS,
+      maxRetries: 0,
+    });
+    expect(INTERACTIVE_TIMEOUT_MS).toBe(10_000);
+    expect(workosClientOptions('client_X', 'background')).toEqual({ clientId: 'client_X' });
+  });
+
+  it.each([
+    ['a 503', 503, {}],
+    ['a 429 with a minute’s Retry-After', 429, { 'retry-after': '60' }],
+  ])(
+    'makes one attempt for an interactive call that meets %s — no sleeping retry',
+    async (_label, status, headers) => {
+      resetWorkosClientForTesting();
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ message: 'no' }), {
+            status,
+            headers: { 'content-type': 'application/json', ...headers },
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const started = Date.now();
+        const error = await workosProvider(env(), { interactive: true })
+          .createMagicAuth('a@b.example', { ipAddress: null, userAgent: null })
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(IdentityProviderUnavailableError);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(Date.now() - started).toBeLessThan(5_000);
+      } finally {
+        vi.unstubAllGlobals();
+        resetWorkosClientForTesting();
+      }
+    },
+  );
 });

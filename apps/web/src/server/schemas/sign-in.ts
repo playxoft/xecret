@@ -1,6 +1,6 @@
 import * as z from 'zod/mini';
 import { MAX_REDIRECT_PATH_LENGTH } from '@/lib/redirect-path';
-import { MAX_EMAIL_LENGTH, MAX_PASSWORD_LENGTH, MAX_PENDING_TOKEN_LENGTH } from '../workos';
+import { MAX_EMAIL_LENGTH, MAX_PASSWORD_LENGTH } from '../workos';
 
 /**
  * The bodies the in-app sign-in routes accept (`server/in-app-sign-in.ts`).
@@ -60,16 +60,12 @@ export const codeSignInSchema = z.strictObject({ email, code, next }, UNEXPECTED
 
 export type CodeSignInRequest = z.infer<typeof codeSignInSchema>;
 
-export const emailVerificationSchema = z.strictObject(
-  {
-    /** WorkOS's pending-authentication token, as the password route handed it out. */
-    pendingToken: z
-      .string()
-      .check(z.minLength(1), z.maxLength(MAX_PENDING_TOKEN_LENGTH), z.regex(/^[\x21-\x7e]+$/)),
-    code,
-    next,
-  },
-  UNEXPECTED_FIELD,
-);
+/**
+ * The address and the code. WorkOS's pending token is not in the body: it is
+ * in the `HttpOnly` verification cookie the password route set, sealed beside
+ * the address it was minted for, and the route finishes only when this
+ * address is that one.
+ */
+export const emailVerificationSchema = z.strictObject({ email, code, next }, UNEXPECTED_FIELD);
 
 export type EmailVerificationRequest = z.infer<typeof emailVerificationSchema>;

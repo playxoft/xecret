@@ -1,14 +1,18 @@
-import { deleteSpentSignInConfirmations } from '@xecret/db/repositories';
+import { deleteSpentSignInConfirmations, pruneSignInFailures } from '@xecret/db/repositories';
 import { json } from '@/server/http';
 import { describeError } from '@/server/logging';
 import { publicRoute } from '@/server/route';
 import { isScheduledRequest } from '@/server/scheduled';
+import { SIGN_IN_FAILURE_WINDOW_MS } from '@/server/sign-in-throttle';
 import { purgeRetainedVaults } from '@/server/vault-purge';
 
 /**
  * The hourly housekeeping, reachable only from the Worker's own Cron Trigger
- * (`worker.ts`, `server/scheduled.ts`): the retained-vault purge, and the
- * spent sign-in confirmations.
+ * (`worker.ts`, `server/scheduled.ts`): the retained-vault purge, the spent
+ * sign-in confirmations, and the failed sign-ins that can no longer hold
+ * anybody back (`sign_in_failures`: last failure older than its window, and
+ * no lockout running — a row per address somebody tried, real or not, which
+ * must not pile up).
  *
  * Anything else — every request from the internet — gets a bare 404 with no
  * body, decided before anything is built: no service context, no database
@@ -59,7 +63,26 @@ const purge = publicRoute(async ({ services }) => {
       });
     signInConfirmations = null;
   }
-  return json({ purged, signInConfirmationsDeleted: signInConfirmations });
+  let signInFailures: number | null;
+  try {
+    const now = new Date();
+    signInFailures = await pruneSignInFailures(services.db, {
+      before: new Date(now.getTime() - SIGN_IN_FAILURE_WINDOW_MS),
+      now,
+    });
+  } catch (cause) {
+    services.log
+      .at('scheduled')
+      .error('Could not prune old failed sign-ins; they wait for the next run', {
+        error: describeError(cause),
+      });
+    signInFailures = null;
+  }
+  return json({
+    purged,
+    signInConfirmationsDeleted: signInConfirmations,
+    signInFailuresPruned: signInFailures,
+  });
 });
 
 export async function POST(request: Request): Promise<Response> {

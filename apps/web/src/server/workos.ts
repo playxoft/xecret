@@ -430,7 +430,11 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
       });
       return { workosUserId: created.userId, expiresAt: created.expiresAt };
     } catch (cause) {
-      throw providerFailure(cause);
+      // `credential`: a 403 that names its reason is about the address — WorkOS
+      // declining it — not this deployment's key, and the sign-in page answers
+      // every address the same. A bare 403, and a method switched off, are
+      // still read as configuration.
+      throw providerFailure(cause, { credential: true });
     }
   }
 
@@ -1027,8 +1031,39 @@ function readString(value: unknown, key: string): string | undefined {
   return typeof field === 'string' && field !== '' ? field : undefined;
 }
 
-/** The isolate's client, keyed by the credentials it was built with. */
-let cachedClient: { key: string; api: WorkosApi } | undefined;
+/**
+ * How long a call a person is waiting on may take, in milliseconds. The SDK's
+ * own default is a minute.
+ */
+export const INTERACTIVE_TIMEOUT_MS = 10_000;
+
+/**
+ * How often such a call is retried: never. The SDK retries 408, 429 and 5xx
+ * three times by default, sleeping for whatever `Retry-After` says (up to a
+ * minute each) — so a WorkOS that stops answering held a sign-in page for about
+ * four minutes, and a 429 anybody could provoke for an address (WorkOS limits
+ * attempts per address) put the request to sleep for three. And none of these
+ * calls is safe to repeat blind: an authorization code is single-use, a
+ * password or code attempt counts against the address at WorkOS, and a Magic
+ * Auth request sends mail.
+ */
+export const INTERACTIVE_MAX_RETRIES = 0;
+
+/** The SDK client options for one kind of caller. */
+export function workosClientOptions(
+  clientId: string,
+  kind: 'interactive' | 'background',
+): { clientId: string; timeout?: number; maxRetries?: number } {
+  return kind === 'interactive'
+    ? { clientId, timeout: INTERACTIVE_TIMEOUT_MS, maxRetries: INTERACTIVE_MAX_RETRIES }
+    : { clientId };
+}
+
+/** The isolate's clients, one per kind, each keyed by the credentials it was built with. */
+const cachedClients: Record<
+  'interactive' | 'background',
+  { key: string; api: WorkosApi } | undefined
+> = { interactive: undefined, background: undefined };
 
 /**
  * Builds the provider from the request's bindings.
@@ -1037,22 +1072,38 @@ let cachedClient: { key: string; api: WorkosApi } | undefined;
  * per-request state, and building it is not free. Keyed on the credentials, so
  * an isolate can never answer with a client configured for different ones.
  *
+ * ── `interactive` ──
+ * For every call a person is watching a page wait on — every sign-in path,
+ * the callback's code exchange included, and the vault reset's emailed code:
+ * {@link INTERACTIVE_TIMEOUT_MS} and no retries. Failing fast is the kind
+ * answer there: "sign-in is temporarily unavailable, try again" in ten seconds
+ * beats a spinner for four minutes, and the person's own retry is a fresh,
+ * deliberate attempt. Everything else — the SSO settings' organisation and
+ * connection calls — keeps the SDK's defaults, where a retry is harmless and
+ * patience is cheap.
+ *
  * A missing API key or client id is a `MissingBindingError`, which the route
  * wrapper turns into a 503 — this deployment cannot sign anybody in, and that
  * is an operator's problem rather than the person's at the door.
  */
-export function workosProvider(env: Bindings): WorkosIdentityProvider {
+export function workosProvider(
+  env: Bindings,
+  options: { interactive?: boolean } = {},
+): WorkosIdentityProvider {
   const apiKey = env.WORKOS_API_KEY;
   if (!apiKey) throw new MissingBindingError('WORKOS_API_KEY');
   const clientId = env.WORKOS_CLIENT_ID;
   if (!clientId) throw new MissingBindingError('WORKOS_CLIENT_ID');
 
+  const kind = options.interactive === true ? 'interactive' : 'background';
   const cacheKey = `${clientId}\u0000${apiKey}`;
-  if (cachedClient?.key !== cacheKey) {
-    cachedClient = { key: cacheKey, api: new WorkOS(apiKey, { clientId }) };
+  let cached = cachedClients[kind];
+  if (cached?.key !== cacheKey) {
+    cached = { key: cacheKey, api: new WorkOS(apiKey, workosClientOptions(clientId, kind)) };
+    cachedClients[kind] = cached;
   }
 
-  return new WorkosIdentityProvider(cachedClient.api, {
+  return new WorkosIdentityProvider(cached.api, {
     clientId,
     redirectUri: callbackUrl(env),
   });
@@ -1071,5 +1122,6 @@ export function callbackUrl(env: Bindings): string {
 
 /** Exists for tests. */
 export function resetWorkosClientForTesting(): void {
-  cachedClient = undefined;
+  cachedClients.interactive = undefined;
+  cachedClients.background = undefined;
 }

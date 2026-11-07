@@ -1,15 +1,17 @@
 import { parseJsonBody } from '@/server/http';
 import {
+  checkCredential,
   codeKey,
   finishInAppSignIn,
   guardInAppSignIn,
+  guessAttemptKey,
   inAppSignInFailure,
-  passwordAttemptKey,
   requestContext,
   spend,
 } from '@/server/in-app-sign-in';
 import { publicRoute } from '@/server/route';
 import { codeSignInSchema } from '@/server/schemas/sign-in';
+import { signInSubject } from '@/server/sign-in-throttle';
 import { workosProvider } from '@/server/workos';
 
 /**
@@ -21,21 +23,24 @@ import { workosProvider } from '@/server/workos';
  * gate in `prepareSignIn` still checks that WorkOS says so.
  *
  * Guessing is bounded before WorkOS is asked: the address bucket, this address
- * from this IP, and this address from anywhere — a six-digit code is worth
- * bounding however many addresses the guesses come from. WorkOS's own limits
- * sit behind those, and its codes last ten minutes.
+ * from this IP, this address from anywhere, and the durable per-address
+ * lockout (`server/sign-in-throttle.ts`) — a six-digit code is worth bounding
+ * however many addresses and data centres the guesses come from. WorkOS's own
+ * limits sit behind those, and its codes last ten minutes.
  */
 export const POST = publicRoute(async ({ request, services }) => {
   try {
-    await guardInAppSignIn(services, request);
+    await guardInAppSignIn(services, request, 'sign-in');
     const body = await parseJsonBody(request, codeSignInSchema);
-    await spend(services, passwordAttemptKey(services, body.email), 'per-address-and-email limit');
+    await spend(services, guessAttemptKey(services, body.email), 'per-address-and-email limit');
     await spend(services, codeKey('guess', body.email), 'per-email code-guess limit');
 
-    const provider = workosProvider(services.env);
-    const exchange = await provider.signInWithMagicAuth(
-      { email: body.email, code: body.code },
-      requestContext(services),
+    const provider = workosProvider(services.env, { interactive: true });
+    const exchange = await checkCredential(services, await signInSubject(body.email), () =>
+      provider.signInWithMagicAuth(
+        { email: body.email, code: body.code },
+        requestContext(services),
+      ),
     );
 
     return await finishInAppSignIn(services, request, { exchange, provider, next: body.next });

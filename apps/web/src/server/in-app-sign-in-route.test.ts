@@ -2,8 +2,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import { WorkOS } from '@workos-inc/node';
 import {
+  deriveEmailVerificationKey,
   deriveSignInConfirmationKey,
+  EMAIL_VERIFICATION_COOKIE_NAME,
   openSignInConfirmation,
+  sealEmailVerification,
   SIGN_IN_CONFIRMATION_COOKIE_NAME,
 } from '@xecret/core/auth';
 import type { AuditRecord } from '@xecret/core/audit';
@@ -106,6 +109,8 @@ const codeRoute = await import('@/app/api/auth/sign-in/code/route');
 const codeVerifyRoute = await import('@/app/api/auth/sign-in/code/verify/route');
 const verifyEmailRoute = await import('@/app/api/auth/sign-in/verify-email/route');
 const confirmRoute = await import('@/app/api/auth/confirm/route');
+const { setEmailVerificationStepForTesting } = await import('./in-app-sign-in');
+const { SIGN_IN_FREE_FAILURES, signInSubject } = await import('./sign-in-throttle');
 
 const ROUTES = {
   '/api/auth/sign-in/password': passwordRoute.POST,
@@ -122,6 +127,8 @@ let lines: LogEntry[] = [];
 let audit: AuditRecord[] = [];
 let env: Record<string, unknown> = {};
 let deferred: Promise<unknown>[] = [];
+/** The caller's address, as `CF-Connecting-IP` would give it — changed to rotate. */
+let clientIp = '203.0.113.5';
 
 beforeAll(async () => {
   t = await createTestDatabase();
@@ -141,10 +148,15 @@ function capturingLog(base: Record<string, unknown> = {}): RequestLog {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   for (const call of Object.values(workos)) call.mockReset();
   t.reset();
+  // Fixed addresses recur across tests; the durable counter must not carry
+  // one test's failures into the next.
+  await t.pg.query('delete from sign_in_failures');
+  setEmailVerificationStepForTesting(null);
+  clientIp = '203.0.113.5';
   lines = [];
   audit = [];
   deferred = [];
@@ -174,7 +186,7 @@ beforeEach(() => {
       meta: {
         requestId,
         rayId: null,
-        ipAddress: '203.0.113.5',
+        ipAddress: clientIp,
         userAgent: 'vitest',
         method: request.method,
         path: new URL(request.url).pathname,
@@ -225,10 +237,10 @@ function workosUser(over: Record<string, unknown> = {}) {
 }
 
 /** An access token as WorkOS shapes one: `auth_time` now, and a session id. */
-function accessToken(): string {
+function accessToken(authTime: number = Math.floor(Date.now() / 1000)): string {
   const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
-  return `${part({ alg: 'RS256' })}.${part({ sub: 'user_01', sid: 'session_01HEADLESS', iat: now, auth_time: now })}.c2ln`;
+  return `${part({ alg: 'RS256' })}.${part({ sub: 'user_01', sid: 'session_01HEADLESS', iat: now, auth_time: authTime })}.c2ln`;
 }
 
 /** What WorkOS's authenticate endpoint answers for a person who just proved themselves. */
@@ -340,6 +352,37 @@ async function userRows(column: 'email' | 'workos_user_id' | 'id', value: string
       [value],
     )
   ).rows;
+}
+
+/** The durable counter's consecutive failures against an address, or 0 with no row. */
+async function failuresFor(email: string): Promise<number> {
+  const rows = (
+    await t.pg.query<{ failed_attempts: number }>(
+      `select failed_attempts from sign_in_failures where subject_hash = $1`,
+      [await signInSubject(email)],
+    )
+  ).rows;
+  return rows[0]?.failed_attempts ?? 0;
+}
+
+/** When the durable lockout against an address ends, or `null`. */
+async function lockedUntil(email: string): Promise<Date | null> {
+  const rows = (
+    await t.pg.query<{ locked_until: Date | null }>(
+      `select locked_until from sign_in_failures where subject_hash = $1`,
+      [await signInSubject(email)],
+    )
+  ).rows;
+  return rows[0]?.locked_until ?? null;
+}
+
+/** Puts an address under a running lockout, as a burst of failures would have. */
+async function lockOut(email: string): Promise<void> {
+  await t.pg.query(
+    `insert into sign_in_failures (subject_hash, failed_attempts, locked_until, last_failed_at)
+     values ($1, $2, now() + interval '10 minutes', now())`,
+    [await signInSubject(email), SIGN_IN_FREE_FAILURES + 3],
+  );
 }
 
 async function membershipsOf(userId: string) {
@@ -495,7 +538,45 @@ describe('a password sign-in', () => {
     expect(await userRows('email', who.email as string)).toHaveLength(0);
   });
 
-  it('asks for the emailed code when WorkOS has not verified the address — and issues nothing yet', async () => {
+  it('answers WorkOS’s email_verification_required exactly like a wrong password, by default — no oracle for unverified accounts', async () => {
+    // Until staging shows WorkOS checks the password first, a code step here
+    // could be given for *any* password: the answer, the status, the field and
+    // the counter are a wrong password's, byte for byte.
+    const unverified = workosUser({ emailVerified: false });
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      step('email_verification_required', {
+        pending_authentication_token: 'pending_tok_01',
+        email: unverified.email,
+        email_verification_id: 'email_verification_01',
+      }),
+    );
+    const paused = await post('/api/auth/sign-in/password', {
+      email: unverified.email,
+      password: PASSWORD,
+    });
+
+    const nobody = workosUser();
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_credentials' }),
+    );
+    const wrong = await post('/api/auth/sign-in/password', {
+      email: nobody.email,
+      password: PASSWORD,
+    });
+
+    expect(paused.status).toBe(wrong.status);
+    expect(paused.body['error']).toEqual({
+      ...(wrong.body['error'] as object),
+      requestId: (paused.body['error'] as { requestId: string }).requestId,
+    });
+    expect(paused.cookies).toEqual([]);
+    expect(paused.text).not.toContain('pending_tok_01');
+    expect(await failuresFor(unverified.email as string)).toBe(1);
+    expect(await userRows('email', unverified.email as string)).toHaveLength(0);
+  });
+
+  it('with the verification step enabled, asks for the emailed code — the pending token sealed in an HttpOnly, SameSite=Strict cookie, never in the body', async () => {
+    setEmailVerificationStepForTesting(true);
     const who = workosUser({ emailVerified: false });
     workos.authenticateWithPassword.mockRejectedValueOnce(
       step('email_verification_required', {
@@ -511,8 +592,15 @@ describe('a password sign-in', () => {
     });
 
     expect(answer.status).toBe(200);
-    expect(answer.body).toEqual({ step: 'verify-email', pendingToken: 'pending_tok_01' });
-    expect(answer.cookies).toEqual([]);
+    expect(answer.body).toEqual({ step: 'verify-email' });
+    expect(answer.text).not.toContain('pending_tok_01');
+    const cookie = answer.cookies.find((c) => c.startsWith(`${EMAIL_VERIFICATION_COOKIE_NAME}=`));
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('Secure');
+    expect(cookie).toContain('SameSite=Strict');
+    expect(cookie).toContain('Path=/');
+    expect(answer.cookies.some((c) => c.startsWith('__Host-xecret_session='))).toBe(false);
+    expect(await failuresFor(who.email as string)).toBe(0);
     expect(await userRows('email', who.email as string)).toHaveLength(0);
   });
 
@@ -832,13 +920,51 @@ describe('asking for an emailed code', () => {
     expect(mailKey).not.toContain('203.0.113.5');
   });
 
-  it('refuses by address before the body is read', async () => {
-    recordLimits((key) => key === '203.0.113.5:-');
+  it('refuses by address, on its own key, before the body is read', async () => {
+    const keys = recordLimits((key) => key === 'sign_in_code_send_ip:203.0.113.5');
 
     const answer = await post('/api/auth/sign-in/code', { email: 'someone@example.com' });
 
     expect(answer.status).toBe(429);
+    expect(keys).toEqual(['sign_in_code_send_ip:203.0.113.5']);
     expect(workos.createMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a 403 that names a reason', refusal(403, { code: 'user_blocked' })],
+    [
+      'organization_authentication_methods_required (organisation membership)',
+      step('organization_authentication_methods_required'),
+    ],
+  ])('answers %s with the same 204, not a tell', async (_label, cause) => {
+    workos.createMagicAuth.mockRejectedValueOnce(cause);
+
+    const answer = await post('/api/auth/sign-in/code', { email: 'member@bigcorp.example' });
+
+    expect(answer.status).toBe(204);
+  });
+
+  it('still reads a bare 403 as the deployment’s key, not the address', async () => {
+    workos.createMagicAuth.mockRejectedValueOnce(refusal(403, {}));
+
+    const answer = await post('/api/auth/sign-in/code', { email: 'someone@example.com' });
+
+    expect(answer.status).toBe(503);
+  });
+
+  it('neither checks nor spends the durable lockout: asking for a code is not a guess', async () => {
+    const who = workosUser();
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES + 2; i += 1) {
+      workos.authenticateWithPassword.mockRejectedValueOnce(
+        refusal(400, { code: 'invalid_credentials' }),
+      );
+      await post('/api/auth/sign-in/password', { email: who.email, password: 'x' });
+    }
+
+    const answer = await post('/api/auth/sign-in/code', { email: who.email });
+
+    expect(answer.status).toBe(204);
+    expect(workos.createMagicAuth).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -965,7 +1091,27 @@ describe('signing in with an emailed code', () => {
 /* ── POST /api/auth/sign-in/verify-email ──────────────────────────────────── */
 
 describe('finishing a password sign-in by verifying the address', () => {
-  it('signs in only once the emailed code verifies the address: password, then code', async () => {
+  /** The verification cookie, sealed as the password route seals it. */
+  async function pausedCookie(
+    email: string,
+    over: { pendingToken?: string; issuedAt?: number } = {},
+  ): Promise<string> {
+    const sealed = await sealEmailVerification(await deriveEmailVerificationKey(COOKIE_PASSWORD), {
+      email,
+      pendingToken: over.pendingToken ?? 'pending_tok_02',
+      issuedAt: over.issuedAt ?? Math.floor(Date.now() / 1000),
+    });
+    return `${EMAIL_VERIFICATION_COOKIE_NAME}=${sealed}`;
+  }
+
+  function cleared(answer: Answer): boolean {
+    return answer.cookies.some(
+      (c) => c.startsWith(`${EMAIL_VERIFICATION_COOKIE_NAME}=;`) && c.includes('Max-Age=0'),
+    );
+  }
+
+  it('signs in only once the emailed code verifies the address: password, then code, the token never leaving the cookie', async () => {
+    setEmailVerificationStepForTesting(true);
     const unverified = workosUser({ emailVerified: false });
     workos.authenticateWithPassword.mockRejectedValueOnce(
       step('email_verification_required', { pending_authentication_token: 'pending_tok_02' }),
@@ -974,21 +1120,23 @@ describe('finishing a password sign-in by verifying the address', () => {
       email: unverified.email,
       password: PASSWORD,
     });
-    expect(paused.body).toEqual({ step: 'verify-email', pendingToken: 'pending_tok_02' });
+    expect(paused.body).toEqual({ step: 'verify-email' });
+    const set = paused.cookies.find((c) => c.startsWith(`${EMAIL_VERIFICATION_COOKIE_NAME}=`))!;
     expect(await userRows('email', unverified.email as string)).toHaveLength(0);
 
     workos.authenticateWithEmailVerification.mockResolvedValueOnce(
       authenticated({ ...unverified, emailVerified: true }, 'Password'),
     );
-    const answer = await post('/api/auth/sign-in/verify-email', {
-      pendingToken: 'pending_tok_02',
-      code: '246810',
-      next: '/app/acme',
-    });
+    const answer = await post(
+      '/api/auth/sign-in/verify-email',
+      { email: unverified.email, code: '246810', next: '/app/acme' },
+      { cookie: set.slice(0, set.indexOf(';')) },
+    );
 
     expect(answer.status).toBe(200);
     expect(answer.body).toEqual({ redirect: '/app/acme' });
     expect(sessionCookieIssued(answer)).toBe(true);
+    expect(cleared(answer)).toBe(true);
     expect(workos.authenticateWithEmailVerification).toHaveBeenCalledWith({
       clientId: CLIENT_ID,
       code: '246810',
@@ -999,57 +1147,280 @@ describe('finishing a password sign-in by verifying the address', () => {
     expect(await userRows('workos_user_id', unverified.id as string)).toHaveLength(1);
   });
 
-  it('answers a wrong code beside the code field, and issues nothing', async () => {
+  it('dates the flow from the paused password step, so minutes spent finding the email do not read as a reused session', async () => {
+    const who = workosUser();
+    const pausedAt = Math.floor(Date.now() / 1000) - 5 * 60;
+    // WorkOS dates the authentication by the password step, five minutes ago.
+    workos.authenticateWithEmailVerification.mockResolvedValueOnce(
+      authenticated(who, 'Password', { accessToken: accessToken(pausedAt) }),
+    );
+
+    const answer = await post(
+      '/api/auth/sign-in/verify-email',
+      { email: who.email, code: '246810' },
+      { cookie: await pausedCookie(who.email as string, { issuedAt: pausedAt }) },
+    );
+
+    expect(answer.body).toEqual({ redirect: '/app' });
+    expect(sessionCookieIssued(answer)).toBe(true);
+  });
+
+  it.each([
+    ['no cookie at all', async () => undefined, 400],
+    ['a cookie sealed for another address', async () => pausedCookie('victim@example.com'), 403],
+    [
+      'a cookie past its ten minutes',
+      async () =>
+        pausedCookie('someone@example.com', { issuedAt: Math.floor(Date.now() / 1000) - 11 * 60 }),
+      400,
+    ],
+    [
+      'a cookie altered on the way',
+      async () => `${(await pausedCookie('someone@example.com')).slice(0, -2)}AA`,
+      400,
+    ],
+  ])(
+    'refuses %s as an expired attempt, clears it, and never asks WorkOS',
+    async (_label, cookie, status) => {
+      const value = await cookie();
+      const answer = await post(
+        '/api/auth/sign-in/verify-email',
+        { email: 'someone@example.com', code: '111111' },
+        value === undefined ? {} : { cookie: value },
+      );
+
+      expect(answer.status).toBe(status);
+      expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.expired);
+      expect(cleared(answer)).toBe(true);
+      expect(workos.authenticateWithEmailVerification).not.toHaveBeenCalled();
+    },
+  );
+
+  it('answers a wrong code beside the code field, keeps the cookie for the right one, and counts it', async () => {
+    const who = workosUser();
     workos.authenticateWithEmailVerification.mockRejectedValueOnce(
       refusal(400, { code: 'email_verification_code_invalid' }),
     );
 
-    const answer = await post('/api/auth/sign-in/verify-email', {
-      pendingToken: 'pending_tok_03',
-      code: '111111',
-    });
+    const answer = await post(
+      '/api/auth/sign-in/verify-email',
+      { email: who.email, code: '111111' },
+      { cookie: await pausedCookie(who.email as string, { pendingToken: 'pending_tok_03' }) },
+    );
 
     expect(answer.status).toBe(400);
     expect(errorOf(answer).fields).toEqual([
       { field: 'code', message: SIGN_IN_FORM_MESSAGES['wrong-code'] },
     ]);
     expect(sessionCookieIssued(answer)).toBe(false);
+    expect(cleared(answer)).toBe(false);
+    expect(await failuresFor(who.email as string)).toBe(1);
   });
 
   it('still refuses an address WorkOS answers as unverified', async () => {
     const who = workosUser({ emailVerified: false });
     workos.authenticateWithEmailVerification.mockResolvedValueOnce(authenticated(who, 'Password'));
 
-    const answer = await post('/api/auth/sign-in/verify-email', {
-      pendingToken: 'pending_tok_04',
-      code: '111111',
-    });
+    const answer = await post(
+      '/api/auth/sign-in/verify-email',
+      { email: who.email, code: '111111' },
+      { cookie: await pausedCookie(who.email as string, { pendingToken: 'pending_tok_04' }) },
+    );
 
     expect(answer.status).toBe(403);
     expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES['verify-email']);
     expect(sessionCookieIssued(answer)).toBe(false);
   });
 
-  it('bounds guesses per pending authentication, keyed on a hash rather than the token', async () => {
-    const keys = recordLimits((key) => key.startsWith('sign_in_verify_email:'));
+  it('spends the address’s code-guess bucket, as an emailed sign-in code does, before asking WorkOS', async () => {
+    const keys = recordLimits((key) => key.startsWith('sign_in_code_guess:'));
+
+    const answer = await post(
+      '/api/auth/sign-in/verify-email',
+      { email: 'Guess@Example.com', code: '111111' },
+      { cookie: await pausedCookie('guess@example.com') },
+    );
+
+    expect(answer.status).toBe(429);
+    expect(keys).toContain('sign_in_verify_email_ip:203.0.113.5');
+    expect(keys).toContain('sign_in_code_guess:guess%40example.com');
+    expect(workos.authenticateWithEmailVerification).not.toHaveBeenCalled();
+  });
+
+  it('refuses a locked address before asking WorkOS', async () => {
+    const who = workosUser();
+    await lockOut(who.email as string);
+
+    const answer = await post(
+      '/api/auth/sign-in/verify-email',
+      { email: who.email, code: '111111' },
+      { cookie: await pausedCookie(who.email as string) },
+    );
+
+    expect(answer.status).toBe(429);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES['rate-limited']);
+    expect(workos.authenticateWithEmailVerification).not.toHaveBeenCalled();
+  });
+
+  it('ends every request as an expired attempt while the step is off: no cookie can exist', async () => {
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      step('email_verification_required', { pending_authentication_token: 'pending_tok_05' }),
+    );
+    const paused = await post('/api/auth/sign-in/password', {
+      email: 'someone@example.com',
+      password: PASSWORD,
+    });
+    expect(paused.cookies).toEqual([]);
 
     const answer = await post('/api/auth/sign-in/verify-email', {
-      pendingToken: 'pending_tok_SECRET',
+      email: 'someone@example.com',
       code: '111111',
     });
 
-    expect(answer.status).toBe(429);
+    expect(answer.status).toBe(400);
     expect(workos.authenticateWithEmailVerification).not.toHaveBeenCalled();
-    expect(keys.some((k) => k.startsWith('sign_in_verify_email:'))).toBe(true);
-    expect(keys.join(' ')).not.toContain('pending_tok_SECRET');
+  });
+});
+
+/* ── the durable per-address lockout ──────────────────────────────────────── */
+
+describe('the durable per-address lockout', () => {
+  async function wrongPassword(email: string): Promise<Answer> {
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_credentials' }),
+    );
+    return post('/api/auth/sign-in/password', { email, password: 'not it' });
+  }
+
+  it('lets a person mistype five times freely, then locks the address — before WorkOS is asked, whatever IP comes next', async () => {
+    const who = workosUser();
+    for (let i = 1; i <= SIGN_IN_FREE_FAILURES; i += 1) {
+      clientIp = `198.51.100.${i}`;
+      expect((await wrongPassword(who.email as string)).status).toBe(400);
+    }
+    expect(await lockedUntil(who.email as string)).toBeNull();
+
+    // The sixth failure is still asked of WorkOS, and earns the first lockout.
+    clientIp = '198.51.100.6';
+    expect((await wrongPassword(who.email as string)).status).toBe(400);
+    expect(await failuresFor(who.email as string)).toBe(SIGN_IN_FREE_FAILURES + 1);
+    expect((await lockedUntil(who.email as string))!.getTime()).toBeGreaterThan(Date.now());
+
+    // From a fresh address, even with the right password: refused, and WorkOS never asked.
+    clientIp = '192.0.2.77';
+    workos.authenticateWithPassword.mockClear();
+    workos.authenticateWithPassword.mockResolvedValueOnce(authenticated(who, 'Password'));
+    const locked = await post('/api/auth/sign-in/password', {
+      email: who.email,
+      password: PASSWORD,
+    });
+    expect(locked.status).toBe(429);
+    expect(errorOf(locked).message).toBe(SIGN_IN_ERROR_MESSAGES['rate-limited']);
+    expect(workos.authenticateWithPassword).not.toHaveBeenCalled();
+    expect(sessionCookieIssued(locked)).toBe(false);
   });
 
-  it('refuses a malformed pending token before asking WorkOS', async () => {
-    for (const pendingToken of ['', 'has spaces', 'x'.repeat(3000)]) {
-      const answer = await post('/api/auth/sign-in/verify-email', { pendingToken, code: '111111' });
-      expect(answer.status).toBe(422);
-    }
-    expect(workos.authenticateWithEmailVerification).not.toHaveBeenCalled();
+  it('is one count per address across passwords and emailed codes, whatever case it is typed in', async () => {
+    const who = workosUser();
+    const email = who.email as string;
+    await lockOut(email);
+
+    const answer = await post('/api/auth/sign-in/code/verify', {
+      email: email.toUpperCase(),
+      code: '123456',
+    });
+
+    expect(answer.status).toBe(429);
+    expect(workos.authenticateWithMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it('counts wrong codes like wrong passwords', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_one_time_code' }),
+    );
+
+    await post('/api/auth/sign-in/code/verify', { email: who.email, code: '000000' });
+
+    expect(await failuresFor(who.email as string)).toBe(1);
+  });
+
+  it('is wiped by a success, which then starts again with every free attempt', async () => {
+    const who = workosUser();
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES - 1; i += 1) await wrongPassword(who.email as string);
+    expect(await failuresFor(who.email as string)).toBe(SIGN_IN_FREE_FAILURES - 1);
+
+    workos.authenticateWithPassword.mockResolvedValueOnce(authenticated(who, 'Password'));
+    const right = await post('/api/auth/sign-in/password', {
+      email: who.email,
+      password: PASSWORD,
+    });
+
+    expect(right.status).toBe(200);
+    expect(await failuresFor(who.email as string)).toBe(0);
+  });
+
+  it('forgets failures older than its window: the next one starts the count again', async () => {
+    const who = workosUser();
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES; i += 1) await wrongPassword(who.email as string);
+    await t.pg.query(
+      `update sign_in_failures set last_failed_at = now() - interval '25 hours'
+        where subject_hash = $1`,
+      [await signInSubject(who.email as string)],
+    );
+
+    await wrongPassword(who.email as string);
+
+    expect(await failuresFor(who.email as string)).toBe(1);
+    expect(await lockedUntil(who.email as string)).toBeNull();
+  });
+
+  it('does not count what is not a guess: WorkOS down, a refusal after WorkOS accepted, a request refused in front', async () => {
+    const holder = await seedUser({ workosUserId: unique('user_01HOLDER') });
+    const intruder = workosUser({ email: holder.email });
+
+    workos.authenticateWithPassword.mockRejectedValueOnce(refusal(503, {}));
+    await post('/api/auth/sign-in/password', { email: holder.email, password: PASSWORD });
+    workos.authenticateWithPassword.mockResolvedValueOnce(authenticated(intruder, 'Password'));
+    const conflict = await post('/api/auth/sign-in/password', {
+      email: holder.email,
+      password: PASSWORD,
+    });
+    await post(
+      '/api/auth/sign-in/password',
+      { email: holder.email, password: PASSWORD },
+      {
+        origin: 'https://evil.example',
+      },
+    );
+
+    expect(conflict.status).toBe(409);
+    expect(await failuresFor(holder.email)).toBe(0);
+  });
+
+  it('folds organization_authentication_methods_required into a wrong password — and counts it', async () => {
+    const who = workosUser();
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      step('organization_authentication_methods_required'),
+    );
+
+    const answer = await post('/api/auth/sign-in/password', {
+      email: who.email,
+      password: PASSWORD,
+    });
+
+    expect(answer.status).toBe(400);
+    expect(errorOf(answer).message).toBe(SIGN_IN_FORM_MESSAGES['wrong-password']);
+    expect(await failuresFor(who.email as string)).toBe(1);
+  });
+
+  it('keys the counter on a hash: the table never holds the address', async () => {
+    const email = 'never-stored@example.com';
+    await wrongPassword(email);
+
+    const rows = await t.pg.query(`select * from sign_in_failures`);
+    expect(JSON.stringify(rows.rows)).not.toContain('never-stored');
+    expect(rows.rows).toHaveLength(1);
   });
 });
 
@@ -1060,7 +1431,14 @@ describe('every in-app sign-in route', () => {
     '/api/auth/sign-in/password': { email: 'someone@example.com', password: PASSWORD },
     '/api/auth/sign-in/code': { email: 'someone@example.com' },
     '/api/auth/sign-in/code/verify': { email: 'someone@example.com', code: '123456' },
-    '/api/auth/sign-in/verify-email': { pendingToken: 'pending', code: '123456' },
+    '/api/auth/sign-in/verify-email': { email: 'someone@example.com', code: '123456' },
+  };
+  /** Each route's own address bucket (finding L5): a sign-in's two steps do not spend one twice. */
+  const ADDRESS_KEYS: Record<RoutePath, string> = {
+    '/api/auth/sign-in/password': '203.0.113.5:-',
+    '/api/auth/sign-in/code': 'sign_in_code_send_ip:203.0.113.5',
+    '/api/auth/sign-in/code/verify': '203.0.113.5:-',
+    '/api/auth/sign-in/verify-email': 'sign_in_verify_email_ip:203.0.113.5',
   };
   const PATHS = Object.keys(BODIES) as RoutePath[];
 
@@ -1097,18 +1475,15 @@ describe('every in-app sign-in route', () => {
     },
   );
 
-  it.each(PATHS)(
-    '%s spends the address bucket the callback spends, and stops there',
-    async (path) => {
-      const keys = recordLimits((key) => key === '203.0.113.5:-');
+  it.each(PATHS)('%s spends its address bucket first, and stops there', async (path) => {
+    const keys = recordLimits((key) => key === ADDRESS_KEYS[path]);
 
-      const answer = await post(path, BODIES[path]);
+    const answer = await post(path, BODIES[path]);
 
-      expect(answer.status).toBe(429);
-      expect(keys).toEqual(['203.0.113.5:-']);
-      expect(workosCalled()).toBe(false);
-    },
-  );
+    expect(answer.status).toBe(429);
+    expect(keys).toEqual([ADDRESS_KEYS[path]]);
+    expect(workosCalled()).toBe(false);
+  });
 
   it('spends the address-and-email bucket for a password before asking WorkOS', async () => {
     const keys = recordLimits((key) => key === '203.0.113.5:someone%40example.com');

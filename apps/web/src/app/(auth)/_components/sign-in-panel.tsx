@@ -29,9 +29,12 @@ import { LOGIN_ROUTE, loginHref } from './login-href';
  * ── Two modes ──
  *  - **Sign in**: email and password first — accounts brought from Firebase
  *    have one — with "email me a code instead" one click away, which is also
- *    the answer to a forgotten password. A password sign-in to an address
- *    WorkOS has not verified asks for the code WorkOS emails to it before
- *    anything is signed in.
+ *    the answer to a forgotten password. While the server's email-verification
+ *    step is enabled (it is off until WorkOS's ordering is proven — see
+ *    `server/in-app-sign-in.ts`), a password sign-in to an address WorkOS has
+ *    not verified asks for the code WorkOS emails to it before anything is
+ *    signed in; while it is off, that sign-in reads as a wrong password and
+ *    the emailed code is the way in.
  *  - **Sign up**: an email, then the code — no password to choose. The code
  *    proves the address, and WorkOS makes the account's user for an address it
  *    has not seen, so this is the whole of signing up. An address that already
@@ -67,13 +70,12 @@ type Step =
   | { kind: 'password' }
   | { kind: 'code-request' }
   | { kind: 'code-entry'; email: string }
-  | { kind: 'verify-email'; email: string; pendingToken: string };
+  | { kind: 'verify-email'; email: string };
 
 /** What the in-app sign-in routes answer on success. */
 interface SignInAnswer {
   redirect?: unknown;
   step?: unknown;
-  pendingToken?: unknown;
 }
 
 export const SIGN_IN_ROUTES = {
@@ -181,10 +183,12 @@ export function SignInPanel({ mode, next, initialError = null }: SignInPanelProp
         { email: address, password, next },
         { redirectOnUnauthenticated: false },
       );
-      if (answer.step === 'verify-email' && typeof answer.pendingToken === 'string') {
+      if (answer.step === 'verify-email') {
+        // WorkOS's pending token is in an HttpOnly cookie the server set; the
+        // page holds only the address it was for.
         setPassword('');
         setBusy(false);
-        reset({ kind: 'verify-email', email: address, pendingToken: answer.pendingToken });
+        reset({ kind: 'verify-email', email: address });
         return;
       }
       go(answer.redirect);
@@ -245,7 +249,7 @@ export function SignInPanel({ mode, next, initialError = null }: SignInPanelProp
             )
           : await api.post<SignInAnswer>(
               SIGN_IN_ROUTES.verifyEmail,
-              { pendingToken: step.pendingToken, code: typed, next },
+              { email: step.email, code: typed, next },
               { redirectOnUnauthenticated: false },
             );
       go(answer.redirect);

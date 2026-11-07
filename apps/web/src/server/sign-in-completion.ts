@@ -19,12 +19,18 @@ import type { WorkosIdentityProvider } from './workos';
  *     domains, the per-identity rate limit, the linker (and its conflict and
  *     deleted-account refusals), `sso_required`, the personal organisation.
  *     Its header lists the steps and why they are in that order.
- *  2. `confirmationReason` — whether the person must confirm first. The
- *     callback's reasons are about a session planted at AuthKit; a password
- *     or an emailed code was presented in this very request, from this site's
- *     own page, so for them only an organisation WorkOS reported unasked
- *     (after its own organisation selection) holds the sign-in back — exactly
- *     as it did when AuthKit's page asked the person to pick.
+ *  2. `confirmationReason` — whether the person must confirm first. All three
+ *     of its reasons are asked of every path; what differs is which can
+ *     arise. For a password or an emailed code, presented from this site's own
+ *     page: `not-member` cannot (it needs a single sign-on); `organization`
+ *     does when WorkOS reports an organisation the sign-in did not ask for —
+ *     after its own organisation selection, exactly when AuthKit's page used
+ *     to ask the person to pick; and `reused-session` only if WorkOS dates the
+ *     authentication more than its allowance before `flow.issuedAt`. That is
+ *     why the in-app routes pass the real start of their flow — the request
+ *     itself, or the paused password step for an email verification — so a
+ *     person who took minutes to find an email is not mistaken for a session
+ *     WorkOS reused.
  *  3. Held back: parked in the sealed confirmation cookie, for
  *     `/sign-in/confirm`. Otherwise: `issueSignIn`, and the session cookies.
  *
@@ -40,7 +46,8 @@ export interface CompleteSignInParams {
   /**
    * What the flow asked for and when it began: the state cookie's sealed
    * organisation and `issuedAt` for the callback; for an in-app sign-in, no
-   * organisation, and the moment the request arrived.
+   * organisation, and the moment the request arrived — or, for an email
+   * verification, the moment the paused password step answered.
    */
   flow: { organizationId: string | null; issuedAt: number };
   /** Where a finished sign-in lands — already held to `safePostSignInPath`. */

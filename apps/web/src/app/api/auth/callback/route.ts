@@ -79,7 +79,10 @@ export const GET = publicRoute(async ({ request, services }) => {
     );
     if (!byAddress.allowed) throw new SignInRefusal('rate-limited', 429, 'per-address limit');
 
-    const provider = workosProvider(services.env);
+    // Interactive: a person is watching this page load, and the code is
+    // single-use, so a blind retry after an ambiguous failure could only
+    // replay a code WorkOS may already have spent (`workosProvider`).
+    const provider = workosProvider(services.env, { interactive: true });
     const key = await oauthStateKey(services.env);
 
     // A parameter given twice is refused rather than resolved: "which one did

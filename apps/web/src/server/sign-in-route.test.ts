@@ -1496,6 +1496,17 @@ describe('the provider’s answer', () => {
     expect(sessionCookieIssued(result)).toBe(false);
   });
 
+  it('logs WorkOS rate-limiting us at warn, not error — anybody can provoke it for an address', async () => {
+    const flow = await startSignIn();
+    workos.authenticateWithCode.mockRejectedValueOnce(
+      Object.assign(new Error('slow down'), { status: 429 }),
+    );
+
+    expect((await finishSignIn(flow)).error).toBe('rate-limited');
+    expect(lines.some((l) => l.level === 'error' && l.fn === 'signIn')).toBe(false);
+    expect(warned('WorkOS rate-limited a sign-in')).toBe(true);
+  });
+
   it.each([
     ['mfa_challenge', 'authenticator-required'],
     ['mfa_enrollment', 'authenticator-required'],

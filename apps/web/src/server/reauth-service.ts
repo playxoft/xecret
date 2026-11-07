@@ -156,10 +156,10 @@ export async function startReauth(
 
   let created: { workosUserId: string };
   try {
-    created = await workosProvider(services.env).createMagicAuth(user.user.email, {
-      ipAddress: services.meta.ipAddress,
-      userAgent: services.meta.userAgent,
-    });
+    created = await workosProvider(services.env, { interactive: true }).createMagicAuth(
+      user.user.email,
+      { ipAddress: services.meta.ipAddress, userAgent: services.meta.userAgent },
+    );
   } catch (cause) {
     // A plain refusal of the request to *send* a code is not "wrong code".
     if (
@@ -228,7 +228,7 @@ export async function verifyReauth(
     throw reservation.reason === 'user-budget' ? errors.reauthBudgetSpent() : signInAgain();
   }
   const { attempt } = reservation;
-  const provider = workosProvider(services.env);
+  const provider = workosProvider(services.env, { interactive: true });
   const context = { ipAddress: services.meta.ipAddress, userAgent: services.meta.userAgent };
 
   let verified: { workosUserId: string; impersonated: boolean };

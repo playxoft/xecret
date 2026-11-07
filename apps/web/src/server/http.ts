@@ -283,10 +283,13 @@ export function isSameOrigin(request: Request, expectedOrigin: string): boolean 
  * `Sec-Fetch-Site`, where sent, must say `same-origin` — never a sibling
  * subdomain.
  *
- * This is the login-CSRF defence for those routes. Without it, a page on
- * another site could post *its owner's* credentials to the sign-in routes from
- * a victim's browser and leave the victim signed in to the attacker's account
- * — storing their secrets there next.
+ * This is the login-CSRF defence for those routes, and only that. Without it,
+ * a page on another site could post *its owner's* credentials to the sign-in
+ * routes from a victim's browser and leave the victim signed in to the
+ * attacker's account — storing their secrets there next. It is no defence
+ * against a client outside a browser: `curl` sends whatever `Origin` it is
+ * told to. Guessing is held back by the rate limits and the per-address
+ * lockout, not by this.
  */
 export function isSameOriginPost(request: Request, expectedOrigin: string): boolean {
   if (request.headers.get('origin') !== expectedOrigin) return false;

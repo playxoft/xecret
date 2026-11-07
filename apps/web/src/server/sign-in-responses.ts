@@ -120,7 +120,8 @@ export interface ClassifiedSignInFailure {
  *    for, because a burst of them is the shape of somebody probing the door.
  *  - **The provider unreachable or misconfigured**, or a binding missing: an
  *    operator's problem. `error`, and the person is told sign-in is
- *    unavailable rather than that they did something wrong.
+ *    unavailable rather than that they did something wrong. WorkOS
+ *    rate-limiting us is `warn`: it can be provoked per address on demand.
  *  - **Anything else** — a programming error, the database — `error`, with the
  *    stack, and the person is told only that it failed.
  *
@@ -151,13 +152,26 @@ export function classifySignInFailure(
       { code, status, reason: refusal.reason },
     );
   } else if (refusal instanceof IdentityProviderUnavailableError) {
-    code = refusal.reason === 'rate-limited' ? 'rate-limited' : 'unavailable';
-    status = refusal.reason === 'rate-limited' ? 429 : 503;
-    log.error(
-      `Could not complete a sign-in because WorkOS was ${refusal.reason} — every sign-in fails ` +
-        'the same way until this is resolved',
-      { code, status, reason: refusal.reason },
-    );
+    if (refusal.reason === 'rate-limited') {
+      // `warn`, not `error`: WorkOS limits attempts per address, so anybody can
+      // provoke this for an address of their choosing, and an alert that
+      // fires on demand pages nobody usefully. A wave of them is still visible.
+      code = 'rate-limited';
+      status = 429;
+      log.warn('WorkOS rate-limited a sign-in; the person was told to wait and try again', {
+        code,
+        status,
+        reason: refusal.reason,
+      });
+    } else {
+      code = 'unavailable';
+      status = 503;
+      log.error(
+        `Could not complete a sign-in because WorkOS was ${refusal.reason} — every sign-in fails ` +
+          'the same way until this is resolved',
+        { code, status, reason: refusal.reason },
+      );
+    }
   } else if (refusal instanceof MissingBindingError) {
     code = 'unavailable';
     status = 503;
