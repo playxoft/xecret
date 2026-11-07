@@ -314,6 +314,29 @@ sentences keep the anti-enumeration discipline the old forms kept.
 `GET /api/auth/login` follows the same rule: a deployment missing its WorkOS configuration
 redirects to `/sign-in?error=unavailable` rather than answering a JSON 503 on a blank tab.
 
+### Signing in on xecret's own page *(amended 2026-11-07)*
+
+People no longer see AuthKit's hosted page to sign in or sign up. `/sign-in` takes an email and
+password, or a six-digit code WorkOS emails (Magic Auth); `/sign-up` is the code alone — it
+proves the address in the step that creates the account, and answers an address that already
+has one exactly like one that does not. Both are checked by WorkOS's headless User Management
+API (`authenticateWithPassword`, `createMagicAuth` + `authenticateWithMagicAuth`, and
+`authenticateWithEmailVerification` when a password sign-in reaches an address WorkOS has not
+verified), posted by the page's `fetch` to `POST /api/auth/sign-in/{password,code,code/verify,
+verify-email}` (`apps/web/src/server/in-app-sign-in.ts`). Those routes refuse anything that is
+not this origin posting JSON — login CSRF, the in-app twin of the planted-session attack —
+spend `RL_LOGIN` per address and per subject before WorkOS is asked, and answer JSON with the
+same sentence `/sign-in?error=` shows. "Continue with Google" is `GET /api/auth/login?provider=
+google`: the state cookie and PKCE as before, WorkOS's Google OAuth instead of AuthKit, the
+callback unchanged. Every path hands its exchange, minted in `workos.ts`, to the one
+`completeSignIn` (`sign-in-completion.ts`): `prepareSignIn`, the confirmation question,
+`issueSignIn`. WorkOS's organisation selection, which AuthKit used to ask the person, is
+finished with the first organisation listed — nothing here reads a non-SSO sign-in's
+organisation — and the sign-in is held back for confirmation as before. An authenticator
+challenge (`mfa_challenge`) is refused with its own sentence until the page can take one;
+no account has MFA today. AuthKit's hosted page remains for the re-authentication flows
+(`reauth=1`) only.
+
 ### Re-authentication for the vault reset: two locks
 
 The vault reset destroys a vault for good and must stay reachable from a locked session, so the
