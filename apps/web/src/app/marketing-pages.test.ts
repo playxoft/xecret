@@ -69,12 +69,13 @@ function idx(haystack: string, needle: string): number {
  * assertions are about.
  *
  * Line comments are stripped only where they begin a line, so a `//` inside a
- * URL in body copy survives.
+ * URL in body copy survives. Both kinds go in one pass, so a `/*` inside a line
+ * comment cannot open a block (see `stripComments`).
  */
 const PROSE = new Map(
   [...SOURCES].map(([page, source]) => [
     page,
-    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, ''),
+    source.replace(/(?<![\w/])\/\*[\s\S]*?\*\/|^[ \t]*\/\/.*$/gm, ''),
   ]),
 );
 
@@ -549,12 +550,17 @@ describe('the add-ons are described the same way everywhere', () => {
  * first — let a `/*` inside a line comment ("the account area, `/app/settings/*`")
  * open a block that ran on to the next `*\/` and swallowed the code between.
  *
+ * A `/*` straight after a letter or a slash — `/app/settings/*` written in the
+ * prose itself — does not open a comment; one after a space still would, and
+ * no legal page's text contains one.
+ *
  * Only for prose. The storage guard below reads code through the TypeScript
  * parser instead, where comments never reach the tree at all.
  */
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\/|(^|[^:'"`\\])\/\/.*$/gm, (comment, before?: string) =>
-    comment.startsWith('/*') ? '' : (before ?? ''),
+  return source.replace(
+    /(?<![\w/])\/\*[\s\S]*?\*\/|(^|[^:'"`\\])\/\/.*$/gm,
+    (comment, before?: string) => (comment.startsWith('/*') ? '' : (before ?? '')),
   );
 }
 
@@ -830,6 +836,14 @@ describe('the legal-date guard', () => {
       expect(stripComments("/* a // b */ const kept = 'yes';")).toBe(" const kept = 'yes';");
     });
 
+    it('reads a `/*` written in the prose itself as text, not as a comment', () => {
+      const source =
+        '<>Your settings live under /app/settings/* in the dashboard.</>\n{/* a note */}';
+      const prose = stripComments(source);
+      expect(prose).toContain('/app/settings/* in the dashboard.');
+      expect(prose).not.toContain('a note');
+    });
+
     it('keeps a URL', () => {
       expect(stripComments("const url = 'https://example.com';")).toContain('https://example.com');
     });
@@ -894,14 +908,36 @@ interface FileScan {
 const STORAGE_NAMES: ReadonlySet<string> = new Set<StorageKind>(['localStorage', 'sessionStorage']);
 const GLOBAL_OBJECTS: ReadonlySet<string> = new Set(['window', 'globalThis', 'self']);
 
-/** A string's text when it begins `xecret.` — a template's with `${…}` for each hole. */
-function xecretText(node: ts.Node): string | null {
-  if (ts.isStringLiteralLike(node)) return node.text.startsWith('xecret.') ? node.text : null;
-  if (ts.isTemplateExpression(node) && node.head.text.startsWith('xecret.')) {
+/** The text of a string or template literal — a template's with `${…}` for each hole. */
+function literalText(node: ts.Node): string | null {
+  if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isTemplateExpression(node)) {
     return node.head.text + node.templateSpans.map((span) => `\${…}${span.literal.text}`).join('');
   }
   return null;
 }
+
+/** A string's text when it *is* a key: when it begins `xecret.`. */
+function xecretText(node: ts.Node): string | null {
+  const text = literalText(node);
+  return text !== null && text.startsWith('xecret.') ? text : null;
+}
+
+/**
+ * Code that lives inside a string — an inline script, like the theme's
+ * no-flash bootstrap, which reads `localStorage` from a template literal the
+ * parser sees only as text. Read the way the regex guard once read whole
+ * files: a quoted `xecret.…` is a key, and `window.localStorage`, an
+ * assignment of it, or a `localStorage.getItem(…)`-style call reaches storage.
+ * Prose that merely mentions "localStorage" matches none of these.
+ */
+const KEY_IN_TEXT = /['"`](xecret\.[^'"`\s]*)/g;
+const REACH_IN_TEXT: Readonly<Record<StorageKind, RegExp>> = {
+  localStorage:
+    /\bwindow\.localStorage\b|=\s*localStorage\b|(?<![\w.])localStorage\s*\.\s*(?:getItem|setItem|removeItem|clear|key)\b/,
+  sessionStorage:
+    /\bwindow\.sessionStorage\b|=\s*sessionStorage\b|(?<![\w.])sessionStorage\s*\.\s*(?:getItem|setItem|removeItem|clear|key)\b/,
+};
 
 /**
  * The storage an identifier reaches for, or `null` when it only *names*
@@ -945,6 +981,11 @@ const SCANS = new WeakMap<Source, FileScan>();
  * opened a "block" that ran to the next `*\/`, and a storage write planted in
  * between passed. Comments never reach the syntax tree, so there is nothing
  * here to get wrong about them.
+ *
+ * The one place the tree does not reach is code inside a string — the theme's
+ * inline bootstrap — so every literal's text is read for keys and storage
+ * calls as well (`KEY_IN_TEXT`, `REACH_IN_TEXT`). A string is never a comment,
+ * so reading inside one reopens nothing the parser closed.
  *
  * Cached per source object: the probes below re-check the whole tree with one
  * file added or changed, and the unchanged files are the same objects.
@@ -991,8 +1032,18 @@ function scanFile(source: Source): FileScan {
       if (key !== null && /^[A-Z_]*KEY$/.test(node.name.text)) declared.push(key);
     }
 
-    const text = xecretText(node);
-    if (text !== null) literals.push(text);
+    const whole = xecretText(node);
+    if (whole !== null) literals.push(whole);
+
+    // And code carried inside a string, which the tree holds only as text.
+    const text = literalText(node);
+    if (text !== null) {
+      for (const match of text.matchAll(KEY_IN_TEXT)) literals.push(match[1] ?? '');
+      for (const storage of ['localStorage', 'sessionStorage'] as const) {
+        if (REACH_IN_TEXT[storage].test(text)) reached.add(storage);
+      }
+    }
+
     ts.forEachChild(node, visit);
   };
   visit(tree);
@@ -1201,6 +1252,31 @@ describe('the privacy policy names everything the app keeps in browser storage',
           "const key = ['xecret', 'panels'].join('.');\nexport const remember = () => window['localStorage'].setItem(key, '1');\n",
         ),
         'components/layout/indexed.ts uses localStorage under no key constant',
+      ],
+      [
+        'a key written inside the theme’s inline bootstrap script, where the parser sees only text',
+        replacing('lib/theme.ts', (text) => {
+          const anchor = 'd.dataset.theme=t;';
+          if (!text.includes(anchor)) throw new Error('THEME_BOOTSTRAP_SCRIPT has changed shape');
+          return text.replace(anchor, `${anchor}s.setItem('xecret.theme.seen','1');`);
+        }),
+        "the string 'xecret.theme.seen', which the policy does not name",
+      ],
+      [
+        'storage code inside a template string, for its key',
+        withSource(
+          'components/layout/inline-script.ts',
+          "export const SCRIPT = `(function(){var s=sessionStorage;s.setItem('xecret.inline.v1','1')})()`;\n",
+        ),
+        "the string 'xecret.inline.v1', which the policy does not name",
+      ],
+      [
+        'storage code inside a template string, for reaching storage under no key constant',
+        withSource(
+          'components/layout/inline-script.ts',
+          "export const SCRIPT = `(function(){var s=sessionStorage;s.setItem('xecret.inline.v1','1')})()`;\n",
+        ),
+        'components/layout/inline-script.ts uses sessionStorage under no key constant',
       ],
       [
         'a key whose file moves it to the other storage',
