@@ -65,13 +65,17 @@ const DESCRIPTION_MAX_LENGTH = 500;
  * invite at here; that page is the one that explains when there is none.
  *
  * Import archive is the one item that is not an administrator's: it writes
- * secrets, and a developer may do that. So it asks what the import request
- * asks of every target — `secret.create` and `secret.update`, both, up front
- * (`…/import/route.ts`) — and not `canAdminister`, which would hide it from
- * every developer. `can()` refuses a member without those two before any grant
- * is consulted, so a viewer, or a custom role without either, could never
- * complete it; a per-environment refusal — production, typically — is the
- * dialog's to report. And it needs an environment to import into.
+ * secrets, and a developer may do that. So it asks what the import asks of
+ * every target, and not `canAdminister`, which would hide it from every
+ * developer. That is three actions, not two: the import request itself
+ * authorises `secret.create` and `secret.update`, both, up front
+ * (`…/import/route.ts`), but before it is sent the dialog reads each target's
+ * key state (`…/keys/route.ts`) and the complete listing the plan is built
+ * against (`…/secrets/route.ts`), and both of those ask `secret.read`. `can()`
+ * refuses a member without any one of the three before a grant is consulted, so
+ * a viewer, or a custom role without one, could never complete it; a
+ * per-environment refusal — production, typically — is the dialog's to report.
+ * And it needs an environment to import into.
  */
 export function projectMenuItems(
   organization: SessionOrganization,
@@ -83,6 +87,7 @@ export function projectMenuItems(
     canInvite: canAdminister(organization, 'member.invite'),
     canImportArchive:
       environments.length > 0 &&
+      capabilities.includes('secret.read') &&
       capabilities.includes('secret.create') &&
       capabilities.includes('secret.update'),
     canRename: canAdminister(organization, 'project.update'),
@@ -106,7 +111,8 @@ export function projectMenuItems(
  *
  * "Import archive" keeps those exact words: the email that carries a vault's
  * archive (`server/vault-archive-mail.ts`) tells its reader to open a project
- * and choose it.
+ * and choose it in this menu, and the README inside archives already issued
+ * names it without the menu.
  *
  * "Invite" is a link out to the organisation's Members page rather than a
  * dialog raised here. Inviting is an *organisation* act — a seat, a role, an
@@ -137,9 +143,10 @@ export function ProjectActions({
     organization,
     environments,
   );
-  if (!canManageMembers && !canInvite && !canImportArchive && !canRename && !canDelete) {
-    return null;
-  }
+  const hasItems = canManageMembers || canInvite || canImportArchive || canRename || canDelete;
+  // An import already open outlives the flags that offered it — see the
+  // dialog's mount below — so it holds this component up even with no menu.
+  if (!hasItems && !importing) return null;
 
   const holdsProduction = environments.some((environment) => environment.isProduction);
 
@@ -159,62 +166,64 @@ export function ProjectActions({
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="secondary" aria-label={`Manage ${project.name}`}>
-            Manage
-            <ChevronDownIcon className="size-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-56">
-          {canManageMembers ? (
-            <DropdownMenuItem onSelect={() => setManagingMembers(true)}>
-              <UsersIcon className="size-4" />
-              Members…
-            </DropdownMenuItem>
-          ) : null}
-          {/* Marked out from the items around it: everything else in this menu
-              changes the project in place, and this one leaves the page. The
-              accent is the same one the sidebar uses for "you are here", which
-              is the only colour in the design system that means "this is the
-              live thing" rather than "this is dangerous". */}
-          {canInvite ? (
-            <DropdownMenuItem asChild>
-              <Link href={appPath.members(orgSlug)} className="text-accent-text">
-                <PlusIcon className="size-4" />
-                Invite a member
-              </Link>
-            </DropdownMenuItem>
-          ) : null}
-          {/* Import archive and Rename share a group: both act on the project
-              in place, neither is about who can reach it. */}
-          {canImportArchive || canRename ? (
-            <>
-              {canManageMembers || canInvite ? <DropdownMenuSeparator /> : null}
-              {canImportArchive ? (
-                <DropdownMenuItem onSelect={() => setImporting(true)}>
-                  Import archive…
-                </DropdownMenuItem>
-              ) : null}
-              {canRename ? (
-                <DropdownMenuItem onSelect={() => setRenaming(true)}>
-                  Rename project…
-                </DropdownMenuItem>
-              ) : null}
-            </>
-          ) : null}
-          {canDelete ? (
-            <>
-              {canManageMembers || canInvite || canImportArchive || canRename ? (
-                <DropdownMenuSeparator />
-              ) : null}
-              <DropdownMenuItem destructive onSelect={() => setDeleting(true)}>
-                Delete project…
+      {hasItems ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="secondary" aria-label={`Manage ${project.name}`}>
+              Manage
+              <ChevronDownIcon className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-56">
+            {canManageMembers ? (
+              <DropdownMenuItem onSelect={() => setManagingMembers(true)}>
+                <UsersIcon className="size-4" />
+                Members…
               </DropdownMenuItem>
-            </>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
+            ) : null}
+            {/* Marked out from the items around it: everything else in this menu
+                changes the project in place, and this one leaves the page. The
+                accent is the same one the sidebar uses for "you are here", which
+                is the only colour in the design system that means "this is the
+                live thing" rather than "this is dangerous". */}
+            {canInvite ? (
+              <DropdownMenuItem asChild>
+                <Link href={appPath.members(orgSlug)} className="text-accent-text">
+                  <PlusIcon className="size-4" />
+                  Invite a member
+                </Link>
+              </DropdownMenuItem>
+            ) : null}
+            {/* Import archive and Rename share a group: both act on the project
+                in place, neither is about who can reach it. */}
+            {canImportArchive || canRename ? (
+              <>
+                {canManageMembers || canInvite ? <DropdownMenuSeparator /> : null}
+                {canImportArchive ? (
+                  <DropdownMenuItem onSelect={() => setImporting(true)}>
+                    Import archive…
+                  </DropdownMenuItem>
+                ) : null}
+                {canRename ? (
+                  <DropdownMenuItem onSelect={() => setRenaming(true)}>
+                    Rename project…
+                  </DropdownMenuItem>
+                ) : null}
+              </>
+            ) : null}
+            {canDelete ? (
+              <>
+                {canManageMembers || canInvite || canImportArchive || canRename ? (
+                  <DropdownMenuSeparator />
+                ) : null}
+                <DropdownMenuItem destructive onSelect={() => setDeleting(true)}>
+                  Delete project…
+                </DropdownMenuItem>
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
 
       <ProjectMembersDialog
         orgSlug={orgSlug}
@@ -225,7 +234,13 @@ export function ProjectActions({
         onOpenChange={setManagingMembers}
       />
 
-      {canImportArchive ? (
+      {/* Mounted while the item is offered, and for as long as the dialog is
+          open whether it is still offered or not. The flag can flip under an
+          open dialog — the session's role re-read, the environments reloaded —
+          and unmounting it then threw away the archive it had opened, after
+          which `importing`, still true, mounted a fresh, empty one in its
+          place. The item stays gated by the flag; closing clears `importing`. */}
+      {canImportArchive || importing ? (
         <ImportArchiveDialog
           open={importing}
           onOpenChange={setImporting}

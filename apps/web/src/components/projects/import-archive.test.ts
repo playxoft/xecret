@@ -8,7 +8,12 @@ import {
   generateEnvironmentHmacKey,
   RecoveryCodeError,
 } from '@xecret/core/crypto/client';
-import { ArchiveFormatError, openArchive, readArchiveFile } from '@xecret/core/vault-archive';
+import {
+  ARCHIVE_MAX_DOCUMENT_BYTES,
+  ArchiveFormatError,
+  openArchive,
+  readArchiveFile,
+} from '@xecret/core/vault-archive';
 import type { OpenedArchive } from '@xecret/core/vault-archive';
 import vectors from '../../../../../packages/core/src/vault-archive/vectors/vault-archive-vectors.json';
 
@@ -58,7 +63,7 @@ const {
   summarise,
 } = await import('./import-archive');
 type TargetState = import('./import-archive').TargetState;
-const { describeOpenFailure, describePlanStatus, ImportArchiveDialog } =
+const { chosenFilesProblem, describeOpenFailure, describePlanStatus, ImportArchiveDialog } =
   await import('./import-archive-dialog');
 
 /**
@@ -385,6 +390,27 @@ describe('the dialog', () => {
     expect(inputs[0]).toContain('accept=".zip,.json,application/zip,application/json"');
     expect(inputs[0]).toContain('class="sr-only"');
     expect(inputs[0]).toContain('aria-label="Choose the archive file"');
+    // Out of the tab order: `sr-only` clips its focus ring to nothing, so it
+    // would be a keyboard stop nobody can see. The button is the keyboard path.
+    expect(inputs[0]).toContain('tabindex="-1"');
+  });
+
+  it('refuses several dropped files rather than taking the first: an archive comes in parts', () => {
+    const part = { size: 1024 };
+    expect(chosenFilesProblem([part, part])).toBe(
+      'Drop one file at a time. An archive that came in parts is imported one part at a time, and each part opens on its own.',
+    );
+    expect(chosenFilesProblem([part])).toBeNull();
+  });
+
+  it('refuses a file larger than any archive by its size, before it is read', () => {
+    // A dropped file is not held to the picker's `accept`; reading it whole is
+    // what this check exists to avoid.
+    expect(chosenFilesProblem([{ size: ARCHIVE_MAX_DOCUMENT_BYTES }])).toBeNull();
+    expect(chosenFilesProblem([{ size: ARCHIVE_MAX_DOCUMENT_BYTES + 1 }])).toBe(
+      'That file is 65 MB, larger than any vault archive (64 MB at most). Choose the .zip attached to the email, or the archive.json inside it.',
+    );
+    expect(chosenFilesProblem([{ size: 3 * 1024 * 1024 * 1024 }])).toMatch(/^That file is 3072 MB/);
   });
 
   it('marks, in the preview, every value the chosen strategy would not write', () => {

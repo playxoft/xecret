@@ -3,14 +3,18 @@
 import { useRef, useState } from 'react';
 
 import { DecryptionError, RecoveryCodeError } from '@xecret/core/crypto/client';
-import { ArchiveFormatError, openArchive, readArchiveFile } from '@xecret/core/vault-archive';
+import {
+  ARCHIVE_MAX_DOCUMENT_BYTES,
+  ArchiveFormatError,
+  openArchive,
+  readArchiveFile,
+} from '@xecret/core/vault-archive';
 import type {
   OpenedArchive,
   OpenedEnvironment,
   VaultArchiveDocument,
 } from '@xecret/core/vault-archive';
 import { errorMessage } from '@/lib/api';
-import { cn } from '@/lib/cn';
 import { createGeneration } from '@/lib/generation';
 import { formatAbsoluteTime, pluralize } from '@/lib/format';
 import {
@@ -24,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
   Field,
+  FileDropZone,
   FileTextIcon,
   Input,
   SecretValue,
@@ -140,7 +145,6 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   // Only the file's name, kept so the dialog can say which file it is reading,
   // which one did not open, and which one the passphrase is for.
   const [fileName, setFileName] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
   const generation = useRef(createGeneration());
 
   function reset() {
@@ -154,7 +158,6 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
     setStrategy('skip');
     setPreview(null);
     setFileName(null);
-    setDragging(false);
     setFileInput((n) => n + 1);
   }
 
@@ -163,8 +166,18 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
     props.onOpenChange(open);
   }
 
-  async function chooseFile(file: File | undefined) {
+  async function chooseFile(files: readonly File[]) {
+    const file = files[0];
     if (file === undefined || busy !== null) return;
+    // Refused before a byte is read: `chosenFilesProblem` says why.
+    const problem = chosenFilesProblem(files);
+    if (problem !== null) {
+      // One file refused is still the file last chosen; several are not one.
+      setFileName(files.length === 1 ? file.name : null);
+      setFailure(problem);
+      setFileInput((n) => n + 1);
+      return;
+    }
     const current = generation.current.start();
     setFailure(null);
     setFileName(file.name);
@@ -361,24 +374,9 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
             {/* The secrets import's drop zone (`secrets/import-dialog.tsx`),
                 for the same reason: a bare file input draws the browser's own
                 unstyled "Choose File" control, which matches nothing else in
-                the product. Dropping a file and choosing one both reach
+                the product. Dropping files and choosing one both reach
                 `chooseFile`, which ignores a second file while one is read. */}
-            <div
-              onDragOver={(event) => {
-                event.preventDefault();
-                if (busy === null) setDragging(true);
-              }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setDragging(false);
-                void chooseFile(event.dataTransfer.files[0]);
-              }}
-              className={cn(
-                'rounded-xl border border-dashed px-4 py-6 text-center transition-colors',
-                dragging ? 'border-accent bg-accent-tint' : 'border-line bg-canvas-inset',
-              )}
-            >
+            <FileDropZone disabled={busy !== null} onFiles={(files) => void chooseFile(files)}>
               <FileTextIcon className="text-fg-subtle mx-auto size-6" />
               <p className="text-fg-muted mt-2 text-sm" aria-live="polite">
                 {busy === 'reading' && fileName !== null ? (
@@ -400,8 +398,13 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
               </p>
               {/* The visible control is a Button; the input is the real file
                   picker behind it, and the Button forwards its click there — so
-                  this is not a drag-only interaction. The `key` stays on the
-                  input: remounting it is what clears it after an error. */}
+                  this is not a drag-only interaction. The Button is also the
+                  keyboard path, and the only one: the input is `sr-only`, so a
+                  focus ring on it would circle a clipped 1px box, and it is kept
+                  out of the tab order rather than left as a stop nobody can see
+                  (the rule `globals.css` states for the billing toggle). The
+                  `key` stays on the input: remounting it is what clears it
+                  after an error. */}
               <Button
                 variant="secondary"
                 size="sm"
@@ -418,14 +421,15 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
                 type="file"
                 accept=".zip,.json,application/zip,application/json"
                 className="sr-only"
+                tabIndex={-1}
                 aria-label="Choose the archive file"
                 disabled={busy !== null}
-                onChange={(event) => void chooseFile(event.target.files?.[0])}
+                onChange={(event) => void chooseFile(Array.from(event.target.files ?? []))}
               />
               <p className="text-fg-subtle mt-3 text-xs leading-5">
                 The .zip attached to the email, or the archive.json inside it.
               </p>
-            </div>
+            </FileDropZone>
           </DialogBody>
         ) : null}
 
@@ -763,6 +767,34 @@ export function describePlanStatus(status: ImportPlanItem['status'] | undefined)
     default:
       return 'not written';
   }
+}
+
+const MIB = 1024 * 1024;
+
+/**
+ * Why the files chosen or dropped are refused before a byte of them is read,
+ * or `null`. Pure, so the rules can be tested.
+ *
+ * More than one file is refused rather than the first taken: an archive can
+ * come in parts, each in its own email, and silently importing whichever part
+ * the browser listed first would leave the user believing the rest went in too.
+ *
+ * A file larger than `readArchiveFile` would ever accept is refused by its size,
+ * because that reader can only apply its cap once the whole file is in this
+ * tab's memory — and a dropped file is not held to the picker's `accept`, so it
+ * can be anything. The cap is the document's; a .zip's few hundred bytes of
+ * headers count against it here, which refuses nothing real: a part xecret
+ * writes is at most 5 MiB (`ARCHIVE_PART_BUDGET_BYTES`).
+ */
+export function chosenFilesProblem(files: readonly { size: number }[]): string | null {
+  if (files.length > 1) {
+    return 'Drop one file at a time. An archive that came in parts is imported one part at a time, and each part opens on its own.';
+  }
+  const file = files[0];
+  if (file !== undefined && file.size > ARCHIVE_MAX_DOCUMENT_BYTES) {
+    return `That file is ${Math.ceil(file.size / MIB)} MB, larger than any vault archive (${ARCHIVE_MAX_DOCUMENT_BYTES / MIB} MB at most). Choose the .zip attached to the email, or the archive.json inside it.`;
+  }
+  return null;
 }
 
 /** Why the archive did not open, in one sentence. Pure, so the mapping can be tested. */

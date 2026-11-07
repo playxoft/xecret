@@ -121,7 +121,7 @@ describe('ProjectActions', () => {
 });
 
 describe('the Import archive item', () => {
-  it('is offered to whoever may create and update secrets, administrator or not', () => {
+  it('is offered to whoever may read, create and update secrets, administrator or not', () => {
     expect(projectMenuItems(organization('owner'), [STAGING]).canImportArchive).toBe(true);
     expect(projectMenuItems(organization('admin'), [STAGING]).canImportArchive).toBe(true);
     expect(projectMenuItems(organization('developer'), [STAGING])).toEqual({
@@ -133,28 +133,46 @@ describe('the Import archive item', () => {
     });
   });
 
-  it('is not offered without both of the actions the import request asks', () => {
+  it('is not offered without every one of the actions the import asks', () => {
     // The import route authorises `secret.create` and `secret.update` up
-    // front, and `can()` refuses a role without them before any grant counts.
+    // front; before it is sent, the dialog reads each target's keys and its
+    // complete listing, which ask `secret.read`. `can()` refuses a role
+    // without any one of them before any grant counts.
     expect(projectMenuItems(organization('viewer'), [STAGING]).canImportArchive).toBe(false);
-    const withoutUpdate = actionsOf('developer').filter((action) => action !== 'secret.update');
-    const withoutCreate = actionsOf('developer').filter((action) => action !== 'secret.create');
+    for (const withheld of ['secret.read', 'secret.create', 'secret.update'] as const) {
+      const narrowed = actionsOf('developer').filter((action) => action !== withheld);
+      expect(
+        projectMenuItems(organization('developer', narrowed), [STAGING]).canImportArchive,
+        `a developer without ${withheld}`,
+      ).toBe(false);
+      // An admin narrowed the same way keeps the items that need none of them.
+      const admin = projectMenuItems(
+        organization(
+          'admin',
+          actionsOf('admin').filter((action) => action !== withheld),
+        ),
+        [STAGING],
+      );
+      expect(admin.canImportArchive, `an admin without ${withheld}`).toBe(false);
+      expect(admin.canRename, `an admin without ${withheld}`).toBe(true);
+    }
+    // …and with all three back, a narrowed role is offered it again.
     expect(
-      projectMenuItems(organization('developer', withoutUpdate), [STAGING]).canImportArchive,
-    ).toBe(false);
-    expect(
-      projectMenuItems(organization('developer', withoutCreate), [STAGING]).canImportArchive,
-    ).toBe(false);
-    // An admin narrowed the same way keeps the items that need neither.
-    const admin = projectMenuItems(
-      organization(
-        'admin',
-        actionsOf('admin').filter((action) => action !== 'secret.update'),
-      ),
-      [STAGING],
-    );
-    expect(admin.canImportArchive).toBe(false);
-    expect(admin.canRename).toBe(true);
+      projectMenuItems(
+        organization('developer', [
+          ...CUSTOM_ROLE_FLOOR,
+          'secret.read',
+          'secret.create',
+          'secret.update',
+        ]),
+        [STAGING],
+      ).canImportArchive,
+    ).toBe(true);
+  });
+
+  it('draws no menu for a developer whose only item needs a read they lack', () => {
+    const narrowed = actionsOf('developer').filter((action) => action !== 'secret.read');
+    expect(render(organization('developer', narrowed), [STAGING])).not.toContain('Manage API');
   });
 
   it('is not offered in a project with no environment to import into', () => {

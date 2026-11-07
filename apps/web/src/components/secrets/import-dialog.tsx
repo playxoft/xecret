@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { errorMessage, isApiError } from '@/lib/api';
-import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
 import type { SecretIo } from '@/components/envkeys';
 import { policyProblem } from '@/components/policies/policy-checks';
@@ -20,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
   Field,
+  FileDropZone,
   FileTextIcon,
   Select,
   SelectContent,
@@ -173,7 +173,6 @@ function ImportBody({
   const [filename, setFilename] = useState<string | null>(null);
   const [format, setFormat] = useState<ImportSourceFormat | 'auto'>('auto');
   const [strategy, setStrategy] = useState<ImportStrategy>('skip');
-  const [dragging, setDragging] = useState(false);
 
   const [plan, setPlan] = useState<ImportPlanResponse | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -350,22 +349,11 @@ function ImportBody({
           </>
         ) : (
           <>
-            <div
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDragging(true);
-              }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setDragging(false);
-                const file = event.dataTransfer.files[0];
+            <FileDropZone
+              onFiles={(files) => {
+                const file = files[0];
                 if (file) void readFile(file);
               }}
-              className={cn(
-                'rounded-xl border border-dashed px-4 py-6 text-center transition-colors',
-                dragging ? 'border-accent bg-accent-tint' : 'border-line bg-canvas-inset',
-              )}
             >
               <FileTextIcon aria-hidden="true" className="text-fg-subtle mx-auto size-6" />
               <p className="text-fg-muted mt-2 text-sm">
@@ -378,9 +366,12 @@ function ImportBody({
                 )}
               </p>
               {/* The visible control is a Button; the input is the real file
-                    picker behind it. Both are keyboard reachable — the button
-                    forwards the click, and the input keeps its own focus ring —
-                    so this is not a drag-only interaction. */}
+                    picker behind it, and the Button forwards its click there —
+                    so this is not a drag-only interaction. The Button is also
+                    the keyboard path, and the only one: the input is `sr-only`,
+                    so a focus ring on it would circle a clipped 1px box, and it
+                    is kept out of the tab order rather than left as a stop
+                    nobody can see. */}
               <Button
                 variant="secondary"
                 size="sm"
@@ -394,6 +385,7 @@ function ImportBody({
                 type="file"
                 accept=".env,.json,.yaml,.yml,.sh,.txt,text/plain,application/json"
                 className="sr-only"
+                tabIndex={-1}
                 aria-label="Choose a file to import"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
@@ -402,7 +394,7 @@ function ImportBody({
                   event.target.value = '';
                 }}
               />
-            </div>
+            </FileDropZone>
 
             <Field
               label="Or paste the file"
