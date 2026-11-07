@@ -463,7 +463,16 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
       ],
       'The sign-in page itself is served by WorkOS, and whatever it stores in your browser is governed by WorkOS’s own policy rather than this one.',
-      'Besides the cookies, this site keeps the entries below in your browser’s own storage. They are written and read by the site’s code in your browser, and none of them is sent to us — though one holds an identifier our server also has, as its entry says.',
+      <>
+        Besides the cookies, this site keeps the entries below in your browser&rsquo;s own storage.
+        They are written and read by the site&rsquo;s code in your browser, and the entries
+        themselves are never uploaded to us. Several of them hold identifiers our server also has
+        &mdash; your account&rsquo;s, members&rsquo; and service tokens&rsquo; identifiers, and
+        organisation, project and environment slugs &mdash; and one of those identifiers, the device
+        identifier in <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code>, is sent
+        to us whenever you set up, use or turn off a device PIN, because naming this browser to our
+        server is what it is for.
+      </>,
       <>
         In <code className="text-fg font-mono text-[0.9em]">localStorage</code>, which keeps them
         until you clear this site&rsquo;s data in your browser:
@@ -505,10 +514,13 @@ const SECTIONS: readonly LegalSection[] = [
           you set up a device PIN on this browser. It holds your vault key — the key your master
           passphrase unlocks — encrypted so that this device alone cannot open it: the other half of
           the key it is encrypted under stays on our server, which releases it only when the PIN you
-          type is right, and deletes it after five wrong attempts. Beside it are a random salt, and
-          an identifier for this browser that our server also holds so that it knows which half to
-          release. The encrypted vault key itself never leaves this browser. Turning the PIN off
-          deletes the entry.
+          type is right, and deletes it after five wrong attempts in a row. Beside it are a random
+          salt, and an identifier for this browser that is sent to our server whenever you set up,
+          use or turn off the PIN, so that it knows which half to release. The encrypted vault key
+          itself never leaves this browser. Turning the PIN off in this browser deletes the entry.
+          If the PIN ends any other way &mdash; turned off from another browser, or revoked because
+          your passphrase was changed or your vault was recovered or reset &mdash; our server has
+          deleted its half, and the entry can stay here until this browser next tries to use it.
         </>,
       ],
       <>
@@ -525,10 +537,13 @@ const SECTIONS: readonly LegalSection[] = [
           vault is unlocked in a tab, that tab keeps a copy of the vault&rsquo;s keys here,{' '}
           <strong className="text-fg font-medium">unencrypted</strong>: your vault key, your
           account&rsquo;s encryption and signing key pairs, and your account identifier. It is what
-          lets a reload skip your passphrase. It is never sent to us. Locking the vault deletes it,
-          and closing the tab normally ends it &mdash; but a browser that reopens closed tabs,
-          restores a previous session or duplicates a tab can carry it along, so on a computer you
-          share, lock the vault before you walk away.
+          lets a reload skip your passphrase, and the entry is never sent to us. Locking the vault,
+          or signing out in that tab, deletes it. If your session ends any other way &mdash; it
+          expires, it is revoked, or you sign out everywhere from another device &mdash; the copy
+          can stay in that tab until the tab is closed or the vault is locked there. Closing a tab
+          normally ends it, but a browser that reopens closed tabs, restores a previous session or
+          duplicates a tab can carry it along. So on a computer you share, lock the vault or close
+          the tab yourself, rather than relying on signing out from somewhere else.
         </>,
       ],
       'There is no advertising cookie, no analytics cookie and no third-party tag on this site. That is why there is no cookie banner: there is nothing to ask you about. If we ever add analytics, this section will say so, and we will ask first where the law requires it.',

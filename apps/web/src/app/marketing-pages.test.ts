@@ -539,6 +539,29 @@ describe('the add-ons are described the same way everywhere', () => {
   });
 });
 
+/* ── Reading source as published ──────────────────────────────────────────── */
+
+/**
+ * Source with its comments taken out: block comments, whole-line `//`
+ * comments, and a `//` comment trailing code on its own line — the last of
+ * which `PROSE` leaves in, and which let a sentence that exists only as a note
+ * after a string satisfy a check about what a page says. A `//` straight after
+ * a colon or a quote is kept, so `https://…` and `'//'` survive.
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+}
+
+/** One section of a legal page's source, from its `id` to the next one, whitespace collapsed. */
+function sectionOf(source: string, id: string): string | null {
+  const text = stripComments(source);
+  const start = text.indexOf(`id: '${id}'`);
+  if (start < 0) return null;
+  const rest = text.slice(start + 1);
+  const next = rest.search(/id: '[a-z-]+'/);
+  return (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
+}
+
 /* ── When a legal page binds ──────────────────────────────────────────────── */
 
 /** How `LegalPage` writes a date out, so §Changes can be checked against it. */
@@ -549,24 +572,16 @@ const LEGAL_DATE = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'UTC',
 });
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const WITHOUT_NOTICE =
   'This version is a change made without that notice, and it takes effect on publication.';
 
 const NOT_MATERIAL = /The version of (\d{1,2} [A-Z][a-z]+ \d{4}) is not a material change\./g;
 
-/**
- * §Changes as published: that section's own text, comments removed, whitespace
- * collapsed — so that neither a note in the source nor a sentence in another
- * section can satisfy a check that is about what §Changes says. `null` when
- * there is no §Changes.
- */
-function changesSection(source: string): string | null {
-  const prose = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-  const start = prose.indexOf("id: 'changes'");
-  if (start < 0) return null;
-  const rest = prose.slice(start + 1);
-  const next = rest.search(/id: '[a-z-]+'/);
-  return (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
+/** Today's date in UTC, as `YYYY-MM-DD` — the calendar `LegalPage` prints in. */
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 /**
@@ -593,17 +608,26 @@ function changesSection(source: string): string | null {
  * outlive it: a later version that moves `UPDATED` and keeps the sentence would
  * otherwise go on telling readers that nothing material changed.
  *
- * Checked against §Changes's own text, never anywhere in the file, where a
- * comment would satisfy it. The cases under "the legal-date guard" below are
- * the dishonest states, each shown to be refused.
+ * `UPDATED` may not be in the future, since a page cannot have been last
+ * updated on a day that has not happened. "Today" is UTC, the calendar the
+ * page prints in, with one day's grace: an author east of UTC writes
+ * tomorrow's UTC date for several hours of every morning, and a guard that
+ * failed for them until lunch would be flaky.
+ *
+ * Checked against §Changes's own text with every kind of comment removed,
+ * never anywhere in the file. The cases under "the legal-date guard" below are
+ * the dishonest states, each shown to be refused for its own reason.
  */
-function legalDatesProblem(page: string, source: string): string | null {
+function legalDatesProblem(page: string, source: string, today = todayUtc()): string | null {
   const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
   const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
   const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
   if (updated === undefined) return `${page} has no UPDATED date`;
+  if (Date.parse(updated) > Date.parse(today) + DAY_MS) {
+    return `${page} is dated ${updated}, which is after today (${today}, UTC)`;
+  }
 
-  const changes = changesSection(source);
+  const changes = sectionOf(source, 'changes');
   const thisVersion = LEGAL_DATE.format(new Date(updated));
   const notMaterial = [...(changes ?? '').matchAll(NOT_MATERIAL)].map((match) => match[1]);
   const stale = notMaterial.find((date) => date !== thisVersion);
@@ -630,7 +654,10 @@ function legalDatesProblem(page: string, source: string): string | null {
 }
 
 describe('the legal-date guard', () => {
-  /** A legal page's source, reduced to what the guard reads. */
+  /** A fixed "today" for the cases, so none of them depends on the clock. */
+  const TODAY = '2026-12-15';
+
+  /** A legal page's source, reduced to what the guard reads, one paragraph per line. */
   function page({
     updated = '2026-11-07',
     effective,
@@ -653,8 +680,12 @@ describe('the legal-date guard', () => {
           ? 'const EFFECTIVE: string | null = null;'
           : `const EFFECTIVE = '${effective}';`,
       'const SECTIONS = [',
-      `  { id: 'cookies', paragraphs: [${elsewhere.join(', ')}] },`,
-      `  { id: 'changes', paragraphs: [${changes.join(', ')}] },`,
+      "  { id: 'cookies', paragraphs: [",
+      ...elsewhere.map((paragraph) => `    ${paragraph},`),
+      '  ] },',
+      "  { id: 'changes', paragraphs: [",
+      ...changes.map((paragraph) => `    ${paragraph},`),
+      '  ] },',
       "  { id: 'contact', paragraphs: [] },",
       '];',
     ].join('\n');
@@ -664,29 +695,32 @@ describe('the legal-date guard', () => {
   const NOT_MATERIAL_NOV_7 = said('The version of 7 November 2026 is not a material change.');
 
   describe('accepts the three honest states', () => {
-    it('notice given: effective after it was written', () => {
-      expect(legalDatesProblem('p', page({ updated: '2026-09-26', effective: '2026-10-26' }))).toBe(
-        null,
-      );
-    });
-
-    it('on publication, with §Changes saying it came without notice', () => {
-      expect(
-        legalDatesProblem('p', page({ effective: null, changes: [said(WITHOUT_NOTICE)] })),
-      ).toBe(null);
-    });
-
-    it('not material: effective the day it was written, with §Changes saying so of this version', () => {
-      expect(
-        legalDatesProblem('p', page({ effective: '2026-11-07', changes: [NOT_MATERIAL_NOV_7] })),
-      ).toBe(null);
-    });
-
-    it('reads the sentence however the source wraps it', () => {
-      const wrapped = '<>\n  The version of 7 November 2026 is not a\n  material change.\n</>';
-      expect(legalDatesProblem('p', page({ effective: '2026-11-07', changes: [wrapped] }))).toBe(
-        null,
-      );
+    it.each([
+      [
+        'notice given: effective after it was written',
+        page({ updated: '2026-09-26', effective: '2026-10-26' }),
+      ],
+      [
+        'on publication, with §Changes saying it came without notice',
+        page({ effective: null, changes: [said(WITHOUT_NOTICE)] }),
+      ],
+      [
+        'not material: effective the day it was written, with §Changes saying so of this version',
+        page({ effective: '2026-11-07', changes: [NOT_MATERIAL_NOV_7] }),
+      ],
+      [
+        'the sentence however the source wraps it',
+        page({
+          effective: '2026-11-07',
+          changes: ['<>\n  The version of 7 November 2026 is not a\n  material change.\n</>'],
+        }),
+      ],
+      [
+        'a date one day ahead of UTC, as an author east of it writes in the morning',
+        page({ updated: '2026-12-16', effective: '2027-01-16' }),
+      ],
+    ])('%s', (_, source) => {
+      expect(legalDatesProblem('p', source, TODAY)).toBe(null);
     });
   });
 
@@ -694,9 +728,15 @@ describe('the legal-date guard', () => {
     // Each with the reason it must be refused for, so a case cannot pass by
     // tripping some other rule first.
     const NO_NOTICE = 'takes effect the day it was written, with no notice';
+    const UNSAID = 'takes effect on publication without §Changes saying so';
     it.each([
       ['no UPDATED date', page({ updated: null, effective: '2026-11-07' }), 'has no UPDATED date'],
       ['no EFFECTIVE date at all', page({}), 'has no EFFECTIVE date'],
+      [
+        'dated after today',
+        page({ updated: '2026-12-20', effective: '2027-01-20' }),
+        'is dated 2026-12-20, which is after today (2026-12-15, UTC)',
+      ],
       [
         'effective before it was written, even when called not material',
         page({ effective: '2026-10-26', changes: [NOT_MATERIAL_NOV_7] }),
@@ -708,10 +748,20 @@ describe('the legal-date guard', () => {
         NO_NOTICE,
       ],
       [
-        'effective the day it was written, called not material only in a comment',
+        'effective the day it was written, called not material only in a block comment',
         page({
           effective: '2026-11-07',
           changes: ['/* The version of 7 November 2026 is not a material change. */'],
+        }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, called not material only in a comment after a paragraph',
+        page({
+          effective: '2026-11-07',
+          changes: [
+            `${said('Nothing else.')} // The version of 7 November 2026 is not a material change.`,
+          ],
         }),
         NO_NOTICE,
       ],
@@ -733,18 +783,19 @@ describe('the legal-date guard', () => {
         page({ updated: '2026-12-01', effective: '2027-01-01', changes: [NOT_MATERIAL_NOV_7] }),
         'calls the version of 7 November 2026 not material',
       ],
+      ['on publication with nothing said', page({ effective: null }), UNSAID],
       [
-        'on publication with nothing said',
-        page({ effective: null }),
-        'takes effect on publication without §Changes saying so',
+        'on publication, said only in a block comment',
+        page({ effective: null, changes: [`/* ${WITHOUT_NOTICE} */`] }),
+        UNSAID,
       ],
       [
-        'on publication, said only in a comment',
-        page({ effective: null, changes: [`/* ${WITHOUT_NOTICE} */`] }),
-        'takes effect on publication without §Changes saying so',
+        'on publication, said only in a comment after a paragraph',
+        page({ effective: null, changes: [`${said('Nothing else.')} // ${WITHOUT_NOTICE}`] }),
+        UNSAID,
       ],
     ])('%s', (_, source, reason) => {
-      expect(legalDatesProblem('p', source)).toContain(reason);
+      expect(legalDatesProblem('p', source, TODAY)).toContain(reason);
     });
   });
 });
@@ -753,75 +804,160 @@ describe('the legal-date guard', () => {
 
 type StorageKind = 'localStorage' | 'sessionStorage';
 
-interface StorageWriter {
-  /** Relative to `src/`. */
+/** A source file: its path under `src/`, and its text. */
+interface Source {
   file: string;
-  kind: StorageKind | 'both' | null;
-  keys: string[];
+  text: string;
 }
 
 /**
- * Every source file that reaches for browser storage or declares a key for it.
- *
- * Found by reading the code rather than from a list, because a list is what
- * went stale: the policy named two keys while the app wrote eight.
- * The rules it reads by are deliberately plain, and the test below fails when
- * code steps outside them rather than letting a write go unseen:
- *
- *  - A file *uses* a storage when, comments aside, it says
- *    `window.localStorage` / `window.sessionStorage` or assigns one
- *    (`s=localStorage`, as the theme's inline bootstrap does).
- *  - A file *declares* a key as a `const …KEY = 'xecret.…'`, which is how all of
- *    them are written today.
+ * Strings that begin `xecret.` and are not browser storage, each with what it
+ * is instead. A new one fails the guard below until it is either disclosed in
+ * the privacy policy or added here with its reason — the burden is on the
+ * string to prove it is not a key.
  */
-function storageWriters(): StorageWriter[] {
+const NOT_BROWSER_STORAGE: Readonly<Record<string, string>> = {
+  'xecret.scheduled-nonces': '`Symbol.for` registry key, server-side (server/scheduled.ts)',
+  'xecret.secret-fetch-counter': '`Symbol.for` registry key, server-side (server/billing/usage.ts)',
+  'xecret.vault.v1': 'BroadcastChannel name — a message bus between tabs, stores nothing',
+  'xecret.v2.prf-salt': 'WebAuthn PRF domain separator — hashed into a salt, never stored',
+};
+
+/** Every non-test source file under `src/`. */
+function readSources(): Source[] {
   const src = join(import.meta.dirname, '..');
-  const files = readdirSync(src, { recursive: true })
+  return readdirSync(src, { recursive: true })
     .map(String)
     .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
-    .filter((file) => !file.endsWith('.d.ts'));
-
-  const writers: StorageWriter[] = [];
-  for (const file of files) {
-    const code = readFileSync(join(src, file), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^[ \t]*\/\/.*$/gm, '');
-    const local = /\bwindow\.localStorage\b|=\s*localStorage\b/.test(code);
-    const session = /\bwindow\.sessionStorage\b|=\s*sessionStorage\b/.test(code);
-    const keys = [...code.matchAll(/const\s+[A-Z_]*KEY\s*=\s*'(xecret\.[^']+)'/g)].map(
-      (match) => match[1] ?? '',
-    );
-    if (!local && !session && keys.length === 0) continue;
-    const kind =
-      local && session ? 'both' : local ? 'localStorage' : session ? 'sessionStorage' : null;
-    writers.push({ file: file.replace(/\\/g, '/'), kind, keys });
-  }
-  return writers;
+    .filter((file) => !file.endsWith('.d.ts'))
+    .map((file) => ({
+      file: file.replace(/\\/g, '/'),
+      text: readFileSync(join(src, file), 'utf8'),
+    }));
 }
 
-/** The part of the privacy policy's storage section that lists one kind of storage. */
-function disclosedUnder(kind: StorageKind): string {
-  const prose = (PROSE.get('privacy') ?? '').replace(/\s+/g, ' ');
-  const start = prose.indexOf("id: 'cookies'");
-  const rest = prose.slice(start + 1);
-  const end = rest.search(/id: '[a-z-]+'/);
-  const section = end < 0 ? rest : rest.slice(0, end);
+/**
+ * Which storage a file uses, read from its code with comments out:
+ * `window.localStorage`, an assignment of it (`s=localStorage`, as the theme's
+ * inline bootstrap has), or a bare `localStorage.getItem(…)`-style call — and
+ * the same for `sessionStorage`.
+ */
+function storageUsedBy(code: string): StorageKind | 'both' | null {
+  const uses = (name: StorageKind) =>
+    new RegExp(
+      `\\bwindow\\.${name}\\b|=\\s*${name}\\b|(?<![\\w.])${name}\\s*\\.\\s*(?:getItem|setItem|removeItem|clear|key)\\b`,
+    ).test(code);
+  const local = uses('localStorage');
+  const session = uses('sessionStorage');
+  return local && session ? 'both' : local ? 'localStorage' : session ? 'sessionStorage' : null;
+}
 
-  const local = section.search(/In <code[^>]*>localStorage<\/code>/);
-  const session = section.search(/In <code[^>]*>sessionStorage<\/code>/);
-  if (local < 0 || session < 0 || session < local) return '';
-  return kind === 'localStorage' ? section.slice(local, session) : section.slice(session);
+/**
+ * Everything wrong between what the code keeps in browser storage and what the
+ * privacy policy says it keeps. Empty when they agree.
+ *
+ * Two nets, because one let things through. The first reads keys the way they
+ * are declared today — a `const …KEY = 'xecret.…'` in a file that uses one
+ * storage — and so can say *which* list each belongs in. The second catches
+ * what the first cannot see: any string beginning `xecret.` anywhere in the
+ * code, a key passed straight to a helper or to `setItem`, a literal tucked
+ * into a file whose other keys are declared properly. Each must be named on
+ * the page, or listed in `NOT_BROWSER_STORAGE` with what it is instead.
+ *
+ * And the reverse: every `xecret.…` key the page names must still be in the
+ * code, so a rename cannot leave the policy disclosing a key nothing writes.
+ */
+function storageDisclosureProblems(sources: readonly Source[], privacySource: string): string[] {
+  const problems: string[] = [];
+
+  const section = sectionOf(privacySource, 'cookies') ?? '';
+  const localAt = section.search(/In <code[^>]*>localStorage<\/code>/);
+  const sessionAt = section.search(/In <code[^>]*>sessionStorage<\/code>/);
+  if (localAt < 0 || sessionAt < localAt) {
+    return ['the policy has no "In localStorage" list followed by an "In sessionStorage" one'];
+  }
+  const listed: Record<StorageKind, string> = {
+    localStorage: section.slice(localAt, sessionAt),
+    sessionStorage: section.slice(sessionAt),
+  };
+  const named = (key: string, where: string) => where.includes(`>${key}</code>`);
+
+  const literals = new Map<string, string>();
+  for (const { file, text } of sources) {
+    const code = stripComments(text);
+    const kind = storageUsedBy(code);
+    const declared = [
+      ...code.matchAll(/const\s+[A-Z_]*KEY\s*=\s*['"`](xecret\.[^'"`]+)['"`]/g),
+    ].map((match) => match[1] ?? '');
+
+    // The first net: declared keys, in the list for the storage their file uses.
+    if (kind === 'both') problems.push(`${file} uses both storages; split it, or teach this test`);
+    if (kind === null && declared.length > 0) {
+      problems.push(
+        `${file} declares ${declared.join(', ')} but uses no storage this test can see`,
+      );
+    }
+    if (kind !== null && kind !== 'both') {
+      if (declared.length === 0) problems.push(`${file} uses ${kind} under no key constant`);
+      const other: StorageKind = kind === 'localStorage' ? 'sessionStorage' : 'localStorage';
+      for (const key of declared) {
+        if (!named(key, listed[kind])) {
+          problems.push(`${file} keeps ${key} in ${kind}, and the policy does not list it there`);
+        }
+        if (named(key, listed[other])) {
+          problems.push(`the policy lists ${key} under ${other}, but ${file} keeps it in ${kind}`);
+        }
+      }
+    }
+
+    // The second net: every `xecret.` string, however it is used.
+    for (const match of code.matchAll(/['"`](xecret\.[^'"`\s]*)/g)) {
+      const literal = match[1] ?? '';
+      if (!literals.has(literal)) literals.set(literal, file);
+    }
+  }
+
+  for (const [literal, file] of literals) {
+    if (literal in NOT_BROWSER_STORAGE) continue;
+    if (!named(literal, listed.localStorage) && !named(literal, listed.sessionStorage)) {
+      problems.push(
+        `${file} has the string '${literal}', which the policy does not name and NOT_BROWSER_STORAGE does not explain`,
+      );
+    }
+  }
+
+  // The reverse: what the page names must still exist.
+  for (const match of section.matchAll(/<code[^>]*>(xecret\.[^<]+)<\/code>/g)) {
+    const key = match[1] ?? '';
+    if (!literals.has(key))
+      problems.push(`the policy names ${key}, which no code contains any more`);
+  }
+  for (const literal of Object.keys(NOT_BROWSER_STORAGE)) {
+    if (!literals.has(literal)) {
+      problems.push(`NOT_BROWSER_STORAGE explains ${literal}, which no code contains any more`);
+    }
+  }
+
+  return problems;
 }
 
 describe('the privacy policy names everything the app keeps in browser storage', () => {
   // Not a number from the engine, but the same failure: a sentence written by
   // hand about something the code decides. On a product whose vault keys can
   // sit in a tab's storage, "what is kept on your device" is the disclosure a
-  // security reviewer reads first, and the one that went stale.
-  const writers = storageWriters();
+  // security reviewer reads first — and the one that went stale, naming two
+  // keys while the app wrote eight.
+  const SOURCES_UNDER_SRC = readSources();
+  const PRIVACY = SOURCES.get('privacy') ?? '';
 
-  it('finds the keys the app exports, so a broken scan cannot pass for an empty one', () => {
-    const found = writers.flatMap((writer) => writer.keys);
+  it('agrees with the code as it stands', () => {
+    expect(storageDisclosureProblems(SOURCES_UNDER_SRC, PRIVACY)).toEqual([]);
+  });
+
+  it('reads the files the exported keys live in, so a broken walk cannot pass for an empty one', () => {
+    // Without a single source, every net above has nothing to check and the
+    // guard passes. The keys the app exports must be among what was read.
+    const text = SOURCES_UNDER_SRC.map((source) => source.text).join('\n');
     for (const key of [
       THEME_STORAGE_KEY,
       SIDEBAR_STORAGE_KEY,
@@ -830,44 +966,81 @@ describe('the privacy policy names everything the app keeps in browser storage',
       DEVICE_PIN_WRAP_KEY,
       VAULT_SESSION_MIRROR_KEY,
     ]) {
-      expect(found, `the scan missed ${key}`).toContain(key);
+      expect(text, `the source walk missed ${key}`).toContain(`'${key}'`);
     }
   });
 
-  it('can tell, for every file, which storage its keys are in', () => {
-    for (const writer of writers) {
-      expect(writer.kind, `${writer.file} declares a storage key but touches no storage`).not.toBe(
-        null,
+  describe('fails on the keys that once slipped past it', () => {
+    // Probes, added beside the real sources rather than written into them.
+    const withSource = (file: string, text: string) => [...SOURCES_UNDER_SRC, { file, text }];
+    const replacing = (file: string, edit: (text: string) => string) =>
+      SOURCES_UNDER_SRC.map((source) =>
+        source.file === file ? { file, text: edit(source.text) } : source,
       );
-      expect(
-        writer.kind,
-        `${writer.file} uses both storages; split it, or teach this test`,
-      ).not.toBe('both');
-      expect(
-        writer.keys.length,
-        `${writer.file} uses storage under no key constant`,
-      ).toBeGreaterThan(0);
-    }
-  });
 
-  it('names every key, under the storage it is kept in', () => {
-    const local = disclosedUnder('localStorage');
-    const session = disclosedUnder('sessionStorage');
-    expect(local, 'no "In localStorage" list before an "In sessionStorage" one').not.toBe('');
-    expect(session, 'no "In sessionStorage" list').not.toBe('');
+    it.each([
+      [
+        'a key passed straight to a wrapper',
+        withSource(
+          'components/drafts/draft-store.ts',
+          "import { writeLocal } from '@/lib/storage';\nexport const saveDraft = (value: string) => writeLocal('xecret.draft.v1', value);\n",
+        ),
+        "the string 'xecret.draft.v1', which the policy does not name",
+      ],
+      [
+        'a bare localStorage.setItem with an inline key',
+        withSource(
+          'components/layout/density.ts',
+          "export function setDensity(value: string) {\n  localStorage.setItem('xecret.density', value);\n}\n",
+        ),
+        "the string 'xecret.density', which the policy does not name",
+      ],
+      [
+        'the same file, for using storage under no key constant',
+        withSource(
+          'components/layout/density.ts',
+          "export function setDensity(value: string) {\n  localStorage.setItem('xecret.density', value);\n}\n",
+        ),
+        'components/layout/density.ts uses localStorage under no key constant',
+      ],
+      [
+        'an inline literal in a file whose other keys are declared',
+        replacing(
+          'lib/theme.ts',
+          (text) =>
+            `${text}\nexport function setContrast(high: boolean) {\n  window.localStorage.setItem('xecret.theme.contrast', String(high));\n}\n`,
+        ),
+        "the string 'xecret.theme.contrast', which the policy does not name",
+      ],
+      [
+        'a key whose file moves it to the other storage',
+        replacing('app/(dashboard)/_lib/use-last-visited-org.ts', (text) =>
+          text.replaceAll('window.sessionStorage', 'window.localStorage'),
+        ),
+        'keeps xecret.last-org in localStorage, and the policy does not list it there',
+      ],
+    ])('%s', (_, sources, problem) => {
+      expect(storageDisclosureProblems(sources, PRIVACY).join('\n')).toContain(problem);
+    });
 
-    for (const writer of writers) {
-      for (const key of writer.keys) {
-        const right = writer.kind === 'sessionStorage' ? session : local;
-        const wrong = writer.kind === 'sessionStorage' ? local : session;
-        expect(
-          right,
-          `${writer.file} writes ${key}, which the policy does not name there`,
-        ).toContain(`>${key}</code>`);
-        expect(wrong, `the policy lists ${key} under the wrong storage`).not.toContain(
-          `>${key}</code>`,
-        );
-      }
-    }
+    it('a key the policy still names after the code stopped writing it', () => {
+      const stale = PRIVACY.replace(
+        '>xecret.sidebar</code>',
+        '>xecret.sidebar</code> and <code className="text-fg font-mono text-[0.9em]">xecret.panels.v1</code>',
+      );
+      expect(storageDisclosureProblems(SOURCES_UNDER_SRC, stale).join('\n')).toContain(
+        'the policy names xecret.panels.v1, which no code contains any more',
+      );
+    });
+
+    it('a key the policy names only in a comment', () => {
+      const commented = PRIVACY.replace(
+        '>xecret.last-org</code>',
+        '>xecret.last-orgs</code> {/* >xecret.last-org</code> */}',
+      );
+      expect(storageDisclosureProblems(SOURCES_UNDER_SRC, commented).join('\n')).toContain(
+        'keeps xecret.last-org in sessionStorage, and the policy does not list it there',
+      );
+    });
   });
 });
