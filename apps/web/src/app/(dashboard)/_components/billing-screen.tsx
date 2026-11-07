@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
+import { MINIMUM_SEATS } from '@xecret/core/entitlements';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
@@ -544,9 +545,13 @@ function ChoosePlan({
             and per-environment access, and Pro by its absence ("every member
             can read every environment") — but custom roles are Enterprise's,
             and no plan gates per-environment access at all. The note at the top
-            of `upgrade-plans.ts` has the open decision. */}
+            of `upgrade-plans.ts` has the open decision. Team's floor is read
+            from the one checkout enforces, as the plans page's card reads it,
+            so raising it in `plans.ts` cannot leave this sentence behind. */}
         {plan === 'team' ? (
-          <p className="text-fg-subtle text-sm">Team is billed from 3 members up.</p>
+          <p className="text-fg-subtle text-sm">
+            Team is billed from {MINIMUM_SEATS.team} members up.
+          </p>
         ) : (
           <p className="text-fg-subtle text-sm">Pro has no seat minimum.</p>
         )}

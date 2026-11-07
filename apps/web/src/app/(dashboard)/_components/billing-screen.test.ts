@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { authoritySummary } from '@xecret/core/authz';
+import { MINIMUM_SEATS } from '@xecret/core/entitlements';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import type { SessionOrganization } from './session';
 
@@ -45,14 +46,14 @@ const OWNER: SessionOrganization = {
   authority: { role: 'owner', customRole: null, ...authoritySummary({ role: 'owner' }) },
 };
 
-/** A yearly Pro subscription, changeable from here. */
-function subscribed(): BillingStatusPayload {
+/** A Pro subscription on `interval`, changeable from here — yearly unless said otherwise. */
+function subscribed(interval: 'monthly' | 'yearly' = 'yearly'): BillingStatusPayload {
   return {
     enabled: true,
     mode: 'live_mode',
     plan: 'pro',
     status: 'active',
-    interval: 'yearly',
+    interval,
     managedBy: 'checkout',
     seats: { billed: 4, seated: 4, pendingInvitations: 0, minimum: 1 },
     currency: 'USD',
@@ -108,17 +109,23 @@ describe('BillingScreen’s change form', () => {
   });
 
   it('opens as it always did when sent nothing', () => {
+    // Monthly, because yearly is also the form's fallback: only a monthly
+    // subscriber can show the default follows the subscription's own period.
+    resource.billing = subscribed('monthly');
     const html = render();
 
     // The next rung up from Pro, on the subscription's own period.
     expect(checked(html, 'Team')).toBe(true);
-    expect(checked(html, 'Yearly')).toBe(true);
+    expect(checked(html, 'Monthly')).toBe(true);
+    expect(checked(html, 'Yearly')).toBe(false);
   });
 
   it('says only the seat floor under Team — no roles, no per-environment access', () => {
     const html = render({ plan: 'team' });
 
-    expect(html).toContain('Team is billed from 3 members up.');
+    // Read from the engine, so a floor raised in `plans.ts` is checked at its
+    // new value rather than leaving a stale "3" passing here.
+    expect(html).toContain(`Team is billed from ${MINIMUM_SEATS.team} members up.`);
     expect(html).not.toMatch(/per-environment/i);
     expect(html).not.toMatch(/\broles\b/i);
   });
