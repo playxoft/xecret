@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { VaultLockedError } from '@/components/vault/key-store';
 import { ApiError, errorMessage } from './api';
 
 /**
@@ -72,6 +73,23 @@ describe('errorMessage', () => {
   it('never reads the message of an arbitrary throw', () => {
     expect(errorMessage(new Error('DB_PASSWORD=hunter2 is invalid'))).toBe(
       'Something went wrong. Please try again.',
+    );
+  });
+
+  /**
+   * Every operation that needs key material throws this once the vault has
+   * locked. "Something went wrong" sent somebody whose only remedy is to unlock
+   * looking for a fault that does not exist.
+   */
+  it('says the vault is locked, rather than that something went wrong', () => {
+    expect(errorMessage(new VaultLockedError())).toBe(
+      'Your vault is locked. Unlock it to continue.',
+    );
+  });
+
+  it('fixes that sentence rather than reading the error’s own message', () => {
+    expect(errorMessage(new VaultLockedError('DB_PASSWORD=hunter2'))).toBe(
+      'Your vault is locked. Unlock it to continue.',
     );
   });
 });

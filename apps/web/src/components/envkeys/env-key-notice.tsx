@@ -15,10 +15,13 @@ import type { EnvKeyUnavailable } from './env-keys';
  * unkeyed `e2ee` environment is a genuine fault worth reporting rather than a
  * state to wait out.
  *
- * The lock screen already gates a locked vault at the shell level, so `locked`
- * is reached only in the narrow window where the shell has not caught up yet —
- * it is written anyway, because a screen whose failure branch depends on another
- * component having rendered first is a screen that eventually renders nothing.
+ * The lock screen gates a locked vault at the shell level, and the shell catches
+ * up with a lock it did not perform — this tab's keys being released, or any
+ * request refused as `session_locked` — by re-reading the session
+ * (`DashboardChrome`). So `locked` is reached only in the moment before that
+ * answer lands. It is written anyway, because a screen whose failure branch
+ * depends on another component having rendered first is a screen that
+ * eventually renders nothing.
  */
 export function EnvKeyUnavailableState({
   reason,

@@ -74,3 +74,27 @@ describe('a rename reaches the breadcrumb trail', () => {
     expect(attribute(source('./dashboard-chrome.tsx'), 'value')).toContain('refreshTrail');
   });
 });
+
+describe('a lock the shell did not perform still lands on the lock screen', () => {
+  // The shell draws the lock screen only from a re-read of `/api/auth/me`. A
+  // lock it did not perform — the server's idle window closing first, another
+  // tab, the eight-hour ceiling — used to leave every screen showing "Could not
+  // load …" and every decrypt "Something went wrong", because nothing re-read.
+  const chrome = source('./dashboard-chrome.tsx');
+
+  it('because every refusal as session_locked is announced', () => {
+    expect(source('../../../lib/api.ts')).toMatch(
+      /if \(error\.code === 'session_locked'\) announceSessionLocked\(\);\s*throw error;/,
+    );
+  });
+
+  it('because the shell re-reads the session when it hears one, or loses its keys', () => {
+    expect(chrome).toMatch(/subscribeSessionLocked\(catchUp\)/);
+    expect(chrome).toMatch(/subscribeVaultKeys\(/);
+  });
+
+  it('because locking re-reads the session whatever the lock request answered', () => {
+    const lock = chrome.slice(chrome.indexOf('const lock = useCallback'));
+    expect(lock.slice(0, lock.indexOf('}, [catchUp]);'))).toMatch(/finally \{[\s\S]*catchUp\(\);/);
+  });
+});
