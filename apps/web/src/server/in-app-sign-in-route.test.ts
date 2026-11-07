@@ -112,7 +112,8 @@ const codeVerifyRoute = await import('@/app/api/auth/sign-in/code/verify/route')
 const verifyEmailRoute = await import('@/app/api/auth/sign-in/verify-email/route');
 const confirmRoute = await import('@/app/api/auth/confirm/route');
 const { setEmailVerificationStepForTesting } = await import('./in-app-sign-in');
-const { SIGN_IN_FREE_FAILURES, addressPool, devicePool } = await import('./sign-in-throttle');
+const { SIGN_IN_FREE_FAILURES, addressPool, devicePool, deviceAddressTag } =
+  await import('./sign-in-throttle');
 /** The shared pool's row key for an address, as the routes compute it. */
 const signInSubject = (email: string) => addressPool(env as never, email);
 
@@ -1606,6 +1607,61 @@ describe('the owner’s own browser (known-device cookie)', () => {
     expect(set).toContain('Secure');
     expect(set).toContain('SameSite=Strict');
     expect(set).toContain(`Max-Age=${90 * 24 * 60 * 60}`);
+    expect(set).not.toContain(who.email as string);
+  });
+
+  it('is never handed out by an answer that issues no session — a held-back sign-in or any refusal', async () => {
+    const knownDevice = (answer: Answer) =>
+      answer.cookies.some((c) => c.startsWith('__Host-xecret_known_device='));
+    const holder = await seedUser({ workosUserId: unique('user_01HOLDER') });
+
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      step('organization_selection_required', {
+        pending_authentication_token: 'pending_org',
+        organizations: [{ id: 'org_01ONE', name: 'One' }],
+      }),
+    );
+    workos.authenticateWithOrganizationSelection.mockResolvedValueOnce(
+      authenticated(workosUser(), 'Password', { organizationId: 'org_01ONE' }),
+    );
+    const parked = await post('/api/auth/sign-in/password', {
+      email: 'parked@example.com',
+      password: PASSWORD,
+    });
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_credentials' }),
+    );
+    const wrong = await post('/api/auth/sign-in/password', {
+      email: 'wrong@example.com',
+      password: 'x',
+    });
+    workos.authenticateWithPassword.mockResolvedValueOnce(
+      authenticated(workosUser({ email: holder.email }), 'Password'),
+    );
+    const conflict = await post('/api/auth/sign-in/password', {
+      email: holder.email,
+      password: PASSWORD,
+    });
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_one_time_code' }),
+    );
+    const wrongCode = await post('/api/auth/sign-in/code/verify', {
+      email: 'code@example.com',
+      code: '000000',
+    });
+    const csrf = await post(
+      '/api/auth/sign-in/password',
+      { email: 'csrf@example.com', password: PASSWORD },
+      { origin: 'https://evil.example' },
+    );
+
+    expect(parked.body).toEqual({ redirect: '/sign-in/confirm' });
+    expect([wrong.status, conflict.status, wrongCode.status, csrf.status]).toEqual([
+      400, 409, 400, 403,
+    ]);
+    for (const answer of [parked, wrong, conflict, wrongCode, csrf]) {
+      expect(knownDevice(answer)).toBe(false);
+    }
   });
 
   it('signs its owner in while an attacker holds the address’s shared pool locked', async () => {
@@ -1730,7 +1786,9 @@ describe('the owner’s own browser (known-device cookie)', () => {
       device.slice(device.indexOf('=') + 1),
       new Date(),
     );
-    expect(opened?.email).toBe(who.email);
+    // The cookie carries a tag of the address, never the address.
+    expect(opened?.addressTag).toBe(await deviceAddressTag(env as never, who.email as string));
+    expect(device).not.toContain(who.email as string);
     const expected = await devicePool(env as never, opened!.deviceId);
     expect(Buffer.from(rows[0]!.subject_hash).equals(Buffer.from(expected))).toBe(true);
   });

@@ -1,9 +1,11 @@
 import {
+  deriveKnownDeviceAddressKey,
   deriveKnownDeviceKey,
   deriveSignInThrottleKey,
   foldAddress,
   generateDeviceId,
   KNOWN_DEVICE_COOKIE_NAME,
+  knownDeviceAddressTag,
   knownDeviceCookie,
   openKnownDevice,
   sealKnownDevice,
@@ -36,9 +38,11 @@ import { SignInRefusal } from './sign-in';
  *
  * ── Two pools (OWASP's device cookie) ──
  *  - **A known device's pool.** Every successful sign-in hands its browser a
- *    sealed `__Host-xecret_known_device` cookie naming a random device id and
- *    the account's address (`@xecret/core/auth`, `known-device.ts`). A request
- *    that carries one for the address it is trying is counted against *that
+ *    sealed `__Host-xecret_known_device` cookie naming a random device id and a
+ *    *tag* of the account's address — an HMAC under its own key, never the
+ *    address, so the cookie says nothing about who signed in
+ *    (`@xecret/core/auth`, `known-device.ts`). A request that carries one whose
+ *    tag matches the tag of the address it is trying is counted against *that
  *    device* alone (`device:<id>`).
  *  - **The address's shared pool** (`address:<address>`), for every other
  *    request — a new browser, a cleared one, and every attacker.
@@ -135,35 +139,45 @@ export interface ThrottlePool {
   kind: 'device' | 'address';
 }
 
-let cachedThrottleKey: { secret: string; key: Promise<CryptoKey> } | undefined;
-let cachedDeviceKey: { secret: string; key: Promise<CryptoKey> } | undefined;
+/**
+ * The three keys this module derives from `WORKOS_COOKIE_PASSWORD`, each under
+ * its own label: the throttle's row keys, the known-device cookie's MAC, and
+ * the cookie's address tag. Derived once per isolate per secret.
+ */
+type KeyKind = 'throttle' | 'device' | 'address';
 
-async function keyFrom(env: Bindings, cache: 'throttle' | 'device'): Promise<CryptoKey> {
+const DERIVE: Record<KeyKind, (secret: string) => Promise<CryptoKey>> = {
+  throttle: deriveSignInThrottleKey,
+  device: deriveKnownDeviceKey,
+  address: deriveKnownDeviceAddressKey,
+};
+
+const cachedKeys: Partial<Record<KeyKind, { secret: string; key: Promise<CryptoKey> }>> = {};
+
+async function keyFrom(env: Bindings, kind: KeyKind): Promise<CryptoKey> {
   const secret = env.WORKOS_COOKIE_PASSWORD;
   if (!secret) throw new MissingBindingError('WORKOS_COOKIE_PASSWORD');
-  const current = cache === 'throttle' ? cachedThrottleKey : cachedDeviceKey;
-  let entry = current;
+  let entry = cachedKeys[kind];
   if (entry?.secret !== secret) {
-    entry = {
-      secret,
-      key: cache === 'throttle' ? deriveSignInThrottleKey(secret) : deriveKnownDeviceKey(secret),
-    };
-    if (cache === 'throttle') cachedThrottleKey = entry;
-    else cachedDeviceKey = entry;
+    entry = { secret, key: DERIVE[kind](secret) };
+    cachedKeys[kind] = entry;
   }
   try {
     return await entry.key;
   } catch {
-    if (cache === 'throttle') cachedThrottleKey = undefined;
-    else cachedDeviceKey = undefined;
+    delete cachedKeys[kind];
     throw new MissingBindingError('WORKOS_COOKIE_PASSWORD (at least 32 characters)');
   }
 }
 
 /** Exists for tests. */
 export function resetSignInThrottleKeysForTesting(): void {
-  cachedThrottleKey = undefined;
-  cachedDeviceKey = undefined;
+  for (const kind of Object.keys(DERIVE) as KeyKind[]) delete cachedKeys[kind];
+}
+
+/** The known-device cookie's tag for an address: never the address itself. */
+export async function deviceAddressTag(env: Bindings, email: string): Promise<string> {
+  return knownDeviceAddressTag(await keyFrom(env, 'address'), email);
 }
 
 async function poolSubject(env: Bindings, name: string): Promise<Uint8Array<ArrayBuffer>> {
@@ -194,7 +208,9 @@ export async function throttlePoolFor(
   const cookie = parseCookies(request.headers.get('cookie')).get(KNOWN_DEVICE_COOKIE_NAME);
   if (cookie !== undefined) {
     const device = await openKnownDevice(await keyFrom(services.env, 'device'), cookie, new Date());
-    if (device !== null && foldAddress(device.email) === foldAddress(email)) {
+    // The cookie holds a tag of the address, never the address: equal tags
+    // are the same address, folded the same way.
+    if (device !== null && device.addressTag === (await deviceAddressTag(services.env, email))) {
       return { subject: await devicePool(services.env, device.deviceId), kind: 'device' };
     }
   }
@@ -291,7 +307,7 @@ export async function knownDeviceCookies(
     const key = await keyFrom(services.env, 'device');
     const sealed = await sealKnownDevice(key, {
       deviceId: generateDeviceId(),
-      email,
+      addressTag: await deviceAddressTag(services.env, email),
       issuedAt: Math.floor(Date.now() / 1000),
     });
     return [knownDeviceCookie(sealed)];

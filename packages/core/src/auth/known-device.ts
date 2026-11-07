@@ -16,21 +16,30 @@ import { deriveCookieKey } from './oauth-state';
  * the address alone, that lock is a lever: anybody can hold any address locked
  * with a handful of wrong guesses an hour, and the real owner pays. So every
  * successful sign-in hands its browser this cookie, naming a random device id
- * and the account's address, and the throttle (web app,
+ * and the address it was earned for, and the throttle (web app,
  * `server/sign-in-throttle.ts`) budgets a request that carries a valid one for
- * the address it names **per device**, apart from everybody else. Somebody
+ * the address it is trying **per device**, apart from everybody else. Somebody
  * without the owner's cookie can only exhaust the shared pool; the owner's own
  * browser keeps its own five free tries and its own backoff.
  *
  * ── What it is, and is not ──
  * `d1.<payload>.<mac>` — an HMAC, under its own HKDF label of the operator
- * secret, over `{ device id, address, issued at }`. `HttpOnly`, `Secure`,
+ * secret, over `{ device id, address tag, issued at }`. `HttpOnly`, `Secure`,
  * `SameSite=Strict`, ninety days. It authenticates nobody and opens nothing:
  * the most a stolen one buys is a separate guessing budget for the one address
- * it names — the same budget a fresh browser gets, no more. It is only ever
- * minted for an address that just signed in, so nobody can earn one for an
+ * it was earned for — the same budget a fresh browser gets, no more. It is only
+ * ever minted for an address that just signed in, so nobody can earn one for an
  * address they cannot sign in to. One per browser: signing in as somebody else
  * replaces it.
+ *
+ * ── It says nothing about who ──
+ * The payload is signed, not encrypted, and the cookie outlives sign-out on
+ * purpose — the device stays known, which is the feature. So it carries no
+ * address: only an **address tag**, an HMAC of the folded address under a key
+ * of its own (`deriveKnownDeviceAddressKey`), which the throttle compares with
+ * the tag of the address being tried. The next person at a shared computer who
+ * opens the cookie store learns that somebody signed in here, and nothing about
+ * whom — not even by trying candidate addresses, without the operator secret.
  */
 
 /** `__Host-`, so a subdomain cannot plant or overwrite it. */
@@ -41,17 +50,21 @@ export const KNOWN_DEVICE_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 const VERSION = 'd1';
 const KEY_LABEL = 'xecret/known-device/v1';
+const ADDRESS_KEY_LABEL = 'xecret/known-device-address/v1';
 const THROTTLE_KEY_LABEL = 'xecret/sign-in-throttle/v1';
 const CLOCK_SKEW_SECONDS = 10;
 const MAX_COOKIE_LENGTH = 1024;
-const MAX_ADDRESS_LENGTH = 320;
-const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/** 256 bits, base64url: a device id, and an address tag. */
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export interface KnownDevice {
   /** 256 random bits, base64url. */
   deviceId: string;
-  /** The address of the account that signed in on this browser. */
-  email: string;
+  /**
+   * The address the device was earned for, as {@link knownDeviceAddressTag}
+   * tags it — never the address itself.
+   */
+  addressTag: string;
   /** Seconds since the epoch. */
   issuedAt: number;
 }
@@ -59,6 +72,25 @@ export interface KnownDevice {
 /** The cookie's MAC key, from the operator secret, under its own label. */
 export function deriveKnownDeviceKey(secret: string): Promise<CryptoKey> {
   return deriveCookieKey(secret, KEY_LABEL);
+}
+
+/**
+ * The key {@link knownDeviceAddressTag} tags an address under: the operator
+ * secret, under a label of its own — neither the cookie's MAC key nor the
+ * throttle's, so a tag can stand in for neither.
+ */
+export function deriveKnownDeviceAddressKey(secret: string): Promise<CryptoKey> {
+  return deriveCookieKey(secret, ADDRESS_KEY_LABEL);
+}
+
+/**
+ * An address's tag: the HMAC of its folded form ({@link foldAddress}),
+ * base64url. Equal for the same address however it was typed; useless for
+ * telling whose it is without the key.
+ */
+export async function knownDeviceAddressTag(key: CryptoKey, email: string): Promise<string> {
+  const mac = await crypto.subtle.sign('HMAC', key, utf8Encode(foldAddress(email)));
+  return toBase64Url(new Uint8Array(mac));
 }
 
 /**
@@ -78,14 +110,14 @@ export function generateDeviceId(): string {
 
 /** `d1.<payload>.<mac>`. Throws `RangeError` for a value it would refuse to read back. */
 export async function sealKnownDevice(key: CryptoKey, value: KnownDevice): Promise<string> {
-  if (!DEVICE_ID_PATTERN.test(value.deviceId) || !isAddress(value.email)) {
-    throw new RangeError('A known device needs a device id and an address.');
+  if (!TOKEN_PATTERN.test(value.deviceId) || !TOKEN_PATTERN.test(value.addressTag)) {
+    throw new RangeError('A known device needs a device id and an address tag.');
   }
   if (!Number.isSafeInteger(value.issuedAt) || value.issuedAt <= 0) {
     throw new RangeError('A known device needs the moment it was issued.');
   }
   const payload = toBase64Url(
-    utf8Encode(JSON.stringify({ d: value.deviceId, e: value.email, t: value.issuedAt })),
+    utf8Encode(JSON.stringify({ d: value.deviceId, a: value.addressTag, t: value.issuedAt })),
   );
   const mac = await crypto.subtle.sign('HMAC', key, utf8Encode(`${VERSION}.${payload}`));
   return `${VERSION}.${payload}.${toBase64Url(new Uint8Array(mac))}`;
@@ -128,15 +160,15 @@ export async function openKnownDevice(
     return null;
   }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-  const { d: deviceId, e: email, t: issuedAt } = raw as Record<string, unknown>;
-  if (typeof deviceId !== 'string' || !DEVICE_ID_PATTERN.test(deviceId)) return null;
-  if (!isAddress(email)) return null;
+  const { d: deviceId, a: addressTag, t: issuedAt } = raw as Record<string, unknown>;
+  if (typeof deviceId !== 'string' || !TOKEN_PATTERN.test(deviceId)) return null;
+  if (typeof addressTag !== 'string' || !TOKEN_PATTERN.test(addressTag)) return null;
   if (typeof issuedAt !== 'number' || !Number.isSafeInteger(issuedAt) || issuedAt <= 0) return null;
 
   const nowSeconds = Math.floor(now.getTime() / 1000);
   if (issuedAt > nowSeconds + CLOCK_SKEW_SECONDS) return null;
   if (nowSeconds - issuedAt > KNOWN_DEVICE_TTL_SECONDS) return null;
-  return { deviceId, email, issuedAt };
+  return { deviceId, addressTag, issuedAt };
 }
 
 /** The `Set-Cookie` value, for the answer that issues a session. */
@@ -158,15 +190,4 @@ export function knownDeviceCookie(value: string): string {
  */
 export function foldAddress(value: string): string {
   return value.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-}
-
-function isAddress(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    value.length <= MAX_ADDRESS_LENGTH &&
-    value.includes('@') &&
-    // eslint-disable-next-line no-control-regex -- control characters are the subject of the check.
-    !/[\u0000-\u001f\u007f]/.test(value)
-  );
 }

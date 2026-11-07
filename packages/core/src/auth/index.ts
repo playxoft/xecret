@@ -115,8 +115,10 @@ export type {
 } from './email-verification';
 
 export {
+  deriveKnownDeviceAddressKey,
   deriveKnownDeviceKey,
   deriveSignInThrottleKey,
+  knownDeviceAddressTag,
   foldAddress,
   generateDeviceId,
   KNOWN_DEVICE_COOKIE_NAME,
