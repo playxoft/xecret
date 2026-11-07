@@ -61,6 +61,15 @@ export type { EmptyStateProps } from './empty-state';
 export { Field, useFieldControl } from './field';
 export type { FieldProps } from './field';
 
+export {
+  carriesFiles,
+  FileDropZone,
+  guardFileDrag,
+  nextDragDepth,
+  useFileDropGuard,
+} from './file-drop-zone';
+export type { FileDropZoneProps, GuardedDragEvent } from './file-drop-zone';
+
 export * from './icons';
 
 export { Input, INPUT_BASE } from './input';

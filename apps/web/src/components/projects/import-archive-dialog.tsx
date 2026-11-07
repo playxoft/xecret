@@ -3,7 +3,12 @@
 import { useRef, useState } from 'react';
 
 import { DecryptionError, RecoveryCodeError } from '@xecret/core/crypto/client';
-import { ArchiveFormatError, openArchive, readArchiveFile } from '@xecret/core/vault-archive';
+import {
+  ARCHIVE_MAX_DOCUMENT_BYTES,
+  ArchiveFormatError,
+  openArchive,
+  readArchiveFile,
+} from '@xecret/core/vault-archive';
 import type {
   OpenedArchive,
   OpenedEnvironment,
@@ -23,6 +28,8 @@ import {
   DialogHeader,
   DialogTitle,
   Field,
+  FileDropZone,
+  FileTextIcon,
   Input,
   SecretValue,
   Select,
@@ -30,6 +37,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useFileDropGuard,
 } from '@/components/ui';
 import { argon2idProvider } from '@/components/vault/argon2';
 import { CredentialChoice, RECOVERY_CODE_HINT } from '@/components/vault/credential-choice';
@@ -132,7 +140,17 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   // Bumped to remount the file input, which is the only way to clear what a
   // file input holds — so the same file can be picked again after an error.
   const [fileInput, setFileInput] = useState(0);
+  // The picker itself is visually hidden behind a Button, which forwards the
+  // click to it; this is how the Button reaches whichever input is mounted.
+  const picker = useRef<HTMLInputElement | null>(null);
+  // Only the file's name, kept so the dialog can say which file it is reading,
+  // which one did not open, and which one the passphrase is for.
+  const [fileName, setFileName] = useState<string | null>(null);
   const generation = useRef(createGeneration());
+  // On every step while open, not only the file step: a file dropped onto the
+  // passphrase, the preview or the results would otherwise replace the page,
+  // and the opened archive with it.
+  useFileDropGuard(props.open);
 
   function reset() {
     generation.current.end();
@@ -144,6 +162,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
     setMapping({});
     setStrategy('skip');
     setPreview(null);
+    setFileName(null);
     setFileInput((n) => n + 1);
   }
 
@@ -152,10 +171,21 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
     props.onOpenChange(open);
   }
 
-  async function chooseFile(file: File | undefined) {
+  async function chooseFile(files: readonly File[]) {
+    const file = files[0];
     if (file === undefined || busy !== null) return;
+    // Refused before a byte is read: `chosenFilesProblem` says why.
+    const problem = chosenFilesProblem(files);
+    if (problem !== null) {
+      // One file refused is still the file last chosen; several are not one.
+      setFileName(files.length === 1 ? file.name : null);
+      setFailure(problem);
+      setFileInput((n) => n + 1);
+      return;
+    }
     const current = generation.current.start();
     setFailure(null);
+    setFileName(file.name);
     setBusy('reading');
     try {
       const doc = await readArchiveFile(new Uint8Array(await file.arrayBuffer()));
@@ -346,33 +376,88 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
 
         {step.kind === 'file' ? (
           <DialogBody>
-            <Field
-              label="Archive file"
-              hint={
-                busy === 'reading'
-                  ? 'Reading the file…'
-                  : 'The .zip attached to the email, or the archive.json inside it.'
-              }
-            >
-              <Input
+            {/* The secrets import's drop zone (`secrets/import-dialog.tsx`),
+                for the same reason: a bare file input draws the browser's own
+                unstyled "Choose File" control, which matches nothing else in
+                the product. Dropping files and choosing one both reach
+                `chooseFile`, which ignores a second file while one is read. */}
+            <FileDropZone disabled={busy !== null} onFiles={(files) => void chooseFile(files)}>
+              <FileTextIcon className="text-fg-subtle mx-auto size-6" />
+              <p className="text-fg-muted mt-2 text-sm" aria-live="polite">
+                {busy === 'reading' && fileName !== null ? (
+                  <>
+                    Reading <span className="text-fg font-mono break-all">{fileName}</span>…
+                  </>
+                ) : (
+                  <>
+                    Drag the archive here
+                    {fileName === null ? null : (
+                      <>
+                        {' '}
+                        — last chosen{' '}
+                        <span className="text-fg font-mono break-all">{fileName}</span>
+                      </>
+                    )}
+                  </>
+                )}
+              </p>
+              {/* The visible control is a Button; the input is the real file
+                  picker behind it, and the Button forwards its click there — so
+                  this is not a drag-only interaction. The Button is also the
+                  keyboard path, and the only one: the input is `sr-only`, so a
+                  focus ring on it would circle a clipped 1px box. The billing
+                  toggle's radios meet the same problem (`globals.css`) and keep
+                  their tab stop by drawing the ring on the label each names;
+                  nothing visible stands for this input but the Button, so it
+                  leaves the tab order instead of being a stop nobody can see.
+                  The `key` stays on the input: remounting it is what clears it
+                  after an error. */}
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-3"
+                loading={busy === 'reading'}
+                disabled={busy !== null}
+                onClick={() => picker.current?.click()}
+              >
+                Choose a file
+              </Button>
+              <input
                 key={fileInput}
+                ref={picker}
                 type="file"
                 accept=".zip,.json,application/zip,application/json"
+                className="sr-only"
+                tabIndex={-1}
+                aria-label="Choose the archive file"
                 disabled={busy !== null}
-                onChange={(event) => void chooseFile(event.target.files?.[0])}
+                onChange={(event) => void chooseFile(Array.from(event.target.files ?? []))}
               />
-            </Field>
+              <p className="text-fg-subtle mt-3 text-xs leading-5">
+                The .zip attached to the email, or the archive.json inside it.
+              </p>
+            </FileDropZone>
           </DialogBody>
         ) : null}
 
         {step.kind === 'credential' ? (
           <form onSubmit={open} noValidate>
             <DialogBody className="flex flex-col gap-4">
-              <p className="text-fg-muted text-sm leading-6">
-                Made {formatAbsoluteTime(step.doc.createdAt)}
-                {step.doc.parts > 1 ? `, part ${step.doc.part} of ${step.doc.parts}` : ''}, holding{' '}
-                {pluralize(step.doc.environments.length, 'environment')}.
-              </p>
+              <div className="border-line bg-canvas-inset flex items-center gap-3 rounded-lg border px-3 py-2.5">
+                <FileTextIcon className="text-fg-subtle size-5 shrink-0" />
+                <div className="min-w-0">
+                  {fileName === null ? null : (
+                    <p className="text-fg truncate font-mono text-sm" title={fileName}>
+                      {fileName}
+                    </p>
+                  )}
+                  <p className="text-fg-muted text-sm leading-6">
+                    Made {formatAbsoluteTime(step.doc.createdAt)}
+                    {step.doc.parts > 1 ? `, part ${step.doc.part} of ${step.doc.parts}` : ''},
+                    holding {pluralize(step.doc.environments.length, 'environment')}.
+                  </p>
+                </div>
+              </div>
               <CredentialChoice
                 value={method}
                 disabled={busy !== null}
@@ -588,7 +673,7 @@ export function ArchiveEnvironmentCard({
   const values = importableValues(environment);
 
   return (
-    <div className="border-border flex flex-col gap-2 rounded-lg border p-3">
+    <div className="border-line flex flex-col gap-2 rounded-lg border p-3">
       <div className="text-sm">
         <span className="text-fg font-medium">
           {environment.orgName} / {environment.projectName} / {environment.environmentName}
@@ -689,6 +774,34 @@ export function describePlanStatus(status: ImportPlanItem['status'] | undefined)
     default:
       return 'not written';
   }
+}
+
+const MIB = 1024 * 1024;
+
+/**
+ * Why the files chosen or dropped are refused before a byte of them is read,
+ * or `null`. Pure, so the rules can be tested.
+ *
+ * More than one file is refused rather than the first taken: an archive can
+ * come in parts, each in its own email, and silently importing whichever part
+ * the browser listed first would leave the user believing the rest went in too.
+ *
+ * A file larger than `readArchiveFile` would ever accept is refused by its size,
+ * because that reader can only apply its cap once the whole file is in this
+ * tab's memory — and a dropped file is not held to the picker's `accept`, so it
+ * can be anything. The cap is the document's; a .zip's headers and its README of
+ * a few KB count against it here, which refuses nothing real: a part xecret
+ * writes is at most 5 MiB (`ARCHIVE_PART_BUDGET_BYTES`).
+ */
+export function chosenFilesProblem(files: readonly { size: number }[]): string | null {
+  if (files.length > 1) {
+    return 'Drop one file at a time. An archive that came in parts is imported one part at a time, and each part opens on its own.';
+  }
+  const file = files[0];
+  if (file !== undefined && file.size > ARCHIVE_MAX_DOCUMENT_BYTES) {
+    return `That file is ${Math.ceil(file.size / MIB)} MB, larger than any vault archive (${ARCHIVE_MAX_DOCUMENT_BYTES / MIB} MB at most). Choose the .zip attached to the email, or the archive.json inside it.`;
+  }
+  return null;
 }
 
 /** Why the archive did not open, in one sentence. Pure, so the mapping can be tested. */
