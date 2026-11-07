@@ -1,7 +1,7 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { connection } from 'next/server';
 import { withProcessFallbacks } from '../bindings';
-import { takesLivePayments } from './config';
+import { billingConfigured, takesLivePayments } from './config';
 
 /**
  * Whether the public pages may say that paying works here (P12): this
@@ -38,6 +38,23 @@ export async function takesPayments(): Promise<boolean> {
   try {
     const { env } = await getCloudflareContext({ async: true });
     return takesLivePayments(withProcessFallbacks(env, process.env));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a checkout can be started here at all — live mode *or* Dodo's test
+ * mode (`billingConfigured`). The in-app plans page's question, not the public
+ * pages': it decides whether that page shows prices and buttons, and a staging
+ * rehearsal has to be able to press them. Read the same way as
+ * `takesPayments`, with the same `false` wherever the configuration cannot be.
+ */
+export async function takesCheckouts(): Promise<boolean> {
+  await connection();
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    return billingConfigured(withProcessFallbacks(env, process.env));
   } catch {
     return false;
   }

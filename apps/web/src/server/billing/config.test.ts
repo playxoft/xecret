@@ -3,6 +3,7 @@ import type { Bindings } from '../bindings';
 import { MissingBindingError } from '../bindings';
 import {
   BillingMisconfiguredError,
+  billingConfigured,
   billingSetup,
   catalogEntryFor,
   DODO_BASE_URL,
@@ -164,5 +165,18 @@ describe('takesLivePayments', () => {
     expect(takesLivePayments(env())).toBe(false);
     // Half-configured: false, never a throw on a public page.
     expect(takesLivePayments(env({ DODO_API_KEY: 'x' }))).toBe(false);
+  });
+});
+
+describe('billingConfigured', () => {
+  it('is true for a complete configuration in either mode', () => {
+    expect(billingConfigured(env({ ...COMPLETE, DODO_ENVIRONMENT: 'live_mode' }))).toBe(true);
+    // Unlike `takesLivePayments`: a test-mode rehearsal can still check out.
+    expect(billingConfigured(env(COMPLETE))).toBe(true);
+  });
+
+  it('is false with nothing set, and false rather than a throw when half-configured', () => {
+    expect(billingConfigured(env())).toBe(false);
+    expect(billingConfigured(env({ DODO_API_KEY: 'x' }))).toBe(false);
   });
 });

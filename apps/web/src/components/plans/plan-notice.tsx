@@ -1,21 +1,47 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
+import { appPath, parseDashboardPath } from '@/app/(dashboard)/_lib/paths';
 import { errorMessage, isApiError } from '@/lib/api';
 import { Alert } from '@/components/ui';
 import { planName, planRefusalOf, upgradeSentence, withoutReasonPrefix } from './plan-copy';
 
 /**
- * Where "compare plans" goes.
+ * Where "compare plans" goes when there is no organisation to compare them for.
  *
- * The public pricing page rather than a checkout: the dashboard has no billing
- * screen of its own yet, and a link that names the plan and lands on the table
- * that describes it is honest about what happens next. When a billing screen
- * exists, this one constant is what changes.
+ * The public pricing page: every currency, the full matrix, and nothing that
+ * needs a session. Inside an organisation `plansHref` sends the link to that
+ * organisation's own plans page instead — see there.
  */
 export const PLANS_HREF = '/pricing';
+
+/**
+ * Where "compare plans" goes from the page at `pathname`.
+ *
+ * The in-app plans page of the organisation the URL names, which is where
+ * every caller of these notices actually is: a refusal or a locked control
+ * inside `/app/{org}/…`. That page names the plan, shows the organisation's
+ * current one to an owner and starts the checkout from the same screen —
+ * where the public pricing page sent an owner out of the dashboard to find
+ * the billing screen again on their own.
+ *
+ * Read from the path rather than taken as a prop, so the cards and dialogs that
+ * draw these notices need not each thread a slug through. Anywhere without an
+ * organisation in its path — the account area, or no router at all — falls
+ * back to `PLANS_HREF`.
+ */
+export function plansHref(pathname: string | null): string {
+  if (pathname === null) return PLANS_HREF;
+  const { orgSlug } = parseDashboardPath(pathname);
+  return orgSlug === null ? PLANS_HREF : appPath.orgPlans(orgSlug);
+}
+
+function usePlansHref(): string {
+  return plansHref(usePathname());
+}
 
 const LINK =
   'text-fg decoration-line-strong hover:decoration-fg font-medium underline underline-offset-4';
@@ -46,6 +72,7 @@ export function ChangeError({
   children?: ReactNode;
 }) {
   const refusal = planRefusalOf(error);
+  const comparePlans = usePlansHref();
 
   if (refusal !== null) {
     return (
@@ -59,7 +86,7 @@ export function ChangeError({
       >
         <p>{withoutReasonPrefix(refusal.message)}</p>
         <p className="mt-1.5">
-          <Link href={PLANS_HREF} className={LINK}>
+          <Link href={comparePlans} className={LINK}>
             Compare plans
           </Link>
         </p>
@@ -102,10 +129,12 @@ export function PlanLock({
   /** For `aria-describedby` on the control it explains. */
   id?: string;
 }) {
+  const comparePlans = usePlansHref();
+
   return (
     <p id={id} className="text-fg-subtle text-sm leading-5">
       {upgradeSentence(what, upgradeTo)}{' '}
-      <Link href={PLANS_HREF} className={LINK}>
+      <Link href={comparePlans} className={LINK}>
         Compare plans
       </Link>
     </p>

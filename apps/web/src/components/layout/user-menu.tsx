@@ -26,6 +26,7 @@ import {
   SettingsIcon,
   Shortcut,
   SunIcon,
+  UpgradeIcon,
 } from '@/components/ui';
 import { useTheme } from './theme-provider';
 
@@ -38,6 +39,11 @@ export interface UserMenuProps {
   user: ShellUser;
   /** Adds an "Account settings" item when provided. */
   accountHref?: string;
+  /**
+   * Adds "Upgrade plan" when provided: the plans page of the organisation on
+   * screen. Absent where there is no organisation to upgrade.
+   */
+  upgradeHref?: string;
   /**
    * Locks the session without ending it. Adds the "Lock now" item when given.
    *
@@ -57,7 +63,7 @@ const THEME_ICONS: Record<ThemePreference, typeof SunIcon> = {
 
 const THEME_ORDER: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
-export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps) {
+export function UserMenu({ user, accountHref, upgradeHref, onLock, className }: UserMenuProps) {
   const { preference, setPreference } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
   const [locking, setLocking] = useState(false);
@@ -130,19 +136,35 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
         <DropdownMenuSeparator />
 
         {accountHref ? (
-          <>
-            <DropdownMenuItem asChild>
-              {/* Emphasised: this is the only route to the account area from
-                  an organisation, and the sidebar's "Organisation settings"
-                  is the plausible-but-wrong place people look first. */}
-              <Link href={accountHref}>
-                <SettingsIcon className="text-accent-text size-4" />
-                <span className="font-medium">Account settings</span>
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
+          <DropdownMenuItem asChild>
+            {/* Emphasised: this is the only route to the account area from
+                an organisation, and the sidebar's "Organisation settings"
+                is the plausible-but-wrong place people look first. */}
+            <Link href={accountHref}>
+              <SettingsIcon className="text-accent-text size-4" />
+              <span className="font-medium">Account settings</span>
+            </Link>
+          </DropdownMenuItem>
         ) : null}
+
+        {upgradeHref ? (
+          <DropdownMenuItem
+            asChild
+            // Tinted at rest rather than only on hover, so it is found without
+            // being hunted for — and tinted rather than filled, so it reads as
+            // an offer beside the account items and not as the menu's
+            // primary action. The plans page it opens is for every member;
+            // only an owner is offered a checkout there.
+            className="bg-accent-tint text-accent-text data-[highlighted]:bg-surface-active data-[highlighted]:text-accent-text mt-0.5"
+          >
+            <Link href={upgradeHref}>
+              <UpgradeIcon className="size-4" />
+              <span className="font-medium">Upgrade plan</span>
+            </Link>
+          </DropdownMenuItem>
+        ) : null}
+
+        {accountHref || upgradeHref ? <DropdownMenuSeparator /> : null}
 
         <DropdownMenuLabel>Theme</DropdownMenuLabel>
         {/* A radio group rather than a cycle button: three states cannot be
