@@ -327,8 +327,9 @@ function redirectToSignIn(): void {
   // this the tab arrived on the sign-in page still holding the User Key and
   // both private keys, in memory and in the `sessionStorage` mirror, for
   // whoever signs in next in it. The release clears the mirror unconditionally,
-  // held keys or not, and its broadcast locks this account's other tabs, whose
-  // session this was too.
+  // held keys or not. When this tab held keys, its broadcast also locks this
+  // account's other tabs, whose session this was too; a tab holding none
+  // broadcasts nothing, and the others release on their own 401s.
   releaseVaultKeys();
 
   const next = encodeURIComponent(`${pathname}${search}${hash}`);

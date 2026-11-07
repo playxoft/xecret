@@ -90,10 +90,11 @@ export function isLeaveGuardArmed(): boolean {
  * answering "leave and lose them" and then being asked "leave site?" is the same
  * question twice, and the second one is the one nobody can act on.
  *
- * And not during a sign-out. The session is revoked before the navigation
- * starts, so staying saves nothing, and a "Stay" would strand the page with
- * every redirect and every lock switched off (`lib/page-exit.ts`). A 401's
- * redirect to sign in still asks: nobody chose that one, and the prompt is the
+ * And not once a sign-out's revoke has been confirmed. The session is gone, so
+ * staying saves nothing, and a "Stay" would strand the page with every redirect
+ * and every lock switched off (`lib/page-exit.ts`). A sign-out whose revoke
+ * failed still asks — the session may be live and the work savable — and so
+ * does a 401's redirect to sign in: nobody chose that one, and the prompt is the
  * last chance to copy out a value that cannot be fetched again.
  */
 export function asksBeforeUnload(unwinding: boolean): boolean {

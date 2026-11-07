@@ -25,6 +25,7 @@ import {
   beginRecovery,
   buildRecoveryKit,
   buildVaultCreate,
+  changePassphrase,
   completeRecovery,
   describePasskeyUnlockFailure,
   describeUnlockFailure,
@@ -33,6 +34,7 @@ import {
   openRecoveryWrap,
   readRecoveryCode,
   reauthSignInUrl,
+  regenerateRecoveryCodes,
   resetStartedBy,
   resumedReset,
   resetConfirmationProblem,
@@ -81,7 +83,7 @@ const fakeArgon2id: Argon2idProvider = async (password, salt) => {
 
 const USER_ID = '018f3f6a-0000-7000-8000-000000000001';
 
-const posted: { path: string; body: unknown }[] = [];
+const posted: { path: string; body: unknown; options?: unknown }[] = [];
 let nextResponse: unknown = null;
 
 vi.mock('@/lib/api', async (importOriginal) => {
@@ -90,12 +92,12 @@ vi.mock('@/lib/api', async (importOriginal) => {
     ...actual,
     api: {
       get: vi.fn(),
-      post: vi.fn((path: string, body: unknown) => {
-        posted.push({ path, body });
+      post: vi.fn((path: string, body: unknown, options?: unknown) => {
+        posted.push({ path, body, options });
         return Promise.resolve(nextResponse);
       }),
-      put: vi.fn((path: string, body: unknown) => {
-        posted.push({ path, body });
+      put: vi.fn((path: string, body: unknown, options?: unknown) => {
+        posted.push({ path, body, options });
         return Promise.resolve(nextResponse);
       }),
       patch: vi.fn(),
@@ -903,6 +905,64 @@ describe('material that moved under a long-lived tab', () => {
         ],
       }),
     ).toBe(false);
+  });
+});
+
+describe('a re-entered passphrase the server refuses', () => {
+  /**
+   * The server answers a wrong passphrase on these two calls with a 401, which
+   * here means "not this passphrase", never "this session has ended". The API
+   * client's own handling of a 401 releases the keys, empties the mirror, locks
+   * every tab and leaves for the sign-in page — so a typo in the regenerate
+   * dialog signed the person out of their vault everywhere. Both opt out, and
+   * the dialog shows the refusal.
+   */
+  async function unlockedVault() {
+    const built = await buildVaultCreate({
+      userId: USER_ID,
+      passphrase: PASSPHRASE,
+      argon2id: fakeArgon2id,
+    });
+    const material = materialFor(built.body as Record<string, unknown>);
+    const userKey = await unwrapUserKey({
+      wrapKey: await passphraseWrapKey(PASSPHRASE, material),
+      blob: material.passphraseWrap,
+      context: { userId: USER_ID, wrapKind: 'passphrase' },
+    });
+    return { material, userKey };
+  }
+
+  it('regenerating recovery codes opts out of the 401 redirect', async () => {
+    const { material, userKey } = await unlockedVault();
+    nextResponse = { recoveryCodesRemaining: 5 };
+
+    await regenerateRecoveryCodes({
+      userId: USER_ID,
+      userKey,
+      material,
+      passphrase: PASSPHRASE,
+      argon2id: fakeArgon2id,
+    });
+
+    expect(posted.at(-1)?.path).toBe('/api/auth/vault/recovery');
+    expect(posted.at(-1)?.options).toEqual({ redirectOnUnauthenticated: false });
+  });
+
+  it('changing the passphrase opts out of it too', async () => {
+    const { material, userKey } = await unlockedVault();
+    nextResponse = { vault: STATUS, material };
+
+    await changePassphrase({
+      userId: USER_ID,
+      userKey,
+      material,
+      currentPassphrase: PASSPHRASE,
+      newPassphrase: 'a brand new passphrase for this vault',
+      argon2id: fakeArgon2id,
+    });
+
+    expect(posted.at(-1)?.path).toBe('/api/auth/vault/passphrase');
+    expect(posted.at(-1)?.options).toEqual({ redirectOnUnauthenticated: false });
   });
 });
 

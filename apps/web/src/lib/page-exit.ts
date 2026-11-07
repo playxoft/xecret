@@ -21,10 +21,16 @@
  * differ over the browser's "Leave site?" prompt, which `UnsavedChangesGuard`
  * raises for staged edits:
  *
- * - **Leaving on purpose** — a sign-out — skips it. The session is revoked
- *   before the navigation starts, so nothing staged could be saved by staying,
+ * - **Leaving on purpose** — a sign-out whose revoke the server confirmed —
+ *   skips it. The session is gone, so nothing staged could be saved by staying,
  *   and a "Stay" would leave this document alive with the flag up: no 401 would
  *   ever redirect again, no lock would ever reach the lock screen.
+ *
+ *   A sign-out gets there in two stages. It raises the redirect state before
+ *   asking for the revoke — suppressing redirects and re-reads just the same —
+ *   and upgrades only once the revoke is confirmed. A revoke that fails
+ *   (offline, a 5xx) may leave the session live and the staged edits savable,
+ *   and the sign-out still navigates; the browser asks first, as it should.
  * - **A redirect to sign in** — a 401 — keeps it. The session ended without
  *   anybody choosing it, and staged values may be credentials pasted from
  *   somewhere they cannot be fetched again; the prompt is the one chance to copy
@@ -46,12 +52,15 @@ type Departure = 'none' | 'sign-in-redirect' | 'leaving-on-purpose';
 
 let departure: Departure = 'none';
 
-/** Called before a sign-out revokes or releases anything. */
+/** Called once a sign-out's revoke has been confirmed, before it releases anything. */
 export function beginLeavingPage(): void {
   departure = 'leaving-on-purpose';
 }
 
-/** Called by the API client before its redirect to sign in. A sign-out under way stays one. */
+/**
+ * Called by the API client before its redirect to sign in, and by a sign-out
+ * before it asks for the revoke. A sign-out already confirmed stays one.
+ */
 export function beginSignInRedirect(): void {
   if (departure === 'none') departure = 'sign-in-redirect';
 }
@@ -61,7 +70,7 @@ export function isLeavingPage(): boolean {
   return departure !== 'none';
 }
 
-/** Whether the departure is a sign-out: staged edits can no longer be saved, so nobody is asked. */
+/** Whether the departure is a confirmed sign-out: staged edits can no longer be saved, so nobody is asked. */
 export function isLeavingOnPurpose(): boolean {
   return departure === 'leaving-on-purpose';
 }

@@ -124,11 +124,18 @@ describe('asksBeforeUnload', () => {
     expect(asksBeforeUnload(true)).toBe(false);
   });
 
-  it('does not ask during a sign-out, which has already made the work unsaveable', () => {
+  it('does not ask once a sign-out has been confirmed, which made the work unsaveable', () => {
     // Asking there offered a "Stay" that stranded the page: session revoked,
     // keys released, and every redirect and every lock switched off.
     beginLeavingPage();
     expect(asksBeforeUnload(false)).toBe(false);
+  });
+
+  it('still asks while a sign-out waits on its revoke, which may yet fail', () => {
+    // Offline or a 5xx: the session may be live and the work savable, and the
+    // sign-out navigates anyway.
+    beginSignInRedirect();
+    expect(asksBeforeUnload(false)).toBe(true);
   });
 
   it('still asks on a redirect to sign in, which nobody chose', () => {
