@@ -4,11 +4,22 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
+import { appPath } from '../../_lib/paths';
 import { useSettingsHeaderHeight } from './settings-header';
 import { SETTINGS_CONTENT_ID, SETTINGS_SECTION_ATTRIBUTE } from './settings-sections';
 
 /** The gap between the sticky header's lower edge and whatever parks below it. */
 const GAP_PX = 16;
+
+/**
+ * Tabs drawn without the rail — Security, as a product decision: its cards read
+ * as one column under the tab bar.
+ *
+ * Only the rail goes. The cards keep their ids and `data-settings-section`, and
+ * the landing below still runs on these tabs — so `…/security#devices` still
+ * opens on the devices card.
+ */
+const WITHOUT_RAIL: ReadonlySet<string> = new Set([appPath.settingsSecurity()]);
 
 /**
  * Where the rail parks, and the line the active section is measured against:
@@ -70,13 +81,12 @@ function sameSections(a: readonly Section[], b: readonly Section[]): boolean {
 
 /**
  * The settings area's table of contents: one link per card on the tab you are
- * reading, with the one you are looking at marked.
+ * reading, with the one you are looking at marked — on every tab but those in
+ * `WITHOUT_RAIL`, which keep only the landing.
  *
  * ── Why this exists ──
  * The tab bar above answers "which area", and a tab is one scroll-length of
- * cards — Security alone carries sign-in settings, the vault, the lock with
- * passkeys and the device PIN inside it, and every session that can act as the
- * account. Landing on it with a specific question meant scrolling to find the
+ * cards. Landing on one with a specific question meant scrolling to find the
  * card that answers it, and then scrolling again to check you had not passed
  * something. This turns that into a glance and a click, and gives every card an
  * address worth sending to somebody.
@@ -96,6 +106,7 @@ function sameSections(a: readonly Section[], b: readonly Section[]): boolean {
  */
 export function SettingsToc() {
   const pathname = usePathname();
+  const railed = !WITHOUT_RAIL.has(pathname);
   const headerHeight = useSettingsHeaderHeight();
   const [sections, setSections] = useState<readonly Section[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -144,6 +155,8 @@ export function SettingsToc() {
   // happens mid-flick and at the very bottom of a short page. Marking nothing
   // would make the list blink on every fast scroll.
   useEffect(() => {
+    // Nothing to mark on a tab without the rail.
+    if (!railed) return;
     const elements = sections
       .map(({ id }) => document.getElementById(id))
       .filter((element): element is HTMLElement => element !== null);
@@ -183,7 +196,7 @@ export function SettingsToc() {
     // Re-observed when the header is re-measured: the band's top edge is that
     // header's lower edge, and an observer built against the old height would
     // hand over to the next section a heading or two early.
-  }, [sections, headerHeight]);
+  }, [railed, sections, headerHeight]);
 
   // ── Landing on the card somebody was sent to ──
   //
@@ -225,6 +238,12 @@ export function SettingsToc() {
   // tab: switching tabs replaces the sections, and an id that is no longer one
   // of them would highlight nothing at all.
   const currentId = sections.some((section) => section.id === active) ? active : sections[0]?.id;
+
+  // No gutter either. The gutter below is held open so the cards do not jump
+  // sideways when the sections arrive; on a tab that never draws the rail
+  // nothing arrives, and an empty 16rem beside the cards would only push them
+  // away from the header they sit under.
+  if (!railed) return null;
 
   return (
     // A column in the flow rather than something floated into the margin, so
