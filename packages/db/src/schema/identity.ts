@@ -178,10 +178,12 @@ export function signInMethodCheck(column: AnyPgColumn) {
 }
 
 /**
- * Consecutive failed in-app sign-ins against one address, and the lockout they
- * earned (migration 0034) — the durable brake on guessing a password or an
- * emailed code. Keyed by the SHA-256 of the lower-cased address, never the
- * address. The policy is the web app's `server/sign-in-throttle.ts`.
+ * Attempts against one in-app sign-in throttle pool — an address's shared
+ * pool, or one known device's — and the lockout they earned (migration 0034).
+ * Keyed by an HMAC of the pool's name under a key derived from the cookie
+ * secret, never the address. Counted before WorkOS is asked, in one statement;
+ * `lastAttemptId` tells that statement's caller whether its attempt was
+ * admitted. The policy is the web app's `server/sign-in-throttle.ts`.
  */
 export const signInFailures = pgTable(
   'sign_in_failures',
@@ -190,6 +192,7 @@ export const signInFailures = pgTable(
     failedAttempts: integer('failed_attempts').notNull().default(0),
     lockedUntil: timestamp('locked_until', { withTimezone: true }),
     lastFailedAt: timestamp('last_failed_at', { withTimezone: true }).notNull().defaultNow(),
+    lastAttemptId: uuid('last_attempt_id'),
   },
   (t) => [
     check('sign_in_failures_subject_hash_length_check', sql`octet_length(${t.subjectHash}) = 32`),

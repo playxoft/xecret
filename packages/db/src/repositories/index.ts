@@ -69,9 +69,10 @@ export {
   clearSignInFailures,
   findSignInFailures,
   pruneSignInFailures,
-  recordSignInFailure,
+  refundSignInAttempt,
+  spendSignInAttempt,
 } from './sign-in-failures';
-export type { SignInFailureState } from './sign-in-failures';
+export type { SignInAttempt, SignInFailureState, SignInThrottlePolicy } from './sign-in-failures';
 
 export {
   findRetainedRecoveryWrap,
@@ -403,6 +404,7 @@ export {
   recordFreshSignIn,
   recordReauthMfaPending,
   reserveReauthCodeSend,
+  releaseReauthGuess,
   reserveReauthGuess,
 } from './reauth';
 export type { CodeSendReservation, GuessReservation, Reauthentication } from './reauth';
