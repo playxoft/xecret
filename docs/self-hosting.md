@@ -301,11 +301,15 @@ proven). xecret depends on verification: the first time somebody signs in, an
 existing account holding the same *verified* address is adopted, and an
 unverified address is refused.
 
-**Failed sign-ins** are counted per address in the database
-(`sign_in_failures`, migration 0034): five in a row are free, then the address
-waits 30 seconds, doubling to at most 15 minutes, until a success. Apply that
+**Sign-in attempts** are counted in the database (`sign_in_failures`, migration
+0034), before WorkOS is asked: five are free, then 30 seconds, doubling to at
+most 15 minutes, until a success. A browser that has signed in to an address
+before carries a sealed `__Host-xecret_known_device` cookie and is counted on
+its own; everybody else shares the address's pool — so somebody guessing at an
+address can lock the shared pool, never the owner's own browser. Apply that
 migration before deploying the build that uses it — without the table, every
-password and code sign-in fails. Google and single sign-on are not counted.
+password and code sign-in is refused. Google and single sign-on are not
+counted.
 
 **Credentials.** Three values per environment:
 

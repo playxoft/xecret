@@ -325,9 +325,14 @@ the page's `fetch` to `POST /api/auth/sign-in/{password,code,code/verify}`
 (`apps/web/src/server/in-app-sign-in.ts`). Those routes refuse anything that is not this origin
 posting JSON — login CSRF, the in-app twin of the planted-session attack (not a bot defence: a
 script outside a browser sets any `Origin`) — spend `RL_LOGIN` per address and per subject,
-and check a **durable per-address lockout** in the database (`sign_in_failures`, migration
-0034: five free consecutive failures, then 30 s doubling to a 15-minute ceiling, cleared by a
-success) before WorkOS is asked, and answer JSON with the same sentence `/sign-in?error=` shows.
+and count every attempt **first** in a durable throttle in the database (`sign_in_failures`,
+migration 0034: one statement counts, refuses while locked, and opens the next lockout — five
+free, then 30 s doubling to a 15-minute ceiling; cleared by a success, refunded when WorkOS
+never judged the attempt). Attempts are counted per **pool**: a browser that has signed in to
+the address before carries a sealed `__Host-xecret_known_device` cookie (OWASP's device
+cookie) and has its own; everybody else shares the address's, so an attacker can lock only the
+shared pool. Rows are keyed by an HMAC under the cookie secret, never the address. The routes
+answer JSON with the same sentence `/sign-in?error=` shows.
 WorkOS answers that would say something about an address before the credential is known to be
 right — `email_verification_required`, `organization_authentication_methods_required` — are
 answered and counted exactly like a wrong password; the email-verification step

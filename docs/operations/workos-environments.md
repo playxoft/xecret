@@ -166,6 +166,16 @@ refuses — with a fixed sentence, by design — anything WorkOS asks for that t
 | "This account signs in with an authenticator app, which this page can't ask for yet…" | `mfa_challenge`, `mfa_enrollment` | The account has (or must set up) a TOTP factor. MFA is off in both environments today, so this means somebody turned it on. |
 | "The sign-in service asked for an extra check this page can't show yet…" | `radar_email_challenge`, `radar_sms_challenge` | WorkOS Radar challenged the attempt. |
 | "That email and password don't match…" for a right password | `email_verification_required`, or `organization_authentication_methods_required` | Answered as a wrong password on purpose, so the page is not an oracle for unverified or policy-bound accounts. The way in is "email me a code". |
+| "Too many sign-in attempts…" | nothing — xecret's own throttle | The address's shared pool is locked by repeated failures (`sign_in_failures`): up to 15 minutes after the latest. The person's own browser, if it has signed in before, is counted separately and is not locked. "Email me a code" answers the same while the pool is locked. |
+
+**The unverified-address case, in full.** While `EMAIL_VERIFICATION_STEP` is off, a person whose
+WorkOS address is unverified and who types the **right** password is told it is wrong, has the
+attempt counted, and is mailed a verification code by WorkOS that the page cannot accept (there is
+no box for it). Their way in is "email me a code": the Magic Auth code verifies the address and
+signs them in. Retrying the password instead locks their own shared pool after five tries — the
+counting is deliberate, because not counting it would make the lockout arrive later for unverified
+addresses than for any other, which would itself name them. Once Staging proves WorkOS checks the
+password before asking for verification, turning the step on ends this.
 
 **The escape hatch.** AuthKit's hosted page is still reachable, and it can complete every one of
 those challenges: send the person — and only that person, from support — to
@@ -174,7 +184,9 @@ AuthKit URL for a request that names no `provider` and no `org`, AuthKit asks fo
 wants, and the callback signs them in through the same checks as every other path. Nothing on the
 product links there; the URL is for support to hand out. It is deliberately not in any refusal
 sentence: a link to a different-looking page inside an error message is a phishing pattern people
-should not be taught.
+should not be taught. It also sits **outside** xecret's sign-in throttle — a password typed on
+AuthKit's page is never counted in `sign_in_failures` — so WorkOS's own limits (and Radar, once
+enabled) are the only brake on guessing there. That is one more reason nothing links to it.
 
 Keep the hosted page's own settings in step with the in-app page. In particular, xecret's sign-up
 is passwordless (an emailed code), but AuthKit's page — reachable by that URL and by any old
