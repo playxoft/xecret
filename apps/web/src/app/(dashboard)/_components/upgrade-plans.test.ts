@@ -38,12 +38,23 @@ import type { OfferPlanId, PaidPlanId } from './upgrade-plans';
 const SRC = join(import.meta.dirname, '..', '..', '..');
 const PRICING = readFileSync(join(SRC, 'app', 'pricing', 'page.tsx'), 'utf8');
 
-/** Every non-test module that can refuse a request: the route handlers and the server. */
+/**
+ * Source with its commentary removed, so a comment can neither satisfy a
+ * positive check (a commented-out `requireFeature` is not a gate) nor trip a
+ * negative one (the server explaining a flag is not reading it). Block
+ * comments, and line comments wherever they start — except after a `:`, so
+ * the `//` in a URL survives.
+ */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/** Every non-test module that can refuse a request — the route handlers and the server — as code. */
 const SERVER = [join(SRC, 'app', 'api'), join(SRC, 'server')]
   .flatMap((root) =>
     readdirSync(root, { recursive: true, encoding: 'utf8' })
       .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
-      .map((file) => readFileSync(join(root, file), 'utf8')),
+      .map((file) => withoutComments(readFileSync(join(root, file), 'utf8'))),
   )
   .join('\n');
 
@@ -224,15 +235,21 @@ describe('every claim is one the product keeps', () => {
    * owner decides between enforcing the gate and rewording `/pricing`, this
    * page claims it nowhere, directly or by implication.
    *
-   * The first assertion is a tripwire, not a wish: when somebody adds the gate
-   * it fails, and the note at the top of `upgrade-plans.ts` — and this test —
-   * are what to revisit.
+   * The first three assertions are a tripwire, not a wish: when somebody adds
+   * the gate they fail, and the note at the top of `upgrade-plans.ts` — and
+   * this test — are what to revisit. Two shapes a gate could take are named:
+   * a `requireFeature` refusing a write, and a read-side check written as a
+   * plain read of the flag. The third is the net under both: the flag's name
+   * appears nowhere in server code at all — not as a string, a property or a
+   * destructured binding — so any gate, however written, trips it.
    */
   it('claims per-environment access nowhere while nothing enforces it', () => {
-    expect(
-      gated('perEnvironmentGrants'),
-      'perEnvironmentGrants is enforced now — revisit the note in upgrade-plans.ts',
-    ).toBe(false);
+    const REVISIT = 'perEnvironmentGrants is enforced now — revisit the note in upgrade-plans.ts';
+    expect(gated('perEnvironmentGrants'), REVISIT).toBe(false);
+    expect(SERVER, REVISIT).not.toMatch(
+      /\bfeatures\s*\??\.\s*perEnvironmentGrants\b|\bfeatures\s*\??\.?\s*\[\s*['"`]perEnvironmentGrants['"`]\s*\]/,
+    );
+    expect(SERVER, REVISIT).not.toMatch(/\bperEnvironmentGrants\b/);
     expect(SHIPPED_CAPABILITIES.map((c) => c.feature)).not.toContain('perEnvironmentGrants');
     expect(COPY).not.toMatch(/per-environment (access|grants)/i);
     expect(COPY).not.toMatch(/every environment/i);

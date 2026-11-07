@@ -513,7 +513,7 @@ function ChoosePlan({
       <CardHeader>
         <CardTitle>{subscribed ? 'Change plan' : 'Choose a plan'}</CardTitle>
         <CardDescription>
-          Per member, with a lower yearly rate. Service tokens and CI never cost anything. Prices in
+          Per member, with a lower yearly rate. Service tokens and CI never take a seat. Prices in
           every currency are on the <Link href="/pricing">pricing page</Link>; checkout shows yours
           before you pay. Enterprise is <Link href="/contact">arranged with us</Link>.
         </CardDescription>
@@ -540,14 +540,15 @@ function ChoosePlan({
           />
         </div>
 
+        {/* The billing floor and nothing else. These used to sell Team on roles
+            and per-environment access, and Pro by its absence ("every member
+            can read every environment") — but custom roles are Enterprise's,
+            and no plan gates per-environment access at all. The note at the top
+            of `upgrade-plans.ts` has the open decision. */}
         {plan === 'team' ? (
-          <p className="text-fg-subtle text-sm">
-            Team adds roles and per-environment access, and is billed from 3 members up.
-          </p>
+          <p className="text-fg-subtle text-sm">Team is billed from 3 members up.</p>
         ) : (
-          <p className="text-fg-subtle text-sm">
-            On Pro every member can read every environment, production included.
-          </p>
+          <p className="text-fg-subtle text-sm">Pro has no seat minimum.</p>
         )}
 
         {preview ? (

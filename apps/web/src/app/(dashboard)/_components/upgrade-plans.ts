@@ -35,16 +35,45 @@ import { appPath, withQuery } from '../_lib/paths';
  * pricing page offers none, so this page does not either.
  *
  * ── Per-environment access: a discrepancy, and an open decision ──
- * `PLANS` gives `perEnvironmentGrants` to Team, and `/pricing` sells "Roles and
- * per-environment access" as a Team feature with a dash under Free and Pro. But
- * nothing checks the flag: the grants routes write per-environment grants on
+ * `PLANS` gives `perEnvironmentGrants` to Team, and the public site sells
+ * "roles and per-environment access" as a Team feature. But nothing checks the
+ * flag — neither a `requireFeature` nor a read of `features.perEnvironmentGrants`
+ * anywhere in the server: the grants routes write per-environment grants on
  * every plan. Selling it here, beside a checkout button, would charge people
  * for something they already have. Whether to enforce the gate or reword the
- * pricing page is the owner's decision and is still pending; until it is made,
+ * public copy is the owner's decision and is still pending; until it is made,
  * this page claims per-environment access nowhere — not as a Team bullet, not
  * as a table row, and not by implication ("everyone on Pro can read every
  * environment", or a Pro audience line about keeping people out of
- * production). Revisit this note when the decision lands.
+ * production). The billing screen's plan sentences were cut back to the seat
+ * floor for the same reason. Revisit this note when the decision lands.
+ *
+ * Where the claim lives today — the sweep that decision needs. Each of these
+ * presents per-environment access as a Team plan boundary:
+ *
+ *  - `app/pricing/page.tsx` — the Team card's "Roles and per-environment
+ *    access" bullet; the Pro card's "Unlimited members — everyone can read
+ *    every environment" and both audience lines; the matrix rows "Roles for
+ *    members" and "Per-project and per-environment grants" (dashed on Free and
+ *    Pro); and the FAQ answer "What is the difference between Pro and Team?"
+ *    ("Team adds roles and per-environment grants … That is the whole gate").
+ *  - `app/page.tsx` — the "What does it cost?" FAQ answer, both the pre-alpha
+ *    and the payments-live versions ("Team … adds … roles and per-environment
+ *    access").
+ *  - `app/features/page.tsx` — "What does xecret cost?", both versions.
+ *  - `app/faq/page.tsx` — "What does xecret cost?".
+ *  - `app/about/page.tsx` — "How do you make money?", both versions, and the
+ *    roadmap entry saying roles and per-environment access are "a plan
+ *    boundary, not a promise".
+ *  - `app/terms/page.tsx` — the Team plan's description in the plans section
+ *    ("roles and per-environment access").
+ *
+ * And these describe it with no plan attached — true today, since every plan
+ * has it, but they would need a plan named if the gate is enforced:
+ * `app/page.tsx` "Access you can revoke" ("Members, roles and per-environment
+ * access"); `app/features/page.tsx`, the roles feature and the "Roles and
+ * per-environment access" guide link; and the FAQ category title "Members,
+ * roles and per-environment access" in `app/faq/page.tsx`.
  *
  * Custom roles are the gate that does exist (`requireFeature(…,
  * 'customRoles')` on the roles routes and on assigning one) — at Enterprise,
