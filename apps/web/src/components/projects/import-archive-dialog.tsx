@@ -37,6 +37,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useFileDropGuard,
 } from '@/components/ui';
 import { argon2idProvider } from '@/components/vault/argon2';
 import { CredentialChoice, RECOVERY_CODE_HINT } from '@/components/vault/credential-choice';
@@ -146,6 +147,10 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   // which one did not open, and which one the passphrase is for.
   const [fileName, setFileName] = useState<string | null>(null);
   const generation = useRef(createGeneration());
+  // On every step while open, not only the file step: a file dropped onto the
+  // passphrase, the preview or the results would otherwise replace the page,
+  // and the opened archive with it.
+  useFileDropGuard(props.open);
 
   function reset() {
     generation.current.end();
@@ -400,10 +405,12 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
                   picker behind it, and the Button forwards its click there — so
                   this is not a drag-only interaction. The Button is also the
                   keyboard path, and the only one: the input is `sr-only`, so a
-                  focus ring on it would circle a clipped 1px box, and it is kept
-                  out of the tab order rather than left as a stop nobody can see
-                  (the rule `globals.css` states for the billing toggle). The
-                  `key` stays on the input: remounting it is what clears it
+                  focus ring on it would circle a clipped 1px box. The billing
+                  toggle's radios meet the same problem (`globals.css`) and keep
+                  their tab stop by drawing the ring on the label each names;
+                  nothing visible stands for this input but the Button, so it
+                  leaves the tab order instead of being a stop nobody can see.
+                  The `key` stays on the input: remounting it is what clears it
                   after an error. */}
               <Button
                 variant="secondary"
@@ -782,8 +789,8 @@ const MIB = 1024 * 1024;
  * A file larger than `readArchiveFile` would ever accept is refused by its size,
  * because that reader can only apply its cap once the whole file is in this
  * tab's memory — and a dropped file is not held to the picker's `accept`, so it
- * can be anything. The cap is the document's; a .zip's few hundred bytes of
- * headers count against it here, which refuses nothing real: a part xecret
+ * can be anything. The cap is the document's; a .zip's headers and its README of
+ * a few KB count against it here, which refuses nothing real: a part xecret
  * writes is at most 5 MiB (`ARCHIVE_PART_BUDGET_BYTES`).
  */
 export function chosenFilesProblem(files: readonly { size: number }[]): string | null {

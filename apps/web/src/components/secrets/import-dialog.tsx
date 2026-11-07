@@ -35,6 +35,7 @@ import {
   TableHeader,
   TableRow,
   Textarea,
+  useFileDropGuard,
   useToast,
 } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
@@ -142,6 +143,9 @@ const STATUS_LABEL: Readonly<Record<ImportPlanItem['status'], string>> = {
  */
 export function ImportDialog({ open, onOpenChange, ...rest }: ImportDialogProps) {
   const [applying, setApplying] = useState(false);
+  // A file dropped anywhere but the drop zone — onto the preview, the footer,
+  // the overlay — would otherwise replace the page, and the dialog with it.
+  useFileDropGuard(open);
 
   return (
     <Dialog open={open} onOpenChange={(next) => (applying ? undefined : onOpenChange(next))}>
