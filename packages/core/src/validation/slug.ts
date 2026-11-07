@@ -52,6 +52,11 @@ const RESERVED_SLUGS = new Set([
   'members',
   'tokens',
   'audit',
+  // The in-app plans page, `/app/{org}/upgrade`, in the same slot. Reserving it
+  // stops a new project claiming the name; a project created with it before
+  // this line keeps working everywhere but its own overview page, which the
+  // plans page now answers.
+  'upgrade',
   // `GET /api/orgs/availability` sits in the slot `{orgSlug}` occupies, so an
   // organisation claiming this slug would shadow the endpoint the create form
   // uses to find out whether a slug is free — and would be unreachable itself.

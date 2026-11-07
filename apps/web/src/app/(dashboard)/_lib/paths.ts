@@ -62,6 +62,12 @@ export const appPath = {
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
   /** The billing screen (P12). Owners only; Dodo's checkout and portal return here. */
   orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
+  /**
+   * The plans, inside the app. Every member may read it; only an owner is
+   * offered a checkout from it. Where the account menu's "Upgrade plan" and
+   * every in-app "Compare plans" link go.
+   */
+  upgrade: (org: string): string => `/app/${segment(org)}/upgrade`,
   members: (org: string): string => `/app/${segment(org)}/members`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,
@@ -289,11 +295,15 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   if (root !== 'app' || first === undefined) return empty;
   if (first === 'settings') return { ...empty, isAccountArea: true };
 
-  // Org-level pages that occupy the slot a project slug would. All four names
-  // are in the reserved slug list, so no project can ever shadow one — which is
+  // Org-level pages that occupy the slot a project slug would. All five names
+  // are in the reserved slug list, so no new project can shadow one — which is
   // what makes this a lookup rather than a guess.
   const orgPage =
-    second === 'settings' || second === 'members' || second === 'tokens' || second === 'audit';
+    second === 'settings' ||
+    second === 'members' ||
+    second === 'tokens' ||
+    second === 'audit' ||
+    second === 'upgrade';
 
   return {
     orgSlug: decodeURIComponent(first),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { apiPath, withQuery } from './paths';
+import { apiPath, appPath, parseDashboardPath, withQuery } from './paths';
 
 /**
  * The query builder every paginated screen composes its requests with.
@@ -58,5 +58,28 @@ describe('withQuery', () => {
     expect(withQuery('/api/orgs/acme/audit?action=secret.read', { cursor: 'a b&c' })).toBe(
       '/api/orgs/acme/audit?action=secret.read&cursor=a+b%26c',
     );
+  });
+});
+
+/**
+ * The plans page sits where a project slug would, at `/app/{org}/upgrade`.
+ *
+ * Read as a project, the shell would ask the API for a project called
+ * `upgrade`, draw it in the breadcrumb trail and light "Projects" in the
+ * sidebar — on a page that has nothing to do with any project. `upgrade` is on
+ * the reserved slug list for the same reason (`slug.test.ts` pins that half).
+ */
+describe('the plans page is an organisation page', () => {
+  it('lives at /app/{org}/upgrade', () => {
+    expect(appPath.upgrade('acme')).toBe('/app/acme/upgrade');
+  });
+
+  it('is not read as a project', () => {
+    expect(parseDashboardPath(appPath.upgrade('acme'))).toEqual({
+      orgSlug: 'acme',
+      projectSlug: null,
+      envSlug: null,
+      isAccountArea: false,
+    });
   });
 });

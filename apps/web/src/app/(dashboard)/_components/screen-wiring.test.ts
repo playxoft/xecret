@@ -74,3 +74,17 @@ describe('a rename reaches the breadcrumb trail', () => {
     expect(attribute(source('./dashboard-chrome.tsx'), 'value')).toContain('refreshTrail');
   });
 });
+
+describe('the account menu offers the plans of the organisation on screen', () => {
+  // The shell builds the link from the slug the switcher names — so "Upgrade
+  // plan" can never open another tenant's plans — and hands it to the menu
+  // only when there is one. Deleting either line leaves both components
+  // working and the item gone, or pointing at `/app//upgrade`.
+  it('built from the switcher’s slug, and only when there is one', () => {
+    const shell = source('../../../components/layout/app-shell.tsx');
+    expect(shell).toMatch(
+      /const upgradeHref = currentOrgSlug === '' \? undefined : appPath\.upgrade\(currentOrgSlug\);/,
+    );
+    expect(shell.slice(shell.indexOf('<UserMenu'))).toContain('{ upgradeHref }');
+  });
+});

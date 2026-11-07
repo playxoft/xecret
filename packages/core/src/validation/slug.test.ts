@@ -66,7 +66,9 @@ describe('slugSchema', () => {
   });
 
   it('rejects slugs that would collide with application routes', () => {
-    for (const slug of ['api', 'admin', 'settings', 'cli', 'xecret']) {
+    // `upgrade` with the organisation pages it sits beside: `/app/{org}/upgrade`
+    // is in the slot a project slug takes.
+    for (const slug of ['api', 'admin', 'settings', 'cli', 'xecret', 'audit', 'upgrade']) {
       expect(isReservedSlug(slug)).toBe(true);
       expect(slugSchema.safeParse(slug).success).toBe(false);
     }

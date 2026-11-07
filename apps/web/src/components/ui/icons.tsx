@@ -222,6 +222,21 @@ export const CheckCircleIcon = (props: IconProps) => (
   </Icon>
 );
 
+/**
+ * Moving up a plan: an arrow rising inside the same ring the status icons use.
+ *
+ * Not a sparkle or a crown. Nothing about a plan change is magic or royal, and
+ * the ring makes it read as a state the organisation moves *to* rather than a
+ * decoration.
+ */
+export const UpgradeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="m8.5 11.5 3.5-3.5 3.5 3.5" />
+    <path d="M12 8v8" />
+  </Icon>
+);
+
 export const ExternalLinkIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M14 4h6v6" />

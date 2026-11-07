@@ -21,6 +21,7 @@ import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
+import { Segmented } from './segmented';
 import { canAdminister, useOrganization } from './session';
 
 /**
@@ -203,8 +204,8 @@ function BillingDetails({
             ))}
           </ul>
           <p className="mt-2">
-            A secret fetch is never refused over a limit. <Link href="/pricing">Compare plans</Link>
-            .
+            A secret fetch is never refused over a limit.{' '}
+            <Link href={appPath.upgrade(orgSlug)}>Compare plans</Link>.
           </p>
         </Alert>
       ) : null}
@@ -388,41 +389,6 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
         </Button>
       </div>
       {error !== null ? <p className="text-danger-text text-sm">{errorMessage(error)}</p> : null}
-    </div>
-  );
-}
-
-function Segmented<T extends string>({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string;
-  options: readonly { value: T; label: string }[];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className="border-line bg-canvas-inset inline-flex rounded-full border p-1"
-    >
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={option.value === value}
-          onClick={() => onChange(option.value)}
-          className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-            option.value === value ? 'bg-surface text-fg shadow-sm' : 'text-fg-muted hover:text-fg'
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
     </div>
   );
 }
