@@ -4,16 +4,21 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { authoritySummary, CUSTOM_ROLE_FLOOR, ROLE_CAPABILITIES } from '@xecret/core/authz';
 import type { Action, CustomRole, OrgRole } from '@xecret/core/authz';
 import type { SessionOrganization } from '@/app/(dashboard)/_components/session';
+import type { Environment } from './types';
 
 /**
  * The project's Manage menu, rendered to static markup: drawn whenever the
- * viewer may do any one thing in it — an inviter with nothing else included.
+ * viewer may do any one thing in it — an inviter with nothing else included,
+ * and a developer who may only import an archive.
+ *
+ * The menu's items render into a portal only once it is open, which static
+ * markup never is, so which items are drawn is asked of `projectMenuItems`.
  */
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {} }) }));
 
 const { Toaster } = await import('@/components/ui');
-const { ProjectActions } = await import('./project-actions');
+const { ProjectActions, projectMenuItems } = await import('./project-actions');
 
 function organization(role: OrgRole, allowedActions?: readonly Action[]): SessionOrganization {
   const customRole: CustomRole | undefined =
@@ -36,7 +41,17 @@ function organization(role: OrgRole, allowedActions?: readonly Action[]): Sessio
   };
 }
 
-function render(org: SessionOrganization): string {
+const STAGING: Environment = {
+  name: 'Staging',
+  slug: 'staging',
+  isProduction: false,
+  sortOrder: 0,
+  encryptionMode: 'e2ee',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+function render(org: SessionOrganization, environments: readonly Environment[] = []): string {
   return renderToStaticMarkup(
     createElement(
       Toaster,
@@ -50,11 +65,18 @@ function render(org: SessionOrganization): string {
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
-        environments: [],
+        environments,
         organization: org,
         onChanged: () => {},
       }),
     ),
+  );
+}
+
+/** Every action a built-in role holds. */
+function actionsOf(role: OrgRole): Action[] {
+  return (Object.keys(ROLE_CAPABILITIES[role]) as Action[]).filter(
+    (action) => ROLE_CAPABILITIES[role][action],
   );
 }
 
@@ -63,10 +85,7 @@ describe('ProjectActions', () => {
     // Everything a viewer holds, so there is a role to invite at, and
     // `member.invite` — but not `member.update`, `project.update` or
     // `project.delete`, the other three items' actions.
-    const viewerActions = (Object.keys(ROLE_CAPABILITIES.viewer) as Action[]).filter(
-      (action) => ROLE_CAPABILITIES.viewer[action],
-    );
-    const html = render(organization('admin', [...viewerActions, 'member.invite']));
+    const html = render(organization('admin', [...actionsOf('viewer'), 'member.invite']));
 
     expect(html).toContain('aria-label="Manage API"');
   });
@@ -84,10 +103,79 @@ describe('ProjectActions', () => {
     expect(render(organization('admin'))).toContain('aria-label="Manage API"');
   });
 
+  it('is drawn for a developer once there is an environment to import an archive into', () => {
+    // A developer administers nothing here, so the import alone holds the
+    // menu up.
+    expect(render(organization('developer'), [STAGING])).toContain('aria-label="Manage API"');
+  });
+
   it('is not drawn for a role that may do none of it', () => {
+    // A developer, with nothing to import into.
     expect(render(organization('developer'))).not.toContain('Manage API');
-    expect(render(organization('admin', [...CUSTOM_ROLE_FLOOR, 'project.read']))).not.toContain(
-      'Manage API',
-    );
+    // A viewer, with somewhere to import into but no right to write there.
+    expect(render(organization('viewer'), [STAGING])).not.toContain('Manage API');
+    expect(
+      render(organization('admin', [...CUSTOM_ROLE_FLOOR, 'project.read']), [STAGING]),
+    ).not.toContain('Manage API');
+  });
+});
+
+describe('the Import archive item', () => {
+  it('is offered to whoever may read, create and update secrets, administrator or not', () => {
+    expect(projectMenuItems(organization('owner'), [STAGING]).canImportArchive).toBe(true);
+    expect(projectMenuItems(organization('admin'), [STAGING]).canImportArchive).toBe(true);
+    expect(projectMenuItems(organization('developer'), [STAGING])).toEqual({
+      canManageMembers: false,
+      canInvite: false,
+      canImportArchive: true,
+      canRename: false,
+      canDelete: false,
+    });
+  });
+
+  it('is not offered without every one of the actions the import asks', () => {
+    // The import route authorises `secret.create` and `secret.update` up
+    // front; before it is sent, the dialog reads each target's keys and its
+    // complete listing, which ask `secret.read`. `can()` refuses a role
+    // without any one of them before any grant counts.
+    expect(projectMenuItems(organization('viewer'), [STAGING]).canImportArchive).toBe(false);
+    for (const withheld of ['secret.read', 'secret.create', 'secret.update'] as const) {
+      const narrowed = actionsOf('developer').filter((action) => action !== withheld);
+      expect(
+        projectMenuItems(organization('developer', narrowed), [STAGING]).canImportArchive,
+        `a developer without ${withheld}`,
+      ).toBe(false);
+      // An admin narrowed the same way keeps the items that need none of them.
+      const admin = projectMenuItems(
+        organization(
+          'admin',
+          actionsOf('admin').filter((action) => action !== withheld),
+        ),
+        [STAGING],
+      );
+      expect(admin.canImportArchive, `an admin without ${withheld}`).toBe(false);
+      expect(admin.canRename, `an admin without ${withheld}`).toBe(true);
+    }
+    // …and with all three back, a narrowed role is offered it again.
+    expect(
+      projectMenuItems(
+        organization('developer', [
+          ...CUSTOM_ROLE_FLOOR,
+          'secret.read',
+          'secret.create',
+          'secret.update',
+        ]),
+        [STAGING],
+      ).canImportArchive,
+    ).toBe(true);
+  });
+
+  it('draws no menu for a developer whose only item needs a read they lack', () => {
+    const narrowed = actionsOf('developer').filter((action) => action !== 'secret.read');
+    expect(render(organization('developer', narrowed), [STAGING])).not.toContain('Manage API');
+  });
+
+  it('is not offered in a project with no environment to import into', () => {
+    expect(projectMenuItems(organization('owner'), []).canImportArchive).toBe(false);
   });
 });

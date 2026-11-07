@@ -76,7 +76,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
     '',
     'To open the attachment:',
     '  - offline, with no account: xecret vault open-archive <file>',
-    '  - in xecret: open a project and choose "Import archive"',
+    '  - in xecret: open a project and choose "Import archive" in its Manage menu',
     '',
     `More: ${params.origin}/docs/security/vault-archive`,
     '',
@@ -120,7 +120,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
       <p style="margin:0 0 8px;font-size:15px;line-height:1.6;">To open the attachment:</p>
       <ul style="margin:0 0 16px;padding-left:20px;font-size:15px;line-height:1.6;">
         <li>offline, with no account: <code>xecret vault open-archive &lt;file&gt;</code></li>
-        <li>in xecret: open a project and choose “Import archive”</li>
+        <li>in xecret: open a project and choose “Import archive” in its Manage menu</li>
       </ul>
       <p style="margin:0 0 24px;font-size:13px;line-height:1.6;color:#6b7078;">
         <a href="${escapeHtml(params.origin)}/docs/security/vault-archive">What this archive is, and how to keep it safe</a>
