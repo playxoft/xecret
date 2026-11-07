@@ -358,10 +358,33 @@ describe('the dialog', () => {
     );
     expect(html).toContain('Import a vault archive');
     expect(html).toContain('neither is sent anywhere');
-    expect(html).toContain('Archive file');
-    expect(html).toContain('accept=".zip,.json,application/zip,application/json"');
+    expect(html).toContain('The .zip attached to the email, or the archive.json inside it.');
     // A locked tab is told before anything slow happens.
     expect(html).toContain('Unlock your vault first');
+  });
+
+  it('asks for the file with a drop zone and a button, not the browser’s bare file input', () => {
+    const html = renderToStaticMarkup(
+      createElement(ImportArchiveDialog, {
+        open: true,
+        onOpenChange: () => {},
+        orgSlug: 'acme',
+        orgId: 'o',
+        projectSlug: 'api',
+        environments: [],
+        onImported: () => {},
+      }),
+    );
+    expect(html).toContain('Drag the archive here');
+    expect(html).toMatch(/<button[^>]*>.*?Choose a file.*?<\/button>/);
+
+    // The real picker is still there — the same files, a name of its own —
+    // only visually hidden behind the button.
+    const inputs = html.match(/<input[^>]*type="file"[^>]*>/g) ?? [];
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toContain('accept=".zip,.json,application/zip,application/json"');
+    expect(inputs[0]).toContain('class="sr-only"');
+    expect(inputs[0]).toContain('aria-label="Choose the archive file"');
   });
 
   it('marks, in the preview, every value the chosen strategy would not write', () => {

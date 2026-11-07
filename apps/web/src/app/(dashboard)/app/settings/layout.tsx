@@ -8,10 +8,10 @@ import { SettingsToc } from './settings-toc';
 
 /**
  * The frame every settings tab shares: one header, one tab bar, and — from `xl`
- * up, in the gutter beside the cards — the contents of the tab you are on. The
- * tabs are routes (`account`, `security`, `danger`), so each keeps an address;
- * the contents list turns each *card* into one too. See `settings-tabs.tsx` and
- * `settings-toc.tsx`.
+ * up, in the gutter beside the cards, on every tab but Security — the contents
+ * of the tab you are on. The tabs are routes (`account`, `security`, `danger`),
+ * so each keeps an address; the contents list turns each *card* into one too.
+ * See `settings-tabs.tsx` and `settings-toc.tsx`.
  */
 export default function SettingsLayout({ children }: { children: ReactNode }) {
   return (
@@ -21,6 +21,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
     // while the frame widens from `xl` to make room for the contents rail
     // beside them. Below that breakpoint the rail is hidden and this is exactly
     // the centred column it has always been.
+    //
+    // The frame keeps its width on Security, which draws no rail
+    // (`settings-toc.tsx`): the header and its tabs stay where they are on every
+    // tab, and the cards keep their measure, flush under the header.
     <div className="mx-auto flex w-full max-w-2xl flex-col xl:max-w-[57rem]">
       {/* Pinned, so the heading, the area you are in and the way to the other
           areas are never above the fold you are reading. */}

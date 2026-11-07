@@ -120,7 +120,7 @@ would need both. If you get a reset email you did not ask for:
 Any time — including long after the seven days — you can put the archive's
 secrets back into a project:
 
-1. Open the project and choose **Import archive**.
+1. Open the project, open its **Manage** menu and choose **Import archive**.
 2. Choose the `.zip` file (or the `archive.json` inside it).
 3. Enter the **old** vault's passphrase or one of its recovery codes. The archive
    is opened in your browser; neither the file's contents nor the passphrase is

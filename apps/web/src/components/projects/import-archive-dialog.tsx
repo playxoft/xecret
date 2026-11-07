@@ -10,6 +10,7 @@ import type {
   VaultArchiveDocument,
 } from '@xecret/core/vault-archive';
 import { errorMessage } from '@/lib/api';
+import { cn } from '@/lib/cn';
 import { createGeneration } from '@/lib/generation';
 import { formatAbsoluteTime, pluralize } from '@/lib/format';
 import {
@@ -23,6 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
   Field,
+  FileTextIcon,
   Input,
   SecretValue,
   Select,
@@ -132,6 +134,13 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   // Bumped to remount the file input, which is the only way to clear what a
   // file input holds — so the same file can be picked again after an error.
   const [fileInput, setFileInput] = useState(0);
+  // The picker itself is visually hidden behind a Button, which forwards the
+  // click to it; this is how the Button reaches whichever input is mounted.
+  const picker = useRef<HTMLInputElement | null>(null);
+  // Only the file's name, kept so the dialog can say which file it is reading,
+  // which one did not open, and which one the passphrase is for.
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const generation = useRef(createGeneration());
 
   function reset() {
@@ -144,6 +153,8 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
     setMapping({});
     setStrategy('skip');
     setPreview(null);
+    setFileName(null);
+    setDragging(false);
     setFileInput((n) => n + 1);
   }
 
@@ -156,6 +167,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
     if (file === undefined || busy !== null) return;
     const current = generation.current.start();
     setFailure(null);
+    setFileName(file.name);
     setBusy('reading');
     try {
       const doc = await readArchiveFile(new Uint8Array(await file.arrayBuffer()));
@@ -346,33 +358,95 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
 
         {step.kind === 'file' ? (
           <DialogBody>
-            <Field
-              label="Archive file"
-              hint={
-                busy === 'reading'
-                  ? 'Reading the file…'
-                  : 'The .zip attached to the email, or the archive.json inside it.'
-              }
+            {/* The secrets import's drop zone (`secrets/import-dialog.tsx`),
+                for the same reason: a bare file input draws the browser's own
+                unstyled "Choose File" control, which matches nothing else in
+                the product. Dropping a file and choosing one both reach
+                `chooseFile`, which ignores a second file while one is read. */}
+            <div
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (busy === null) setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragging(false);
+                void chooseFile(event.dataTransfer.files[0]);
+              }}
+              className={cn(
+                'rounded-xl border border-dashed px-4 py-6 text-center transition-colors',
+                dragging ? 'border-accent bg-accent-tint' : 'border-line bg-canvas-inset',
+              )}
             >
-              <Input
+              <FileTextIcon className="text-fg-subtle mx-auto size-6" />
+              <p className="text-fg-muted mt-2 text-sm" aria-live="polite">
+                {busy === 'reading' && fileName !== null ? (
+                  <>
+                    Reading <span className="text-fg font-mono break-all">{fileName}</span>…
+                  </>
+                ) : (
+                  <>
+                    Drag the archive here
+                    {fileName === null ? null : (
+                      <>
+                        {' '}
+                        — last chosen{' '}
+                        <span className="text-fg font-mono break-all">{fileName}</span>
+                      </>
+                    )}
+                  </>
+                )}
+              </p>
+              {/* The visible control is a Button; the input is the real file
+                  picker behind it, and the Button forwards its click there — so
+                  this is not a drag-only interaction. The `key` stays on the
+                  input: remounting it is what clears it after an error. */}
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-3"
+                loading={busy === 'reading'}
+                disabled={busy !== null}
+                onClick={() => picker.current?.click()}
+              >
+                Choose a file
+              </Button>
+              <input
                 key={fileInput}
+                ref={picker}
                 type="file"
                 accept=".zip,.json,application/zip,application/json"
+                className="sr-only"
+                aria-label="Choose the archive file"
                 disabled={busy !== null}
                 onChange={(event) => void chooseFile(event.target.files?.[0])}
               />
-            </Field>
+              <p className="text-fg-subtle mt-3 text-xs leading-5">
+                The .zip attached to the email, or the archive.json inside it.
+              </p>
+            </div>
           </DialogBody>
         ) : null}
 
         {step.kind === 'credential' ? (
           <form onSubmit={open} noValidate>
             <DialogBody className="flex flex-col gap-4">
-              <p className="text-fg-muted text-sm leading-6">
-                Made {formatAbsoluteTime(step.doc.createdAt)}
-                {step.doc.parts > 1 ? `, part ${step.doc.part} of ${step.doc.parts}` : ''}, holding{' '}
-                {pluralize(step.doc.environments.length, 'environment')}.
-              </p>
+              <div className="border-line bg-canvas-inset flex items-center gap-3 rounded-lg border px-3 py-2.5">
+                <FileTextIcon className="text-fg-subtle size-5 shrink-0" />
+                <div className="min-w-0">
+                  {fileName === null ? null : (
+                    <p className="text-fg truncate font-mono text-sm" title={fileName}>
+                      {fileName}
+                    </p>
+                  )}
+                  <p className="text-fg-muted text-sm leading-6">
+                    Made {formatAbsoluteTime(step.doc.createdAt)}
+                    {step.doc.parts > 1 ? `, part ${step.doc.part} of ${step.doc.parts}` : ''},
+                    holding {pluralize(step.doc.environments.length, 'environment')}.
+                  </p>
+                </div>
+              </div>
               <CredentialChoice
                 value={method}
                 disabled={busy !== null}
@@ -588,7 +662,7 @@ export function ArchiveEnvironmentCard({
   const values = importableValues(environment);
 
   return (
-    <div className="border-border flex flex-col gap-2 rounded-lg border p-3">
+    <div className="border-line flex flex-col gap-2 rounded-lg border p-3">
       <div className="text-sm">
         <span className="text-fg font-medium">
           {environment.orgName} / {environment.projectName} / {environment.environmentName}
