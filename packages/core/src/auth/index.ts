@@ -115,6 +115,19 @@ export type {
 } from './email-verification';
 
 export {
+  deriveKnownDeviceKey,
+  deriveSignInThrottleKey,
+  foldAddress,
+  generateDeviceId,
+  KNOWN_DEVICE_COOKIE_NAME,
+  KNOWN_DEVICE_TTL_SECONDS,
+  knownDeviceCookie,
+  openKnownDevice,
+  sealKnownDevice,
+} from './known-device';
+export type { KnownDevice } from './known-device';
+
+export {
   clearedSignInConfirmationCookie,
   deriveSignInConfirmationKey,
   generateConfirmationNonce,
