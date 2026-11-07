@@ -22,10 +22,13 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * document earns.
  *
  * The data categories in section 2 are deliberately specific — column names,
- * cookie names, the two `localStorage` keys — because "we collect certain
- * information to provide and improve our services" is not a disclosure. That
- * specificity is also the maintenance burden: change the session table or add a
- * fourth cookie and this page is wrong until it is edited.
+ * cookie names, every key the site keeps in browser storage — because "we
+ * collect certain information to provide and improve our services" is not a
+ * disclosure. That specificity is also the maintenance burden: change the
+ * session table or add a fourth cookie and this page is wrong until it is
+ * edited. The browser storage, at least, is pinned: `marketing-pages.test.ts`
+ * finds every storage key the app's code declares and fails when this page
+ * does not name it, or names it under the wrong kind of storage.
  */
 
 const TITLE = 'Privacy policy';
@@ -33,8 +36,8 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-10-20';
-const EFFECTIVE = '2026-10-26';
+const UPDATED = '2026-11-07';
+const EFFECTIVE = '2026-11-07';
 
 const CANONICAL = absoluteUrl('/privacy');
 
@@ -461,12 +464,88 @@ const SECTIONS: readonly LegalSection[] = [
       ],
       'The sign-in page itself is served by WorkOS, and whatever it stores in your browser is governed by WorkOS’s own policy rather than this one.',
       <>
-        Two preferences live in <code className="text-fg font-mono text-[0.9em]">localStorage</code>{' '}
-        on your own device and are never sent to us:{' '}
-        <code className="text-fg font-mono text-[0.9em]">xecret.theme</code> (light, dark or system)
-        and <code className="text-fg font-mono text-[0.9em]">xecret.sidebar</code> (whether the
-        dashboard sidebar is collapsed).
+        Besides the cookies, this site keeps the entries below in your browser&rsquo;s own storage.
+        They are written and read by the site&rsquo;s code in your browser, and the entries
+        themselves are never uploaded to us. Several of them hold identifiers our server also has
+        &mdash; your account&rsquo;s, members&rsquo; and service tokens&rsquo; identifiers, and
+        organisation, project and environment slugs &mdash; and one of those identifiers, the device
+        identifier in <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code>, is sent
+        to us whenever you set up, use or turn off a device PIN, because naming this browser to our
+        server is what it is for.
       </>,
+      <>
+        In <code className="text-fg font-mono text-[0.9em]">localStorage</code>, which keeps them
+        until you clear this site&rsquo;s data in your browser:
+      </>,
+      [
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.theme</code> — light, dark or
+          system.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.sidebar</code> — whether the
+          dashboard sidebar is collapsed.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.projects.view</code> — whether the
+          projects page shows a grid or a list.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.nudge.unlock.v1</code> — when this
+          browser last offered you a faster way to unlock your vault, as a timestamp, so that the
+          offer is not made again for 30 days.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.pins.v1</code> — the public keys
+          of the members and service tokens this browser has encrypted keys for, each filed under
+          its xecret identifier with the date it was first recorded. A public key is not a secret.
+          It is kept so that if our server ever presented a different key for one of them, this
+          browser would notice and warn you instead of encrypting to it.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.pins.mode.v1</code> — for each
+          environment this browser has worked with, filed under its organisation, project and
+          environment slugs: whether it was end-to-end encrypted, and when that was first seen. If
+          our server later claimed that such an environment was no longer end-to-end encrypted, this
+          browser would refuse to send it secret values in plain text.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code> — present only if
+          you set up a device PIN on this browser. It holds your vault key — the key your master
+          passphrase unlocks — encrypted so that this device alone cannot open it: the other half of
+          the key it is encrypted under stays on our server, which releases it only when the PIN you
+          type is right, and deletes it after five wrong attempts in a row. Beside it are a random
+          salt, and an identifier for this browser that is sent to our server whenever you set up,
+          use or turn off the PIN, so that it knows which half to release. The encrypted vault key
+          itself never leaves this browser. Turning the PIN off in this browser deletes the entry.
+          If the PIN ends any other way &mdash; turned off from another browser, or revoked because
+          your passphrase was changed or your vault was recovered or reset &mdash; our server has
+          deleted its half, and the entry can stay here until this browser next tries to use it.
+        </>,
+      ],
+      <>
+        In <code className="text-fg font-mono text-[0.9em]">sessionStorage</code>, which belongs to
+        a single tab:
+      </>,
+      [
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.last-org</code> — the slug of the
+          organisation this tab was last working in, so that your account pages keep pointing at it.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">xecret.uk.session.v1</code> — while your
+          vault is unlocked in a tab, that tab keeps a copy of the vault&rsquo;s keys here,{' '}
+          <strong className="text-fg font-medium">unencrypted</strong>: your vault key, your
+          account&rsquo;s encryption and signing key pairs, and your account identifier. It is what
+          lets a reload skip your passphrase, and the entry is never sent to us. Locking the vault,
+          or signing out in that tab, deletes it. If your session ends any other way &mdash; it
+          expires, it is revoked, or you sign out everywhere from another device &mdash; the copy
+          can stay in that tab until the tab is closed or the vault is locked there. Closing a tab
+          normally ends it, but a browser that reopens closed tabs, restores a previous session or
+          duplicates a tab can carry it along. So on a computer you share, lock the vault or close
+          the tab yourself, rather than relying on signing out from somewhere else.
+        </>,
+      ],
       'There is no advertising cookie, no analytics cookie and no third-party tag on this site. That is why there is no cookie banner: there is nothing to ask you about. If we ever add analytics, this section will say so, and we will ask first where the law requires it.',
     ],
   },
@@ -516,6 +595,13 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'Changes to this policy',
     paragraphs: [
       'When this policy changes, the date at the top of the page changes with it. For a change that materially affects your rights, we will email the owners of every organisation and announce it in the repository before it takes effect.',
+      <>
+        The version of 7 November 2026 is not a material change. It describes more completely what
+        this site keeps in your browser, under{' '}
+        <LegalLink href="#cookies">Cookies and browser storage</LegalLink>, including one new
+        display preference. What we collect, why we process it, who processes it for us, and your
+        rights are unchanged.
+      </>,
       <>
         This page lives in the same repository as the product, so its history is the git history:
         you can see what it said before, and when it changed, without taking our word for it. That

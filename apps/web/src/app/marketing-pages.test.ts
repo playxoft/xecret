@@ -1,8 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+import { PROJECT_VIEW_STORAGE_KEY } from '@/components/projects/project-listing';
+import { DEVICE_PIN_WRAP_KEY } from '@/components/vault/device-pin';
+import { VAULT_SESSION_MIRROR_KEY } from '@/components/vault/session-mirror';
+import { UNLOCK_NUDGE_KEY } from '@/components/vault/unlock-nudge';
+import { SIDEBAR_STORAGE_KEY, THEME_STORAGE_KEY } from '@/lib/theme';
 
 /**
  * The prose pages against the engine, and against each other.
@@ -63,12 +69,13 @@ function idx(haystack: string, needle: string): number {
  * assertions are about.
  *
  * Line comments are stripped only where they begin a line, so a `//` inside a
- * URL in body copy survives.
+ * URL in body copy survives. Both kinds go in one pass, so a `/*` inside a line
+ * comment cannot open a block (see `stripComments`).
  */
 const PROSE = new Map(
   [...SOURCES].map(([page, source]) => [
     page,
-    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, ''),
+    source.replace(/(?<![\w/])\/\*[\s\S]*?\*\/|^[ \t]*\/\/.*$/gm, ''),
   ]),
 );
 
@@ -488,50 +495,6 @@ describe('the add-ons are described the same way everywhere', () => {
     }
   });
 
-  it('gives the notice the legal pages promise before a change takes effect', () => {
-    // §Changes: "for a material change we will give notice … before it takes
-    // effect, 30 days ahead where we reasonably can".
-    //
-    // The date has been wrong in both directions. It once stayed at the old
-    // value, so a customer got no signal that the prices binding them had
-    // changed; then it moved to the publish date, so the page promised advance
-    // notice and gave none — and fed `datePublished`, claiming the new table was
-    // in force before it was written. So a dated version must take effect at or
-    // after it was written.
-    //
-    // A version may instead take effect on publication (`EFFECTIVE = null`):
-    // the deploy is its date, which the source cannot know. That is a change
-    // made *without* the notice §Changes promises, so §Changes itself has to
-    // say so — checked against that section's own text, not anywhere in the
-    // file, where a comment would satisfy it.
-    for (const page of ['terms', 'privacy'] as const) {
-      const source = SOURCES.get(page) ?? '';
-      const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
-      const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
-      const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
-
-      expect(updated, `${page} has no UPDATED date`).toBeDefined();
-      if (onPublication) {
-        const start = source.indexOf("id: 'changes'");
-        expect(start, `${page} takes effect on publication but has no §Changes`).toBeGreaterThan(
-          -1,
-        );
-        const rest = source.slice(start + 1);
-        const next = rest.search(/id: '[a-z-]+'/);
-        const changes = (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
-        expect(changes, `${page} takes effect on publication without §Changes saying so`).toContain(
-          'This version is a change made without that notice, and it takes effect on publication.',
-        );
-        continue;
-      }
-      expect(effective, `${page} has no EFFECTIVE date`).toBeDefined();
-      expect(
-        Date.parse(effective as string),
-        `${page} takes effect before it was published`,
-      ).toBeGreaterThanOrEqual(Date.parse(updated as string));
-    }
-  });
-
   /**
    * The version these terms replace promised something this one withdraws for
    * the limits it introduces, and counsel reads the two side by side: §Changes
@@ -568,5 +531,782 @@ describe('the add-ons are described the same way everywhere', () => {
         /\$\d|per[- ]connection|add-on/i,
       );
     }
+  });
+});
+
+/* ── Reading source as published ──────────────────────────────────────────── */
+
+/**
+ * A legal page's source with its comments taken out, for reading its prose —
+ * the JSX text, which is what the reader sees.
+ *
+ * Block comments, whole-line `//` comments, and a `//` comment trailing code
+ * on its line: the last is one `PROSE` leaves in, and it let a sentence that
+ * existed only as a note after a string satisfy a check about what a page
+ * says. A `//` straight after a colon or a quote is kept, so `https://…` and
+ * `'//'` survive.
+ *
+ * **One pass**, so whichever comment *starts* first wins. Two passes — blocks
+ * first — let a `/*` inside a line comment ("the account area, `/app/settings/*`")
+ * open a block that ran on to the next `*\/` and swallowed the code between.
+ *
+ * A `/*` straight after a letter or a slash — `/app/settings/*` written in the
+ * prose itself — does not open a comment; one after a space still would, and
+ * no legal page's text contains one.
+ *
+ * Only for prose. The storage guard below reads code through the TypeScript
+ * parser instead, where comments never reach the tree at all.
+ */
+function stripComments(source: string): string {
+  return source.replace(
+    /(?<![\w/])\/\*[\s\S]*?\*\/|(^|[^:'"`\\])\/\/.*$/gm,
+    (comment, before?: string) => (comment.startsWith('/*') ? '' : (before ?? '')),
+  );
+}
+
+/** One section of a legal page's source, from its `id` to the next one, whitespace collapsed. */
+function sectionOf(source: string, id: string): string | null {
+  const text = stripComments(source);
+  const start = text.indexOf(`id: '${id}'`);
+  if (start < 0) return null;
+  const rest = text.slice(start + 1);
+  const next = rest.search(/id: '[a-z-]+'/);
+  return (next < 0 ? rest : rest.slice(0, next)).replace(/\s+/g, ' ');
+}
+
+/* ── When a legal page binds ──────────────────────────────────────────────── */
+
+/** How `LegalPage` writes a date out, so §Changes can be checked against it. */
+const LEGAL_DATE = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const WITHOUT_NOTICE =
+  'This version is a change made without that notice, and it takes effect on publication.';
+
+const NOT_MATERIAL = /The version of (\d{1,2} [A-Z][a-z]+ \d{4}) is not a material change\./g;
+
+/** Today's date in UTC, as `YYYY-MM-DD` — the calendar `LegalPage` prints in. */
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Why a legal page's dates misstate when it binds, or `null` when they do not.
+ *
+ * §Changes promises: "for a material change we will give notice … before it
+ * takes effect". The date has been wrong in both directions. It once stayed at
+ * the old value, so a customer got no signal that the prices binding them had
+ * changed; then it moved to the publish date, so the page promised advance
+ * notice and gave none — and fed `datePublished`, claiming the new table was in
+ * force before it was written. Three states are honest, and nothing else is:
+ *
+ *  1. **Notice given** — `EFFECTIVE` a date after `UPDATED`.
+ *  2. **On publication, without notice** — `EFFECTIVE = null`: the deploy is its
+ *     date, which the source cannot know. A change made without the notice
+ *     §Changes promises, so §Changes has to say so.
+ *  3. **Not material** — `EFFECTIVE` equal to `UPDATED`. Taking effect the day
+ *     it was written gives no notice, and a deploy that lands days later would
+ *     have the page claim it bound people before they could read it. That is
+ *     honest only for a version with nothing to give notice of, so §Changes has
+ *     to say this version — by its date — is not material.
+ *
+ * The non-material sentence names its version's date so that it cannot
+ * outlive it: a later version that moves `UPDATED` and keeps the sentence would
+ * otherwise go on telling readers that nothing material changed.
+ *
+ * `UPDATED` may not be in the future, since a page cannot have been last
+ * updated on a day that has not happened. "Today" is UTC, the calendar the
+ * page prints in, with one day's grace: an author east of UTC writes
+ * tomorrow's UTC date for several hours of every morning, and a guard that
+ * failed for them until lunch would be flaky.
+ *
+ * Checked against §Changes's own text with every kind of comment removed,
+ * never anywhere in the file. The cases under "the legal-date guard" below are
+ * the dishonest states, each shown to be refused for its own reason.
+ */
+function legalDatesProblem(page: string, source: string, today = todayUtc()): string | null {
+  const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
+  const effective = /const EFFECTIVE(?:: [^=]+)? = '([\d-]+)'/.exec(source)?.[1];
+  const onPublication = /const EFFECTIVE(?:: [^=]+)? = null;/.test(source);
+  if (updated === undefined) return `${page} has no UPDATED date`;
+  if (Date.parse(updated) > Date.parse(today) + DAY_MS) {
+    return `${page} is dated ${updated}, which is after today (${today}, UTC)`;
+  }
+
+  const changes = sectionOf(source, 'changes');
+  const thisVersion = LEGAL_DATE.format(new Date(updated));
+  const notMaterial = [...(changes ?? '').matchAll(NOT_MATERIAL)].map((match) => match[1]);
+  const stale = notMaterial.find((date) => date !== thisVersion);
+  if (stale !== undefined) {
+    return `${page} §Changes calls the version of ${stale} not material, but this one is of ${thisVersion}`;
+  }
+
+  if (onPublication) {
+    if (changes === null) return `${page} takes effect on publication but has no §Changes`;
+    if (!changes.includes(WITHOUT_NOTICE)) {
+      return `${page} takes effect on publication without §Changes saying so`;
+    }
+    return null;
+  }
+
+  if (effective === undefined) return `${page} has no EFFECTIVE date`;
+  if (Date.parse(effective) < Date.parse(updated)) {
+    return `${page} takes effect before it was published`;
+  }
+  if (effective === updated && !notMaterial.includes(thisVersion)) {
+    return `${page} takes effect the day it was written, with no notice, and §Changes does not say the version of ${thisVersion} is not material`;
+  }
+  return null;
+}
+
+describe('the legal-date guard', () => {
+  /** A fixed "today" for the cases, so none of them depends on the clock. */
+  const TODAY = '2026-12-15';
+
+  /** A legal page's source, reduced to what the guard reads, one paragraph per line. */
+  function page({
+    updated = '2026-11-07',
+    effective,
+    changes = [],
+    elsewhere = [],
+  }: {
+    updated?: string | null;
+    /** A date, `null` for on publication, `undefined` for no constant at all. */
+    effective?: string | null;
+    /** Paragraphs of §Changes, as source text. */
+    changes?: string[];
+    /** Paragraphs of another section, as source text. */
+    elsewhere?: string[];
+  }): string {
+    return [
+      updated === null ? '' : `const UPDATED = '${updated}';`,
+      effective === undefined
+        ? ''
+        : effective === null
+          ? 'const EFFECTIVE: string | null = null;'
+          : `const EFFECTIVE = '${effective}';`,
+      'const SECTIONS = [',
+      "  { id: 'cookies', paragraphs: [",
+      ...elsewhere.map((paragraph) => `    ${paragraph},`),
+      '  ] },',
+      "  { id: 'changes', paragraphs: [",
+      ...changes.map((paragraph) => `    ${paragraph},`),
+      '  ] },',
+      "  { id: 'contact', paragraphs: [] },",
+      '];',
+    ].join('\n');
+  }
+
+  const said = (text: string) => JSON.stringify(text);
+  const NOT_MATERIAL_NOV_7 = said('The version of 7 November 2026 is not a material change.');
+
+  describe('accepts the three honest states', () => {
+    it.each([
+      [
+        'notice given: effective after it was written',
+        page({ updated: '2026-09-26', effective: '2026-10-26' }),
+      ],
+      [
+        'on publication, with §Changes saying it came without notice',
+        page({ effective: null, changes: [said(WITHOUT_NOTICE)] }),
+      ],
+      [
+        'not material: effective the day it was written, with §Changes saying so of this version',
+        page({ effective: '2026-11-07', changes: [NOT_MATERIAL_NOV_7] }),
+      ],
+      [
+        'the sentence however the source wraps it',
+        page({
+          effective: '2026-11-07',
+          changes: ['<>\n  The version of 7 November 2026 is not a\n  material change.\n</>'],
+        }),
+      ],
+      [
+        'a date one day ahead of UTC, as an author east of it writes in the morning',
+        page({ updated: '2026-12-16', effective: '2027-01-16' }),
+      ],
+    ])('%s', (_, source) => {
+      expect(legalDatesProblem('p', source, TODAY)).toBe(null);
+    });
+  });
+
+  describe('refuses every dishonest one', () => {
+    // Each with the reason it must be refused for, so a case cannot pass by
+    // tripping some other rule first.
+    const NO_NOTICE = 'takes effect the day it was written, with no notice';
+    const UNSAID = 'takes effect on publication without §Changes saying so';
+    it.each([
+      ['no UPDATED date', page({ updated: null, effective: '2026-11-07' }), 'has no UPDATED date'],
+      ['no EFFECTIVE date at all', page({}), 'has no EFFECTIVE date'],
+      [
+        'dated after today',
+        page({ updated: '2026-12-20', effective: '2027-01-20' }),
+        'is dated 2026-12-20, which is after today (2026-12-15, UTC)',
+      ],
+      [
+        'effective before it was written, even when called not material',
+        page({ effective: '2026-10-26', changes: [NOT_MATERIAL_NOV_7] }),
+        'takes effect before it was published',
+      ],
+      [
+        'effective the day it was written, with nothing said',
+        page({ effective: '2026-11-07' }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, called not material only in a block comment',
+        page({
+          effective: '2026-11-07',
+          changes: ['/* The version of 7 November 2026 is not a material change. */'],
+        }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, called not material only in a comment after a paragraph',
+        page({
+          effective: '2026-11-07',
+          changes: [
+            `${said('Nothing else.')} // The version of 7 November 2026 is not a material change.`,
+          ],
+        }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, called not material in another section',
+        page({ effective: '2026-11-07', elsewhere: [NOT_MATERIAL_NOV_7] }),
+        NO_NOTICE,
+      ],
+      [
+        'effective the day it was written, with the sentence left from an older version',
+        page({
+          effective: '2026-11-07',
+          changes: [said('The version of 20 October 2026 is not a material change.')],
+        }),
+        'calls the version of 20 October 2026 not material',
+      ],
+      [
+        'notice given, but an older version’s "not material" left standing',
+        page({ updated: '2026-12-01', effective: '2027-01-01', changes: [NOT_MATERIAL_NOV_7] }),
+        'calls the version of 7 November 2026 not material',
+      ],
+      ['on publication with nothing said', page({ effective: null }), UNSAID],
+      [
+        'on publication, said only in a block comment',
+        page({ effective: null, changes: [`/* ${WITHOUT_NOTICE} */`] }),
+        UNSAID,
+      ],
+      [
+        'on publication, said only in a comment after a paragraph',
+        page({ effective: null, changes: [`${said('Nothing else.')} // ${WITHOUT_NOTICE}`] }),
+        UNSAID,
+      ],
+      [
+        'a stale "not material" behind a line comment holding `/*`',
+        // Read blocks-first, the `/*` in the note opened a block that ran to
+        // the doc comment's close and hid the stale sentence between them.
+        page({
+          effective: '2026-11-07',
+          changes: [
+            NOT_MATERIAL_NOV_7,
+            '// see /app/settings/* for where this is shown',
+            said('The version of 20 October 2026 is not a material change.'),
+            '/** a note further down */ said',
+          ],
+        }),
+        'calls the version of 20 October 2026 not material',
+      ],
+    ])('%s', (_, source, reason) => {
+      expect(legalDatesProblem('p', source, TODAY)).toContain(reason);
+    });
+  });
+
+  describe('reads comments one at a time, whichever starts first', () => {
+    it('keeps the code after a line comment that holds `/*`', () => {
+      const source = "// see /app/settings/* for more\nconst kept = 'yes';\n/** a doc */\n";
+      expect(stripComments(source)).toContain("const kept = 'yes';");
+    });
+
+    it('still removes a block comment that holds `//`', () => {
+      expect(stripComments("/* a // b */ const kept = 'yes';")).toBe(" const kept = 'yes';");
+    });
+
+    it('reads a `/*` written in the prose itself as text, not as a comment', () => {
+      const source =
+        '<>Your settings live under /app/settings/* in the dashboard.</>\n{/* a note */}';
+      const prose = stripComments(source);
+      expect(prose).toContain('/app/settings/* in the dashboard.');
+      expect(prose).not.toContain('a note');
+    });
+
+    it('keeps a URL', () => {
+      expect(stripComments("const url = 'https://example.com';")).toContain('https://example.com');
+    });
+  });
+
+  describe('the real pages', () => {
+    it.each(['terms', 'privacy'] as const)(
+      'gives the notice %s promises before a change takes effect',
+      (name) => {
+        expect(legalDatesProblem(name, SOURCES.get(name) ?? '')).toBeNull();
+      },
+    );
+  });
+});
+
+/* ── Browser storage, against the code that writes it ──────────────────────── */
+
+type StorageKind = 'localStorage' | 'sessionStorage';
+
+/** A source file: its path under `src/`, and its text. */
+interface Source {
+  file: string;
+  text: string;
+}
+
+/**
+ * Strings that begin `xecret.` and are not browser storage, each with what it
+ * is instead. A new one fails the guard below until it is either disclosed in
+ * the privacy policy or added here with its reason — the burden is on the
+ * string to prove it is not a key.
+ */
+const NOT_BROWSER_STORAGE: Readonly<Record<string, string>> = {
+  'xecret.scheduled-nonces': '`Symbol.for` registry key, server-side (server/scheduled.ts)',
+  'xecret.secret-fetch-counter': '`Symbol.for` registry key, server-side (server/billing/usage.ts)',
+  'xecret.vault.v1': 'BroadcastChannel name — a message bus between tabs, stores nothing',
+  'xecret.v2.prf-salt': 'WebAuthn PRF domain separator — hashed into a salt, never stored',
+};
+
+/** Every non-test source file under `src/`. */
+function readSources(): Source[] {
+  const src = join(import.meta.dirname, '..');
+  return readdirSync(src, { recursive: true })
+    .map(String)
+    .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+    .filter((file) => !file.endsWith('.d.ts'))
+    .map((file) => ({
+      file: file.replace(/\\/g, '/'),
+      text: readFileSync(join(src, file), 'utf8'),
+    }));
+}
+
+/** What one file's code says about browser storage. */
+interface FileScan {
+  /** The storage it reaches for, or `'both'`, or `null` when neither. */
+  kind: StorageKind | 'both' | null;
+  /** Keys declared as `const …KEY = 'xecret.…'`. */
+  declared: string[];
+  /** Every string in the code that begins `xecret.`, however it is used. */
+  literals: string[];
+}
+
+const STORAGE_NAMES: ReadonlySet<string> = new Set<StorageKind>(['localStorage', 'sessionStorage']);
+const GLOBAL_OBJECTS: ReadonlySet<string> = new Set(['window', 'globalThis', 'self']);
+
+/** The text of a string or template literal — a template's with `${…}` for each hole. */
+function literalText(node: ts.Node): string | null {
+  if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isTemplateExpression(node)) {
+    return node.head.text + node.templateSpans.map((span) => `\${…}${span.literal.text}`).join('');
+  }
+  return null;
+}
+
+/** A string's text when it *is* a key: when it begins `xecret.`. */
+function xecretText(node: ts.Node): string | null {
+  const text = literalText(node);
+  return text !== null && text.startsWith('xecret.') ? text : null;
+}
+
+/**
+ * Code that lives inside a string — an inline script, like the theme's
+ * no-flash bootstrap, which reads `localStorage` from a template literal the
+ * parser sees only as text. Read the way the regex guard once read whole
+ * files: a quoted `xecret.…` is a key, and `window.localStorage`, an
+ * assignment of it, or a `localStorage.getItem(…)`-style call reaches storage.
+ * Prose that merely mentions "localStorage" matches none of these.
+ */
+const KEY_IN_TEXT = /['"`](xecret\.[^'"`\s]*)/g;
+const REACH_IN_TEXT: Readonly<Record<StorageKind, RegExp>> = {
+  localStorage:
+    /\bwindow\.localStorage\b|=\s*localStorage\b|(?<![\w.])localStorage\s*\.\s*(?:getItem|setItem|removeItem|clear|key)\b/,
+  sessionStorage:
+    /\bwindow\.sessionStorage\b|=\s*sessionStorage\b|(?<![\w.])sessionStorage\s*\.\s*(?:getItem|setItem|removeItem|clear|key)\b/,
+};
+
+/**
+ * The storage an identifier reaches for, or `null` when it only *names*
+ * something called that: a key in an object literal, a declaration, a type.
+ * `window.localStorage` (or `globalThis.` / `self.`) counts, and so does the
+ * bare global however it is used — `localStorage.setItem(…)`, `s = localStorage`.
+ */
+function storageReachedBy(node: ts.Identifier): StorageKind | null {
+  if (!STORAGE_NAMES.has(node.text)) return null;
+  const name = node.text as StorageKind;
+  const parent = node.parent;
+
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+    return ts.isIdentifier(parent.expression) && GLOBAL_OBJECTS.has(parent.expression.text)
+      ? name
+      : null;
+  }
+  const declares =
+    ts.isPropertyAssignment(parent) ||
+    ts.isPropertySignature(parent) ||
+    ts.isPropertyDeclaration(parent) ||
+    ts.isMethodDeclaration(parent) ||
+    ts.isVariableDeclaration(parent) ||
+    ts.isParameter(parent) ||
+    ts.isBindingElement(parent) ||
+    ts.isImportSpecifier(parent) ||
+    ts.isExportSpecifier(parent);
+  if (declares && (parent as { name?: ts.Node }).name === node) return null;
+  if (ts.isQualifiedName(parent) || ts.isTypeReferenceNode(parent)) return null;
+  return name;
+}
+
+const SCANS = new WeakMap<Source, FileScan>();
+
+/**
+ * One file, read through the TypeScript parser.
+ *
+ * Not through regular expressions over the text, which this guard used to do:
+ * deciding what is a comment from the outside went wrong in a way that hid
+ * two hundred lines of `dashboard-chrome.tsx` — a `/*` inside a `//` comment
+ * opened a "block" that ran to the next `*\/`, and a storage write planted in
+ * between passed. Comments never reach the syntax tree, so there is nothing
+ * here to get wrong about them.
+ *
+ * The one place the tree does not reach is code inside a string — the theme's
+ * inline bootstrap — so every literal's text is read for keys and storage
+ * calls as well (`KEY_IN_TEXT`, `REACH_IN_TEXT`). A string is never a comment,
+ * so reading inside one reopens nothing the parser closed.
+ *
+ * Cached per source object: the probes below re-check the whole tree with one
+ * file added or changed, and the unchanged files are the same objects.
+ */
+function scanFile(source: Source): FileScan {
+  const cached = SCANS.get(source);
+  if (cached !== undefined) return cached;
+
+  const tree = ts.createSourceFile(
+    source.file,
+    source.text,
+    ts.ScriptTarget.Latest,
+    true,
+    source.file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const reached = new Set<StorageKind>();
+  const declared: string[] = [];
+  const literals: string[] = [];
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const storage = storageReachedBy(node);
+      if (storage !== null) reached.add(storage);
+    } else if (
+      // `window['localStorage']`.
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      GLOBAL_OBJECTS.has(node.expression.text) &&
+      ts.isStringLiteralLike(node.argumentExpression) &&
+      STORAGE_NAMES.has(node.argumentExpression.text)
+    ) {
+      reached.add(node.argumentExpression.text as StorageKind);
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      let value = node.initializer;
+      while (
+        value !== undefined &&
+        (ts.isAsExpression(value) ||
+          ts.isSatisfiesExpression(value) ||
+          ts.isParenthesizedExpression(value))
+      ) {
+        value = value.expression;
+      }
+      const key = value === undefined ? null : xecretText(value);
+      if (key !== null && /^[A-Z_]*KEY$/.test(node.name.text)) declared.push(key);
+    }
+
+    const whole = xecretText(node);
+    if (whole !== null) literals.push(whole);
+
+    // And code carried inside a string, which the tree holds only as text.
+    const text = literalText(node);
+    if (text !== null) {
+      for (const match of text.matchAll(KEY_IN_TEXT)) literals.push(match[1] ?? '');
+      for (const storage of ['localStorage', 'sessionStorage'] as const) {
+        if (REACH_IN_TEXT[storage].test(text)) reached.add(storage);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+
+  const kind =
+    reached.size === 2
+      ? 'both'
+      : reached.has('localStorage')
+        ? 'localStorage'
+        : reached.has('sessionStorage')
+          ? 'sessionStorage'
+          : null;
+  const scan: FileScan = { kind, declared, literals };
+  SCANS.set(source, scan);
+  return scan;
+}
+
+/**
+ * Everything wrong between what the code keeps in browser storage and what the
+ * privacy policy says it keeps. Empty when they agree.
+ *
+ * Two nets, because one let things through. The first reads keys the way they
+ * are declared today — a `const …KEY = 'xecret.…'` in a file that uses one
+ * storage — and so can say *which* list each belongs in. The second catches
+ * what the first cannot see: any string beginning `xecret.` anywhere in the
+ * code, a key passed straight to a helper or to `setItem`, a literal tucked
+ * into a file whose other keys are declared properly. Each must be named on
+ * the page, or listed in `NOT_BROWSER_STORAGE` with what it is instead.
+ *
+ * And the reverse: every `xecret.…` key the page names must still be in the
+ * code, so a rename cannot leave the policy disclosing a key nothing writes.
+ */
+function storageDisclosureProblems(sources: readonly Source[], privacySource: string): string[] {
+  const problems: string[] = [];
+
+  const section = sectionOf(privacySource, 'cookies') ?? '';
+  const localAt = section.search(/In <code[^>]*>localStorage<\/code>/);
+  const sessionAt = section.search(/In <code[^>]*>sessionStorage<\/code>/);
+  if (localAt < 0 || sessionAt < localAt) {
+    return ['the policy has no "In localStorage" list followed by an "In sessionStorage" one'];
+  }
+  const listed: Record<StorageKind, string> = {
+    localStorage: section.slice(localAt, sessionAt),
+    sessionStorage: section.slice(sessionAt),
+  };
+  const named = (key: string, where: string) => where.includes(`>${key}</code>`);
+
+  const literals = new Map<string, string>();
+  for (const source of sources) {
+    const { file } = source;
+    const { kind, declared, literals: found } = scanFile(source);
+
+    // The first net: declared keys, in the list for the storage their file uses.
+    if (kind === 'both') problems.push(`${file} uses both storages; split it, or teach this test`);
+    if (kind === null && declared.length > 0) {
+      problems.push(
+        `${file} declares ${declared.join(', ')} but uses no storage this test can see`,
+      );
+    }
+    if (kind !== null && kind !== 'both') {
+      if (declared.length === 0) problems.push(`${file} uses ${kind} under no key constant`);
+      const other: StorageKind = kind === 'localStorage' ? 'sessionStorage' : 'localStorage';
+      for (const key of declared) {
+        if (!named(key, listed[kind])) {
+          problems.push(`${file} keeps ${key} in ${kind}, and the policy does not list it there`);
+        }
+        if (named(key, listed[other])) {
+          problems.push(`the policy lists ${key} under ${other}, but ${file} keeps it in ${kind}`);
+        }
+      }
+    }
+
+    // The second net: every `xecret.` string, however it is used.
+    for (const literal of found) {
+      if (!literals.has(literal)) literals.set(literal, file);
+    }
+  }
+
+  for (const [literal, file] of literals) {
+    if (literal in NOT_BROWSER_STORAGE) continue;
+    if (!named(literal, listed.localStorage) && !named(literal, listed.sessionStorage)) {
+      problems.push(
+        `${file} has the string '${literal}', which the policy does not name and NOT_BROWSER_STORAGE does not explain`,
+      );
+    }
+  }
+
+  // The reverse: what the page names must still exist.
+  for (const match of section.matchAll(/<code[^>]*>(xecret\.[^<]+)<\/code>/g)) {
+    const key = match[1] ?? '';
+    if (!literals.has(key))
+      problems.push(`the policy names ${key}, which no code contains any more`);
+  }
+  for (const literal of Object.keys(NOT_BROWSER_STORAGE)) {
+    if (!literals.has(literal)) {
+      problems.push(`NOT_BROWSER_STORAGE explains ${literal}, which no code contains any more`);
+    }
+  }
+
+  return problems;
+}
+
+describe('the privacy policy names everything the app keeps in browser storage', () => {
+  // Not a number from the engine, but the same failure: a sentence written by
+  // hand about something the code decides. On a product whose vault keys can
+  // sit in a tab's storage, "what is kept on your device" is the disclosure a
+  // security reviewer reads first — and the one that went stale, naming two
+  // keys while the app wrote eight.
+  const SOURCES_UNDER_SRC = readSources();
+  const PRIVACY = SOURCES.get('privacy') ?? '';
+
+  it('agrees with the code as it stands', () => {
+    expect(storageDisclosureProblems(SOURCES_UNDER_SRC, PRIVACY)).toEqual([]);
+  });
+
+  it('reads the files the exported keys live in, so a broken walk cannot pass for an empty one', () => {
+    // Without a single source, every net above has nothing to check and the
+    // guard passes. The keys the app exports must be among what was read.
+    const text = SOURCES_UNDER_SRC.map((source) => source.text).join('\n');
+    for (const key of [
+      THEME_STORAGE_KEY,
+      SIDEBAR_STORAGE_KEY,
+      PROJECT_VIEW_STORAGE_KEY,
+      UNLOCK_NUDGE_KEY,
+      DEVICE_PIN_WRAP_KEY,
+      VAULT_SESSION_MIRROR_KEY,
+    ]) {
+      expect(text, `the source walk missed ${key}`).toContain(`'${key}'`);
+    }
+  });
+
+  describe('fails on the keys that once slipped past it', () => {
+    // Probes, added beside the real sources rather than written into them.
+    const withSource = (file: string, text: string) => [...SOURCES_UNDER_SRC, { file, text }];
+    const replacing = (file: string, edit: (text: string) => string) =>
+      SOURCES_UNDER_SRC.map((source) =>
+        source.file === file ? { file, text: edit(source.text) } : source,
+      );
+
+    it.each([
+      [
+        'a key passed straight to a wrapper',
+        withSource(
+          'components/drafts/draft-store.ts',
+          "import { writeLocal } from '@/lib/storage';\nexport const saveDraft = (value: string) => writeLocal('xecret.draft.v1', value);\n",
+        ),
+        "the string 'xecret.draft.v1', which the policy does not name",
+      ],
+      [
+        'a bare localStorage.setItem with an inline key',
+        withSource(
+          'components/layout/density.ts',
+          "export function setDensity(value: string) {\n  localStorage.setItem('xecret.density', value);\n}\n",
+        ),
+        "the string 'xecret.density', which the policy does not name",
+      ],
+      [
+        'the same file, for using storage under no key constant',
+        withSource(
+          'components/layout/density.ts',
+          "export function setDensity(value: string) {\n  localStorage.setItem('xecret.density', value);\n}\n",
+        ),
+        'components/layout/density.ts uses localStorage under no key constant',
+      ],
+      [
+        'an inline literal in a file whose other keys are declared',
+        replacing(
+          'lib/theme.ts',
+          (text) =>
+            `${text}\nexport function setContrast(high: boolean) {\n  window.localStorage.setItem('xecret.theme.contrast', String(high));\n}\n`,
+        ),
+        "the string 'xecret.theme.contrast', which the policy does not name",
+      ],
+      [
+        'a write after a line comment holding `/*`, with a block comment further down',
+        withSource(
+          'components/layout/chrome-probe.tsx',
+          [
+            '// The account area — `/app/settings/*` — has no organisation in its path.',
+            'export function remember() {',
+            "  window.localStorage.setItem('xecret.chrome.probe', '1');",
+            '}',
+            '/** A later doc comment, whose close once ended the "block" opened above. */',
+            'export const later = 1;',
+            '',
+          ].join('\n'),
+        ),
+        "the string 'xecret.chrome.probe', which the policy does not name",
+      ],
+      [
+        'the same shape planted in dashboard-chrome.tsx itself, where it once hid 200 lines',
+        replacing('app/(dashboard)/_components/dashboard-chrome.tsx', (text) => {
+          const planted = text.replace(
+            /^(.*\/app\/settings\/\*.*)$/m,
+            "$1\n  function planted() { window.localStorage.setItem('xecret.chrome.probe', '1'); }",
+          );
+          if (planted === text) throw new Error('the `/app/settings/*` comment has moved');
+          return planted;
+        }),
+        "the string 'xecret.chrome.probe', which the policy does not name",
+      ],
+      [
+        'a key written through `window[…]`, under no key constant',
+        withSource(
+          'components/layout/indexed.ts',
+          "const key = ['xecret', 'panels'].join('.');\nexport const remember = () => window['localStorage'].setItem(key, '1');\n",
+        ),
+        'components/layout/indexed.ts uses localStorage under no key constant',
+      ],
+      [
+        'a key written inside the theme’s inline bootstrap script, where the parser sees only text',
+        replacing('lib/theme.ts', (text) => {
+          const anchor = 'd.dataset.theme=t;';
+          if (!text.includes(anchor)) throw new Error('THEME_BOOTSTRAP_SCRIPT has changed shape');
+          return text.replace(anchor, `${anchor}s.setItem('xecret.theme.seen','1');`);
+        }),
+        "the string 'xecret.theme.seen', which the policy does not name",
+      ],
+      [
+        'storage code inside a template string, for its key',
+        withSource(
+          'components/layout/inline-script.ts',
+          "export const SCRIPT = `(function(){var s=sessionStorage;s.setItem('xecret.inline.v1','1')})()`;\n",
+        ),
+        "the string 'xecret.inline.v1', which the policy does not name",
+      ],
+      [
+        'storage code inside a template string, for reaching storage under no key constant',
+        withSource(
+          'components/layout/inline-script.ts',
+          "export const SCRIPT = `(function(){var s=sessionStorage;s.setItem('xecret.inline.v1','1')})()`;\n",
+        ),
+        'components/layout/inline-script.ts uses sessionStorage under no key constant',
+      ],
+      [
+        'a key whose file moves it to the other storage',
+        replacing('app/(dashboard)/_lib/use-last-visited-org.ts', (text) =>
+          text.replaceAll('window.sessionStorage', 'window.localStorage'),
+        ),
+        'keeps xecret.last-org in localStorage, and the policy does not list it there',
+      ],
+    ])('%s', (_, sources, problem) => {
+      expect(storageDisclosureProblems(sources, PRIVACY).join('\n')).toContain(problem);
+    });
+
+    it('a key the policy still names after the code stopped writing it', () => {
+      const stale = PRIVACY.replace(
+        '>xecret.sidebar</code>',
+        '>xecret.sidebar</code> and <code className="text-fg font-mono text-[0.9em]">xecret.panels.v1</code>',
+      );
+      expect(storageDisclosureProblems(SOURCES_UNDER_SRC, stale).join('\n')).toContain(
+        'the policy names xecret.panels.v1, which no code contains any more',
+      );
+    });
+
+    it('a key the policy names only in a comment', () => {
+      const commented = PRIVACY.replace(
+        '>xecret.last-org</code>',
+        '>xecret.last-orgs</code> {/* >xecret.last-org</code> */}',
+      );
+      expect(storageDisclosureProblems(SOURCES_UNDER_SRC, commented).join('\n')).toContain(
+        'keeps xecret.last-org in sessionStorage, and the policy does not list it there',
+      );
+    });
   });
 });
