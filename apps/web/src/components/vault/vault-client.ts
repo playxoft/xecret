@@ -853,13 +853,23 @@ export async function changePassphrase(params: {
     });
     zeroize(wrapKey);
 
-    const response = await api.post<VaultResponse>(apiPath.vaultPassphrase(), {
-      currentUnlockVerifier: toBase64Url(currentUnlockVerifier),
-      unlockVerifier: toBase64Url(unlockVerifier),
-      kdfSalt: toBase64Url(kdfSalt),
-      kdfParams: CURRENT_KDF_PARAMS,
-      passphraseWrap,
-    });
+    const response = await api.post<VaultResponse>(
+      apiPath.vaultPassphrase(),
+      {
+        currentUnlockVerifier: toBase64Url(currentUnlockVerifier),
+        unlockVerifier: toBase64Url(unlockVerifier),
+        kdfSalt: toBase64Url(kdfSalt),
+        kdfParams: CURRENT_KDF_PARAMS,
+        passphraseWrap,
+      },
+      // The server answers a wrong current passphrase with a 401, and that one
+      // means "not this passphrase", not "this session has ended". Left to the
+      // API client it would release the keys, empty the mirror, lock every tab
+      // and leave for the sign-in page over a typo; the form shows it instead.
+      // The local check above makes it rare here — see `regenerateRecoveryCodes`
+      // for the call where it is not.
+      { redirectOnUnauthenticated: false },
+    );
 
     return { vault: response.vault, material: requireMaterial(response) };
   } finally {
@@ -1045,10 +1055,19 @@ export async function regenerateRecoveryCodes(params: {
     userKey: params.userKey,
   });
 
-  const response = await api.put<{ recoveryCodesRemaining: number }>(apiPath.vaultRecovery(), {
-    unlockVerifier: toBase64Url(unlockVerifier),
-    recoveryWraps: wraps,
-  });
+  const response = await api.put<{ recoveryCodesRemaining: number }>(
+    apiPath.vaultRecovery(),
+    {
+      unlockVerifier: toBase64Url(unlockVerifier),
+      recoveryWraps: wraps,
+    },
+    // A mistyped passphrase reaches the server here — nothing above checks it
+    // locally — and comes back as a 401 meaning "not this passphrase". Left to
+    // the API client, that 401 would end the session in this browser: keys
+    // released, mirror emptied, every tab locked, off to the sign-in page. The
+    // dialog shows the refusal instead, as it always did.
+    { redirectOnUnauthenticated: false },
+  );
 
   return { codes, remaining: response.recoveryCodesRemaining };
 }

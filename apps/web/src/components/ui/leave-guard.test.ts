@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { beginLeavingPage, beginSignInRedirect, stayOnPage } from '@/lib/page-exit';
 import {
   armLeaveGuard,
   askBeforeLeaving,
+  asksBeforeUnload,
   interceptedHref,
   isLeaveGuardArmed,
   isPlainLeftClick,
+  subscribeLeaveGuard,
 } from './leave-guard';
 import type { AnchorFacts, ClickFlags } from './leave-guard';
 
@@ -110,6 +113,38 @@ describe('interceptedHref', () => {
   });
 });
 
+describe('asksBeforeUnload', () => {
+  afterEach(() => stayOnPage());
+
+  it('asks the browser to confirm leaving staged work', () => {
+    expect(asksBeforeUnload(false)).toBe(true);
+  });
+
+  it('does not ask twice when the guard is the one navigating', () => {
+    expect(asksBeforeUnload(true)).toBe(false);
+  });
+
+  it('does not ask once a sign-out has been confirmed, which made the work unsaveable', () => {
+    // Asking there offered a "Stay" that stranded the page: session revoked,
+    // keys released, and every redirect and every lock switched off.
+    beginLeavingPage();
+    expect(asksBeforeUnload(false)).toBe(false);
+  });
+
+  it('still asks while a sign-out waits on its revoke, which may yet fail', () => {
+    // Offline or a 5xx: the session may be live and the work savable, and the
+    // sign-out navigates anyway.
+    beginSignInRedirect();
+    expect(asksBeforeUnload(false)).toBe(true);
+  });
+
+  it('still asks on a redirect to sign in, which nobody chose', () => {
+    // The last chance to copy out a staged value that cannot be fetched again.
+    beginSignInRedirect();
+    expect(asksBeforeUnload(false)).toBe(true);
+  });
+});
+
 describe('the armed slot', () => {
   it('is unarmed until a guard claims it, and again once it lets go', () => {
     expect(isLeaveGuardArmed()).toBe(false);
@@ -151,5 +186,22 @@ describe('the armed slot', () => {
 
     disarm();
     expect(askBeforeLeaving('/acme/projects')).toBe(false);
+  });
+
+  it('tells a subscriber when it arms and disarms, and not for a stale disarm', () => {
+    // The dashboard shell holds the lock screen back while work is staged and
+    // shows it the moment the work is saved or discarded — which it can only
+    // know by being told.
+    const heard: boolean[] = [];
+    const stop = subscribeLeaveGuard(() => heard.push(isLeaveGuardArmed()));
+
+    const disarmFirst = armLeaveGuard(() => {});
+    const disarmSecond = armLeaveGuard(() => {});
+    disarmFirst();
+    disarmSecond();
+    stop();
+    armLeaveGuard(() => {})();
+
+    expect(heard).toEqual([true, true, false]);
   });
 });

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { armLeaveGuard, interceptedHref, isPlainLeftClick } from './leave-guard';
+import { armLeaveGuard, asksBeforeUnload, interceptedHref, isPlainLeftClick } from './leave-guard';
 
 import { ConfirmDialog } from './confirm-dialog';
 
@@ -122,10 +122,9 @@ export function UnsavedChangesGuard({
     if (!when) return;
 
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      // Except when this component is the one navigating. Answering "leave and
-      // lose them" and then being asked "leave site?" by the browser is the same
-      // question twice, and the second one is the one nobody can act on.
-      if (unwinding.current) return;
+      // Except when this component is the one navigating, or a sign-out is —
+      // see `asksBeforeUnload` for both.
+      if (!asksBeforeUnload(unwinding.current)) return;
       event.preventDefault();
       // Non-empty deliberately: the legacy path is specified to fire only when
       // `returnValue` is *not* the empty string, so assigning one asks the older

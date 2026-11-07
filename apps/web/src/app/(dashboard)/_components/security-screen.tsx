@@ -256,7 +256,10 @@ function LockCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-wrap justify-end gap-3">
-          <Button variant="secondary" onClick={() => void lock()}>
+          {/* A failed request is dropped, as the account menu drops it: the keys
+              are gone either way, and the shell's re-read of the session is
+              what shows the outcome. */}
+          <Button variant="secondary" onClick={() => void lock().catch(() => undefined)}>
             Lock this device
           </Button>
           <Button variant="secondary" loading={lockingEverywhere} onClick={lockEverywhere}>
