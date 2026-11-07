@@ -99,9 +99,11 @@ export function AppShell({
       // this shell, so a value read during render would still be `false` at the
       // moment the key is pressed.
       if (isLeaveGuardArmed()) return;
-      // Floating deliberately: the re-render onto the lock screen is the whole
-      // point, and there is nothing after it to sequence.
-      if (onLock !== undefined) void onLock();
+      // Not awaited: the re-render onto the lock screen is the whole point, and
+      // there is nothing after it to sequence. A failed request is dropped, as
+      // the idle timer and the account menu drop it — the keys are gone either
+      // way, and the shell's re-read of the session shows what happened.
+      if (onLock !== undefined) void onLock().catch(() => undefined);
     },
     !drawerOpen && onLock !== undefined,
   );

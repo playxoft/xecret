@@ -1160,6 +1160,23 @@ describe('the in-flight crypto guard', () => {
     expect(posted).toHaveLength(0);
   });
 
+  it('says the keys changed, not that the vault locked, when the vault is still open', async () => {
+    // A revoked grant or a rotation drops the environment's key while the vault
+    // stays unlocked. "Unlock and try again" would be an instruction nobody can
+    // follow; trying again is the whole remedy.
+    holdVaultKeys(vaultFor(USER_ID));
+    const material = freshMaterial();
+    holdEnvKey(material);
+
+    const io = clientSecretIo(context, material);
+    releaseEnvKeys();
+
+    await expect(
+      io.create({ name: 'DATABASE_URL', value: 'postgres://live', valueType: 'string' }),
+    ).rejects.toThrow(/keys changed/i);
+    expect(posted).toHaveLength(0);
+  });
+
   it('refuses a rotation whose environment key was released first', async () => {
     const vault = vaultFor(USER_ID);
     holdVaultKeys(vault);

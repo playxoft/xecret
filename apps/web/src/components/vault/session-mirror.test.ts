@@ -75,9 +75,10 @@ describe('the mirrored blob', () => {
   });
 
   it('refuses a blob belonging to another account', () => {
-    // A session that expires is a redirect to sign-in with no lock in between,
-    // so the mirror outlives its own account inside one tab. Without this, the
-    // next person to sign in there would mount holding the previous User Key.
+    // A session can end with no lock in between, and a tab taken to the sign-in
+    // page without a refused request keeps the mirror past its own account.
+    // Without this, the next person to sign in there would mount holding the
+    // previous User Key.
     expect(decodeMirror(encodeMirror(material(7, 'user-1')), 'user-2')).toBeNull();
   });
 

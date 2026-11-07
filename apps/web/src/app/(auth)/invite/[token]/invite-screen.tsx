@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { OrgRole } from '@xecret/core/authz';
 import { api, endSession, errorMessage, SIGN_IN_PATH } from '@/lib/api';
+import { beginLeavingPage, beginSignInRedirect } from '@/lib/page-exit';
+import { releaseVaultKeys } from '@/components/vault';
 import { Alert, Button, Card, CardContent, Spinner } from '@/components/ui';
 import { InviteKeyStep } from '@/components/envkeys';
 import type { InviteKeyGrant } from '@/components/envkeys';
@@ -217,6 +219,33 @@ export function InviteScreen({ token }: { token: string }) {
 
   const emailMatches = isEmailMatch(viewerEmail, invitation.email);
 
+  /**
+   * Signs the wrong account out, the way the account menu does.
+   *
+   * Through WorkOS's logout when the server answers one: AuthKit would
+   * otherwise sign this browser straight back in as the same, wrong account.
+   * Without one, this page again.
+   */
+  async function signOut() {
+    // Before the revoke: no 401 from here on may start a navigation of its own
+    // (`lib/page-exit.ts`). The browser still asks about leaving until the
+    // revoke is confirmed.
+    beginSignInRedirect();
+    let destination = SIGN_IN_PATH;
+    try {
+      destination = await endSession();
+      beginLeavingPage();
+    } finally {
+      // The keys first, and whatever the revoke did. A tab that was unlocked
+      // when it followed somebody else's invitation here still holds them — in
+      // memory and in its `sessionStorage` mirror — and signing out must not
+      // carry them into whoever signs in next.
+      releaseVaultKeys();
+      if (destination === SIGN_IN_PATH) window.location.reload();
+      else window.location.assign(destination);
+    }
+  }
+
   return (
     <Card>
       <CardContent className="flex flex-col gap-4 py-8">
@@ -263,18 +292,7 @@ export function InviteScreen({ token }: { token: string }) {
               You are signed in as {viewerEmail}, but this invitation is addressed to{' '}
               {invitation.email}. Sign out, then sign in with the invited address.
             </Alert>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                // Through WorkOS's logout when the server answers one: AuthKit
-                // would otherwise sign this browser straight back in as the
-                // same, wrong account. Without one, this page again.
-                void endSession().then((destination) => {
-                  if (destination === SIGN_IN_PATH) window.location.reload();
-                  else window.location.assign(destination);
-                });
-              }}
-            >
+            <Button variant="secondary" onClick={() => void signOut()}>
               Sign out
             </Button>
           </>

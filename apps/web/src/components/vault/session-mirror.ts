@@ -129,10 +129,12 @@ export function encodeMirror(keys: VaultKeyMaterial): string {
  * a render, and an exception there would replace the dashboard with an error
  * boundary rather than with the passphrase field that actually fixes it.
  *
- * `expectedUserId` is not a formality. A session that expires is a redirect to
- * sign-in with no lock in between, so the mirror survives into whoever signs in
- * next *in that same tab*. Without this comparison, that person's dashboard
- * would mount holding the previous account's User Key.
+ * `expectedUserId` is not a formality. A session can end with no lock in
+ * between, and while the API client's redirect to sign in clears the mirror on
+ * a 401, a tab taken to the sign-in page any other way makes no request to be
+ * refused — so the mirror can survive into whoever signs in next *in that same
+ * tab*. Without this comparison, that person's dashboard would mount holding
+ * the previous account's User Key.
  */
 export function decodeMirror(raw: string | null, expectedUserId: string): VaultKeyMaterial | null {
   if (raw === null) return null;

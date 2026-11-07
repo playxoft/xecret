@@ -38,6 +38,8 @@ import { SecretTable, SecretTableSkeleton } from '@/components/secrets/secret-ta
 import type { SecretListResponse, SecretSummary } from '@/components/secrets/types';
 import { useOpenedNotes } from '@/components/secrets/use-opened-notes';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
+import { listingAfterFailure } from '../_lib/secret-listing';
+import type { SecretListState } from '../_lib/secret-listing';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
 import { canAdminister, useOrganization } from './session';
@@ -483,17 +485,10 @@ interface SecretList {
  * happens to be a page number today; a client that did arithmetic on it would
  * break the day the listing becomes a true keyset cursor, which the audit log
  * has already had to do.
+ *
+ * The state's shape, and what a failed re-read does to rows already on screen,
+ * live in `_lib/secret-listing.ts`.
  */
-interface SecretListState {
-  /** The environment this page set belongs to. `null` before the first response. */
-  path: string | null;
-  items: readonly SecretSummary[] | null;
-  cursor: string | null;
-  error: unknown;
-  /** From the last `loadMore`; see `SecretList.loadMoreError`. */
-  loadMoreError: unknown;
-}
-
 function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): SecretList {
   const [state, setState] = useState<SecretListState>({
     path: null,
@@ -530,7 +525,9 @@ function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): S
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setState({ path, items: null, cursor: null, error: cause, loadMoreError: null });
+        // Not a plain replace: a re-read refused because the session locked
+        // keeps the rows on screen, and the staged edits in the table with them.
+        setState((current) => listingAfterFailure(current, path, cause));
       });
 
     return () => controller.abort();
