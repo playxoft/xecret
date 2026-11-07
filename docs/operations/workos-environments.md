@@ -156,7 +156,34 @@ WorkOS returns the browser only to a logout redirect configured for that environ
      WorkOS really does without it (step 2). That is what Production would do if step 1 were
      missed.
 
-## 5. What still needs a person
+## 5. When the in-app sign-in page cannot finish a sign-in
+
+The sign-in page checks a password or an emailed code itself, through WorkOS's headless API, and
+refuses — with a fixed sentence, by design — anything WorkOS asks for that the page cannot show:
+
+| The person sees | WorkOS asked for | What it means |
+| --- | --- | --- |
+| "This account signs in with an authenticator app, which this page can't ask for yet…" | `mfa_challenge`, `mfa_enrollment` | The account has (or must set up) a TOTP factor. MFA is off in both environments today, so this means somebody turned it on. |
+| "The sign-in service asked for an extra check this page can't show yet…" | `radar_email_challenge`, `radar_sms_challenge` | WorkOS Radar challenged the attempt. |
+| "That email and password don't match…" for a right password | `email_verification_required`, or `organization_authentication_methods_required` | Answered as a wrong password on purpose, so the page is not an oracle for unverified or policy-bound accounts. The way in is "email me a code". |
+
+**The escape hatch.** AuthKit's hosted page is still reachable, and it can complete every one of
+those challenges: send the person — and only that person, from support — to
+`<origin>/api/auth/login` with no parameters (or `?next=/app/...`). The login route builds an
+AuthKit URL for a request that names no `provider` and no `org`, AuthKit asks for whatever WorkOS
+wants, and the callback signs them in through the same checks as every other path. Nothing on the
+product links there; the URL is for support to hand out. It is deliberately not in any refusal
+sentence: a link to a different-looking page inside an error message is a phishing pattern people
+should not be taught.
+
+Keep the hosted page's own settings in step with the in-app page. In particular, xecret's sign-up
+is passwordless (an emailed code), but AuthKit's page — reachable by that URL and by any old
+`?hint=sign-up` link — offers whatever sign-up methods the dashboard enables. **Turn off password
+sign-up in the WorkOS dashboard's authentication settings**, in both environments, if new accounts
+should never choose a password (leave password *sign-in* on: migrated accounts use it). Check on
+Staging what that setting leaves on AuthKit's page before relying on it.
+
+## 6. What still needs a person
 
 - `check:env` does not read the database, so it cannot tell you `workos_home` is unrecorded on a
   self-hosted database; the first owner who turns SSO on is told instead.

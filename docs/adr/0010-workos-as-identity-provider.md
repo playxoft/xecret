@@ -320,13 +320,20 @@ People no longer see AuthKit's hosted page to sign in or sign up. `/sign-in` tak
 password, or a six-digit code WorkOS emails (Magic Auth); `/sign-up` is the code alone — it
 proves the address in the step that creates the account, and answers an address that already
 has one exactly like one that does not. Both are checked by WorkOS's headless User Management
-API (`authenticateWithPassword`, `createMagicAuth` + `authenticateWithMagicAuth`, and
-`authenticateWithEmailVerification` when a password sign-in reaches an address WorkOS has not
-verified), posted by the page's `fetch` to `POST /api/auth/sign-in/{password,code,code/verify,
-verify-email}` (`apps/web/src/server/in-app-sign-in.ts`). Those routes refuse anything that is
-not this origin posting JSON — login CSRF, the in-app twin of the planted-session attack —
-spend `RL_LOGIN` per address and per subject before WorkOS is asked, and answer JSON with the
-same sentence `/sign-in?error=` shows. "Continue with Google" is `GET /api/auth/login?provider=
+API (`authenticateWithPassword`, `createMagicAuth` + `authenticateWithMagicAuth`), posted by
+the page's `fetch` to `POST /api/auth/sign-in/{password,code,code/verify}`
+(`apps/web/src/server/in-app-sign-in.ts`). Those routes refuse anything that is not this origin
+posting JSON — login CSRF, the in-app twin of the planted-session attack (not a bot defence: a
+script outside a browser sets any `Origin`) — spend `RL_LOGIN` per address and per subject,
+and check a **durable per-address lockout** in the database (`sign_in_failures`, migration
+0034: five free consecutive failures, then 30 s doubling to a 15-minute ceiling, cleared by a
+success) before WorkOS is asked, and answer JSON with the same sentence `/sign-in?error=` shows.
+WorkOS answers that would say something about an address before the credential is known to be
+right — `email_verification_required`, `organization_authentication_methods_required` — are
+answered and counted exactly like a wrong password; the email-verification step
+(`POST /api/auth/sign-in/verify-email`, with WorkOS's pending token sealed beside the address
+in an `HttpOnly`, `SameSite=Strict` cookie) is built and tested but stays off until Staging
+shows WorkOS checks the password first. "Continue with Google" is `GET /api/auth/login?provider=
 google`: the state cookie and PKCE as before, WorkOS's Google OAuth instead of AuthKit, the
 callback unchanged. Every path hands its exchange, minted in `workos.ts`, to the one
 `completeSignIn` (`sign-in-completion.ts`): `prepareSignIn`, the confirmation question,
@@ -334,8 +341,11 @@ callback unchanged. Every path hands its exchange, minted in `workos.ts`, to the
 finished with the first organisation listed — nothing here reads a non-SSO sign-in's
 organisation — and the sign-in is held back for confirmation as before. An authenticator
 challenge (`mfa_challenge`) is refused with its own sentence until the page can take one;
-no account has MFA today. AuthKit's hosted page remains for the re-authentication flows
-(`reauth=1`) only.
+no account has MFA today. Every WorkOS call a person waits on uses a ten-second timeout and no
+retries. Nothing on a sign-in page links to AuthKit's hosted page; it remains reachable through
+`GET /api/auth/login` for the re-authentication flows (`reauth=1`), for a request naming no
+`provider` and no `org` (support's escape hatch for a challenge the in-app page cannot show), and
+for old `?hint=sign-up` links.
 
 ### Re-authentication for the vault reset: two locks
 

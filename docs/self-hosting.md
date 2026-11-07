@@ -12,7 +12,7 @@ being honest about the one thing it sells.
 | **Cloudflare Workers (paid plan)** | Runs the web app and API (`@opennextjs/cloudflare`). The paid plan's CPU limits are assumed — see [ADR 0002](adr/0002-root-key-custody.md). | Yes |
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare; the Neon serverless HTTP driver is the fallback without Hyperdrive. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the Root KEK, bound to the Worker. | Yes |
-| **A WorkOS account** | Identity only — xecret's own sign-in page checks passwords and emailed codes through WorkOS's User Management API, and Google and enterprise SSO sign-in go through WorkOS redirects; AuthKit's hosted page is used only to re-authenticate (see below). xecret checks each result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
+| **A WorkOS account** | Identity only — xecret's own sign-in page checks passwords and emailed codes through WorkOS's User Management API, and Google and enterprise SSO sign-in go through WorkOS redirects; AuthKit's hosted page is linked from no sign-in page, and serves re-authentication and a support escape hatch (see below). xecret checks each result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
 | **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | PIN-reset links, invitation emails, and the escape archive emailed before every vault reset (P23). | **Yes, for a production deployment** (`XECRET_ENV=production`): without one, every vault reset is refused with a 503 — a vault is never reset without its archive being emailed first — and `check:deploy production` fails. Elsewhere optional: invitations return a shareable link instead, PIN reset answers 200 with `sent: false` and a reason, and a vault resets only when the person ticks "Reset without the emailed archive". |
 | **Phase.dev** (or any secret source for deploy time) | Where *your* copy of the Root KEK lives between deploys. The Worker never calls it at runtime. | Your choice — any process that can populate deploy-time env vars works. |
 | **Dodo Payments** | Taking payment for plans — xecret's hosted service charges through it. | **No.** Leave every `DODO_*` variable unset and payments are switched off: plans are whatever `npm run plan:set` writes (every capability is yours to grant), the billing screen says the installation takes no payments, and nothing else changes. Every organisation starts on Free, **and Free's limits are enforced** — 5 projects, 3 members, 250 secrets per environment and the rest; give an organisation the room you want with `npm run plan:set` — a plan, or one limit raised with `--limit-override projects=2000`. Set *some* of them and the deployment refuses billing with a 503 until all are set — see [billing](operations/billing.md). |
@@ -166,10 +166,16 @@ password or a six-digit emailed code is checked with one call to WorkOS's
 headless User Management API, "Continue with Google" goes from xecret to WorkOS
 straight on to Google and back, and an organisation's single sign-on goes to its
 identity provider the same way. Each result is checked once, server to server,
-and from then on xecret uses its own session. AuthKit's hosted page is still
-used for re-authentication — the vault reset's first check, the security
-settings' "Open sign-in page", the SSO setup portal's step-up — and nowhere
-else. Everything below happens in the WorkOS dashboard.
+and from then on xecret uses its own session. Nothing on the sign-in or
+sign-up pages leads to AuthKit's hosted page, but it is still reachable: the
+re-authentication flows use it (the vault reset's first check, the security
+settings' "Open sign-in page", the SSO setup portal's step-up), and so does
+`<XECRET_PUBLIC_URL>/api/auth/login` with no `provider` or `org` — and an old
+`?hint=sign-up` link. That bare URL is the support escape hatch for a challenge
+the in-app page cannot show (an authenticator, a Radar check), described in
+[WorkOS environments](operations/workos-environments.md), §5, along with the
+dashboard settings to keep in step with it. Everything below happens in the
+WorkOS dashboard.
 
 **Environments.** A WorkOS account has a **Staging** and a **Production**
 environment, and they share nothing — not users, not keys. Use Staging for local
@@ -284,12 +290,22 @@ against WorkOS's documented behaviour; it has not yet been exercised against a
 WorkOS environment with MFA turned on.
 
 **Email verification.** Keep it on, with WorkOS's own verification email, in
-both environments. A password sign-in to an address WorkOS has not verified is
-answered with `email_verification_required`, WorkOS emails the address a code,
-and the sign-in page asks for it before anything is signed in. xecret depends
-on it: the first time somebody signs in, an existing account holding the same
-*verified* address is adopted, and an unverified address is refused — with the
-setting off, that refusal is all such a person would ever see.
+both environments. WorkOS answers a password sign-in to an address it has not
+verified with `email_verification_required`. Until it is shown that WorkOS
+checks the password *before* deciding that, the sign-in page answers it exactly
+like a wrong password — anything else could tell a stranger which addresses
+have unverified accounts — and the person signs in with an emailed code, which
+verifies the address as it goes (`EMAIL_VERIFICATION_STEP` in
+`apps/web/src/server/in-app-sign-in.ts` turns the code step on once that is
+proven). xecret depends on verification: the first time somebody signs in, an
+existing account holding the same *verified* address is adopted, and an
+unverified address is refused.
+
+**Failed sign-ins** are counted per address in the database
+(`sign_in_failures`, migration 0034): five in a row are free, then the address
+waits 30 seconds, doubling to at most 15 minutes, until a success. Apply that
+migration before deploying the build that uses it — without the table, every
+password and code sign-in fails. Google and single sign-on are not counted.
 
 **Credentials.** Three values per environment:
 
