@@ -10,6 +10,7 @@ import {
 } from '@/server/in-app-sign-in';
 import { publicRoute } from '@/server/route';
 import { codeRequestSchema } from '@/server/schemas/sign-in';
+import { assertPoolOpen, throttlePoolFor } from '@/server/sign-in-throttle';
 import { workosProvider } from '@/server/workos';
 
 /**
@@ -32,15 +33,24 @@ import { workosProvider } from '@/server/workos';
  *
  * Mail goes to somebody's inbox, so the per-subject bucket is the address
  * alone — not the IP, which would hand a sender a fresh allowance per proxy
- * (`attemptKey`'s note) — beside this route's own address bucket. Asking for
- * a code is not a guess, so it neither checks nor spends the durable
- * per-address lockout; the code it sends is guarded where it is checked.
+ * (`attemptKey`'s note) — beside this route's own address bucket.
+ *
+ * Asking for a code is not a guess, so it spends nothing of the durable
+ * throttle. But while the pool the code would be checked against is locked —
+ * this browser's own, if it is known to the address, otherwise the address's
+ * shared pool — it answers rate-limited instead of mailing a code nobody can
+ * redeem until the lockout ends. That says nothing new about the address: a
+ * pool locks the same way for an address with no account, and only somebody's
+ * failed guesses lock it.
  */
 export const POST = publicRoute(async ({ request, services }) => {
   try {
     await guardInAppSignIn(services, request, 'code-send');
     const body = await parseJsonBody(request, codeRequestSchema);
     await spend(services, codeKey('send', body.email), 'per-email code limit');
+    // No code while the pool it would be checked against is locked: it could
+    // not be redeemed, and mailing it anyway only fills somebody's inbox.
+    await assertPoolOpen(services, await throttlePoolFor(services, request, body.email));
 
     try {
       await workosProvider(services.env, { interactive: true }).createMagicAuth(

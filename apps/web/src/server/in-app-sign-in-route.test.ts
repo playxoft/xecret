@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { WorkOS } from '@workos-inc/node';
 import {
   deriveEmailVerificationKey,
+  deriveKnownDeviceKey,
   deriveSignInConfirmationKey,
   EMAIL_VERIFICATION_COOKIE_NAME,
+  openKnownDevice,
   openSignInConfirmation,
   sealEmailVerification,
   SIGN_IN_CONFIRMATION_COOKIE_NAME,
@@ -110,7 +112,9 @@ const codeVerifyRoute = await import('@/app/api/auth/sign-in/code/verify/route')
 const verifyEmailRoute = await import('@/app/api/auth/sign-in/verify-email/route');
 const confirmRoute = await import('@/app/api/auth/confirm/route');
 const { setEmailVerificationStepForTesting } = await import('./in-app-sign-in');
-const { SIGN_IN_FREE_FAILURES, signInSubject } = await import('./sign-in-throttle');
+const { SIGN_IN_FREE_FAILURES, addressPool, devicePool } = await import('./sign-in-throttle');
+/** The shared pool's row key for an address, as the routes compute it. */
+const signInSubject = (email: string) => addressPool(env as never, email);
 
 const ROUTES = {
   '/api/auth/sign-in/password': passwordRoute.POST,
@@ -383,6 +387,56 @@ async function lockOut(email: string): Promise<void> {
      values ($1, $2, now() + interval '10 minutes', now())`,
     [await signInSubject(email), SIGN_IN_FREE_FAILURES + 3],
   );
+}
+
+/**
+ * The error the real SDK raises when its timeout fires — produced, not
+ * restated: a `fetch` that never answers, the interactive options with a
+ * 20 ms timeout, and whatever the SDK throws is what the stubs then throw.
+ */
+async function realSdkTimeout(): Promise<unknown> {
+  vi.stubGlobal(
+    'fetch',
+    (_url: unknown, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+        );
+      }),
+  );
+  try {
+    const sdk = new WorkOS('sk_test_not_a_real_key', {
+      clientId: CLIENT_ID,
+      timeout: 20,
+      maxRetries: 0,
+    });
+    return await sdk.userManagement
+      .authenticateWithPassword({ clientId: CLIENT_ID, email: 'slow@example.com', password: 'x' })
+      .catch((error: unknown) => error);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
+/**
+ * Signs `who` in once with a password, as their own browser would, and answers
+ * the `name=value` of the known-device cookie that browser was handed.
+ */
+async function signInOnce(who: Record<string, unknown>): Promise<string> {
+  workos.authenticateWithPassword.mockResolvedValueOnce(authenticated(who, 'Password'));
+  const answer = await post('/api/auth/sign-in/password', { email: who.email, password: PASSWORD });
+  const set = answer.cookies.find((c) => c.startsWith('__Host-xecret_known_device='));
+  if (set === undefined) throw new Error('the sign-in handed this browser no known-device cookie');
+  workos.authenticateWithPassword.mockClear();
+  return set.slice(0, set.indexOf(';'));
+}
+
+/** One wrong password for `email`, from the current `clientIp`, without a known-device cookie. */
+async function wrongPassword(email: string): Promise<Answer> {
+  workos.authenticateWithPassword.mockRejectedValueOnce(
+    refusal(400, { code: 'invalid_credentials' }),
+  );
+  return post('/api/auth/sign-in/password', { email, password: 'not it' });
 }
 
 async function membershipsOf(userId: string) {
@@ -952,9 +1006,9 @@ describe('asking for an emailed code', () => {
     expect(answer.status).toBe(503);
   });
 
-  it('neither checks nor spends the durable lockout: asking for a code is not a guess', async () => {
+  it('spends nothing of the durable throttle: asking for a code is not a guess', async () => {
     const who = workosUser();
-    for (let i = 0; i < SIGN_IN_FREE_FAILURES + 2; i += 1) {
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES; i += 1) {
       workos.authenticateWithPassword.mockRejectedValueOnce(
         refusal(400, { code: 'invalid_credentials' }),
       );
@@ -965,6 +1019,38 @@ describe('asking for an emailed code', () => {
 
     expect(answer.status).toBe(204);
     expect(workos.createMagicAuth).toHaveBeenCalledTimes(1);
+    expect(await failuresFor(who.email as string)).toBe(SIGN_IN_FREE_FAILURES);
+  });
+
+  it('mails no code while the pool it would be checked against is locked — and says so', async () => {
+    const who = workosUser();
+    await lockOut(who.email as string);
+
+    const answer = await post('/api/auth/sign-in/code', { email: who.email });
+
+    expect(answer.status).toBe(429);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES['rate-limited']);
+    expect(workos.createMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it('still mails a code to the owner’s known browser while the shared pool is locked', async () => {
+    const who = workosUser();
+    const device = await signInOnce(who);
+    await lockOut(who.email as string);
+
+    const answer = await post('/api/auth/sign-in/code', { email: who.email }, { cookie: device });
+
+    expect(answer.status).toBe(204);
+    expect(workos.createMagicAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a WorkOS timeout as unavailable, not as a refusal of the address', async () => {
+    workos.createMagicAuth.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await post('/api/auth/sign-in/code', { email: 'someone@example.com' });
+
+    expect(answer.status).toBe(503);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
   });
 });
 
@@ -1285,13 +1371,6 @@ describe('finishing a password sign-in by verifying the address', () => {
 /* ── the durable per-address lockout ──────────────────────────────────────── */
 
 describe('the durable per-address lockout', () => {
-  async function wrongPassword(email: string): Promise<Answer> {
-    workos.authenticateWithPassword.mockRejectedValueOnce(
-      refusal(400, { code: 'invalid_credentials' }),
-    );
-    return post('/api/auth/sign-in/password', { email, password: 'not it' });
-  }
-
   it('lets a person mistype five times freely, then locks the address — before WorkOS is asked, whatever IP comes next', async () => {
     const who = workosUser();
     for (let i = 1; i <= SIGN_IN_FREE_FAILURES; i += 1) {
@@ -1414,13 +1493,246 @@ describe('the durable per-address lockout', () => {
     expect(await failuresFor(who.email as string)).toBe(1);
   });
 
-  it('keys the counter on a hash: the table never holds the address', async () => {
+  it('keys the counter on an HMAC under the deployment’s secret: never the address, nor a plain hash of it', async () => {
     const email = 'never-stored@example.com';
     await wrongPassword(email);
 
-    const rows = await t.pg.query(`select * from sign_in_failures`);
-    expect(JSON.stringify(rows.rows)).not.toContain('never-stored');
+    const rows = await t.pg.query<{ subject_hash: Uint8Array }>(
+      `select subject_hash from sign_in_failures`,
+    );
     expect(rows.rows).toHaveLength(1);
+    const stored = Buffer.from(rows.rows[0]!.subject_hash);
+    expect(stored.toString('latin1')).not.toContain('never-stored');
+    const plain = Buffer.from(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(email)),
+    );
+    expect(stored.equals(plain)).toBe(false);
+    expect(stored.equals(Buffer.from(await signInSubject(email)))).toBe(true);
+    // Another deployment's secret keys the same address somewhere else entirely.
+    const elsewhere = await addressPool(
+      { WORKOS_COOKIE_PASSWORD: 'a-different-cookie-password-also-over-32-characters' } as never,
+      email,
+    );
+    expect(stored.equals(Buffer.from(elsewhere))).toBe(false);
+  });
+});
+
+/* ── review round 2: timeouts, bursts, and the owner's own browser ────────── */
+
+describe('a WorkOS timeout (the real SDK’s)', () => {
+  it('is answered as unavailable on a password, never as a wrong password, and counts nothing', async () => {
+    const who = workosUser();
+    workos.authenticateWithPassword.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await post('/api/auth/sign-in/password', {
+      email: who.email,
+      password: PASSWORD,
+    });
+
+    expect(answer.status).toBe(503);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
+    expect(errorOf(answer).fields).toBeUndefined();
+    expect(await failuresFor(who.email as string)).toBe(0);
+  });
+
+  it('is answered as unavailable on an emailed code, never as a wrong code, and counts nothing', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await post('/api/auth/sign-in/code/verify', {
+      email: who.email,
+      code: '123456',
+    });
+
+    expect(answer.status).toBe(503);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
+    expect(await failuresFor(who.email as string)).toBe(0);
+  });
+});
+
+describe('a burst of concurrent guesses (counted before WorkOS is asked)', () => {
+  function everyGuessWrong() {
+    workos.authenticateWithPassword.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      throw refusal(400, { code: 'invalid_credentials' });
+    });
+  }
+
+  it('lets exactly one of forty through at the end of the free attempts', async () => {
+    const who = workosUser();
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES; i += 1) await wrongPassword(who.email as string);
+    workos.authenticateWithPassword.mockReset();
+    everyGuessWrong();
+
+    const answers = await Promise.all(
+      Array.from({ length: 40 }, (_, i) => {
+        clientIp = `198.51.100.${i + 1}`;
+        return post('/api/auth/sign-in/password', { email: who.email, password: `guess-${i}` });
+      }),
+    );
+
+    expect(workos.authenticateWithPassword).toHaveBeenCalledTimes(1);
+    expect(answers.filter((a) => a.status === 400)).toHaveLength(1);
+    expect(answers.filter((a) => a.status === 429)).toHaveLength(39);
+    expect(await failuresFor(who.email as string)).toBe(SIGN_IN_FREE_FAILURES + 1);
+  });
+
+  it('lets exactly the free attempts and one more of forty through on a fresh address', async () => {
+    const who = workosUser();
+    everyGuessWrong();
+
+    await Promise.all(
+      Array.from({ length: 40 }, (_, i) =>
+        post('/api/auth/sign-in/password', { email: who.email, password: `guess-${i}` }),
+      ),
+    );
+
+    expect(workos.authenticateWithPassword).toHaveBeenCalledTimes(SIGN_IN_FREE_FAILURES + 1);
+  });
+});
+
+describe('the owner’s own browser (known-device cookie)', () => {
+  it('is handed a sealed, HttpOnly, SameSite=Strict, ninety-day cookie by every sign-in that issues a session', async () => {
+    const who = workosUser();
+    workos.authenticateWithPassword.mockResolvedValueOnce(authenticated(who, 'Password'));
+
+    const answer = await post('/api/auth/sign-in/password', {
+      email: who.email,
+      password: PASSWORD,
+    });
+
+    const set = answer.cookies.find((c) => c.startsWith('__Host-xecret_known_device='));
+    expect(set).toContain('HttpOnly');
+    expect(set).toContain('Secure');
+    expect(set).toContain('SameSite=Strict');
+    expect(set).toContain(`Max-Age=${90 * 24 * 60 * 60}`);
+  });
+
+  it('signs its owner in while an attacker holds the address’s shared pool locked', async () => {
+    const who = workosUser();
+    const device = await signInOnce(who);
+    // The attacker, from anywhere, without the cookie.
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES + 1; i += 1) {
+      clientIp = `203.0.113.${100 + i}`;
+      await wrongPassword(who.email as string);
+    }
+    clientIp = '203.0.113.200';
+    expect((await wrongPassword(who.email as string)).status).toBe(429);
+    // That refusal never reached WorkOS, so its queued answer is still queued.
+    workos.authenticateWithPassword.mockReset();
+
+    // The owner, from their own browser.
+    clientIp = '192.0.2.10';
+    workos.authenticateWithPassword.mockResolvedValueOnce(authenticated(who, 'Password'));
+    const owner = await post(
+      '/api/auth/sign-in/password',
+      { email: who.email, password: PASSWORD },
+      { cookie: device },
+    );
+
+    expect(owner.status).toBe(200);
+    expect(sessionCookieIssued(owner)).toBe(true);
+    // And the attacker's lock is still where they left it.
+    expect((await lockedUntil(who.email as string))!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('gives the owner’s browser a budget of its own: five free, then its own backoff', async () => {
+    const who = workosUser();
+    const device = await signInOnce(who);
+    for (let i = 0; i < SIGN_IN_FREE_FAILURES + 1; i += 1) {
+      workos.authenticateWithPassword.mockRejectedValueOnce(
+        refusal(400, { code: 'invalid_credentials' }),
+      );
+      await post(
+        '/api/auth/sign-in/password',
+        { email: who.email, password: 'typo' },
+        {
+          cookie: device,
+        },
+      );
+    }
+
+    const seventh = await post(
+      '/api/auth/sign-in/password',
+      { email: who.email, password: PASSWORD },
+      { cookie: device },
+    );
+
+    expect(seventh.status).toBe(429);
+    // The shared pool was never touched by the owner's typos.
+    expect(await failuresFor(who.email as string)).toBe(0);
+  });
+
+  it('counts a browser known to another address in that address’s shared pool, like any stranger', async () => {
+    const owner = workosUser();
+    const device = await signInOnce(owner);
+    const target = workosUser();
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_credentials' }),
+    );
+
+    await post(
+      '/api/auth/sign-in/password',
+      { email: target.email, password: 'x' },
+      {
+        cookie: device,
+      },
+    );
+
+    expect(await failuresFor(target.email as string)).toBe(1);
+  });
+
+  it('ignores a cookie it did not seal — the shared pool counts the request', async () => {
+    const who = workosUser();
+    const device = await signInOnce(who);
+    const forged = `${device.slice(0, -4)}AAAA`;
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_credentials' }),
+    );
+
+    await post(
+      '/api/auth/sign-in/password',
+      { email: who.email, password: 'x' },
+      {
+        cookie: forged,
+      },
+    );
+
+    expect(await failuresFor(who.email as string)).toBe(1);
+  });
+
+  it('counts the device by its own key, not by the address', async () => {
+    const who = workosUser();
+    const device = await signInOnce(who);
+    workos.authenticateWithPassword.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_credentials' }),
+    );
+
+    await post(
+      '/api/auth/sign-in/password',
+      { email: who.email, password: 'x' },
+      {
+        cookie: device,
+      },
+    );
+
+    const rows = (
+      await t.pg.query<{ subject_hash: Uint8Array; failed_attempts: number }>(
+        `select subject_hash, failed_attempts from sign_in_failures`,
+      )
+    ).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.failed_attempts).toBe(1);
+    expect(await failuresFor(who.email as string)).toBe(0);
+    // Keyed by the device the cookie names — read back with the cookie's own key.
+    const opened = await openKnownDevice(
+      await deriveKnownDeviceKey(COOKIE_PASSWORD),
+      device.slice(device.indexOf('=') + 1),
+      new Date(),
+    );
+    expect(opened?.email).toBe(who.email);
+    const expected = await devicePool(env as never, opened!.deviceId);
+    expect(Buffer.from(rows[0]!.subject_hash).equals(Buffer.from(expected))).toBe(true);
   });
 });
 

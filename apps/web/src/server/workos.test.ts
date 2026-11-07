@@ -538,6 +538,47 @@ describe('failure categories', () => {
     },
   );
 
+  it('reads a 408 as WorkOS unreachable — even for a credential call, never as a refusal', () => {
+    for (const options of [{}, { credential: true }]) {
+      expect(providerFailure(failure(408, { error: 'Request timeout' }), options)).toMatchObject({
+        reason: 'unreachable',
+      });
+    }
+  });
+
+  it('reads the real SDK’s own timeout as unreachable on every authenticate call', async () => {
+    vi.stubGlobal(
+      'fetch',
+      (_url: unknown, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    );
+    try {
+      const sdk = new WorkOS('sk_test_not_a_real_key', {
+        ...workosClientOptions(CONFIG.clientId, 'interactive'),
+        timeout: 20,
+      });
+      const provider = new WorkosIdentityProvider(sdk as unknown as WorkosApi, CONFIG);
+      const request = { ipAddress: null, userAgent: null };
+
+      for (const call of [
+        () => provider.signInWithPassword({ email: 'a@b.example', password: 'pw' }, request),
+        () => provider.signInWithMagicAuth({ email: 'a@b.example', code: '123456' }, request),
+        () => provider.exchangeCode('01HZXCODE', CONTEXT),
+        () => provider.createMagicAuth('a@b.example', request),
+      ]) {
+        const error = await call().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(IdentityProviderUnavailableError);
+        expect(error).toMatchObject({ reason: 'unreachable' });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('passes a verification failure it already classified straight through', () => {
     const original = new IdentityVerificationError('no-email');
     expect(providerFailure(original)).toBe(original);

@@ -30,6 +30,7 @@ import {
   writeEvents,
 } from '@/server/sign-in';
 import { refusedSignIn, seeOther } from '@/server/sign-in-responses';
+import { knownDeviceCookies } from '@/server/sign-in-throttle';
 import { workosProvider } from '@/server/workos';
 import type { WorkosIdentityProvider } from '@/server/workos';
 
@@ -142,7 +143,13 @@ export const POST = publicRoute(async ({ request, services }) => {
     });
 
     services.bindLog({ signInOutcome: result.outcome, signInPurpose: parked.purpose });
-    return seeOther(next, [...result.cookies, ...cleared]);
+    // Known to this address from now on, as after any sign-in that issues a
+    // session (`completeSignIn`; `server/sign-in-throttle.ts`).
+    return seeOther(next, [
+      ...result.cookies,
+      ...(await knownDeviceCookies(services, user.email)),
+      ...cleared,
+    ]);
   } catch (cause) {
     return refusedSignIn(services, cause, next, cleared);
   }

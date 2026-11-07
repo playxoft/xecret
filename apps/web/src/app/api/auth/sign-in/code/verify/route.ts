@@ -11,7 +11,7 @@ import {
 } from '@/server/in-app-sign-in';
 import { publicRoute } from '@/server/route';
 import { codeSignInSchema } from '@/server/schemas/sign-in';
-import { signInSubject } from '@/server/sign-in-throttle';
+import { throttlePoolFor } from '@/server/sign-in-throttle';
 import { workosProvider } from '@/server/workos';
 
 /**
@@ -36,11 +36,14 @@ export const POST = publicRoute(async ({ request, services }) => {
     await spend(services, codeKey('guess', body.email), 'per-email code-guess limit');
 
     const provider = workosProvider(services.env, { interactive: true });
-    const exchange = await checkCredential(services, await signInSubject(body.email), () =>
-      provider.signInWithMagicAuth(
-        { email: body.email, code: body.code },
-        requestContext(services),
-      ),
+    const exchange = await checkCredential(
+      services,
+      await throttlePoolFor(services, request, body.email),
+      () =>
+        provider.signInWithMagicAuth(
+          { email: body.email, code: body.code },
+          requestContext(services),
+        ),
     );
 
     return await finishInAppSignIn(services, request, { exchange, provider, next: body.next });

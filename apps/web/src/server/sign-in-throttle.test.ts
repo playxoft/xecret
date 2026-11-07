@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { Bindings } from './bindings';
+import { MissingBindingError } from './bindings';
 import {
+  addressPool,
+  devicePool,
   SIGN_IN_FAILURE_WINDOW_MS,
   SIGN_IN_FREE_FAILURES,
   SIGN_IN_LOCKOUT_BASE_MS,
   SIGN_IN_LOCKOUT_MAX_MS,
   signInLockoutFor,
-  signInSubject,
 } from './sign-in-throttle';
 
 /**
@@ -62,15 +65,45 @@ describe('the sign-in lockout', () => {
   });
 });
 
-describe('the counter’s key', () => {
-  it('is the SHA-256 of the address, folding only ASCII capitals and surrounding spaces', async () => {
-    const a = await signInSubject(' Pat@Example.COM ');
-    const b = await signInSubject('pat@example.com');
-    const other = await signInSubject('pat@example.org');
+describe('the pools’ keys', () => {
+  const env = {
+    WORKOS_COOKIE_PASSWORD: 'a-cookie-password-that-is-comfortably-over-32-characters',
+  } as unknown as Bindings;
+
+  it('are an HMAC of the pool’s name, folding only ASCII capitals and surrounding spaces of an address', async () => {
+    const a = await addressPool(env, ' Pat@Example.COM ');
+    const b = await addressPool(env, 'pat@example.com');
+    const other = await addressPool(env, 'pat@example.org');
+    const plain = new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode('pat@example.com')),
+    );
 
     expect(a).toHaveLength(32);
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
     expect(Buffer.from(a).equals(Buffer.from(other))).toBe(false);
-    expect(Buffer.from(a).toString('utf8')).not.toContain('pat');
+    expect(Buffer.from(a).equals(Buffer.from(plain))).toBe(false);
+  });
+
+  it('never let a device and an address share a row', async () => {
+    const address = await addressPool(env, 'pat@example.com');
+    const device = await devicePool(env, 'pat@example.com');
+    expect(Buffer.from(address).equals(Buffer.from(device))).toBe(false);
+  });
+
+  it('depend on the deployment’s secret', async () => {
+    const other = {
+      WORKOS_COOKIE_PASSWORD: 'another-cookie-password-also-over-thirty-two-chars',
+    } as unknown as Bindings;
+    expect(
+      Buffer.from(await addressPool(env, 'pat@example.com')).equals(
+        Buffer.from(await addressPool(other, 'pat@example.com')),
+      ),
+    ).toBe(false);
+  });
+
+  it('refuse to key anything without the secret', async () => {
+    await expect(addressPool({} as Bindings, 'pat@example.com')).rejects.toBeInstanceOf(
+      MissingBindingError,
+    );
   });
 });

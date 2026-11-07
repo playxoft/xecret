@@ -13,7 +13,7 @@ import {
 } from '@/server/in-app-sign-in';
 import { publicRoute } from '@/server/route';
 import { passwordSignInSchema } from '@/server/schemas/sign-in';
-import { signInSubject } from '@/server/sign-in-throttle';
+import { throttlePoolFor } from '@/server/sign-in-throttle';
 import { AuthenticationStepRequired, workosProvider } from '@/server/workos';
 
 /**
@@ -44,13 +44,13 @@ export const POST = publicRoute(async ({ request, services }) => {
     await spend(services, guessAttemptKey(services, body.email), 'per-address-and-email limit');
 
     const provider = workosProvider(services.env, { interactive: true });
-    const subject = await signInSubject(body.email);
+    const pool = await throttlePoolFor(services, request, body.email);
     const startedAt = Math.floor(Date.now() / 1000);
     let exchange;
     try {
       exchange = await checkCredential(
         services,
-        subject,
+        pool,
         () =>
           provider.signInWithPassword(
             { email: body.email, password: body.password },

@@ -3,6 +3,7 @@ import type { AuthorizationCodeExchange, OAuthPurpose, WorkosIdentity } from '@x
 import type { ServiceContext } from './context';
 import { confirmationReason, issueSignIn, lastAccountKey, prepareSignIn } from './sign-in';
 import { parkSignIn } from './sign-in-confirmation';
+import { knownDeviceCookies } from './sign-in-throttle';
 import type { WorkosIdentityProvider } from './workos';
 
 /**
@@ -126,5 +127,13 @@ export async function completeSignIn(
   });
 
   services.bindLog({ signInOutcome: result.outcome, signInPurpose: purpose });
-  return { kind: 'issued', cookies: result.cookies };
+  // The browser that just signed in is now known to this address: the in-app
+  // sign-in throttle counts its attempts in a pool of its own
+  // (`server/sign-in-throttle.ts`), so an attacker locking the address's shared
+  // pool never locks this browser out. Every path that issues a session does
+  // this — Google and single sign-on included.
+  return {
+    kind: 'issued',
+    cookies: [...result.cookies, ...(await knownDeviceCookies(services, prepared.user.email))],
+  };
 }

@@ -14,7 +14,7 @@ import {
 import { publicRoute } from '@/server/route';
 import { emailVerificationSchema } from '@/server/schemas/sign-in';
 import { SignInRefusal } from '@/server/sign-in';
-import { signInSubject } from '@/server/sign-in-throttle';
+import { throttlePoolFor } from '@/server/sign-in-throttle';
 import { workosProvider } from '@/server/workos';
 
 /**
@@ -64,11 +64,14 @@ export const POST = publicRoute(async ({ request, services }) => {
     await spend(services, codeKey('guess', body.email), 'per-email code-guess limit');
 
     const provider = workosProvider(services.env, { interactive: true });
-    const exchange = await checkCredential(services, await signInSubject(paused.email), () =>
-      provider.completeEmailVerification(
-        { code: body.code, pendingAuthenticationToken: paused.pendingToken },
-        requestContext(services),
-      ),
+    const exchange = await checkCredential(
+      services,
+      await throttlePoolFor(services, request, paused.email),
+      () =>
+        provider.completeEmailVerification(
+          { code: body.code, pendingAuthenticationToken: paused.pendingToken },
+          requestContext(services),
+        ),
     );
 
     clear = [endedPausedSignIn()];

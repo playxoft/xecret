@@ -12,6 +12,7 @@ import {
   issueReauthProof,
   markReauthCodeSent,
   recordReauthMfaPending,
+  releaseReauthGuess,
   reserveReauthCodeSend,
   reserveReauthGuess,
   toBytes,
@@ -200,7 +201,10 @@ export type ReauthVerification =
  * spends.
  *
  * The guess is reserved against both budgets **first** (`reserveReauthGuess`),
- * so it costs the same whatever WorkOS answers and however many arrive at once.
+ * so it costs the same whatever WorkOS answers and however many arrive at once
+ * — and is given back only when WorkOS gave no answer at all (a timeout, an
+ * outage, its rate limit: `releaseReauthGuess`), since such a guess told
+ * nobody anything.
  * The proof is a 256-bit token, returned once, stored only as its SHA-256 and
  * bound to this session and this user. A second success replaces the first
  * proof rather than adding one.
@@ -270,6 +274,16 @@ export async function verifyReauth(
       });
       if (!recorded) throw signInAgain();
       return { kind: 'mfa', mfaToken: cause.pendingAuthenticationToken };
+    }
+    if (cause instanceof IdentityProviderUnavailableError) {
+      // WorkOS never judged this guess — it timed out, was unreachable, or
+      // was rate-limiting us — so it told nobody anything, and the guess is
+      // given back. Every answer WorkOS did give keeps its charge.
+      await releaseReauthGuess(services.db, attempt.id).catch((release: unknown) => {
+        services.log.at('verifyReauth').error('Could not give back a guess WorkOS never judged', {
+          error: release instanceof Error ? release.name : 'unknown',
+        });
+      });
     }
     throw refusalFor(
       services,

@@ -27,7 +27,8 @@ import { SignInRefusal } from './sign-in';
 import { completeSignIn } from './sign-in-completion';
 import { SIGN_IN_CONFIRM_PATH } from './sign-in-confirmation';
 import { classifySignInFailure, UNUSABLE_ANSWERS } from './sign-in-responses';
-import { assertNotLockedOut, clearSignInFailuresFor, countSignInFailure } from './sign-in-throttle';
+import { clearSignInPool, refundSignInAttemptFor, spendSignInAttemptFor } from './sign-in-throttle';
+import type { ThrottlePool } from './sign-in-throttle';
 import { AuthenticationStepRequired } from './workos';
 import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
 
@@ -80,13 +81,15 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  *     the address alone for a code request (mail to somebody's inbox, which an
  *     IP has no business multiplying) and for a code guess (a six-digit secret
  *     worth bounding however many addresses guess at it).
- *  5. **The durable per-address lockout** (`server/sign-in-throttle.ts`,
- *     `sign_in_failures`): consecutive failures against the address, global
- *     and in the database, so rotating IPs and data centres buys nothing. A
- *     locked address is refused as rate-limited before WorkOS is asked; a
- *     refused credential counts; a success clears it. `prepareSignIn` then
- *     spends the per-identity bucket, keyed on the WorkOS user, as it does for
- *     the callback.
+ *  5. **The durable throttle** (`server/sign-in-throttle.ts`,
+ *     `sign_in_failures`): the attempt is counted — first, in one statement —
+ *     against this browser's own pool when it carries a known-device cookie
+ *     earned for the address, and against the address's shared pool
+ *     otherwise; refused as rate-limited while that pool is locked. Global and
+ *     in the database, so rotating IPs and data centres buys nothing, and an
+ *     attacker can lock only the shared pool, never the owner's browser.
+ *     `prepareSignIn` then spends the per-identity bucket, keyed on the WorkOS
+ *     user, as it does for the callback.
  *
  * ── Answers that must look alike ──
  * A wrong password and an address with no account are one WorkOS answer and
@@ -138,6 +141,16 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  * is unverified, a *wrong* password must answer `invalid_credentials`, and only
  * the right one `email_verification_required`. If so, set this to `true` — the
  * route, the cookie and the page are built and tested for it.
+ *
+ * ── What it costs while off ──
+ * Somebody with an unverified address who types the *right* password is told
+ * the password is wrong, has the attempt counted, and is mailed a verification
+ * code by WorkOS that this page cannot accept. Their way in is "email me a
+ * code" — the Magic Auth code verifies the address and signs them in — and
+ * enough retries of the password lock their own shared pool first. The
+ * counting is deliberate: an answer that is not counted while every wrong
+ * password is would itself be an oracle — the lockout would arrive later for an
+ * unverified address than for any other, and that difference names it.
  */
 const EMAIL_VERIFICATION_STEP = false;
 let emailVerificationStep = EMAIL_VERIFICATION_STEP;
@@ -244,29 +257,40 @@ function isRefusedCredential(cause: unknown, fold: ReadonlySet<AuthenticationSte
 }
 
 /**
- * Steps 5 and the WorkOS call, for one guess at a credential: refuses a locked
- * address, asks WorkOS, and keeps the address's count — cleared when WorkOS
- * accepts, one more when it refuses (or answers in a way folded into a refusal,
- * `fold`). Anything else WorkOS says passes through untouched, uncounted.
+ * Step 5 and the WorkOS call, for one guess at a credential
+ * (`server/sign-in-throttle.ts` has the design):
+ *
+ *  1. **Count it first** against its pool, or refuse it as rate-limited while
+ *     the pool is locked — one statement, so a concurrent burst cannot slip
+ *     past the end of the free attempts together.
+ *  2. Ask WorkOS.
+ *  3. Accepted → clear the pool. Refused, or answered in a way folded into a
+ *     refusal (`fold`) → the up-front count stands. Anything else — WorkOS
+ *     unavailable, timed out, rate-limiting us, or asking for a step this page
+ *     does not fold — was never a judgement of the guess: the count is
+ *     refunded, and the cause passes through untouched.
  */
 export async function checkCredential(
   services: ServiceContext,
-  subject: Uint8Array<ArrayBuffer>,
+  pool: ThrottlePool,
   attempt: () => Promise<AuthorizationCodeExchange<WorkosIdentity>>,
   fold: ReadonlySet<AuthenticationStepCode> = FOLDED_STEPS,
 ): Promise<AuthorizationCodeExchange<WorkosIdentity>> {
-  await assertNotLockedOut(services, subject);
+  await spendSignInAttemptFor(services, pool);
+  let exchange: AuthorizationCodeExchange<WorkosIdentity>;
   try {
-    const exchange = await attempt();
-    await clearSignInFailuresFor(services, subject);
-    return exchange;
+    exchange = await attempt();
   } catch (cause) {
-    if (!isRefusedCredential(cause, fold)) throw cause;
-    await countSignInFailure(services, subject);
-    throw new RefusedCredential(
-      cause instanceof IdentityVerificationError ? cause.reason : 'refused',
-    );
+    if (isRefusedCredential(cause, fold)) {
+      throw new RefusedCredential(
+        cause instanceof IdentityVerificationError ? cause.reason : 'refused',
+      );
+    }
+    await refundSignInAttemptFor(services, pool);
+    throw cause;
   }
+  await clearSignInPool(services, pool);
+  return exchange;
 }
 
 /**

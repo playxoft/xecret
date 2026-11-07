@@ -994,6 +994,26 @@ describe('starting a sign-in', () => {
     expect(result.location).toBe('/app');
     expect(sessionCookieIssued(result)).toBe(true);
     expect(audit.find((e) => e.action === 'auth.signup')?.metadata.signInMethod).toBe('oauth');
+    // A browser that signed in with Google is known to the address too, so the
+    // in-app throttle never locks it out of a password or code sign-in.
+    expect(
+      result.cookies.some(
+        (c) => c.startsWith('__Host-xecret_known_device=') && c.includes('SameSite=Strict'),
+      ),
+    ).toBe(true);
+  });
+
+  it('answers a code exchange WorkOS never answered (its SDK timing out) as unavailable, not expired', async () => {
+    const flow = await startSignIn('?provider=google');
+    workos.authenticateWithCode.mockRejectedValueOnce(
+      Object.assign(new Error('Request timeout after 10000ms'), {
+        name: 'OauthException',
+        status: 408,
+        error: 'Request timeout',
+      }),
+    );
+
+    expect((await finishSignIn(flow)).error).toBe('unavailable');
   });
 });
 

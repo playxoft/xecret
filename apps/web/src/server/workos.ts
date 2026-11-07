@@ -966,6 +966,11 @@ export function providerFailure(cause: unknown, options: { credential?: boolean 
   if (status === 401 || status === 403)
     return new IdentityProviderUnavailableError('misconfigured');
   if (status === 429) return new IdentityProviderUnavailableError('rate-limited');
+  // The SDK's own timeout: it aborts the fetch and raises an `OauthException`
+  // with status 408 and `error: "Request timeout"` — a request WorkOS never
+  // answered, not one it refused. Before the 4xx branch below, which would
+  // otherwise read it as a wrong password or code, and count it.
+  if (status === 408) return new IdentityProviderUnavailableError('unreachable');
   if (status === undefined || status >= 500) {
     return new IdentityProviderUnavailableError('unreachable');
   }
