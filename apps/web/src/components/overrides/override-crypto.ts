@@ -233,7 +233,8 @@ export async function setOverride(params: {
  * Opens one of the caller's own overrides.
  *
  * Throws {@link OverrideUnreadableError} for a blob this account cannot open,
- * and `VaultLockedError` when the vault locked first. Never returns anything
+ * `VaultLockedError` when the vault locked first, and `VaultKeysChangedError`
+ * when its keys were replaced while it stayed open. Never returns anything
  * but the plaintext the owner sealed: the tag is what proves the owner's own key
  * made this blob, for this row.
  */
@@ -292,6 +293,11 @@ export function overrideFailureMessage(cause: unknown): string | null {
   }
   if (cause instanceof Error && cause.name === 'VaultLockedError') {
     return 'Your vault locked before this finished. Unlock it and try again.';
+  }
+  // The vault stayed open and its keys were swapped underneath: a retry works,
+  // and asking for an unlock would send somebody looking for a lock screen.
+  if (cause instanceof Error && cause.name === 'VaultKeysChangedError') {
+    return 'Your vault keys changed before this finished. Try again.';
   }
   return null;
 }

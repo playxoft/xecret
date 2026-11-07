@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { VaultKeysChangedError, VaultLockedError } from '@/components/vault/key-store';
 import { ApiError, errorMessage } from './api';
 
 /**
@@ -72,6 +73,36 @@ describe('errorMessage', () => {
   it('never reads the message of an arbitrary throw', () => {
     expect(errorMessage(new Error('DB_PASSWORD=hunter2 is invalid'))).toBe(
       'Something went wrong. Please try again.',
+    );
+  });
+
+  /**
+   * Every operation that needs key material throws this once the vault has
+   * locked. "Something went wrong" sent somebody whose only remedy is to unlock
+   * looking for a fault that does not exist.
+   */
+  it('says the vault is locked, rather than that something went wrong', () => {
+    expect(errorMessage(new VaultLockedError())).toBe(
+      'Your vault is locked. Unlock it to continue.',
+    );
+  });
+
+  it('fixes that sentence rather than reading the error’s own message', () => {
+    expect(errorMessage(new VaultLockedError('DB_PASSWORD=hunter2'))).toBe(
+      'Your vault is locked. Unlock it to continue.',
+    );
+  });
+
+  /**
+   * The same refusal while the vault is still open — keys swapped under the
+   * operation by a passphrase change, a handoff or a revoked grant. Asking for
+   * an unlock there is an instruction nobody can follow, and it discourages the
+   * retry that would simply work.
+   */
+  it('asks for a retry, not an unlock, when the keys changed under an open vault', () => {
+    expect(errorMessage(new VaultKeysChangedError())).toBe('Your vault keys changed. Try again.');
+    expect(errorMessage(new VaultKeysChangedError('DB_PASSWORD=hunter2'))).toBe(
+      'Your vault keys changed. Try again.',
     );
   });
 });

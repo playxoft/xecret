@@ -15,10 +15,14 @@ import type { EnvKeyUnavailable } from './env-keys';
  * unkeyed `e2ee` environment is a genuine fault worth reporting rather than a
  * state to wait out.
  *
- * The lock screen already gates a locked vault at the shell level, so `locked`
- * is reached only in the narrow window where the shell has not caught up yet —
- * it is written anyway, because a screen whose failure branch depends on another
- * component having rendered first is a screen that eventually renders nothing.
+ * The lock screen gates a locked vault at the shell level, and the shell catches
+ * up with a lock it did not perform — this tab's keys being released, any
+ * request refused as `session_locked`, or a tab that never obtained keys at all
+ * — by re-reading the session or locking it (`_lib/lock-catch-up.ts`). So
+ * `locked` is reached only in the moment before that lands, or while staged
+ * work holds it back. It is written anyway, because a screen whose failure
+ * branch depends on another component having rendered first is a screen that
+ * eventually renders nothing.
  */
 export function EnvKeyUnavailableState({
   reason,

@@ -3,7 +3,7 @@
 import { useParams, usePathname } from 'next/navigation';
 
 import { errorMessage, isApiError } from '@/lib/api';
-import { AlertTriangleIcon, Button, Card, RefreshIcon, Skeleton } from '@/components/ui';
+import { AlertTriangleIcon, Button, Card, LockIcon, RefreshIcon, Skeleton } from '@/components/ui';
 import { ssoRequiredRemedy } from './sso-required';
 
 /**
@@ -46,6 +46,27 @@ export function ErrorState({ subject, error, onRetry }: ErrorStateProps) {
   // Not a failure at all: the organisation wants its own single sign-on, and
   // the person can give it that in one step (review round 2, L9).
   const sso = ssoRequiredRemedy(error, params?.orgSlug, pathname);
+  // Not a failure either: the vault locked, and nothing about this screen is
+  // wrong. The refusal has already told the shell (`lib/session-locked.ts`),
+  // which swaps the whole dashboard for the lock screen once it has re-read the
+  // session — at once, or, while staged edits elsewhere hold it back, as soon as
+  // they are saved or discarded. No request id and no retry: there is nothing to
+  // report, and retrying cannot succeed until the unlock the lock screen asks for.
+  const locked = isApiError(error) && error.code === 'session_locked';
+
+  if (locked) {
+    return (
+      <Card role="status" className="p-6">
+        <div className="flex gap-3.5">
+          <LockIcon className="text-fg-muted mt-0.5 size-5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-fg text-[0.9375rem] font-semibold">Your vault is locked</h2>
+            <p className="text-fg-muted mt-1.5 text-sm leading-6">Unlock your vault to continue.</p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
 
   if (sso !== null) {
     return (

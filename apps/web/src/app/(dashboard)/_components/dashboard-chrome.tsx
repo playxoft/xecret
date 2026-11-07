@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { isApiError, SIGN_IN_PATH } from '@/lib/api';
@@ -15,6 +15,7 @@ import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
 import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { createLockCatchUp } from '../_lib/lock-catch-up';
 import { useAutoLock } from '../_lib/use-auto-lock';
 import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
@@ -97,32 +98,55 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     void reloadTrail();
   }, [reloadTrail]);
 
-  // Locking re-reads the session, which re-renders this component and lands on
-  // the lock screen. One code path for "we are locked", whether that came from
-  // the menu, from the idle timer below, or from an eight-hour timeout.
+  // ── Catching up with a lock ──
   //
+  // Re-reading the session is what lands on the lock screen, and
+  // `lock-catch-up.ts` decides when: after a lock this shell performed, a lock
+  // in another tab, the eight-hour ceiling, a request refused because the
+  // server's idle window closed first, or a tab that never obtained keys. Every
+  // re-read of the session goes through it — the screens' `refresh`, the new
+  // organisation, the unlock — so that at most one is under way at a time
+  // whichever of them lands on the lock screen.
+  //
+  // Created once: the resource's own reload is stable for its whole life, and
+  // is handed to nothing else.
+  const [lockCatchUp] = useState(() =>
+    createLockCatchUp({ reload: session.reload, lockVault: () => lockVault() }),
+  );
+  const reloadSession = lockCatchUp.reload;
+
   // `lockVault` rather than a bare POST, because locking is two things and only
   // one of them is a request: it also zeroizes the User Key and both private
   // keys in this browser, in a `finally`, so a failed request still leaves the
   // laptop locked. That is the direction the idle timer needs it to fail in.
-  const reloadSession = session.reload;
-  const lock = useCallback(async () => {
-    await lockVault();
-    // `void`, not awaited: `reload` returns a promise now, and nothing after
-    // this line depends on the answer — the re-render it causes is the whole
-    // point, and it is what lands on the lock screen. Left bare it was a
-    // floating promise, which is the shape a genuine forgotten `await` also has.
-    void reloadSession();
-  }, [reloadSession]);
+  // The lock request answering `session_locked` — the server's window closed
+  // first — counts as success, and the session is re-read whatever it answered.
+  const lock = lockCatchUp.lock;
+
+  // Every committed answer, a failure included, lowers the one-at-a-time guard.
+  useEffect(() => {
+    lockCatchUp.answered();
+  }, [lockCatchUp, session.data, session.error]);
+
+  // Armed only while the shell is drawing an unlocked dashboard: behind the
+  // lock screen there is nothing to catch up with, and before the first answer
+  // there is nothing to re-read.
+  const vaultState = session.data?.vault;
+  const unlockedShell = vaultState?.configured === true && vaultState.unlocked;
+  // Whether the unlocked branch below mounts a `VaultProvider` — every case but
+  // the one with no organisations. Only a provider restores this tab's mirror or
+  // asks another tab for keys, so only under one is "no keys yet" a state that
+  // ends; the keyless grace period runs there and nowhere else.
+  const keysObtainable = unlockedShell && (memberships?.length ?? 0) > 0;
+
+  useEffect(() => {
+    if (!unlockedShell) return;
+    return lockCatchUp.arm({ awaitKeys: keysObtainable });
+  }, [unlockedShell, keysObtainable, lockCatchUp]);
 
   // The idle lock. Armed only while there is an unlock to lose; the interval
   // comes from the account's setting on the security page, `0` disarms it.
-  const vaultState = session.data?.vault;
-  useAutoLock(
-    vaultState?.autoLockMinutes ?? 0,
-    vaultState?.configured === true && vaultState.unlocked,
-    lock,
-  );
+  useAutoLock(vaultState?.autoLockMinutes ?? 0, unlockedShell, lock);
 
   // Built once and rendered in whichever branch below is reached — never in two
   // at the same time. An element rather than a second `<CreateOrganizationDialog>`
@@ -147,7 +171,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
     return (
       <ChromeFrame>
-        <ErrorState subject="your account" error={session.error} onRetry={session.reload} />
+        <ErrorState subject="your account" error={session.error} onRetry={reloadSession} />
       </ChromeFrame>
     );
   }
@@ -178,7 +202,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     // tabs' handoff requests with it.
     return (
       <VaultProvider key={user.id} userId={user.id} locked>
-        <LockScreen status={vault} user={user} onUnlocked={session.reload} />
+        <LockScreen status={vault} user={user} onUnlocked={reloadSession} />
       </VaultProvider>
     );
   }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  acquireCryptoLease,
   holdVaultKeys,
   readVaultKeys,
   releaseVaultKeys,
@@ -8,7 +9,10 @@ import {
   setMirrorStorage,
   shouldReleaseForServerVerdict,
   subscribeVaultKeys,
+  VaultKeysChangedError,
+  VaultLockedError,
   vaultKeysHeld,
+  withVaultKeys,
 } from './key-store';
 import { VAULT_SESSION_MIRROR_KEY } from './session-mirror';
 import type { MirrorStorage } from './session-mirror';
@@ -129,6 +133,46 @@ describe('replacing keys', () => {
   });
 });
 
+describe('which refusal an operation on stale keys gets', () => {
+  // Both refuse for the same reason — the bytes handed in are not the ones held
+  // — and are told apart because the remedies are opposite: unlocking, or simply
+  // trying again. Telling somebody whose vault is open to unlock it sends them
+  // looking for a lock screen that is not there.
+  it('is "locked" when the vault now holds nothing', async () => {
+    const keys = material(1);
+    holdVaultKeys(keys);
+    releaseVaultKeys();
+
+    await expect(withVaultKeys(keys, async () => 'ran')).rejects.toBeInstanceOf(VaultLockedError);
+  });
+
+  it('is "changed" when the vault holds different keys — a passphrase change, a handoff', async () => {
+    const first = material(1);
+    holdVaultKeys(first);
+    holdVaultKeys(material(9));
+
+    await expect(withVaultKeys(first, async () => 'ran')).rejects.toBeInstanceOf(
+      VaultKeysChangedError,
+    );
+  });
+
+  it('is decided the same way when a lease is refused while a wipe waits', () => {
+    // An operation in flight keeps the superseded bytes alive, so the next one
+    // is refused at the lease — and the vault is still open.
+    const inFlight = acquireCryptoLease();
+    holdVaultKeys(material(1));
+    holdVaultKeys(material(9));
+    expect(() => acquireCryptoLease()).toThrow(VaultKeysChangedError);
+
+    // Now it is a lock.
+    releaseVaultKeys();
+    expect(() => acquireCryptoLease()).toThrow(VaultLockedError);
+
+    inFlight.release();
+    expect(() => acquireCryptoLease().release()).not.toThrow();
+  });
+});
+
 describe('the session mirror', () => {
   it('survives a reload: the same bytes come back, in new arrays', () => {
     const storage = fakeStorage();
@@ -159,8 +203,8 @@ describe('the session mirror', () => {
   });
 
   it('refuses a mirror belonging to another account', () => {
-    // An expired session is a redirect to sign-in with no lock in between, so
-    // the blob outlives its own account inside one tab.
+    // A session can end with no lock in between, and a tab taken to the sign-in
+    // page without a refused request keeps the blob past its own account.
     const storage = fakeStorage();
     setMirrorStorage(storage);
     holdVaultKeys(material(11));

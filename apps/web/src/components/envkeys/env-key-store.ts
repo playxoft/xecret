@@ -5,8 +5,8 @@ import type { Bytes } from '@xecret/core/crypto/client';
 import {
   acquireCryptoLease,
   deferWipe,
+  staleKeyError,
   subscribeVaultKeys,
-  VaultLockedError,
   vaultKeysHeld,
 } from '@/components/vault/key-store';
 
@@ -182,7 +182,9 @@ export async function withEnvKey<T>(material: EnvKeyMaterial, run: () => Promise
   const lease = acquireCryptoLease();
   try {
     const current = held.get(envKeyCacheKey(material.environmentId, material.envDataKeyId));
-    if (current !== material) throw new VaultLockedError();
+    // Locked if the vault went with it; a revocation or a rotation otherwise,
+    // which a retry against the current key gets past.
+    if (current !== material) throw staleKeyError();
     return await run();
   } finally {
     lease.release();

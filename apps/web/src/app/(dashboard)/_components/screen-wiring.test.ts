@@ -74,3 +74,83 @@ describe('a rename reaches the breadcrumb trail', () => {
     expect(attribute(source('./dashboard-chrome.tsx'), 'value')).toContain('refreshTrail');
   });
 });
+
+describe('the shell catches up with a lock through its coordinator', () => {
+  // `lock-catch-up.ts` decides when the shell re-reads the session, and its own
+  // tests pin how. What they cannot see is the shell actually using it — armed
+  // while the unlocked dashboard is drawn, told about every answer, and the only
+  // way the session is ever re-read. A re-read that went around it would land
+  // on the lock screen with the one-at-a-time guard down, and re-read again.
+  const chrome = source('./dashboard-chrome.tsx');
+
+  it('is armed while the unlocked dashboard is drawn, and hears every answer', () => {
+    expect(chrome).toMatch(
+      /if \(!unlockedShell\) return;\s*return lockCatchUp\.arm\(\{ awaitKeys: keysObtainable \}\);/,
+    );
+    // Keys are awaited only where a `VaultProvider` is mounted: the unlocked
+    // branch with organisations. The screen with none mounts no provider, and a
+    // grace period there locked the whole account's session on every cold load.
+    expect(chrome).toMatch(
+      /const keysObtainable = unlockedShell && \(memberships\?\.length \?\? 0\) > 0;/,
+    );
+    expect(chrome).toMatch(/if \(organizations\.length === 0\) \{/);
+    expect(chrome).toMatch(
+      /lockCatchUp\.answered\(\);\s*\}, \[lockCatchUp, session\.data, session\.error\]\);/,
+    );
+  });
+
+  it('is the only way the session is re-read', () => {
+    // The resource's own reload goes to the coordinator, and nowhere else.
+    expect(chrome.match(/session\.reload/g)).toEqual(['session.reload']);
+    expect(chrome).toMatch(/createLockCatchUp\(\{ reload: session\.reload,/);
+
+    expect(attribute(chrome, 'onUnlocked')).toBe('reloadSession');
+    expect(attribute(chrome, 'onRetry')).toBe('reloadSession');
+    expect(attribute(chrome, 'onCreated')).toBe('reloadSession');
+    expect(attribute(chrome, 'value')).toContain('refresh: reloadSession');
+  });
+
+  it('locks through it, so a lock re-reads the session whatever its request answered', () => {
+    expect(chrome).toMatch(/const lock = lockCatchUp\.lock;/);
+  });
+});
+
+describe('staged work survives a lock it cannot be saved through', () => {
+  // Both rules are pure functions with tests of their own. What those tests
+  // cannot see is the screen still calling them: unwired, each fails silently
+  // in exactly the case it exists for.
+  it('the listing keeps its rows when a re-read is refused as locked', () => {
+    // Every save re-reads the listing, and a refusal that replaced the rows
+    // unmounted the table and every staged edit in it.
+    const screen = source('./environment-screen.tsx');
+    const hook = screen.slice(screen.indexOf('function useSecretList'));
+    expect(hook).toMatch(
+      /\.catch\(\(cause: unknown\) => \{\s*if \(controller\.signal\.aborted\) return;[\s\S]*?setState\(\(current\) => listingAfterFailure\(current, path, cause\)\);/,
+    );
+  });
+
+  it('the browser is asked about staged edits by the one rule that knows about sign-outs', () => {
+    const guard = source('../../../components/ui/unsaved-changes-guard.tsx');
+    const handler = guard.slice(guard.indexOf('const onBeforeUnload'));
+    expect(handler.slice(0, handler.indexOf('event.preventDefault()'))).toMatch(
+      /if \(!asksBeforeUnload\(unwinding\.current\)\) return;/,
+    );
+  });
+});
+
+describe('every sign-out leaves in the same order', () => {
+  // Redirects suppressed before the revoke; a departure on purpose — no "Leave
+  // site?" — only once the revoke is confirmed; the keys released and the page
+  // left whatever the revoke did. A failed revoke may leave the session live,
+  // and the browser must still be allowed to ask.
+  it.each([
+    ['the account menu', '../../../components/layout/user-menu.tsx'],
+    ['the lock screen', './lock-screen.tsx'],
+    ['the invitation screen', '../../(auth)/invite/[token]/invite-screen.tsx'],
+  ])('%s', (_where, path) => {
+    const text = source(path);
+    expect(text).toMatch(
+      /beginSignInRedirect\(\);[\s\S]*?try \{\s*destination = await endSession\(\);\s*beginLeavingPage\(\);\s*\} finally \{[\s\S]*?releaseVaultKeys\(\);/,
+    );
+  });
+});

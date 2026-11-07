@@ -17,15 +17,40 @@
  * file, and importing a `.tsx` one from it drags JSX into transforms that do not
  * expect it.
  */
+import { isLeavingOnPurpose } from '@/lib/page-exit';
+
 let armedGuard: ((href: string) => void) | null = null;
+
+const listeners = new Set<() => void>();
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}
 
 /** Called by the guard while it has something to protect. */
 export function armLeaveGuard(ask: (href: string) => void): () => void {
   armedGuard = ask;
+  notify();
   return () => {
     // Only if it is still ours. A guard unmounting after another has armed
     // would otherwise disarm the live one.
-    if (armedGuard === ask) armedGuard = null;
+    if (armedGuard !== ask) return;
+    armedGuard = null;
+    notify();
+  };
+}
+
+/**
+ * Hears the guard arm and disarm. Returns the unsubscribe function.
+ *
+ * For a caller that stood down because work was at stake and has to act once it
+ * no longer is: the dashboard shell holds back the lock screen while staged
+ * edits are on screen, and shows it the moment they are saved or discarded.
+ */
+export function subscribeLeaveGuard(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
   };
 }
 
@@ -56,6 +81,24 @@ export function askBeforeLeaving(href: string): boolean {
  */
 export function isLeaveGuardArmed(): boolean {
   return armedGuard !== null;
+}
+
+/**
+ * Whether the browser's "Leave site?" prompt should be raised for staged work.
+ *
+ * Not when the guard itself is the one navigating — `unwinding` — since
+ * answering "leave and lose them" and then being asked "leave site?" is the same
+ * question twice, and the second one is the one nobody can act on.
+ *
+ * And not once a sign-out's revoke has been confirmed. The session is gone, so
+ * staying saves nothing, and a "Stay" would strand the page with every redirect
+ * and every lock switched off (`lib/page-exit.ts`). A sign-out whose revoke
+ * failed still asks — the session may be live and the work savable — and so
+ * does a 401's redirect to sign in: nobody chose that one, and the prompt is the
+ * last chance to copy out a value that cannot be fetched again.
+ */
+export function asksBeforeUnload(unwinding: boolean): boolean {
+  return !unwinding && !isLeavingOnPurpose();
 }
 
 /**
