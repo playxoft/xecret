@@ -19,13 +19,36 @@
  */
 let armedGuard: ((href: string) => void) | null = null;
 
+const listeners = new Set<() => void>();
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}
+
 /** Called by the guard while it has something to protect. */
 export function armLeaveGuard(ask: (href: string) => void): () => void {
   armedGuard = ask;
+  notify();
   return () => {
     // Only if it is still ours. A guard unmounting after another has armed
     // would otherwise disarm the live one.
-    if (armedGuard === ask) armedGuard = null;
+    if (armedGuard !== ask) return;
+    armedGuard = null;
+    notify();
+  };
+}
+
+/**
+ * Hears the guard arm and disarm. Returns the unsubscribe function.
+ *
+ * For a caller that stood down because work was at stake and has to act once it
+ * no longer is: the dashboard shell holds back the lock screen while staged
+ * edits are on screen, and shows it the moment they are saved or discarded.
+ */
+export function subscribeLeaveGuard(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
   };
 }
 

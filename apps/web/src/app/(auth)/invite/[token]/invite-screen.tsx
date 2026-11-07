@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { OrgRole } from '@xecret/core/authz';
 import { api, endSession, errorMessage, SIGN_IN_PATH } from '@/lib/api';
+import { beginLeavingPage } from '@/lib/page-exit';
 import { Alert, Button, Card, CardContent, Spinner } from '@/components/ui';
 import { InviteKeyStep } from '@/components/envkeys';
 import type { InviteKeyGrant } from '@/components/envkeys';
@@ -270,6 +271,10 @@ export function InviteScreen({ token }: { token: string }) {
                 // would otherwise sign this browser straight back in as the
                 // same, wrong account. Without one, this page again.
                 void endSession().then((destination) => {
+                  // Raised only once the navigation is certain — a failed
+                  // revoke stays on this page — and before it starts, so no
+                  // 401 replaces it (`lib/page-exit.ts`).
+                  beginLeavingPage();
                   if (destination === SIGN_IN_PATH) window.location.reload();
                   else window.location.assign(destination);
                 });

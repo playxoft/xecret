@@ -5,6 +5,7 @@ import { useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import { endSession, SIGN_IN_PATH } from '@/lib/api';
+import { beginLeavingPage } from '@/lib/page-exit';
 import { releaseVaultKeys } from '@/components/vault';
 import { initials } from '@/lib/format';
 import { THEME_LABELS } from '@/lib/theme';
@@ -73,6 +74,11 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
     setLocking(true);
     try {
       await onLock();
+    } catch {
+      // Caught and dropped, as the idle timer does. The keys are gone whatever
+      // the request did, and the shell has re-read the session, which is what
+      // shows the outcome — the lock screen, or why the account could not be
+      // reached. A rejection left floating would say nothing more.
     } finally {
       setLocking(false);
     }
@@ -80,6 +86,12 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
 
   async function handleSignOut() {
     setSigningOut(true);
+    // First, before the revoke and before the keys are released: from here on
+    // every 401 is expected, and neither the API client's sign-in redirect nor
+    // the shell's re-read of the session may start a navigation that replaces
+    // the one below (`lib/page-exit.ts`). Raised unconditionally because the
+    // navigation below is unconditional too.
+    beginLeavingPage();
     // The sign-in page, unless the server answers WorkOS's logout URL for the
     // AuthKit session this one came from — which ends that too, and comes back
     // to the sign-in page itself.

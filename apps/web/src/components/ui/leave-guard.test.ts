@@ -6,6 +6,7 @@ import {
   interceptedHref,
   isLeaveGuardArmed,
   isPlainLeftClick,
+  subscribeLeaveGuard,
 } from './leave-guard';
 import type { AnchorFacts, ClickFlags } from './leave-guard';
 
@@ -151,5 +152,22 @@ describe('the armed slot', () => {
 
     disarm();
     expect(askBeforeLeaving('/acme/projects')).toBe(false);
+  });
+
+  it('tells a subscriber when it arms and disarms, and not for a stale disarm', () => {
+    // The dashboard shell holds the lock screen back while work is staged and
+    // shows it the moment the work is saved or discarded — which it can only
+    // know by being told.
+    const heard: boolean[] = [];
+    const stop = subscribeLeaveGuard(() => heard.push(isLeaveGuardArmed()));
+
+    const disarmFirst = armLeaveGuard(() => {});
+    const disarmSecond = armLeaveGuard(() => {});
+    disarmFirst();
+    disarmSecond();
+    stop();
+    armLeaveGuard(() => {})();
+
+    expect(heard).toEqual([true, true, false]);
   });
 });

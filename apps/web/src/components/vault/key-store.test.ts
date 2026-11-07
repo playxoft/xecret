@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  acquireCryptoLease,
   holdVaultKeys,
   readVaultKeys,
   releaseVaultKeys,
@@ -8,7 +9,10 @@ import {
   setMirrorStorage,
   shouldReleaseForServerVerdict,
   subscribeVaultKeys,
+  VaultKeysChangedError,
+  VaultLockedError,
   vaultKeysHeld,
+  withVaultKeys,
 } from './key-store';
 import { VAULT_SESSION_MIRROR_KEY } from './session-mirror';
 import type { MirrorStorage } from './session-mirror';
@@ -126,6 +130,46 @@ describe('replacing keys', () => {
 
     expect([...first.userKey]).toEqual(Array<number>(32).fill(0));
     expect(readVaultKeys()?.userKey[0]).toBe(9);
+  });
+});
+
+describe('which refusal an operation on stale keys gets', () => {
+  // Both refuse for the same reason — the bytes handed in are not the ones held
+  // — and are told apart because the remedies are opposite: unlocking, or simply
+  // trying again. Telling somebody whose vault is open to unlock it sends them
+  // looking for a lock screen that is not there.
+  it('is "locked" when the vault now holds nothing', async () => {
+    const keys = material(1);
+    holdVaultKeys(keys);
+    releaseVaultKeys();
+
+    await expect(withVaultKeys(keys, async () => 'ran')).rejects.toBeInstanceOf(VaultLockedError);
+  });
+
+  it('is "changed" when the vault holds different keys — a passphrase change, a handoff', async () => {
+    const first = material(1);
+    holdVaultKeys(first);
+    holdVaultKeys(material(9));
+
+    await expect(withVaultKeys(first, async () => 'ran')).rejects.toBeInstanceOf(
+      VaultKeysChangedError,
+    );
+  });
+
+  it('is decided the same way when a lease is refused while a wipe waits', () => {
+    // An operation in flight keeps the superseded bytes alive, so the next one
+    // is refused at the lease — and the vault is still open.
+    const inFlight = acquireCryptoLease();
+    holdVaultKeys(material(1));
+    holdVaultKeys(material(9));
+    expect(() => acquireCryptoLease()).toThrow(VaultKeysChangedError);
+
+    // Now it is a lock.
+    releaseVaultKeys();
+    expect(() => acquireCryptoLease()).toThrow(VaultLockedError);
+
+    inFlight.release();
+    expect(() => acquireCryptoLease().release()).not.toThrow();
   });
 });
 

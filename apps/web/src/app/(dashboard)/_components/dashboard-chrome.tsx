@@ -1,12 +1,11 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { isApiError, SIGN_IN_PATH } from '@/lib/api';
-import { subscribeSessionLocked } from '@/lib/session-locked';
-import { lockVault, subscribeVaultKeys, vaultKeysHeld, VaultProvider } from '@/components/vault';
+import { lockVault, VaultProvider } from '@/components/vault';
 import { AppShell, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
 import { CreateOrganizationDialog } from '@/components/organizations';
@@ -16,6 +15,7 @@ import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
 import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { createLockCatchUp } from '../_lib/lock-catch-up';
 import { useAutoLock } from '../_lib/use-auto-lock';
 import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
@@ -100,52 +100,33 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   // ── Catching up with a lock ──
   //
-  // Re-reading the session is what lands on the lock screen: `/api/auth/me` is
-  // exempt from the lock gate, so it answers a locked session with
-  // `unlocked: false` rather than a refusal. One code path for "we are locked",
-  // whether the lock came from the menu, the idle timer, another tab, the
-  // eight-hour ceiling, or a server whose idle window closed before this
-  // browser's did.
+  // Re-reading the session is what lands on the lock screen, and
+  // `lock-catch-up.ts` decides when: after a lock this shell performed, a lock
+  // in another tab, the eight-hour ceiling, a request refused because the
+  // server's idle window closed first, or a tab that never obtained keys. Every
+  // re-read of the session goes through it — the screens' `refresh`, the new
+  // organisation, the unlock — so that at most one is under way at a time
+  // whichever of them lands on the lock screen.
   //
-  // At most one catch-up at a time. A screen whose parallel requests are all
-  // refused announces the lock once per request, and the key release that
-  // accompanies it is one more notice of the same lock; a second re-read would
-  // only abort the first. The guard comes down when a new answer is committed,
-  // not when the reload's promise settles: the promise settles before the render
-  // that draws the answer, and that render is where the lock screen's provider
-  // releases any keys still held — a release that must not read as a fresh lock
-  // and start another re-read underneath the lock screen.
-  const reloadSession = session.reload;
-  const catchingUp = useRef(false);
-  const catchUp = useCallback(() => {
-    if (catchingUp.current) return;
-    catchingUp.current = true;
-    void reloadSession();
-  }, [reloadSession]);
-  useEffect(() => {
-    catchingUp.current = false;
-  }, [session.data]);
+  // Created once: the resource's own reload is stable for its whole life, and
+  // is handed to nothing else.
+  const [lockCatchUp] = useState(() =>
+    createLockCatchUp({ reload: session.reload, lockVault: () => lockVault() }),
+  );
+  const reloadSession = lockCatchUp.reload;
 
   // `lockVault` rather than a bare POST, because locking is two things and only
   // one of them is a request: it also zeroizes the User Key and both private
   // keys in this browser, in a `finally`, so a failed request still leaves the
   // laptop locked. That is the direction the idle timer needs it to fail in.
-  const lock = useCallback(async () => {
-    try {
-      await lockVault();
-    } catch (cause) {
-      // A session the server has already locked is refused by the lock route
-      // itself — deliberately, see its header — so the idle timer meets this
-      // whenever the server's window closed first. It is the outcome asked
-      // for, not a failure of it.
-      if (!isApiError(cause) || cause.code !== 'session_locked') throw cause;
-    } finally {
-      // Whatever the request did. The keys are gone either way, and a shell
-      // that went on drawing the dashboard over a key store holding nothing is
-      // a page of "Could not load …" and "Something went wrong".
-      catchUp();
-    }
-  }, [catchUp]);
+  // The lock request answering `session_locked` — the server's window closed
+  // first — counts as success, and the session is re-read whatever it answered.
+  const lock = lockCatchUp.lock;
+
+  // Every committed answer, a failure included, lowers the one-at-a-time guard.
+  useEffect(() => {
+    lockCatchUp.answered();
+  }, [lockCatchUp, session.data, session.error]);
 
   // Armed only while the shell is drawing an unlocked dashboard: behind the
   // lock screen there is nothing to catch up with, and before the first answer
@@ -155,30 +136,8 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!unlockedShell) return;
-    let active = true;
-
-    // A refusal from any request: the server has locked this session.
-    const stopRefusals = subscribeSessionLocked(catchUp);
-
-    // A release of this tab's keys that `lock` did not perform: a lock in
-    // another tab, or the vault provider reconciling with a server that has
-    // stopped honouring the unlock. Neither re-reads the session on its own.
-    // Deferred, because a release can happen while another component renders —
-    // the lock screen's provider releases whatever is still held as it mounts —
-    // and a reload started from there would be a state update mid-render.
-    const stopKeys = subscribeVaultKeys(() => {
-      if (vaultKeysHeld()) return;
-      queueMicrotask(() => {
-        if (active) catchUp();
-      });
-    });
-
-    return () => {
-      active = false;
-      stopRefusals();
-      stopKeys();
-    };
-  }, [unlockedShell, catchUp]);
+    return lockCatchUp.arm();
+  }, [unlockedShell, lockCatchUp]);
 
   // The idle lock. Armed only while there is an unlock to lose; the interval
   // comes from the account's setting on the security page, `0` disarms it.
@@ -207,7 +166,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
     return (
       <ChromeFrame>
-        <ErrorState subject="your account" error={session.error} onRetry={session.reload} />
+        <ErrorState subject="your account" error={session.error} onRetry={reloadSession} />
       </ChromeFrame>
     );
   }
@@ -238,7 +197,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     // tabs' handoff requests with it.
     return (
       <VaultProvider key={user.id} userId={user.id} locked>
-        <LockScreen status={vault} user={user} onUnlocked={session.reload} />
+        <LockScreen status={vault} user={user} onUnlocked={reloadSession} />
       </VaultProvider>
     );
   }

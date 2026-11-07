@@ -49,9 +49,9 @@ export function ErrorState({ subject, error, onRetry }: ErrorStateProps) {
   // Not a failure either: the vault locked, and nothing about this screen is
   // wrong. The refusal has already told the shell (`lib/session-locked.ts`),
   // which swaps the whole dashboard for the lock screen once it has re-read the
-  // session, so this is on screen for that moment at most. No request id and no
-  // retry: there is nothing to report, and retrying cannot succeed until the
-  // unlock that the lock screen is about to ask for.
+  // session — at once, or, while staged edits elsewhere hold it back, as soon as
+  // they are saved or discarded. No request id and no retry: there is nothing to
+  // report, and retrying cannot succeed until the unlock the lock screen asks for.
   const locked = isApiError(error) && error.code === 'session_locked';
 
   if (locked) {

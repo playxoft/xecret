@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { VaultLockedError } from '@/components/vault/key-store';
+import { VaultKeysChangedError, VaultLockedError } from '@/components/vault/key-store';
 import { ApiError, errorMessage } from './api';
 
 /**
@@ -90,6 +90,19 @@ describe('errorMessage', () => {
   it('fixes that sentence rather than reading the error’s own message', () => {
     expect(errorMessage(new VaultLockedError('DB_PASSWORD=hunter2'))).toBe(
       'Your vault is locked. Unlock it to continue.',
+    );
+  });
+
+  /**
+   * The same refusal while the vault is still open — keys swapped under the
+   * operation by a passphrase change, a handoff or a revoked grant. Asking for
+   * an unlock there is an instruction nobody can follow, and it discourages the
+   * retry that would simply work.
+   */
+  it('asks for a retry, not an unlock, when the keys changed under an open vault', () => {
+    expect(errorMessage(new VaultKeysChangedError())).toBe('Your vault keys changed. Try again.');
+    expect(errorMessage(new VaultKeysChangedError('DB_PASSWORD=hunter2'))).toBe(
+      'Your vault keys changed. Try again.',
     );
   });
 });

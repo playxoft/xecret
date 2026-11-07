@@ -121,6 +121,34 @@ export class VaultLockedError extends Error {
   }
 }
 
+/**
+ * Refused because the material this operation captured was replaced, while the
+ * vault stayed open.
+ *
+ * The same refusal as {@link VaultLockedError} — the bytes it was handed are not
+ * the ones the store holds — with the opposite remedy. A passphrase change, a
+ * recovery or a handoff from another tab swaps the vault keys; a revoked grant
+ * drops an environment's. Nothing is locked, so telling somebody to unlock sends
+ * them looking for a lock screen that is not there, when trying again would
+ * simply work.
+ */
+export class VaultKeysChangedError extends Error {
+  constructor(message = 'The vault keys changed before this finished. Try again.') {
+    super(message);
+    this.name = 'VaultKeysChangedError';
+  }
+}
+
+/**
+ * The refusal for an operation whose material is no longer current: locked if
+ * this browser now holds no vault keys at all, changed if it holds different
+ * ones. Read at the moment of refusal, which is the only moment the answer is
+ * true.
+ */
+export function staleKeyError(): VaultLockedError | VaultKeysChangedError {
+  return held === null ? new VaultLockedError() : new VaultKeysChangedError();
+}
+
 let inFlight = 0;
 let lockPending = false;
 const deferredWipes: (() => void)[] = [];
@@ -134,7 +162,10 @@ const deferredWipes: (() => void)[] = [];
  * would mean running it against material that no longer exists.
  */
 export function acquireCryptoLease(): CryptoLease {
-  if (lockPending) throw new VaultLockedError();
+  // A pending wipe is a lock only when nothing is held. Superseded keys — a
+  // passphrase change, a handoff — and a revoked environment key wait on the
+  // same counter while the vault stays open.
+  if (lockPending) throw staleKeyError();
 
   inFlight += 1;
   let released = false;
@@ -348,7 +379,7 @@ function wipe(keys: VaultKeyMaterial): void {
 export async function withVaultKeys<T>(keys: VaultKeyMaterial, run: () => Promise<T>): Promise<T> {
   const lease = acquireCryptoLease();
   try {
-    if (held !== keys) throw new VaultLockedError();
+    if (held !== keys) throw staleKeyError();
     return await run();
   } finally {
     lease.release();

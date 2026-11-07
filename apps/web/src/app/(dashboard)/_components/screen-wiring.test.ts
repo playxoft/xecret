@@ -75,26 +75,33 @@ describe('a rename reaches the breadcrumb trail', () => {
   });
 });
 
-describe('a lock the shell did not perform still lands on the lock screen', () => {
-  // The shell draws the lock screen only from a re-read of `/api/auth/me`. A
-  // lock it did not perform — the server's idle window closing first, another
-  // tab, the eight-hour ceiling — used to leave every screen showing "Could not
-  // load …" and every decrypt "Something went wrong", because nothing re-read.
+describe('the shell catches up with a lock through its coordinator', () => {
+  // `lock-catch-up.ts` decides when the shell re-reads the session, and its own
+  // tests pin how. What they cannot see is the shell actually using it — armed
+  // while the unlocked dashboard is drawn, told about every answer, and the only
+  // way the session is ever re-read. A re-read that went around it would land
+  // on the lock screen with the one-at-a-time guard down, and re-read again.
   const chrome = source('./dashboard-chrome.tsx');
 
-  it('because every refusal as session_locked is announced', () => {
-    expect(source('../../../lib/api.ts')).toMatch(
-      /if \(error\.code === 'session_locked'\) announceSessionLocked\(\);\s*throw error;/,
+  it('is armed while the unlocked dashboard is drawn, and hears every answer', () => {
+    expect(chrome).toMatch(/if \(!unlockedShell\) return;\s*return lockCatchUp\.arm\(\);/);
+    expect(chrome).toMatch(
+      /lockCatchUp\.answered\(\);\s*\}, \[lockCatchUp, session\.data, session\.error\]\);/,
     );
   });
 
-  it('because the shell re-reads the session when it hears one, or loses its keys', () => {
-    expect(chrome).toMatch(/subscribeSessionLocked\(catchUp\)/);
-    expect(chrome).toMatch(/subscribeVaultKeys\(/);
+  it('is the only way the session is re-read', () => {
+    // The resource's own reload goes to the coordinator, and nowhere else.
+    expect(chrome.match(/session\.reload/g)).toEqual(['session.reload']);
+    expect(chrome).toMatch(/createLockCatchUp\(\{ reload: session\.reload,/);
+
+    expect(attribute(chrome, 'onUnlocked')).toBe('reloadSession');
+    expect(attribute(chrome, 'onRetry')).toBe('reloadSession');
+    expect(attribute(chrome, 'onCreated')).toBe('reloadSession');
+    expect(attribute(chrome, 'value')).toContain('refresh: reloadSession');
   });
 
-  it('because locking re-reads the session whatever the lock request answered', () => {
-    const lock = chrome.slice(chrome.indexOf('const lock = useCallback'));
-    expect(lock.slice(0, lock.indexOf('}, [catchUp]);'))).toMatch(/finally \{[\s\S]*catchUp\(\);/);
+  it('locks through it, so a lock re-reads the session whatever its request answered', () => {
+    expect(chrome).toMatch(/const lock = lockCatchUp\.lock;/);
   });
 });

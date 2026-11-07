@@ -3,6 +3,7 @@
 import { useState } from 'react';
 
 import { endSession, SIGN_IN_PATH } from '@/lib/api';
+import { beginLeavingPage } from '@/lib/page-exit';
 import { Wordmark } from '@/components/layout';
 import { Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
 import { releaseVaultKeys, VaultSetup, VaultUnlock } from '@/components/vault';
@@ -197,6 +198,9 @@ function Footer() {
 
   async function signOut() {
     setBusy(true);
+    // Before anything else, as the account menu does: no 401 from here on may
+    // replace the navigation below (`lib/page-exit.ts`).
+    beginLeavingPage();
     // WorkOS's logout URL when the server answers one, so the AuthKit session
     // ends too; the sign-in page otherwise.
     let destination = SIGN_IN_PATH;

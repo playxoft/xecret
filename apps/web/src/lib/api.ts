@@ -21,6 +21,7 @@
  *     can show the lock screen (`lib/session-locked.ts`).
  */
 
+import { isLeavingPage } from './page-exit';
 import { CSRF_COOKIE_NAME, POST_SIGN_IN_PATH, readCookie, SIGN_IN_PATH } from './session-hint';
 import { announceSessionLocked } from './session-locked';
 
@@ -249,6 +250,8 @@ const FALLBACK_MESSAGE = 'Something went wrong. Please try again.';
 
 const VAULT_LOCKED_MESSAGE = 'Your vault is locked. Unlock it to continue.';
 
+const VAULT_KEYS_CHANGED_MESSAGE = 'Your vault keys changed. Try again.';
+
 /**
  * Turns a non-2xx response into an `ApiError`.
  *
@@ -305,6 +308,10 @@ async function toApiError(response: Response): Promise<ApiError> {
 
 function redirectToSignIn(): void {
   if (typeof window === 'undefined') return;
+  // Already leaving on purpose — signing out, through WorkOS's logout. The 401s
+  // that follow a revoked session are expected, and a redirect here would
+  // replace that navigation before it is sent (`lib/page-exit.ts`).
+  if (isLeavingPage()) return;
   const { pathname, search, hash } = window.location;
   // Already on an auth screen: a redirect here would loop and would discard
   // whatever the user had typed.
@@ -468,16 +475,22 @@ export function signOutDestination(logoutUrl: unknown): string {
  * string from a schema (`parseWith` discards zod's `input` precisely so no
  * rejected value is echoed), so nothing user-supplied can travel this way.
  *
- * ── Why a locked vault is the one non-`ApiError` with a sentence ──
+ * ── Why the two key-store refusals are the non-`ApiError`s with a sentence ──
  * Every operation that needs key material throws `VaultLockedError` once the
  * vault has locked, and collapsing that to "Something went wrong" tells somebody
- * whose only remedy is to unlock that something is broken. Its own message is
- * not read either — the sentence is fixed here, like the fallback. Recognised by
- * `name` rather than by class, as `override-crypto.ts` does: the class lives
- * with the key store, and this module must not import the vault to describe it.
+ * whose only remedy is to unlock that something is broken. `VaultKeysChangedError`
+ * is the same refusal with the vault still open — the keys were swapped under
+ * the operation — where the remedy is a retry, and "unlock" would be an
+ * instruction nobody can follow. Neither error's own message is read; each
+ * sentence is fixed here, like the fallback. Recognised by `name` rather than by
+ * class, as `override-crypto.ts` does: the classes live with the key store, and
+ * this module must not import the vault to describe it.
  */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error && error.name === 'VaultLockedError') return VAULT_LOCKED_MESSAGE;
+  if (error instanceof Error && error.name === 'VaultKeysChangedError') {
+    return VAULT_KEYS_CHANGED_MESSAGE;
+  }
   if (!isApiError(error)) return FALLBACK_MESSAGE;
   if (error.code !== 'validation_failed' || error.fields.length === 0) return error.message;
 
