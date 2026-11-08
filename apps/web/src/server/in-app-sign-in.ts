@@ -35,26 +35,34 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
 /**
  * Signing in on xecret's own page — the server half.
  *
- * The sign-in and sign-up pages take a password, or an emailed six-digit code,
- * themselves, and post it here; these routes check it with WorkOS's headless
- * User Management API (`WorkosIdentityProvider.signInWithPassword` and
- * friends) and never send the browser to a WorkOS page. "Continue with Google"
- * is the one sign-in that leaves the site, and it goes through the login route
- * straight to Google and back to the callback.
+ * The sign-in and sign-up pages take a password, and the sign-up page the
+ * six-digit code that proves the address, themselves, and post them here;
+ * these routes check them with WorkOS's headless User Management API
+ * (`WorkosIdentityProvider.signInWithPassword` and friends) and never send the
+ * browser to a WorkOS page. "Continue with Google" is the one sign-in that
+ * leaves the site, and it goes through the login route straight to Google and
+ * back to the callback. A forgotten password is reset on the site too
+ * (`server/password-reset.ts`).
  *
- * ── Four routes, one tail ──
- *  - `POST /api/auth/sign-in/password` — email and password.
- *  - `POST /api/auth/sign-in/code` — has WorkOS email a code (Magic Auth). The
- *    same for an address with an account and one without: WorkOS creates the
- *    account's WorkOS user when the address has none, which is how signing up
- *    works here, and the answer never says which it was.
- *  - `POST /api/auth/sign-in/code/verify` — the emailed code.
+ * ── The routes, one tail ──
+ *  - `POST /api/auth/sign-in/password` — email and password: the sign-in page.
+ *  - `POST /api/auth/sign-in/code` — has WorkOS email a code (Magic Auth): the
+ *    sign-up page's first step. The same for an address with an account and
+ *    one without: WorkOS creates the WorkOS user when the address has none, and
+ *    the answer never says which it was.
+ *  - `POST /api/auth/sign-up` — that code, and the password chosen beside it:
+ *    the code proves the inbox, and only then is the password set
+ *    (`app/api/auth/sign-up/route.ts` has why that order).
+ *  - `POST /api/auth/sign-in/code/verify` — an emailed code alone. **No page
+ *    links here any more**: the sign-in page's "email me a code" was removed
+ *    in favour of "Forgot password?". Kept, hardened and tested, as support's
+ *    way to sign somebody in by their inbox.
  *  - `POST /api/auth/sign-in/verify-email` — the code WorkOS emails when a
  *    password sign-in reaches an address it has not verified
  *    (`email_verification_required`) — **off until proven safe**; see
  *    {@link emailVerificationStepEnabled}.
  *
- * Each ends in {@link finishInAppSignIn}: the exchange its WorkOS call minted
+ * Each sign-in ends in {@link finishInAppSignIn}: the exchange its WorkOS call minted
  * goes through `completeSignIn` — `prepareSignIn`, the confirmation question,
  * `issueSignIn` — exactly the code the callback runs. So impersonation, the
  * verified-address gate, an SSO sign-in's domains, the linker's conflict and
@@ -71,15 +79,16 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  *     and nothing more: a script outside a browser sets `Origin` to whatever it
  *     likes, so it is no defence against a bot. The brakes on a bot are steps
  *     2, 4 and 5.
- *  2. **An address bucket** — `RL_LOGIN`, keyed on the caller's IP. The password
- *     and code routes spend the key the callback spends; asking for a code and
- *     verifying an address each have their own, so one sign-in's two steps do
- *     not spend one allowance twice.
+ *  2. **An address bucket** — `RL_LOGIN`, keyed on the caller's IP. The password,
+ *     code and sign-up routes spend the key the callback spends; asking for a
+ *     code, verifying an address, asking for a reset link and using one each
+ *     have their own, so one flow's two steps do not spend one allowance twice.
  *  3. The body, parsed.
  *  4. **Per-subject buckets**, before WorkOS is asked: the address and the
  *     caller's IP for a guess (the guessing surface `attemptKey` was made for);
- *     the address alone for a code request (mail to somebody's inbox, which an
- *     IP has no business multiplying) and for a code guess (a six-digit secret
+ *     the address alone for mail — a code request and a reset link spend the
+ *     *same* key, one allowance per inbox whatever the mail carries, which an
+ *     IP has no business multiplying — and for a code guess (a six-digit secret
  *     worth bounding however many addresses guess at it).
  *  5. **The durable throttle** (`server/sign-in-throttle.ts`,
  *     `sign_in_failures`): the attempt is counted — first, in one statement —
@@ -89,7 +98,10 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  *     in the database, so rotating IPs and data centres buys nothing, and an
  *     attacker can lock only the shared pool, never the owner's browser.
  *     `prepareSignIn` then spends the per-identity bucket, keyed on the WorkOS
- *     user, as it does for the callback.
+ *     user, as it does for the callback. The password reset's two routes are
+ *     the deliberate exception — the reset is the owner's way in while the
+ *     shared pool is held locked, and its token names no address to count
+ *     against (`server/password-reset.ts`).
  *
  * ── Answers that must look alike ──
  * A wrong password and an address with no account are one WorkOS answer and
@@ -134,8 +146,9 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  * anybody that the address has an unverified account, and have WorkOS email it
  * a code on demand. WorkOS's error does not say which order it used, so the
  * safe default is no oracle: the step is answered exactly like a wrong
- * password, and counted like one. The person's way in is "email me a code",
- * which verifies the address as it signs them in.
+ * password, and counted like one. The person's way in is "Forgot password?":
+ * a reset verifies the address as it sets the password (WorkOS documents
+ * both), and they then sign in with it.
  *
  * **Staging check before turning this on:** with a WorkOS user whose address
  * is unverified, a *wrong* password must answer `invalid_credentials`, and only
@@ -145,9 +158,10 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  * ── What it costs while off ──
  * Somebody with an unverified address who types the *right* password is told
  * the password is wrong, has the attempt counted, and is mailed a verification
- * code by WorkOS that this page cannot accept. Their way in is "email me a
- * code" — the Magic Auth code verifies the address and signs them in — and
- * enough retries of the password lock their own shared pool first. The
+ * code by WorkOS that this page cannot accept. Their way in is "Forgot
+ * password?" — the reset link verifies the address and sets a password they
+ * then sign in with; the reset is never held back by the lockout — and enough
+ * retries of the password lock their own shared pool first. The
  * counting is deliberate: an answer that is not counted while every wrong
  * password is would itself be an oracle — the lockout would arrive later for an
  * unverified address than for any other, and that difference names it.
@@ -179,7 +193,8 @@ export function requestContext(services: ServiceContext): {
 }
 
 /** Which route's address bucket a request spends — see step 2 above. */
-export type AddressBucket = 'sign-in' | 'code-send' | 'verify-email';
+export type AddressBucket =
+  'sign-in' | 'code-send' | 'verify-email' | 'password-reset' | 'password-reset-confirm';
 
 function addressKey(services: ServiceContext, bucket: AddressBucket): string {
   const ip = services.meta.ipAddress;
@@ -191,6 +206,10 @@ function addressKey(services: ServiceContext, bucket: AddressBucket): string {
       return rateLimitKey(['sign_in_code_send_ip', ip]);
     case 'verify-email':
       return rateLimitKey(['sign_in_verify_email_ip', ip]);
+    case 'password-reset':
+      return rateLimitKey(['password_reset_ip', ip]);
+    case 'password-reset-confirm':
+      return rateLimitKey(['password_reset_confirm_ip', ip]);
   }
 }
 
@@ -225,12 +244,64 @@ export function guessAttemptKey(services: ServiceContext, email: string): string
   return attemptKey(services.meta.ipAddress, email);
 }
 
-/** The per-subject key for an emailed code: the address alone, lower-cased. */
+/**
+ * The per-subject key for an emailed code: the address alone, lower-cased.
+ * `send` is every mail these routes have WorkOS send to an inbox — a sign-up
+ * code and a password-reset link spend the same allowance.
+ */
 export function codeKey(purpose: 'send' | 'guess', email: string): string {
   return rateLimitKey([
     purpose === 'send' ? 'sign_in_code' : 'sign_in_code_guess',
     email.toLowerCase(),
   ]);
+}
+
+/**
+ * The earliest a route that mails an inbox answers, from the moment its
+ * request arrived. Those routes answer every address alike, and the *answer*
+ * is the easy half: WorkOS takes longer to make a user, a code or a reset for
+ * an address than to refuse one it has no user for, and that difference is a
+ * stopwatch's oracle for which addresses have accounts. Holding both answers to
+ * the same floor flattens it while WorkOS answers inside it; a WorkOS slower
+ * than the floor still shows through, as a weak signal, and only while it is
+ * slow. It costs a person who asked for an email a second they spend opening
+ * their mail anyway.
+ */
+export const MAIL_ANSWER_FLOOR_MS = 1200;
+let mailAnswerFloorMs = MAIL_ANSWER_FLOOR_MS;
+
+/** Exists for tests. `null` restores the default. */
+export function setMailAnswerFloorForTesting(ms: number | null): void {
+  mailAnswerFloorMs = ms ?? MAIL_ANSWER_FLOOR_MS;
+}
+
+/** Waits out the rest of {@link MAIL_ANSWER_FLOOR_MS}, if any is left. */
+export async function holdMailAnswer(services: ServiceContext): Promise<void> {
+  const remaining = services.meta.startedAt + mailAnswerFloorMs - Date.now();
+  if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+}
+
+/**
+ * A password WorkOS's policy refused, as the 400 beside the password field.
+ * Only ever given once the inbox is proven — the sign-up's code was accepted,
+ * or the reset's link was — so it says nothing about the address to anybody
+ * who does not already hold it.
+ */
+export function weakPasswordAnswer(services: ServiceContext): Response {
+  const message = SIGN_IN_FORM_MESSAGES['weak-password'];
+  services.log.at('signIn').warn('WorkOS refused a new password under its password policy', {
+    status: 400,
+  });
+  services.bindLog({ signInOutcome: 'refused', signInRefusal: 'weak-password' });
+  const error = new ApiError('bad_request', message, {
+    fields: [{ field: 'password', message }],
+  });
+  return json(error.toBody(services.meta.requestId), { status: 400 });
+}
+
+/** Whether `cause` is WorkOS's password policy refusing a new password. */
+export function isWeakPassword(cause: unknown): boolean {
+  return cause instanceof IdentityVerificationError && cause.reason === 'weak-password';
 }
 
 /**

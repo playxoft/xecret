@@ -18,7 +18,8 @@ import { AuthenticationStepRequired, workosProvider } from '@/server/workos';
 
 /**
  * Signs in with an email and a password typed on xecret's own sign-in page —
- * accounts migrated from Firebase brought theirs. See `server/in-app-sign-in.ts`
+ * accounts migrated from Firebase brought theirs, and accounts made on the
+ * sign-up page chose one. See `server/in-app-sign-in.ts`
  * for the guards in front of WorkOS, the shared tail behind it and how it
  * answers.
  *
@@ -28,8 +29,8 @@ import { AuthenticationStepRequired, workosProvider } from '@/server/workos';
  * because it cannot yet be shown that WorkOS checks the password before it
  * decides, and if it does not, anything else would be an oracle for unverified
  * accounts (`EMAIL_VERIFICATION_STEP` in `server/in-app-sign-in.ts`). The
- * person's way in is "email me a code", which verifies the address as it signs
- * them in.
+ * person's way in is "Forgot password?": the reset link verifies the address as
+ * it sets the password.
  *
  * With the step enabled, the page is told `{ step: 'verify-email' }` and asks
  * for the code; WorkOS's pending token is sealed beside the address into an

@@ -27,8 +27,9 @@ import type { LogEntry, RequestLog } from './logging';
 import type { WorkosApi } from './workos';
 
 /**
- * Signing in on xecret's own page, end to end: the four in-app routes —
- * password, code request, code, email verification — against a real database.
+ * Signing in on xecret's own page, end to end: the in-app routes — password,
+ * code request, code, email verification, sign-up, and the password reset's
+ * request and completion — against a real database.
  *
  * ── What is real, and what is stubbed ──
  * Real: the routes and `publicRoute`; the origin and content-type guard; the
@@ -40,8 +41,9 @@ import type { WorkosApi } from './workos';
  * Stubbed: the WorkOS calls that would leave the process, at the SDK's own
  * method names (`authenticateWithPassword`, `createMagicAuth`,
  * `authenticateWithMagicAuth`, `authenticateWithEmailVerification`,
- * `authenticateWithOrganizationSelection`, `getOrganization`), the audit sink
- * and the logger — both captured. No real WorkOS endpoint is ever called.
+ * `authenticateWithOrganizationSelection`, `createPasswordReset`,
+ * `resetPassword`, `updateUser`, `getOrganization`), the audit sink and the
+ * logger — both captured. No real WorkOS endpoint is ever called.
  *
  * Every refusal is asserted the same three ways as the callback's: what the
  * page is told, that no session cookie was issued, and what the database holds
@@ -62,6 +64,9 @@ const workos = vi.hoisted(() => ({
   authenticateWithEmailVerification: vi.fn(),
   authenticateWithOrganizationSelection: vi.fn(),
   createMagicAuth: vi.fn(),
+  createPasswordReset: vi.fn(),
+  resetPassword: vi.fn(),
+  updateUser: vi.fn(),
   getOrganization: vi.fn(),
 }));
 
@@ -89,6 +94,9 @@ vi.mock('./workos', async (importOriginal) => {
       authenticateWithEmailVerification: workos.authenticateWithEmailVerification,
       authenticateWithOrganizationSelection: workos.authenticateWithOrganizationSelection,
       createMagicAuth: workos.createMagicAuth,
+      createPasswordReset: workos.createPasswordReset,
+      resetPassword: workos.resetPassword,
+      updateUser: workos.updateUser,
       getLogoutUrl: (options: Parameters<WorkOS['userManagement']['getLogoutUrl']>[0]) =>
         sdk.userManagement.getLogoutUrl(options),
     },
@@ -110,8 +118,12 @@ const passwordRoute = await import('@/app/api/auth/sign-in/password/route');
 const codeRoute = await import('@/app/api/auth/sign-in/code/route');
 const codeVerifyRoute = await import('@/app/api/auth/sign-in/code/verify/route');
 const verifyEmailRoute = await import('@/app/api/auth/sign-in/verify-email/route');
+const signUpRoute = await import('@/app/api/auth/sign-up/route');
+const resetRequestRoute = await import('@/app/api/auth/password-reset/route');
+const resetConfirmRoute = await import('@/app/api/auth/password-reset/confirm/route');
 const confirmRoute = await import('@/app/api/auth/confirm/route');
-const { setEmailVerificationStepForTesting } = await import('./in-app-sign-in');
+const { setEmailVerificationStepForTesting, setMailAnswerFloorForTesting } =
+  await import('./in-app-sign-in');
 const { SIGN_IN_FREE_FAILURES, addressPool, devicePool, deviceAddressTag } =
   await import('./sign-in-throttle');
 /** The shared pool's row key for an address, as the routes compute it. */
@@ -122,6 +134,9 @@ const ROUTES = {
   '/api/auth/sign-in/code': codeRoute.POST,
   '/api/auth/sign-in/code/verify': codeVerifyRoute.POST,
   '/api/auth/sign-in/verify-email': verifyEmailRoute.POST,
+  '/api/auth/sign-up': signUpRoute.POST,
+  '/api/auth/password-reset': resetRequestRoute.POST,
+  '/api/auth/password-reset/confirm': resetConfirmRoute.POST,
 } as const;
 
 type RoutePath = keyof typeof ROUTES;
@@ -161,6 +176,9 @@ beforeEach(async () => {
   // one test's failures into the next.
   await t.pg.query('delete from sign_in_failures');
   setEmailVerificationStepForTesting(null);
+  // The mail routes' timing floor is its own test's subject; elsewhere it
+  // would only make the suite wait.
+  setMailAnswerFloorForTesting(0);
   clientIp = '203.0.113.5';
   lines = [];
   audit = [];
@@ -218,7 +236,24 @@ beforeEach(async () => {
     createdAt: '2026-11-07T10:00:00Z',
     updatedAt: '2026-11-07T10:00:00Z',
   });
+  workos.createPasswordReset.mockResolvedValue({
+    object: 'password_reset',
+    id: 'password_reset_01',
+    userId: 'user_01RESET',
+    email: 'whoever@example.com',
+    passwordResetToken: RESET_TOKEN_SENT,
+    passwordResetUrl: `${ORIGIN}/sign-in/reset-password?token=${RESET_TOKEN_SENT}`,
+    expiresAt: '2026-11-07T10:15:00Z',
+    createdAt: '2026-11-07T10:00:00Z',
+  });
+  workos.updateUser.mockImplementation(async ({ userId }: { userId: string }) => ({
+    object: 'user',
+    id: userId,
+  }));
 });
+
+/** The token in the reset WorkOS answers the request with — which must never surface. */
+const RESET_TOKEN_SENT = 'tok-reset-aaaa-bbbb';
 
 /* ── fixtures ─────────────────────────────────────────────────────────────── */
 
@@ -1369,6 +1404,506 @@ describe('finishing a password sign-in by verifying the address', () => {
   });
 });
 
+/* ── POST /api/auth/sign-up ───────────────────────────────────────────────── */
+
+describe('creating an account: the emailed code, then the chosen password', () => {
+  function signUp(body: Record<string, unknown>, options: { cookie?: string } = {}) {
+    return post('/api/auth/sign-up', { password: PASSWORD, ...body }, options);
+  }
+
+  it('creates the account a new address signs up for: the code checked first, then the password set, auth.signup', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+
+    const answer = await signUp({ email: who.email, code: '246810', next: '/invite/tok_abc' });
+
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ redirect: '/invite/tok_abc' });
+    expect(sessionCookieIssued(answer)).toBe(true);
+    expect(workos.authenticateWithMagicAuth).toHaveBeenCalledWith({
+      clientId: CLIENT_ID,
+      code: '246810',
+      email: who.email,
+      ipAddress: '203.0.113.5',
+      userAgent: 'vitest',
+    });
+    expect(workos.updateUser).toHaveBeenCalledWith({ userId: who.id, password: PASSWORD });
+    // The password is set only once the code has proven the inbox.
+    expect(workos.authenticateWithMagicAuth.mock.invocationCallOrder[0]!).toBeLessThan(
+      workos.updateUser.mock.invocationCallOrder[0]!,
+    );
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await membershipsOf(row!.id)).toEqual([expect.objectContaining({ role: 'owner' })]);
+    expect(audit.find((e) => e.action === 'auth.signup')).toBeDefined();
+  });
+
+  it('signs an address that already has an account in to it, its password becoming the one chosen', async () => {
+    const who = workosUser();
+    const existing = await seedUser({
+      workosUserId: who.id as string,
+      email: who.email as string,
+    });
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.status).toBe(200);
+    expect(sessionCookieIssued(answer)).toBe(true);
+    expect(workos.updateUser).toHaveBeenCalledWith({ userId: who.id, password: PASSWORD });
+    expect(await userRows('workos_user_id', who.id as string)).toEqual([
+      expect.objectContaining({ id: existing.id }),
+    ]);
+    expect(audit.map((e) => e.action)).toContain('auth.login');
+  });
+
+  it('answers an address with an account exactly as one without, at both steps — no oracle', async () => {
+    const holder = workosUser();
+    await seedUser({ workosUserId: holder.id as string, email: holder.email as string });
+    const stranger = workosUser();
+
+    const sentHolder = await post('/api/auth/sign-in/code', { email: holder.email });
+    const sentStranger = await post('/api/auth/sign-in/code', { email: stranger.email });
+    expect([sentHolder.status, sentHolder.text]).toEqual([sentStranger.status, sentStranger.text]);
+
+    workos.authenticateWithMagicAuth
+      .mockRejectedValueOnce(refusal(400, { code: 'invalid_one_time_code' }))
+      .mockRejectedValueOnce(refusal(400, { code: 'invalid_one_time_code' }));
+    const wrongHolder = await signUp({ email: holder.email, code: '000000' });
+    const wrongStranger = await signUp({ email: stranger.email, code: '000000' });
+    expect(wrongHolder.status).toBe(wrongStranger.status);
+    const strip = (answer: Answer) => ({ ...errorOf(answer), requestId: undefined });
+    expect(strip(wrongHolder)).toEqual(strip(wrongStranger));
+    expect(wrongHolder.cookies).toEqual(wrongStranger.cookies);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+  });
+
+  it('answers a wrong or expired code beside the code field, sets no password, issues nothing, and counts it', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(
+      refusal(400, { code: 'invalid_one_time_code' }),
+    );
+
+    const answer = await signUp({ email: who.email, code: '000000' });
+
+    expect(answer.status).toBe(400);
+    expect(errorOf(answer).fields).toEqual([
+      { field: 'code', message: SIGN_IN_FORM_MESSAGES['wrong-code'] },
+    ]);
+    expect(sessionCookieIssued(answer)).toBe(false);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+    expect(await failuresFor(who.email as string)).toBe(1);
+    expect(await userRows('email', who.email as string)).toHaveLength(0);
+  });
+
+  it('refuses a password under WorkOS’s ten-character floor, and a malformed body, before anything is asked', async () => {
+    for (const body of [
+      { email: 'someone@example.com', code: '123456', password: 'nine char' },
+      { email: 'someone@example.com', code: '123456', password: '' },
+      { email: 'someone@example.com', code: '12345', password: PASSWORD },
+      { email: 'someone@example.com', code: '123456' },
+      { email: 'someone@example.com', code: '123456', password: PASSWORD, admin: true },
+    ]) {
+      const answer = await post('/api/auth/sign-up', body);
+      expect([400, 422]).toContain(answer.status);
+    }
+    expect(workos.authenticateWithMagicAuth).not.toHaveBeenCalled();
+    expect(workos.updateUser).not.toHaveBeenCalled();
+  });
+
+  it('answers a password WorkOS’s policy refuses beside the password field — only after the code — and signs nothing in', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+    workos.updateUser.mockRejectedValueOnce(
+      refusal(400, {
+        code: 'password_strength_error',
+        message: 'Password does not meet strength requirements.',
+        errors: [{ code: 'password_too_weak', message: 'Too weak.' }],
+      }),
+    );
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.status).toBe(400);
+    expect(errorOf(answer)).toMatchObject({
+      message: SIGN_IN_FORM_MESSAGES['weak-password'],
+      fields: [{ field: 'password', message: SIGN_IN_FORM_MESSAGES['weak-password'] }],
+    });
+    expect(sessionCookieIssued(answer)).toBe(false);
+    expect(answer.cookies.some((c) => c.startsWith('__Host-xecret_known_device='))).toBe(false);
+    expect(await userRows('workos_user_id', who.id as string)).toHaveLength(0);
+  });
+
+  it('sets no password on an authentication the sign-in then refuses: impersonated, or unverified', async () => {
+    const impersonated = workosUser();
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(
+      authenticated(impersonated, 'MagicAuth', {
+        impersonator: { email: 'support@workos.example', reason: null },
+      }),
+    );
+    const first = await signUp({ email: impersonated.email, code: '246810' });
+
+    const unverified = workosUser({ emailVerified: false });
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(unverified, 'MagicAuth'));
+    const second = await signUp({ email: unverified.email, code: '246810' });
+
+    expect(errorOf(first).message).toBe(SIGN_IN_ERROR_MESSAGES.impersonation);
+    expect(errorOf(second).message).toBe(SIGN_IN_ERROR_MESSAGES['verify-email']);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+    expect(sessionCookieIssued(first) || sessionCookieIssued(second)).toBe(false);
+  });
+
+  it('refuses a locked address before asking WorkOS anything', async () => {
+    const who = workosUser();
+    await lockOut(who.email as string);
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.status).toBe(429);
+    expect(workos.authenticateWithMagicAuth).not.toHaveBeenCalled();
+    expect(workos.updateUser).not.toHaveBeenCalled();
+  });
+
+  it('spends the address-and-email and the code-guess buckets before asking WorkOS', async () => {
+    const keys = recordLimits((key) => key.startsWith('sign_in_code_guess:'));
+
+    const answer = await signUp({ email: 'Guess@Example.com', code: '123456' });
+
+    expect(answer.status).toBe(429);
+    expect(keys).toEqual([
+      '203.0.113.5:-',
+      '203.0.113.5:guess%40example.com',
+      'sign_in_code_guess:guess%40example.com',
+    ]);
+    expect(workos.authenticateWithMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it('answers WorkOS timing out on the password as unavailable, signing nothing in', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+    workos.updateUser.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.status).toBe(503);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
+    expect(errorOf(answer).fields).toBeUndefined();
+    expect(sessionCookieIssued(answer)).toBe(false);
+  });
+
+  it('hands the known-device cookie out with the session, and never logs, echoes or stores the password', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.cookies.some((c) => c.startsWith('__Host-xecret_known_device='))).toBe(true);
+    const said = everythingSaid(answer) + JSON.stringify(audit);
+    expect(said).not.toContain(PASSWORD);
+    expect(said).not.toContain('246810');
+    const stored = await t.pg.query(`select * from users where workos_user_id = $1`, [who.id]);
+    expect(JSON.stringify(stored.rows)).not.toContain(PASSWORD);
+  });
+});
+
+/* ── POST /api/auth/password-reset ────────────────────────────────────────── */
+
+describe('asking for a password-reset link', () => {
+  it('has WorkOS email the link, and answers 204 with nothing in it — the token and link WorkOS returned included', async () => {
+    const answer = await post('/api/auth/password-reset', { email: 'forgetful@example.com' });
+
+    expect(answer.status).toBe(204);
+    expect(answer.text).toBe('');
+    expect(answer.cookies).toEqual([]);
+    expect(workos.createPasswordReset).toHaveBeenCalledWith({ email: 'forgetful@example.com' });
+    expect(JSON.stringify(lines)).not.toContain(RESET_TOKEN_SENT);
+  });
+
+  it.each([
+    [
+      'no user at the address (404, its message naming the address)',
+      refusal(404, {
+        code: 'entity_not_found',
+        message: 'User not found: who@example.com',
+      }),
+    ],
+    ['an address WorkOS declines (400)', refusal(400, { code: 'invalid_email' })],
+    ['a 403 that names its reason', refusal(403, { code: 'password_reset_not_allowed' })],
+    ['WorkOS’s own per-address rate limit', refusal(429, {})],
+    ['a domain policy', step('sso_required')],
+  ])(
+    'answers the same 204 for %s — no oracle for accounts, and WorkOS’s message never logged',
+    async (_label, cause) => {
+      workos.createPasswordReset.mockRejectedValueOnce(cause);
+
+      const answer = await post('/api/auth/password-reset', { email: 'who@example.com' });
+
+      expect(answer.status).toBe(204);
+      expect(answer.text).toBe('');
+      expect(JSON.stringify(lines)).not.toContain('User not found');
+      expect(JSON.stringify(lines)).not.toContain('who@example.com');
+    },
+  );
+
+  it.each([
+    ['WorkOS down', refusal(503, {})],
+    ['our API key refused', refusal(401, {})],
+    ['a bare 403', refusal(403, {})],
+  ])('reports %s as unavailable — the same for every address', async (_label, cause) => {
+    workos.createPasswordReset.mockRejectedValueOnce(cause);
+
+    const answer = await post('/api/auth/password-reset', { email: 'who@example.com' });
+
+    expect(answer.status).toBe(503);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
+  });
+
+  it('answers a WorkOS timeout as unavailable', async () => {
+    workos.createPasswordReset.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await post('/api/auth/password-reset', { email: 'who@example.com' });
+
+    expect(answer.status).toBe(503);
+  });
+
+  it('caps mail per address on the one key a sign-up code spends too, before WorkOS is asked', async () => {
+    const keys = recordLimits((key) => key === 'sign_in_code:who%40example.com');
+
+    const answer = await post('/api/auth/password-reset', { email: 'Who@Example.com' });
+
+    expect(answer.status).toBe(429);
+    expect(keys).toEqual(['password_reset_ip:203.0.113.5', 'sign_in_code:who%40example.com']);
+    expect(workos.createPasswordReset).not.toHaveBeenCalled();
+  });
+
+  it('is not held back by the sign-in lockout: the reset is the owner’s way in while their address is under attack', async () => {
+    await lockOut('besieged@example.com');
+
+    const answer = await post('/api/auth/password-reset', { email: 'besieged@example.com' });
+
+    expect(answer.status).toBe(204);
+    expect(workos.createPasswordReset).toHaveBeenCalled();
+  });
+
+  it('refuses a malformed body before asking WorkOS', async () => {
+    for (const body of [{}, { email: 'not an address' }, { email: 'a@b.example', next: '/app' }]) {
+      const answer = await post('/api/auth/password-reset', body);
+      expect([400, 422]).toContain(answer.status);
+    }
+    expect(workos.createPasswordReset).not.toHaveBeenCalled();
+  });
+
+  it('waits out the same floor whether or not WorkOS had a user to email', async () => {
+    setMailAnswerFloorForTesting(80);
+    const timed = async () => {
+      const started = Date.now();
+      const answer = await post('/api/auth/password-reset', { email: 'who@example.com' });
+      return { answer, took: Date.now() - started };
+    };
+
+    const sent = await timed();
+    workos.createPasswordReset.mockRejectedValueOnce(refusal(404, { code: 'entity_not_found' }));
+    const nobody = await timed();
+
+    expect([sent.answer.status, nobody.answer.status]).toEqual([204, 204]);
+    expect(sent.took).toBeGreaterThanOrEqual(70);
+    expect(nobody.took).toBeGreaterThanOrEqual(70);
+  });
+});
+
+/* ── POST /api/auth/password-reset/confirm ────────────────────────────────── */
+
+describe('choosing a new password from the reset link', () => {
+  const NEW_PASSWORD = 'a brand new passphrase 41';
+
+  function confirmReset(body: Record<string, unknown> = {}) {
+    return post('/api/auth/password-reset/confirm', {
+      token: RESET_TOKEN_SENT,
+      password: NEW_PASSWORD,
+      ...body,
+    });
+  }
+
+  async function activeSessions(userId: string): Promise<number> {
+    return (
+      await t.pg.query<{ n: number }>(
+        `select count(*)::int as n from sessions where user_id = $1 and revoked_at is null`,
+        [userId],
+      )
+    ).rows[0]!.n;
+  }
+
+  it('sets the password, ends every session of the account, clears its shared pool — and signs nothing in', async () => {
+    const who = workosUser();
+    await signInOnce(who);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await activeSessions(row!.id)).toBe(1);
+    await lockOut(who.email as string);
+    audit = [];
+    workos.resetPassword.mockResolvedValueOnce({ user: { ...who, emailVerified: false } });
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(204);
+    expect(answer.text).toBe('');
+    expect(workos.resetPassword).toHaveBeenCalledWith({
+      token: RESET_TOKEN_SENT,
+      newPassword: NEW_PASSWORD,
+    });
+    expect(await activeSessions(row!.id)).toBe(0);
+    expect(await failuresFor(who.email as string)).toBe(0);
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        action: 'auth.session_revoked',
+        metadata: expect.objectContaining({ reason: 'password-reset' }),
+      }),
+    );
+    // No session, and so no known-device cookie: the person signs in next.
+    expect(answer.cookies).toEqual([]);
+  });
+
+  it('still tells the truth — the password was changed — when the cleanup after it fails', async () => {
+    const who = workosUser();
+    workos.resetPassword.mockResolvedValueOnce({ user: who });
+    // The pool's key cannot be derived without the cookie secret.
+    delete env['WORKOS_COOKIE_PASSWORD'];
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(204);
+    expect(
+      lines.some(
+        (line) => line.level === 'error' && String(line.message).includes('could not be cleared'),
+      ),
+    ).toBe(true);
+  });
+
+  it('works for a WorkOS user with no xecret account yet, ending nothing', async () => {
+    const who = workosUser();
+    workos.resetPassword.mockResolvedValueOnce({ user: who });
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(204);
+    expect(await userRows('workos_user_id', who.id as string)).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      'a token WorkOS never issued (its 404 quotes the token)',
+      refusal(404, {
+        code: 'password_reset_token_not_found',
+        message: `Could not locate user with provided token: '${RESET_TOKEN_SENT}'`,
+      }),
+    ],
+    [
+      'an expired token',
+      refusal(400, {
+        code: 'password_reset_error',
+        message: 'Could not reset password.',
+        errors: [{ code: 'password_reset_token_expired', message: 'Expired.' }],
+      }),
+    ],
+    [
+      'an expired token beside a weak password — the link wins',
+      refusal(400, {
+        code: 'password_reset_error',
+        errors: [
+          { code: 'password_reset_token_expired', message: 'Expired.' },
+          { code: 'password_too_weak', message: 'Too weak.' },
+        ],
+      }),
+    ],
+  ])('answers %s with the one link sentence, above the form', async (_label, cause) => {
+    workos.resetPassword.mockRejectedValueOnce(cause);
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(400);
+    expect(errorOf(answer).message).toBe(SIGN_IN_FORM_MESSAGES['reset-link-invalid']);
+    expect(errorOf(answer).fields).toBeUndefined();
+    expect(everythingSaid(answer)).not.toContain(RESET_TOKEN_SENT);
+  });
+
+  it('answers a password WorkOS’s policy refuses beside the password field — the link still good', async () => {
+    workos.resetPassword.mockRejectedValueOnce(
+      refusal(400, {
+        code: 'password_reset_error',
+        errors: [{ code: 'password_too_weak', message: 'Too weak.' }],
+      }),
+    );
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(400);
+    expect(errorOf(answer).fields).toEqual([
+      { field: 'password', message: SIGN_IN_FORM_MESSAGES['weak-password'] },
+    ]);
+  });
+
+  it.each([
+    ['WorkOS down', refusal(503, {}), 503],
+    ['WorkOS rate-limiting us', refusal(429, {}), 429],
+    ['our API key refused', refusal(401, {}), 503],
+  ] as const)(
+    'reports %s as the service’s trouble, never as a dead link',
+    async (_label, cause, status) => {
+      workos.resetPassword.mockRejectedValueOnce(cause);
+
+      const answer = await confirmReset();
+
+      expect(answer.status).toBe(status);
+      expect(errorOf(answer).message).not.toBe(SIGN_IN_FORM_MESSAGES['reset-link-invalid']);
+    },
+  );
+
+  it('answers the real SDK’s timeout as unavailable — never as an expired link', async () => {
+    workos.resetPassword.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(503);
+    expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
+  });
+
+  it('refuses a token of the wrong shape, a short password, or a stray field before asking WorkOS', async () => {
+    for (const body of [
+      { token: '' },
+      { token: 'has a space' },
+      { token: 'x'.repeat(257) },
+      { token: 'tok<script>' },
+      { password: 'too short' },
+      { confirm: NEW_PASSWORD },
+    ]) {
+      const answer = await confirmReset(body);
+      expect([400, 422]).toContain(answer.status);
+    }
+    expect(workos.resetPassword).not.toHaveBeenCalled();
+  });
+
+  it('counts nothing in the durable lockout, whatever WorkOS said', async () => {
+    workos.resetPassword.mockRejectedValueOnce(
+      refusal(404, { code: 'password_reset_token_not_found' }),
+    );
+    await confirmReset();
+    workos.resetPassword.mockResolvedValueOnce({ user: workosUser() });
+    await confirmReset();
+
+    const rows = await t.pg.query(`select 1 from sign_in_failures`);
+    expect(rows.rows).toHaveLength(0);
+  });
+
+  it('never logs, echoes or stores the token or the password', async () => {
+    const who = workosUser();
+    workos.resetPassword.mockResolvedValueOnce({ user: who });
+
+    const answer = await confirmReset();
+
+    const said = everythingSaid(answer) + JSON.stringify(audit);
+    expect(said).not.toContain(RESET_TOKEN_SENT);
+    expect(said).not.toContain(NEW_PASSWORD);
+  });
+});
+
 /* ── the durable per-address lockout ──────────────────────────────────────── */
 
 describe('the durable per-address lockout', () => {
@@ -1802,13 +2337,19 @@ describe('every in-app sign-in route', () => {
     '/api/auth/sign-in/code': { email: 'someone@example.com' },
     '/api/auth/sign-in/code/verify': { email: 'someone@example.com', code: '123456' },
     '/api/auth/sign-in/verify-email': { email: 'someone@example.com', code: '123456' },
+    '/api/auth/sign-up': { email: 'someone@example.com', code: '123456', password: PASSWORD },
+    '/api/auth/password-reset': { email: 'someone@example.com' },
+    '/api/auth/password-reset/confirm': { token: RESET_TOKEN_SENT, password: PASSWORD },
   };
-  /** Each route's own address bucket (finding L5): a sign-in's two steps do not spend one twice. */
+  /** Each route's own address bucket (finding L5): a flow's two steps do not spend one twice. */
   const ADDRESS_KEYS: Record<RoutePath, string> = {
     '/api/auth/sign-in/password': '203.0.113.5:-',
     '/api/auth/sign-in/code': 'sign_in_code_send_ip:203.0.113.5',
     '/api/auth/sign-in/code/verify': '203.0.113.5:-',
     '/api/auth/sign-in/verify-email': 'sign_in_verify_email_ip:203.0.113.5',
+    '/api/auth/sign-up': '203.0.113.5:-',
+    '/api/auth/password-reset': 'password_reset_ip:203.0.113.5',
+    '/api/auth/password-reset/confirm': 'password_reset_confirm_ip:203.0.113.5',
   };
   const PATHS = Object.keys(BODIES) as RoutePath[];
 

@@ -30,11 +30,11 @@ export const metadata: Metadata = {
  * Signing in — on this page, start to finish — and the place a failed sign-in
  * comes back to.
  *
- * Email and password, or a six-digit code emailed to the address, are typed
- * here and checked by the in-app sign-in routes (`SignInPanel`,
- * `server/in-app-sign-in.ts`); "Continue with Google" is one link out to Google
- * and back; "Sign in with single sign-on" leads to this same page's
- * organisation warning below. Nothing here leads to a WorkOS page.
+ * Email and password are typed here and checked by the in-app sign-in route
+ * (`SignInPanel`, `server/in-app-sign-in.ts`); "Forgot password?" leads to the
+ * reset request (`/sign-in/forgot-password`); "Continue with Google" is one
+ * link out to Google and back; "Sign in with single sign-on" leads to this
+ * same page's organisation warning below. Nothing here leads to a WorkOS page.
  *
  * ── Why the ways out are links ──
  * The login route answers with a 307 to WorkOS, which sends the browser on to
@@ -137,7 +137,7 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
         </>
       }
     >
-      <SignInPanel mode="sign-in" next={next} initialError={error} />
+      <SignInPanel next={next} initialError={error} />
     </AuthCard>
   );
 }

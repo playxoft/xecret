@@ -1,44 +1,55 @@
 'use client';
 
 import { useState } from 'react';
-import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react';
+import type { FormEvent } from 'react';
 
-import { api, errorMessage, isApiError } from '@/lib/api';
-import { safeRedirectPath } from '@/lib/redirect-path';
+import { api } from '@/lib/api';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 // From their own modules rather than the `components/ui` barrel, as the pages
-// do: this panel is all the client code the sign-in screens ship.
-import { Alert } from '@/components/ui/alert';
+// do: these forms are all the client code the sign-in screens ship.
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
-import { EyeIcon, EyeOffIcon, GoogleIcon } from '@/components/ui/icons';
+import { GoogleIcon } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
-import { LOGIN_ROUTE, loginHref } from './login-href';
+import {
+  CodeField,
+  EmailField,
+  emailProblem,
+  leaveFor,
+  normalisedCode,
+  OrDivider,
+  PasswordInput,
+  TextButton,
+  TextLink,
+  useAuthForm,
+} from './form-parts';
+import { authScreenHref, LOGIN_ROUTE, loginHref } from './login-href';
 
 /**
- * Signing in, and signing up, on xecret's own page.
+ * Signing in on xecret's own page.
  *
  * Everything a person does here stays on this site except "Continue with
- * Google", which is one link out to Google by way of the login route. A
- * password, or a six-digit code xecret has WorkOS email, is posted to the
- * in-app sign-in routes (`server/in-app-sign-in.ts`) by `fetch`, and the
- * answer says where to go: the destination with a session, or the
- * "Continue as …?" confirmation for a sign-in held back. Nothing here talks
- * to WorkOS, and the browser never loads a WorkOS page.
+ * Google", which is one link out to Google by way of the login route. The
+ * email and password are posted to the in-app sign-in route
+ * (`server/in-app-sign-in.ts`) by `fetch`, and the answer says where to go: the
+ * destination with a session, or the "Continue as …?" confirmation for a
+ * sign-in held back. Nothing here talks to WorkOS, and the browser never loads
+ * a WorkOS page.
  *
- * ── Two modes ──
- *  - **Sign in**: email and password first — accounts brought from Firebase
- *    have one — with "email me a code instead" one click away, which is also
- *    the answer to a forgotten password. While the server's email-verification
- *    step is enabled (it is off until WorkOS's ordering is proven — see
- *    `server/in-app-sign-in.ts`), a password sign-in to an address WorkOS has
- *    not verified asks for the code WorkOS emails to it before anything is
- *    signed in; while it is off, that sign-in reads as a wrong password and
- *    the emailed code is the way in.
- *  - **Sign up**: an email, then the code — no password to choose. The code
- *    proves the address, and WorkOS makes the account's user for an address it
- *    has not seen, so this is the whole of signing up. An address that already
- *    has an account is simply signed in; the page never says which it was.
+ * ── What is offered ──
+ * Google; the email and password (accounts brought from Firebase have one, and
+ * the sign-up page sets one); "Forgot password?", which goes to the reset
+ * request (`/sign-in/forgot-password`) — the way in for a forgotten password,
+ * for an address whose verification was never finished (a reset verifies it),
+ * and for an account that has never had a password (a reset sets its first);
+ * and an organisation's single sign-on. There is no "email me a code" here any
+ * more: "Forgot password?" covers what it was for.
+ *
+ * While the server's email-verification step is enabled (it is off until
+ * WorkOS's ordering is proven — see `server/in-app-sign-in.ts`), a password
+ * sign-in to an address WorkOS has not verified asks for the code WorkOS
+ * emails to it before anything is signed in; while it is off, that sign-in
+ * reads as a wrong password, and "Forgot password?" is the way in.
  *
  * ── Errors ──
  * The routes answer the API's error envelope with the same sentence
@@ -47,30 +58,16 @@ import { LOGIN_ROUTE, loginHref } from './login-href';
  * back naming its field, and is shown beside it. `initialError` is the
  * sentence for a `?error=` the server page read — a Google or single sign-on
  * attempt that came back refused — shown until the next attempt replaces it.
- *
- * ── Never kept ──
- * The password and codes live in this component's state until the request
- * that carries them, and nowhere else: never logged, never put in a URL, never
- * stored. The password field says `current-password` and the code fields
- * `one-time-code`, so a password manager and the phone's keyboard offer the
- * right thing.
  */
 
-export type SignInMode = 'sign-in' | 'sign-up';
-
 export interface SignInPanelProps {
-  mode: SignInMode;
   /** Already held to `safeRedirectPath` by the page. */
   next: string;
   /** The sentence for the page's `?error=`, or `null`. */
   initialError?: string | null;
 }
 
-type Step =
-  | { kind: 'password' }
-  | { kind: 'code-request' }
-  | { kind: 'code-entry'; email: string }
-  | { kind: 'verify-email'; email: string };
+type Step = { kind: 'password' } | { kind: 'verify-email'; email: string };
 
 /** What the in-app sign-in routes answer on success. */
 interface SignInAnswer {
@@ -80,93 +77,15 @@ interface SignInAnswer {
 
 export const SIGN_IN_ROUTES = {
   password: '/api/auth/sign-in/password',
-  sendCode: '/api/auth/sign-in/code',
-  verifyCode: '/api/auth/sign-in/code/verify',
   verifyEmail: '/api/auth/sign-in/verify-email',
 } as const;
 
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/**
- * Deliberately permissive. Whether an address exists is answered by the
- * email that arrives, and a strict pattern's only effect is refusing the
- * valid addresses it did not anticipate.
- */
-function emailProblem(value: string): string | null {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return 'Enter your email address.';
-  if (!EMAIL_PATTERN.test(trimmed)) return 'That doesn’t look like an email address.';
-  return null;
-}
-
-/** A pasted code arrives with spaces or a newline as often as not. */
-function normalisedCode(value: string): string {
-  return value.replace(/\s+/g, '');
-}
-
-export function SignInPanel({ mode, next, initialError = null }: SignInPanelProps) {
-  const [step, setStep] = useState<Step>(
-    mode === 'sign-in' ? { kind: 'password' } : { kind: 'code-request' },
-  );
+export function SignInPanel({ next, initialError = null }: SignInPanelProps) {
+  const [step, setStep] = useState<Step>({ kind: 'password' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [banner, setBanner] = useState<string | null>(initialError);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [problems, setProblems] = useState<Record<string, string>>({});
-
-  function reset(nextStep: Step) {
-    setStep(nextStep);
-    setCode('');
-    setBanner(null);
-    setNotice(null);
-    setProblems({});
-  }
-
-  /**
-   * A full document load, not a client-side push: the session cookie has only
-   * just been set, and everything rendered so far was rendered for nobody.
-   * Held to a same-origin path once more on the way out, whatever the server
-   * said. `busy` stays set: the page is leaving.
-   */
-  function go(redirect: unknown) {
-    const target = safeRedirectPath(
-      typeof redirect === 'string' ? redirect : null,
-      POST_SIGN_IN_PATH,
-    );
-    window.location.assign(target);
-  }
-
-  function fail(cause: unknown) {
-    setBusy(false);
-    setNotice(null);
-    if (isApiError(cause) && cause.fields.length > 0) {
-      const fields = cause.fieldErrors();
-      setProblems(fields);
-      // A problem with a field this step does not show (`next`, the body as a
-      // whole) is the page's problem, not the person's: say it above.
-      if (!['email', 'password', 'code'].some((name) => name in fields)) {
-        setBanner(errorMessage(cause));
-      } else {
-        setBanner(null);
-      }
-      return;
-    }
-    setProblems({});
-    setBanner(errorMessage(cause));
-  }
-
-  /** Starts a request: clears what the last one said, unless the form is already busy. */
-  function begin(local: Record<string, string>): boolean {
-    if (busy) return false;
-    setProblems(local);
-    if (Object.keys(local).length > 0) return false;
-    setBanner(null);
-    setNotice(null);
-    setBusy(true);
-    return true;
-  }
+  const form = useAuthForm(initialError);
 
   async function submitPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -174,7 +93,7 @@ export function SignInPanel({ mode, next, initialError = null }: SignInPanelProp
     const emailError = emailProblem(email);
     if (emailError !== null) local['email'] = emailError;
     if (password.length === 0) local['password'] = 'Enter your password.';
-    if (!begin(local)) return;
+    if (!form.begin(local)) return;
 
     const address = email.trim();
     try {
@@ -187,102 +106,45 @@ export function SignInPanel({ mode, next, initialError = null }: SignInPanelProp
         // WorkOS's pending token is in an HttpOnly cookie the server set; the
         // page holds only the address it was for.
         setPassword('');
-        setBusy(false);
-        reset({ kind: 'verify-email', email: address });
+        setCode('');
+        form.setBusy(false);
+        form.clear();
+        setStep({ kind: 'verify-email', email: address });
         return;
       }
-      go(answer.redirect);
+      leaveFor(answer.redirect);
     } catch (cause) {
-      fail(cause);
+      form.fail(cause, ['email', 'password']);
     }
-  }
-
-  async function sendCode(address: string, resend: boolean) {
-    try {
-      await api.post<void>(
-        SIGN_IN_ROUTES.sendCode,
-        { email: address },
-        { redirectOnUnauthenticated: false },
-      );
-      setBusy(false);
-      if (resend) {
-        setCode('');
-        setProblems({});
-        setNotice('We’ve sent a new code. If more than one arrives, use the newest.');
-      } else {
-        reset({ kind: 'code-entry', email: address });
-      }
-    } catch (cause) {
-      fail(cause);
-    }
-  }
-
-  async function submitCodeRequest(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const local: Record<string, string> = {};
-    const emailError = emailProblem(email);
-    if (emailError !== null) local['email'] = emailError;
-    if (!begin(local)) return;
-    await sendCode(email.trim(), false);
-  }
-
-  async function resendCode(address: string) {
-    if (!begin({})) return;
-    await sendCode(address, true);
   }
 
   async function submitCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (step.kind !== 'code-entry' && step.kind !== 'verify-email') return;
+    if (step.kind !== 'verify-email') return;
     const typed = normalisedCode(code);
     const local: Record<string, string> = {};
     if (!/^[0-9]{6}$/.test(typed)) local['code'] = 'Enter the six-digit code from the email.';
-    if (!begin(local)) return;
+    if (!form.begin(local)) return;
 
     try {
-      const answer =
-        step.kind === 'code-entry'
-          ? await api.post<SignInAnswer>(
-              SIGN_IN_ROUTES.verifyCode,
-              { email: step.email, code: typed, next },
-              { redirectOnUnauthenticated: false },
-            )
-          : await api.post<SignInAnswer>(
-              SIGN_IN_ROUTES.verifyEmail,
-              { email: step.email, code: typed, next },
-              { redirectOnUnauthenticated: false },
-            );
-      go(answer.redirect);
+      const answer = await api.post<SignInAnswer>(
+        SIGN_IN_ROUTES.verifyEmail,
+        { email: step.email, code: typed, next },
+        { redirectOnUnauthenticated: false },
+      );
+      leaveFor(answer.redirect);
     } catch (cause) {
-      fail(cause);
+      form.fail(cause, ['code']);
     }
   }
 
-  const messages = (
-    <>
-      {banner !== null ? <Alert tone="danger">{banner}</Alert> : null}
-      {notice !== null ? <Alert tone="success">{notice}</Alert> : null}
-    </>
-  );
-
-  if (step.kind === 'code-entry' || step.kind === 'verify-email') {
-    const verifying = step.kind === 'verify-email';
+  if (step.kind === 'verify-email') {
     return (
       <div className="flex flex-col gap-5">
-        {messages}
+        {form.messages}
         <p className="text-fg-muted text-sm leading-6">
-          {verifying ? (
-            <>
-              First, confirm your email address. We’ve emailed a six-digit code to{' '}
-              <span className="text-fg font-medium break-all">{step.email}</span>.
-            </>
-          ) : (
-            <>
-              We’ve emailed a six-digit code to{' '}
-              <span className="text-fg font-medium break-all">{step.email}</span>. It expires in ten
-              minutes.
-            </>
-          )}
+          First, confirm your email address. We’ve emailed a six-digit code to{' '}
+          <span className="text-fg font-medium break-all">{step.email}</span>.
         </p>
 
         {/* `noValidate` hands validation to us: the browser's own bubbles
@@ -293,62 +155,39 @@ export function SignInPanel({ mode, next, initialError = null }: SignInPanelProp
           onSubmit={(event) => void submitCode(event)}
           className="flex flex-col gap-4"
         >
-          <Field
-            label="Code from the email"
-            hint="Six digits. Spaces don’t matter."
-            error={problems['code'] ?? null}
-          >
-            <Input
-              name="code"
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              autoComplete="one-time-code"
-              inputMode="numeric"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              autoFocus
-              maxLength={16}
-              className="font-mono tracking-widest"
-              placeholder="123456"
-              disabled={busy}
-            />
-          </Field>
-
-          <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>
-            {verifying ? 'Confirm and sign in' : mode === 'sign-up' ? 'Create account' : 'Sign in'}
+          <CodeField
+            value={code}
+            onChange={setCode}
+            error={form.problems['code'] ?? null}
+            disabled={form.busy}
+          />
+          <Button type="submit" variant="primary" size="lg" className="w-full" loading={form.busy}>
+            Confirm and sign in
           </Button>
         </form>
 
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          {verifying ? (
-            <TextButton onClick={() => reset({ kind: 'password' })} disabled={busy}>
-              Start again
-            </TextButton>
-          ) : (
-            <>
-              <TextButton onClick={() => void resendCode(step.email)} disabled={busy}>
-                Send a new code
-              </TextButton>
-              <TextButton onClick={() => reset({ kind: 'code-request' })} disabled={busy}>
-                Use a different email
-              </TextButton>
-            </>
-          )}
+          <TextButton
+            onClick={() => {
+              form.clear();
+              setStep({ kind: 'password' });
+            }}
+            disabled={form.busy}
+          >
+            Start again
+          </TextButton>
         </div>
-        {verifying ? (
-          <p className="text-fg-subtle text-sm leading-6">
-            Didn’t get it? Check your spam folder, or start again and sign in once more to send
-            another.
-          </p>
-        ) : null}
+        <p className="text-fg-subtle text-sm leading-6">
+          Didn’t get it? Check your spam folder, or start again and sign in once more to send
+          another.
+        </p>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-5">
-      {messages}
+      {form.messages}
 
       <Button variant="secondary" size="lg" className="w-full" asChild>
         {/* A plain link, not `next/link` and not a form: the login route
@@ -364,91 +203,40 @@ export function SignInPanel({ mode, next, initialError = null }: SignInPanelProp
 
       <OrDivider />
 
-      {step.kind === 'password' ? (
-        <form
-          noValidate
-          onSubmit={(event) => void submitPassword(event)}
-          className="flex flex-col gap-4"
-        >
-          <Field label="Email" error={problems['email'] ?? null}>
-            <Input
-              type="email"
-              name="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete="username"
-              inputMode="email"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder="you@company.com"
-              disabled={busy}
-            />
-          </Field>
+      <form
+        noValidate
+        onSubmit={(event) => void submitPassword(event)}
+        className="flex flex-col gap-4"
+      >
+        <EmailField
+          value={email}
+          onChange={setEmail}
+          error={form.problems['email'] ?? null}
+          disabled={form.busy}
+        />
 
-          <Field label="Password" error={problems['password'] ?? null}>
-            <PasswordInput
-              name="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              disabled={busy}
-            />
-          </Field>
+        <Field label="Password" error={form.problems['password'] ?? null}>
+          <PasswordInput
+            name="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+            disabled={form.busy}
+          />
+        </Field>
 
-          <div className="-mt-1 flex justify-end">
-            <TextButton onClick={() => reset({ kind: 'code-request' })} disabled={busy}>
-              Forgot your password? Email me a code
-            </TextButton>
-          </div>
+        <div className="-mt-1 flex justify-end">
+          <TextLink href={authScreenHref('/sign-in/forgot-password', next)}>
+            Forgot password?
+          </TextLink>
+        </div>
 
-          <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>
-            Sign in
-          </Button>
-        </form>
-      ) : (
-        <form
-          noValidate
-          onSubmit={(event) => void submitCodeRequest(event)}
-          className="flex flex-col gap-4"
-        >
-          <p className="text-fg-muted text-sm leading-6">
-            {mode === 'sign-up'
-              ? 'Enter your email and we’ll send you a six-digit code. There’s no password to choose: next time, sign in with a new code or with Google.'
-              : 'We’ll email you a six-digit code. Enter it here to sign in — no password needed.'}
-          </p>
+        <Button type="submit" variant="primary" size="lg" className="w-full" loading={form.busy}>
+          Sign in
+        </Button>
+      </form>
 
-          <Field label="Email" error={problems['email'] ?? null}>
-            <Input
-              type="email"
-              name="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete={mode === 'sign-up' ? 'email' : 'username'}
-              inputMode="email"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder="you@company.com"
-              disabled={busy}
-            />
-          </Field>
-
-          <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>
-            Email me a code
-          </Button>
-
-          {mode === 'sign-in' ? (
-            <div className="flex justify-center">
-              <TextButton onClick={() => reset({ kind: 'password' })} disabled={busy}>
-                Sign in with a password instead
-              </TextButton>
-            </div>
-          ) : null}
-        </form>
-      )}
-
-      {mode === 'sign-in' ? <SingleSignOn next={next} /> : null}
+      <SingleSignOn next={next} />
     </div>
   );
 }
@@ -499,75 +287,5 @@ function SingleSignOn({ next }: { next: string }) {
         </Button>
       </form>
     </details>
-  );
-}
-
-function OrDivider() {
-  return (
-    <div className="flex items-center gap-3" aria-hidden="true">
-      <span className="bg-line h-px flex-1" />
-      <span className="text-fg-subtle text-sm">or</span>
-      <span className="bg-line h-px flex-1" />
-    </div>
-  );
-}
-
-/** A button that reads as a link: a secondary way forward, never the main one. */
-function TextButton({
-  children,
-  onClick,
-  disabled,
-}: {
-  children: ReactNode;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="text-fg-muted hover:text-fg decoration-line-strong hover:decoration-fg rounded-sm text-sm underline underline-offset-4 transition-colors disabled:cursor-not-allowed disabled:opacity-55"
-    >
-      {children}
-    </button>
-  );
-}
-
-interface PasswordInputProps extends InputHTMLAttributes<HTMLInputElement> {
-  /** A sign-in's password, for password managers. */
-  autoComplete: 'current-password';
-}
-
-/**
- * A password field with a reveal toggle. It always starts masked, and the
- * toggle reports its state with `aria-pressed` so it is usable without seeing
- * the icon change. A masked field on a phone keyboard is where most sign-in
- * failures come from.
- */
-function PasswordInput({ autoComplete, ...props }: PasswordInputProps) {
-  const [visible, setVisible] = useState(false);
-
-  return (
-    <Input
-      {...props}
-      type={visible ? 'text' : 'password'}
-      autoComplete={autoComplete}
-      autoCapitalize="off"
-      autoCorrect="off"
-      spellCheck={false}
-      endSlot={
-        <Button
-          size="icon"
-          variant="ghost"
-          className="size-7"
-          onClick={() => setVisible((current) => !current)}
-          aria-pressed={visible}
-          aria-label={visible ? 'Hide password' : 'Show password'}
-        >
-          {visible ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
-        </Button>
-      }
-    />
   );
 }

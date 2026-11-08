@@ -161,13 +161,14 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
 
 ## Create a WorkOS account and configure AuthKit
 
-People sign in and sign up on xecret's own `/sign-in` and `/sign-up` pages: a
-password or a six-digit emailed code is checked with one call to WorkOS's
-headless User Management API, "Continue with Google" goes from xecret to WorkOS
-straight on to Google and back, and an organisation's single sign-on goes to its
-identity provider the same way. Each result is checked once, server to server,
-and from then on xecret uses its own session. Nothing on the sign-in or
-sign-up pages leads to AuthKit's hosted page, but it is still reachable: the
+People sign in, sign up and reset a forgotten password on xecret's own pages
+(`/sign-in`, `/sign-up`, `/sign-in/forgot-password`, `/sign-in/reset-password`):
+a password, a sign-up's six-digit emailed code or a reset link is checked with
+WorkOS's headless User Management API, "Continue with Google" goes from xecret
+to WorkOS straight on to Google and back, and an organisation's single sign-on
+goes to its identity provider the same way. Each result is checked once, server
+to server, and from then on xecret uses its own session. Nothing on these pages
+leads to AuthKit's hosted page, but it is still reachable: the
 re-authentication flows use it (the vault reset's first check, the security
 settings' "Open sign-in page", the SSO setup portal's step-up), and so does
 `<XECRET_PUBLIC_URL>/api/auth/login` with no `provider` or `org` — and an old
@@ -217,6 +218,16 @@ environment matches redirects exactly. The checks worth making on Staging are in
 [WorkOS environments and the organisation link](operations/workos-environments.md),
 §4.
 
+**Password reset URL — set it before deploying.** In Redirects, set the
+**password reset URL** to `<XECRET_PUBLIC_URL>/sign-in/reset-password`, in each
+WorkOS environment you use, and keep the **password reset** email on (Emails →
+Configuration). "Forgot password?" asks WorkOS to send the reset email, and
+WorkOS builds its link from this setting with `?token=…` appended; left at its
+default — AuthKit's own reset page — every reset email leads away from xecret.
+Not `/reset-password`, which is a permanent redirect for Firebase-era links.
+[WorkOS environments](operations/workos-environments.md), §5, has what the reset
+does and does not do.
+
 **Authentication methods.** Enable email and password, and Google. In Staging
 WorkOS can use its own demonstration Google credentials; in **Production**,
 Google sign-in needs your own OAuth client — create it in the Google Cloud
@@ -265,11 +276,13 @@ To undo a link written from the wrong environment, see
 [WorkOS environments and the organisation link](operations/workos-environments.md).
 
 **Magic Auth.** Enable it, and leave WorkOS's default Magic Auth email on. The
-sign-in page's "email me a code" and the whole of signing up are a one-time code
-that WorkOS creates and emails, and so is the vault reset's second check; WorkOS
-refuses to create one at all while Magic Auth is disabled — so with it off,
-nobody can sign up, sign in by code or reset a vault, and the pages say sign-in
-is unavailable. A code sign-in is a sign-in like any other, but it
+sign-up page's emailed code is a one-time code that WorkOS creates and emails —
+the account's password is set only once that code has proven the inbox — and so
+is the vault reset's second check; WorkOS refuses to create one at all while
+Magic Auth is disabled — so with it off, nobody can sign up or reset a vault,
+and the pages say sign-in is unavailable. (The sign-in page offers no
+"email me a code": "Forgot password?" covers a forgotten password.) A code
+sign-in is a sign-in like any other, but it
 never counts as the vault reset's first check, which counts only a password, a
 passkey, Google or SSO sign-in — no other OAuth provider. (It does count as the
 fresh sign-in an owner needs before opening the SSO setup portal, which has no
@@ -294,7 +307,7 @@ both environments. WorkOS answers a password sign-in to an address it has not
 verified with `email_verification_required`. Until it is shown that WorkOS
 checks the password *before* deciding that, the sign-in page answers it exactly
 like a wrong password — anything else could tell a stranger which addresses
-have unverified accounts — and the person signs in with an emailed code, which
+have unverified accounts — and the person resets their password, which
 verifies the address as it goes (`EMAIL_VERIFICATION_STEP` in
 `apps/web/src/server/in-app-sign-in.ts` turns the code step on once that is
 proven). xecret depends on verification: the first time somebody signs in, an
@@ -308,8 +321,9 @@ before carries a sealed `__Host-xecret_known_device` cookie and is counted on
 its own; everybody else shares the address's pool — so somebody guessing at an
 address can lock the shared pool, never the owner's own browser. Apply that
 migration before deploying the build that uses it — without the table, every
-password and code sign-in is refused. Google and single sign-on are not
-counted.
+password sign-in and sign-up is refused. Google, single sign-on and the password
+reset are not counted — the reset is how an owner gets in while somebody else
+holds their address's pool locked, and a finished reset clears it.
 
 **Credentials.** Three values per environment:
 

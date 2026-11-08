@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { SIGN_IN_ERROR_MESSAGES } from '@/lib/sign-in-errors';
 
 /**
- * The sign-in and sign-up screens, as a browser first receives them.
+ * The sign-in, sign-up and password-reset screens, as a browser first
+ * receives them.
  *
  * Rendered to static markup — the server pages themselves, with the panel the
  * form lives in — because what is worth pinning is what a person is handed
@@ -26,6 +27,9 @@ vi.mock('@/server/sign-in', () => ({ ssoContinueKey: vi.fn() }));
 
 const { default: SignInPage } = await import('./sign-in/page');
 const { default: SignUpPage } = await import('./sign-up/page');
+const { default: ForgotPasswordPage } = await import('./sign-in/forgot-password/page');
+const resetPasswordModule = await import('./sign-in/reset-password/page');
+const ResetPasswordPage = resetPasswordModule.default;
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -42,6 +46,22 @@ async function signUpPage(search: Search = {}): Promise<string> {
     params: Promise.resolve({}),
     searchParams: Promise.resolve(search),
   } as unknown as Parameters<typeof SignUpPage>[0]);
+  return renderToStaticMarkup(element as ReactElement);
+}
+
+async function forgotPasswordPage(search: Search = {}): Promise<string> {
+  const element = await ForgotPasswordPage({
+    params: Promise.resolve({}),
+    searchParams: Promise.resolve(search),
+  } as unknown as Parameters<typeof ForgotPasswordPage>[0]);
+  return renderToStaticMarkup(element as ReactElement);
+}
+
+async function resetPasswordPage(search: Search = {}): Promise<string> {
+  const element = await ResetPasswordPage({
+    params: Promise.resolve({}),
+    searchParams: Promise.resolve(search),
+  } as unknown as Parameters<typeof ResetPasswordPage>[0]);
   return renderToStaticMarkup(element as ReactElement);
 }
 
@@ -72,8 +92,17 @@ describe('the sign-in page', () => {
     expect(email).toContain('autoComplete="username"');
     expect(password).toContain('type="password"');
     expect(password).toContain('autoComplete="current-password"');
-    expect(text(html)).toContain('Forgot your password? Email me a code');
     expect(text(html)).toContain('Sign in');
+  });
+
+  it('offers “Forgot password?” as a link to the reset request — and no emailed-code sign-in', async () => {
+    const html = await signInPage();
+
+    expect(hrefs(html)).toContain('/sign-in/forgot-password');
+    expect(text(html)).toContain('Forgot password?');
+    expect(text(html)).not.toMatch(/email me a code|code instead|sign-in code/i);
+    expect(input(html, 'code')).toBeNull();
+    expect(html).not.toContain('/api/auth/sign-in/code');
   });
 
   it('goes to Google through the login route, never to a WorkOS page', async () => {
@@ -100,6 +129,7 @@ describe('the sign-in page', () => {
     expect(hrefs(html)).toContain('/api/auth/login?provider=google&next=%2Finvite%2Ftok_abc');
     expect(input(html, 'next')).toContain('value="/invite/tok_abc"');
     expect(hrefs(html)).toContain('/sign-up?next=%2Finvite%2Ftok_abc');
+    expect(hrefs(html)).toContain('/sign-in/forgot-password?next=%2Finvite%2Ftok_abc');
   });
 
   it('drops a next that is not a same-origin path, everywhere it would have gone', async () => {
@@ -142,12 +172,15 @@ describe('the sign-in page', () => {
 });
 
 describe('the sign-up page', () => {
-  it('asks for an email and a code — no password — and offers Google', async () => {
+  it('asks for an email and a new password twice — new-password for a password manager — and offers Google', async () => {
     const html = await signUpPage({ next: '/invite/tok_abc' });
 
-    expect(input(html, 'email')).toContain('autoComplete="email"');
-    expect(input(html, 'password')).toBeNull();
-    expect(text(html)).toContain('Email me a code');
+    expect(input(html, 'email')).toContain('autoComplete="username"');
+    expect(input(html, 'password')).toContain('type="password"');
+    expect(input(html, 'password')).toContain('autoComplete="new-password"');
+    expect(input(html, 'confirm')).toContain('autoComplete="new-password"');
+    expect(text(html)).toContain('Create account');
+    expect(text(html)).not.toMatch(/email me a code/i);
     expect(hrefs(html)).toContain('/api/auth/login?provider=google&next=%2Finvite%2Ftok_abc');
     expect(hrefs(html)).toContain('/sign-in?next=%2Finvite%2Ftok_abc');
     // Signing up is not where an organisation's single sign-on starts.
@@ -159,33 +192,104 @@ describe('the sign-up page', () => {
   });
 });
 
-describe('the code step', () => {
-  // The panel's first render is the only one a static render sees; the code
-  // step's field is pinned at its source, where its attributes are written.
-  const source = readFileSync(
-    join(import.meta.dirname, '_components', 'sign-in-panel.tsx'),
-    'utf8',
+describe('the password-reset screens', () => {
+  it('asks for the address on the request page, and leads back to sign-in keeping next', async () => {
+    const html = await forgotPasswordPage({ next: '/invite/tok_abc' });
+
+    expect(input(html, 'email')).toContain('type="email"');
+    expect(input(html, 'email')).toContain('autoComplete="username"');
+    expect(input(html, 'password')).toBeNull();
+    expect(text(html)).toContain('Email me a reset link');
+    expect(hrefs(html)).toContain('/sign-in?next=%2Finvite%2Ftok_abc');
+  });
+
+  it('asks for the new password twice on the link’s page, both new-password', async () => {
+    const html = await resetPasswordPage({ token: 'tok-reset-aaaa-bbbb' });
+
+    expect(input(html, 'password')).toContain('autoComplete="new-password"');
+    expect(input(html, 'confirm')).toContain('autoComplete="new-password"');
+    expect(input(html, 'email')).toBeNull();
+    expect(text(html)).toContain('Change password');
+    // The token is the form's to post, not the page's to show.
+    expect(text(html)).not.toContain('tok-reset-aaaa-bbbb');
+  });
+
+  it.each([
+    [{}],
+    [{ token: '' }],
+    [{ token: 'has a space' }],
+    [{ token: ['a', 'b'] }],
+    [{ token: 'x'.repeat(300) }],
+  ])(
+    'says a link without a usable token is incomplete, and offers a new one: %j',
+    async (search) => {
+      const html = await resetPasswordPage(search);
+
+      expect(input(html, 'password')).toBeNull();
+      expect(text(html)).toContain('That reset link is incomplete');
+      expect(hrefs(html)).toContain('/sign-in/forgot-password');
+    },
   );
 
+  it('sends no referrer and asks not to be indexed: its URL carries the token', () => {
+    expect(resetPasswordModule.metadata.referrer).toBe('no-referrer');
+    expect(resetPasswordModule.metadata.robots).toEqual({ index: false, follow: false });
+  });
+
+  it('names no WorkOS and no AuthKit', async () => {
+    for (const html of [
+      await forgotPasswordPage(),
+      await resetPasswordPage({ token: 'tok-reset-aaaa-bbbb' }),
+      await resetPasswordPage(),
+    ]) {
+      expect(html).not.toMatch(NO_WORKOS);
+    }
+  });
+});
+
+describe('the forms, at their source', () => {
+  // A panel's first render is the only one a static render sees; the later
+  // steps' fields are pinned at their source, where their attributes are
+  // written.
+  const read = (file: string) =>
+    readFileSync(join(import.meta.dirname, '_components', file), 'utf8');
+  const parts = read('form-parts.tsx');
+  const signIn = read('sign-in-panel.tsx');
+  const signUp = read('sign-up-panel.tsx');
+  const reset = read('password-reset-panel.tsx');
+  const newPassword = read('new-password.tsx');
+  const all = [parts, signIn, signUp, reset, newPassword].join('\n');
+
   it('asks for the code as a one-time code, numerically, and never as a password', () => {
-    const field = source.slice(source.indexOf('label="Code from the email"'));
+    const field = parts.slice(parts.indexOf('label="Code from the email"'));
     const tag = field.slice(0, field.indexOf('/>'));
     expect(tag).toContain('autoComplete="one-time-code"');
     expect(tag).toContain('inputMode="numeric"');
     expect(tag).not.toContain('type="password"');
   });
 
-  it('posts to the in-app routes and nowhere else, and never logs', () => {
-    expect(source).toContain("'/api/auth/sign-in/password'");
-    expect(source).toContain("'/api/auth/sign-in/code'");
-    expect(source).toContain("'/api/auth/sign-in/code/verify'");
-    expect(source).toContain("'/api/auth/sign-in/verify-email'");
-    expect(source).not.toMatch(/console\./);
-    expect(source).not.toMatch(/localStorage|sessionStorage/);
+  it('posts to the in-app routes and nowhere else — and nothing posts an emailed code to sign in', () => {
+    expect(signIn).toContain("'/api/auth/sign-in/password'");
+    expect(signIn).toContain("'/api/auth/sign-in/verify-email'");
+    expect(signIn).not.toContain('/api/auth/sign-in/code');
+    expect(signUp).toContain("'/api/auth/sign-in/code'");
+    expect(signUp).toContain("'/api/auth/sign-up'");
+    expect(reset).toContain("'/api/auth/password-reset'");
+    expect(reset).toContain("'/api/auth/password-reset/confirm'");
+    expect(all).not.toContain('/api/auth/sign-in/code/verify');
+  });
+
+  it('never logs, and never keeps anything in storage', () => {
+    expect(all).not.toMatch(/console\./);
+    expect(all).not.toMatch(/localStorage|sessionStorage/);
+  });
+
+  it('drops the reset token from the address bar as soon as the page runs', () => {
+    expect(reset).toContain("window.history.replaceState(null, '', window.location.pathname)");
   });
 
   it('never adds outline-none', () => {
-    expect(source).not.toContain('outline-none');
+    expect(all).not.toContain('outline-none');
   });
 });
 

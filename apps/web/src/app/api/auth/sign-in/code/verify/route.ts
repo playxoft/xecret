@@ -22,6 +22,13 @@ import { workosProvider } from '@/server/workos';
  * of the address, so the account it signs in to has a verified address; the
  * gate in `prepareSignIn` still checks that WorkOS says so.
  *
+ * **No page links here.** The sign-in page's "email me a code" was removed —
+ * "Forgot password?" covers a forgotten password — and the sign-up page posts
+ * its code to `POST /api/auth/sign-up`, which checks it exactly as this does
+ * and sets the chosen password. This route is kept as it was reviewed and
+ * tested: support's way to sign somebody in by their inbox alone, and the
+ * smallest change to bring the option back.
+ *
  * Guessing is bounded before WorkOS is asked: the address bucket, this address
  * from this IP, this address from anywhere, and the durable per-address
  * lockout (`server/sign-in-throttle.ts`) — a six-digit code is worth bounding

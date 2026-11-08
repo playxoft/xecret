@@ -1,6 +1,12 @@
 import * as z from 'zod/mini';
 import { MAX_REDIRECT_PATH_LENGTH } from '@/lib/redirect-path';
-import { MAX_EMAIL_LENGTH, MAX_PASSWORD_LENGTH } from '../workos';
+import {
+  MAX_EMAIL_LENGTH,
+  MAX_PASSWORD_LENGTH,
+  MAX_RESET_TOKEN_LENGTH,
+  MIN_NEW_PASSWORD_LENGTH,
+  RESET_TOKEN_PATTERN,
+} from '../workos';
 
 /**
  * The bodies the in-app sign-in routes accept (`server/in-app-sign-in.ts`).
@@ -69,3 +75,58 @@ export type CodeSignInRequest = z.infer<typeof codeSignInSchema>;
 export const emailVerificationSchema = z.strictObject({ email, code, next }, UNEXPECTED_FIELD);
 
 export type EmailVerificationRequest = z.infer<typeof emailVerificationSchema>;
+
+/**
+ * A password being *chosen* — on sign-up, or from a reset link. WorkOS's own
+ * length floor is held here, so the commonest refusal is the same answer for
+ * every address and costs WorkOS nothing; the rest of its policy (a zxcvbn
+ * score of 3, not containing the address) the page estimates before it posts,
+ * and WorkOS judges.
+ */
+const newPassword = z
+  .string()
+  .check(
+    z.minLength(
+      MIN_NEW_PASSWORD_LENGTH,
+      `Use at least ${MIN_NEW_PASSWORD_LENGTH} characters — a few unrelated words make a strong one.`,
+    ),
+    z.maxLength(MAX_PASSWORD_LENGTH, 'That password is longer than this form accepts.'),
+  );
+
+/**
+ * The sign-up's second step: the code `POST /api/auth/sign-in/code` had WorkOS
+ * email, and the password chosen on the page's first step — held by the page
+ * until now, so that it reaches the server only beside the proof that the
+ * inbox is the person's.
+ */
+export const signUpSchema = z.strictObject(
+  { email, code, password: newPassword, next },
+  UNEXPECTED_FIELD,
+);
+
+export type SignUpRequest = z.infer<typeof signUpSchema>;
+
+/** "Forgot password?": the address alone. */
+export const passwordResetRequestSchema = z.strictObject({ email }, UNEXPECTED_FIELD);
+
+export type PasswordResetRequestBody = z.infer<typeof passwordResetRequestSchema>;
+
+/**
+ * The reset link's token, and the new password. The confirmation field is the
+ * page's own check and never posted: the server has nothing to compare it to.
+ */
+export const passwordResetSchema = z.strictObject(
+  {
+    token: z
+      .string()
+      .check(
+        z.minLength(1, 'That reset link is incomplete. Open it from the email again.'),
+        z.maxLength(MAX_RESET_TOKEN_LENGTH, 'That reset link is not one this page can use.'),
+        z.regex(RESET_TOKEN_PATTERN, 'That reset link is not one this page can use.'),
+      ),
+    password: newPassword,
+  },
+  UNEXPECTED_FIELD,
+);
+
+export type PasswordResetBody = z.infer<typeof passwordResetSchema>;

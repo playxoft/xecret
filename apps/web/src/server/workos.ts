@@ -2,6 +2,7 @@ import { GenerateLinkIntent, WorkOS } from '@workos-inc/node';
 import {
   IdentityVerificationError,
   WORKOS_SESSION_ID_PATTERN,
+  WORKOS_USER_ID_PATTERN,
   workosIdentity,
 } from '@xecret/core/auth';
 import { fromBase64Url } from '@xecret/core/crypto';
@@ -75,6 +76,9 @@ export interface WorkosApi {
     | 'authenticateWithMagicAuth'
     | 'authenticateWithTotp'
     | 'getLogoutUrl'
+    | 'createPasswordReset'
+    | 'resetPassword'
+    | 'updateUser'
   >;
   multiFactorAuth: Pick<WorkOS['multiFactorAuth'], 'challengeFactor'>;
   organizations: Pick<
@@ -153,6 +157,28 @@ export const MAX_PENDING_TOKEN_LENGTH = 2048;
 
 /** Printable ASCII without spaces: what an opaque WorkOS token can be made of. */
 const PENDING_TOKEN_PATTERN = /^[\x21-\x7e]+$/;
+
+/**
+ * The longest password-reset token accepted from a browser. WorkOS's are short
+ * and opaque (about 25 characters); the bound exists so that a hostile body is
+ * refused on shape before it is forwarded.
+ */
+export const MAX_RESET_TOKEN_LENGTH = 256;
+
+/**
+ * What a reset token can be made of: RFC 3986's unreserved characters, because
+ * it arrives as a query parameter in the link WorkOS emails, unencoded.
+ */
+export const RESET_TOKEN_PATTERN = /^[A-Za-z0-9._~-]+$/;
+
+/**
+ * The shortest password a new one may be — WorkOS's own default policy
+ * (`min_length` 10, beside a zxcvbn score of 3 and "does not contain the
+ * address"). Held here, on the server, so that the commonest refusal is the
+ * same answer for every address and never needs WorkOS to give it; the page
+ * also estimates the score before it lets the form go.
+ */
+export const MIN_NEW_PASSWORD_LENGTH = 10;
 
 /**
  * The provider could not be asked, as opposed to answering "no".
@@ -355,8 +381,9 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
 
   /**
    * Signs a person in with the six-digit code WorkOS emailed them
-   * ({@link createMagicAuth}) — the in-app page's "email me a code", which is
-   * also how an account is created there. Unlike
+   * ({@link createMagicAuth}) — the sign-up page's code, which proves the inbox
+   * before the chosen password is set ({@link setPassword}), and the
+   * code-only sign-in no page links to any more. Unlike
    * {@link authenticateWithMagicAuth}, which only says whose inbox a code
    * reached (the vault reset's second lock), this answers the whole exchange,
    * for the sign-in to be built on.
@@ -435,6 +462,105 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
       // every address the same. A bare 403, and a method switched off, are
       // still read as configuration.
       throw providerFailure(cause, { credential: true });
+    }
+  }
+
+  /**
+   * Has WorkOS email a password-reset link to `email` — the API is marked
+   * "sends email", and the link is the environment's **password reset URL**
+   * (a dashboard setting: Applications → the application → Redirects) with
+   * `?token=` appended. That URL must be this deployment's
+   * `/sign-in/reset-password`; its default is AuthKit's own page
+   * (`docs/operations/workos-environments.md` §5).
+   *
+   * WorkOS answers the reset object with the token and the finished link in
+   * it, so that an application which sends its own email can. This one does
+   * not, and both are dropped here, unread, exactly as {@link createMagicAuth}
+   * drops its code: nothing that can complete a reset reaches a caller, a log
+   * or a row. Nothing is returned at all — not even whose user it was, which
+   * the route must not be able to tell apart from an address with none.
+   *
+   * A reset works for any WorkOS user, including one that has never had a
+   * password — one made by an emailed code, or by Google: the password it sets
+   * is then their first. That is WorkOS's documented answer for users imported
+   * without passwords ("trigger a password reset flow using the WorkOS Password
+   * Reset API"), and it is what lets a code-only account arm the vault reset's
+   * first lock with a password.
+   */
+  async sendPasswordReset(email: string): Promise<void> {
+    assertEmailShape(email);
+    try {
+      await this.#api.userManagement.createPasswordReset({ email });
+    } catch (cause) {
+      // `credential`: a named 403 is WorkOS declining the address, not this
+      // deployment's key — the same reading as a Magic Auth request. An address
+      // with no user is a 404 whose message names the address; only the code
+      // is ever read from it.
+      throw providerFailure(cause, { credential: true });
+    }
+  }
+
+  /**
+   * Sets a new password with the token from the emailed link
+   * (`/user_management/password_reset/confirm`). WorkOS verifies the address
+   * as it does — the link reached the inbox — and revokes the WorkOS user's
+   * own sessions; xecret's are ended by the caller.
+   *
+   * Answers whose user it was, from WorkOS's answer, and nothing else. No
+   * session comes back from WorkOS, and none is made here: the person signs in
+   * with the new password (see `server/password-reset.ts` for why).
+   *
+   * ── Its refusals, sorted ──
+   * WorkOS reports a token it never issued as a 404 whose *message quotes the
+   * token* — so no message is ever read, only codes — and an expired token and
+   * a password its policy refuses together, as one 400 `password_reset_error`
+   * with the reasons in `errors`. Either the token is unusable
+   * (`reset-token-invalid`) or, with a good token, the password is
+   * (`weak-password`). Everything else is {@link providerFailure}'s.
+   */
+  async resetPassword(params: {
+    token: string;
+    newPassword: string;
+  }): Promise<{ workosUserId: string; email: string }> {
+    assertResetTokenShape(params.token);
+    assertNewPasswordShape(params.newPassword);
+
+    let user: { id: string; email: string };
+    try {
+      ({ user } = await this.#api.userManagement.resetPassword({
+        token: params.token,
+        newPassword: params.newPassword,
+      }));
+    } catch (cause) {
+      throw passwordFailure(cause, { reset: true });
+    }
+    if (typeof user.email !== 'string' || user.email === '') {
+      throw new IdentityVerificationError('no-email');
+    }
+    return { workosUserId: user.id, email: user.email };
+  }
+
+  /**
+   * Sets the password of a WorkOS user whose inbox was **just** proven — the
+   * in-app sign-up's last step, after its emailed code was accepted
+   * (`POST /api/auth/sign-up`). Never called before that proof: a password set
+   * on an address nobody has proven is the pre-account takeover PR #100's
+   * note 12 rules out (the attacker's password would survive the owner's
+   * verification, by whatever route it came).
+   *
+   * A password WorkOS's policy refuses is `weak-password`; anything else is
+   * {@link providerFailure}'s, read as this deployment's call (a 401 or 403 here
+   * is the key, never the person).
+   */
+  async setPassword(workosUserId: string, password: string): Promise<void> {
+    if (typeof workosUserId !== 'string' || !WORKOS_USER_ID_PATTERN.test(workosUserId)) {
+      throw new IdentityVerificationError('malformed-subject');
+    }
+    assertNewPasswordShape(password);
+    try {
+      await this.#api.userManagement.updateUser({ userId: workosUserId, password });
+    } catch (cause) {
+      throw passwordFailure(cause, { reset: false });
     }
   }
 
@@ -902,6 +1028,88 @@ function assertPendingTokenShape(token: string): void {
   ) {
     throw new IdentityVerificationError('malformed-pending-token');
   }
+}
+
+function assertResetTokenShape(token: string): void {
+  if (
+    typeof token !== 'string' ||
+    token === '' ||
+    token.length > MAX_RESET_TOKEN_LENGTH ||
+    !RESET_TOKEN_PATTERN.test(token)
+  ) {
+    throw new IdentityVerificationError('reset-token-invalid');
+  }
+}
+
+/** A password about to be *set*: WorkOS's own length floor, and the forwarding bound. */
+function assertNewPasswordShape(password: string): void {
+  if (
+    typeof password !== 'string' ||
+    password.length < MIN_NEW_PASSWORD_LENGTH ||
+    password.length > MAX_PASSWORD_LENGTH
+  ) {
+    throw new IdentityVerificationError('weak-password');
+  }
+}
+
+/** WorkOS's codes for a password its policy refuses, on a user update and inside a reset. */
+const PASSWORD_POLICY_CODES: ReadonlySet<string> = new Set([
+  'password_strength_error',
+  'password_too_short',
+  'password_too_long',
+  'password_too_weak',
+  'password_contains_email',
+  'password_pwned',
+]);
+
+/**
+ * Sorts a failed password reset or password update. Read from codes only —
+ * never from a message, which for an unknown reset token quotes the token.
+ *
+ *  - `reset-token-invalid`: a token WorkOS never issued (404,
+ *    `password_reset_token_not_found`), or one past its fifteen minutes
+ *    (`password_reset_token_expired` inside `password_reset_error`). The token
+ *    wins over a weak password reported beside it: either way the person needs
+ *    a new link.
+ *  - `weak-password`: WorkOS's password policy, alone.
+ *  - Anything else: {@link providerFailure}'s — a timeout or an outage
+ *    unavailable, never a refusal; for the reset (a credential, of sorts), a
+ *    named 403 is the token's problem, not this deployment's key.
+ */
+function passwordFailure(cause: unknown, options: { reset: boolean }): Error {
+  if (cause instanceof IdentityVerificationError) return cause;
+  const code = readString(cause, 'code') ?? readString(cause, 'error');
+  const items = errorItemCodes(cause);
+  const status = readNumber(cause, 'status');
+
+  if (options.reset) {
+    if (
+      code === 'password_reset_token_not_found' ||
+      items.includes('password_reset_token_expired') ||
+      (status === 404 && code !== undefined)
+    ) {
+      return new IdentityVerificationError('reset-token-invalid');
+    }
+  }
+  if (
+    (code !== undefined && PASSWORD_POLICY_CODES.has(code)) ||
+    ((code === 'password_reset_error' || code === undefined) &&
+      items.length > 0 &&
+      items.every((item) => PASSWORD_POLICY_CODES.has(item)))
+  ) {
+    return new IdentityVerificationError('weak-password');
+  }
+  return providerFailure(cause, { credential: options.reset });
+}
+
+/** The `code` of each entry in a WorkOS error's `errors` list, where it has one. */
+function errorItemCodes(cause: unknown): string[] {
+  if (typeof cause !== 'object' || cause === null) return [];
+  const list = (cause as Record<string, unknown>)['errors'];
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((item: unknown) => readString(item, 'code'))
+    .filter((code): code is string => code !== undefined);
 }
 
 function requestFacts(context: { ipAddress: string | null; userAgent: string | null }) {

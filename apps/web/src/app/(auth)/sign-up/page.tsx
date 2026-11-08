@@ -5,7 +5,7 @@ import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import { AuthCard } from '../_components/auth-card';
 import { authScreenHref, singleParam } from '../_components/login-href';
-import { SignInPanel } from '../_components/sign-in-panel';
+import { SignUpPanel } from '../_components/sign-up-panel';
 
 export const metadata: Metadata = {
   title: 'Create an account',
@@ -13,23 +13,22 @@ export const metadata: Metadata = {
 };
 
 /**
- * Account creation, on this page: an email address and the six-digit code
- * emailed to it, or Google.
+ * Account creation, on this page: an email and a password, then the six-digit
+ * code emailed to the address — or Google.
  *
  * Kept as its own screen rather than folded into `/sign-in` (plan §8 Q4)
  * because it is where every "Start free" button on the public site points, and
  * somebody who clicked one should land on a page that says what they are about
  * to get, not on a page asking them to sign in to an account they do not have.
  *
- * ── Why no password ──
- * Signing up is the emailed-code flow (`SignInPanel`'s sign-up mode, WorkOS
- * Magic Auth through `server/in-app-sign-in.ts`): the code proves the address
- * in the same step that creates the account, so the verified-address gate in
- * `prepareSignIn` is met without a separate verification screen, and there is
- * no password policy, strength meter or reset flow to build for it. It also
- * answers an address that already has an account exactly as one that does not
- * — that address is simply signed in — where a password sign-up would have to
- * say "that address is taken" to somebody who may not own it.
+ * ── The code before the password ──
+ * The person types both at once; the page holds the password while the code
+ * is emailed, and the server sets it only beside a right code
+ * (`SignUpPanel`, `POST /api/auth/sign-up`). So the code proves the address in
+ * the same request that sets the password — the verified-address gate in
+ * `prepareSignIn` is met, no password ever sits on an address nobody has
+ * proven, and an address that already has an account is answered exactly as
+ * one that does not, at every step (it is signed in to, with the new password).
  *
  * `next` is accepted because the sign-in screen's "Create an account" link
  * passes it on: somebody bounced from the CLI's consent screen, or following an
@@ -62,7 +61,7 @@ export default async function SignUpPage({ searchParams }: PageProps<'/sign-up'>
       }
     >
       <div className="flex flex-col gap-5">
-        <SignInPanel mode="sign-up" next={next} />
+        <SignUpPanel next={next} />
         <p className="text-fg-subtle text-sm leading-6">
           Joining a team? Use the address your invitation was sent to: invitations are tied to it.
         </p>

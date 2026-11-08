@@ -6,7 +6,7 @@ import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
  * The links that start a sign-in that leaves the site, and the links between
  * the two screens that offer one.
  *
- * A password or an emailed code is typed on the sign-in page itself. What
+ * A password, or a sign-up's emailed code, is typed on the page itself. What
  * leaves the site — "Continue with Google", an organisation's single sign-on,
  * and the re-authentication flows that still use AuthKit's hosted page — goes
  * through `GET /api/auth/login`, and the only part of that worth getting wrong
@@ -116,11 +116,14 @@ function isOrgSlug(value: string): boolean {
   return value.length <= SLUG_MAX_LENGTH && SLUG_PATTERN.test(value);
 }
 
-/** The two screens that start a sign-in, for the cross-link each shows the other. */
-export type AuthScreen = '/sign-in' | '/sign-up';
+/**
+ * The screens that start a sign-in, for the cross-links between them: the two
+ * that start one, and the reset request a forgotten password goes to.
+ */
+export type AuthScreen = '/sign-in' | '/sign-up' | '/sign-in/forgot-password';
 
 /**
- * A link to the other authentication screen that keeps `next`.
+ * A link to another authentication screen that keeps `next`.
  *
  * Somebody bounced to `/sign-in?next=/cli/authorize?…` who has no account yet
  * clicks "Create an account"; dropping `next` there would sign them up and then

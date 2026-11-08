@@ -123,6 +123,19 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
         { domain: 'failed.example', state: 'failed' },
       ],
     })),
+    createPasswordReset: vi.fn(async () => ({
+      object: 'password_reset',
+      id: 'password_reset_01',
+      userId: 'user_01HZXK9P3Q',
+      email: 'alice@bigcorp.example',
+      passwordResetToken: 'tok-reset-aaaa-bbbb',
+      passwordResetUrl:
+        'https://xecret.playxoft.com/sign-in/reset-password?token=tok-reset-aaaa-bbbb',
+      expiresAt: '2026-10-12T10:15:00Z',
+      createdAt: '2026-10-12T10:00:00Z',
+    })),
+    resetPassword: vi.fn(async () => ({ user: user({ emailVerified: false }) })),
+    updateUser: vi.fn(async () => user()),
     ...over,
   };
 
@@ -138,6 +151,9 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
       authenticateWithPassword: calls.authenticateWithPassword,
       authenticateWithEmailVerification: calls.authenticateWithEmailVerification,
       authenticateWithOrganizationSelection: calls.authenticateWithOrganizationSelection,
+      createPasswordReset: calls.createPasswordReset,
+      resetPassword: calls.resetPassword,
+      updateUser: calls.updateUser,
     },
     multiFactorAuth: { challengeFactor: calls.challengeFactor },
     organizations: { getOrganization: calls.getOrganization, createOrganization: vi.fn() },
@@ -767,6 +783,256 @@ describe('Magic Auth', () => {
         { ipAddress: null, userAgent: null },
       ),
     ).rejects.toMatchObject({ reason: 'invalid_one_time_code' });
+  });
+});
+
+describe('passwords: the reset link and the sign-up’s last step', () => {
+  const TOKEN = 'tok-reset-aaaa-bbbb';
+  const NEW_PASSWORD = 'a brand new passphrase 41';
+
+  it('has WorkOS email a reset link, and drops the token and the link WorkOS answers with', async () => {
+    const { provider, calls } = stubApi();
+
+    const sent = await provider.sendPasswordReset('alice@bigcorp.example');
+
+    expect(sent).toBeUndefined();
+    expect(calls.createPasswordReset).toHaveBeenCalledWith({ email: 'alice@bigcorp.example' });
+  });
+
+  it('refuses a malformed address before asking WorkOS for a reset', async () => {
+    const { provider, calls } = stubApi();
+
+    await expect(provider.sendPasswordReset('no-at-sign')).rejects.toBeInstanceOf(
+      IdentityVerificationError,
+    );
+    expect(calls.createPasswordReset).not.toHaveBeenCalled();
+  });
+
+  it('reads a reset request’s 404 and named 403 as about the address, a bare 403 as our key', async () => {
+    const nobody = stubApi({
+      createPasswordReset: vi.fn(async () =>
+        Promise.reject(failure(404, { code: 'entity_not_found', message: 'User not found: x@y' })),
+      ),
+    });
+    const named = stubApi({
+      createPasswordReset: vi.fn(async () => Promise.reject(failure(403, { code: 'blocked' }))),
+    });
+    const bare = stubApi({ createPasswordReset: vi.fn(async () => Promise.reject(failure(403))) });
+
+    await expect(nobody.provider.sendPasswordReset('x@y.example')).rejects.toBeInstanceOf(
+      IdentityVerificationError,
+    );
+    await expect(named.provider.sendPasswordReset('x@y.example')).rejects.toMatchObject({
+      reason: 'blocked',
+    });
+    await expect(bare.provider.sendPasswordReset('x@y.example')).rejects.toBeInstanceOf(
+      IdentityProviderUnavailableError,
+    );
+  });
+
+  it('resets with the token and the new password, answering only whose user it was', async () => {
+    const { provider, calls } = stubApi();
+
+    const reset = await provider.resetPassword({ token: TOKEN, newPassword: NEW_PASSWORD });
+
+    expect(reset).toEqual({ workosUserId: 'user_01HZXK9P3Q', email: 'alice@bigcorp.example' });
+    expect(calls.resetPassword).toHaveBeenCalledWith({ token: TOKEN, newPassword: NEW_PASSWORD });
+  });
+
+  it.each([[''], ['has a space'], ['x'.repeat(257)], ['tok<en>'], ['ünicode']])(
+    'refuses the reset token %j before asking WorkOS',
+    async (token) => {
+      const { provider, calls } = stubApi();
+
+      await expect(
+        provider.resetPassword({ token, newPassword: NEW_PASSWORD }),
+      ).rejects.toMatchObject({ reason: 'reset-token-invalid' });
+      expect(calls.resetPassword).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses a new password under WorkOS’s floor before asking WorkOS', async () => {
+    const { provider, calls } = stubApi();
+
+    await expect(
+      provider.resetPassword({ token: TOKEN, newPassword: 'nine char' }),
+    ).rejects.toMatchObject({
+      reason: 'weak-password',
+    });
+    await expect(provider.setPassword('user_01HZXK9P3Q', 'short')).rejects.toMatchObject({
+      reason: 'weak-password',
+    });
+    expect(calls.resetPassword).not.toHaveBeenCalled();
+    expect(calls.updateUser).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'an unknown token (404)',
+      404,
+      { code: 'password_reset_token_not_found' },
+      'reset-token-invalid',
+    ],
+    [
+      'an expired token',
+      400,
+      { code: 'password_reset_error', errors: [{ code: 'password_reset_token_expired' }] },
+      'reset-token-invalid',
+    ],
+    [
+      'an expired token beside a policy refusal',
+      400,
+      {
+        code: 'password_reset_error',
+        errors: [{ code: 'password_reset_token_expired' }, { code: 'password_too_short' }],
+      },
+      'reset-token-invalid',
+    ],
+    [
+      'a password the policy refuses',
+      400,
+      { code: 'password_reset_error', errors: [{ code: 'password_too_weak' }] },
+      'weak-password',
+    ],
+  ] as const)('sorts a reset refusal for %s', async (_label, status, fields, reason) => {
+    const { provider } = stubApi({
+      resetPassword: vi.fn(async () => Promise.reject(failure(status, fields))),
+    });
+
+    await expect(
+      provider.resetPassword({ token: TOKEN, newPassword: NEW_PASSWORD }),
+    ).rejects.toMatchObject({
+      reason,
+    });
+  });
+
+  it('sorts the real SDK’s own exceptions, built from WorkOS’s answers, the same way', async () => {
+    const answers: Array<[number, Record<string, unknown>, string]> = [
+      [
+        404,
+        {
+          code: 'password_reset_token_not_found',
+          message: `Could not locate user with provided token: '${TOKEN}'`,
+        },
+        'reset-token-invalid',
+      ],
+      [
+        400,
+        {
+          code: 'password_reset_error',
+          message: 'Could not reset password.',
+          errors: [{ code: 'password_reset_token_expired', message: 'The token has expired.' }],
+        },
+        'reset-token-invalid',
+      ],
+      [
+        400,
+        {
+          code: 'password_reset_error',
+          message: 'Could not reset password.',
+          errors: [{ code: 'password_too_weak', message: 'Too weak.' }],
+        },
+        'weak-password',
+      ],
+    ];
+    for (const [status, body, reason] of answers) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { 'content-type': 'application/json' },
+            }),
+        ),
+      );
+      try {
+        const sdk = new WorkOS(
+          'sk_test_not_a_real_key',
+          workosClientOptions(CONFIG.clientId, 'interactive'),
+        );
+        const provider = new WorkosIdentityProvider(sdk as unknown as WorkosApi, CONFIG);
+        const error = await provider
+          .resetPassword({ token: TOKEN, newPassword: NEW_PASSWORD })
+          .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(IdentityVerificationError);
+        expect(error).toMatchObject({ reason });
+        // Only codes are read: the message that quotes the token stays behind.
+        expect(JSON.stringify(error) + String(error)).not.toContain(TOKEN);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+
+  it('reads the real SDK’s timeout on a reset, a reset request and a password as unreachable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      (_url: unknown, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    );
+    try {
+      const sdk = new WorkOS('sk_test_not_a_real_key', {
+        ...workosClientOptions(CONFIG.clientId, 'interactive'),
+        timeout: 20,
+      });
+      const provider = new WorkosIdentityProvider(sdk as unknown as WorkosApi, CONFIG);
+      for (const call of [
+        () => provider.resetPassword({ token: TOKEN, newPassword: NEW_PASSWORD }),
+        () => provider.sendPasswordReset('a@b.example'),
+        () => provider.setPassword('user_01HZXK9P3Q', NEW_PASSWORD),
+      ]) {
+        const error = await call().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(IdentityProviderUnavailableError);
+        expect(error).toMatchObject({ reason: 'unreachable' });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('sets a password on the user the code proved, and sorts a policy refusal as weak', async () => {
+    const ok = stubApi();
+    await ok.provider.setPassword('user_01HZXK9P3Q', NEW_PASSWORD);
+    expect(ok.calls.updateUser).toHaveBeenCalledWith({
+      userId: 'user_01HZXK9P3Q',
+      password: NEW_PASSWORD,
+    });
+
+    const weak = stubApi({
+      updateUser: vi.fn(async () =>
+        Promise.reject(
+          failure(400, {
+            code: 'password_strength_error',
+            errors: [{ code: 'password_too_weak' }],
+          }),
+        ),
+      ),
+    });
+    await expect(weak.provider.setPassword('user_01HZXK9P3Q', NEW_PASSWORD)).rejects.toMatchObject({
+      reason: 'weak-password',
+    });
+
+    // A 403 setting a password is this deployment's key, never the person.
+    const bare = stubApi({
+      updateUser: vi.fn(async () => Promise.reject(failure(403, { code: 'x' }))),
+    });
+    await expect(bare.provider.setPassword('user_01HZXK9P3Q', NEW_PASSWORD)).rejects.toBeInstanceOf(
+      IdentityProviderUnavailableError,
+    );
+  });
+
+  it('refuses to set a password on something that is not a WorkOS user id', async () => {
+    const { provider, calls } = stubApi();
+
+    await expect(provider.setPassword('../users/other', NEW_PASSWORD)).rejects.toBeInstanceOf(
+      IdentityVerificationError,
+    );
+    expect(calls.updateUser).not.toHaveBeenCalled();
   });
 });
 

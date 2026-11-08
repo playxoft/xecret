@@ -73,17 +73,25 @@ export const SIGN_IN_ERROR_MESSAGES = {
 export type SignInErrorCode = keyof typeof SIGN_IN_ERROR_MESSAGES;
 
 /**
- * What the sign-in form says beside the field a person got wrong. Not in the
- * table above, because no redirect ever carries them: they answer something
- * typed on the page, and are shown on the page.
+ * What the sign-in, sign-up and password-reset forms say beside the field a
+ * person got wrong, or above a form whose link has run out. Not in the table
+ * above, because no redirect ever carries them: they answer something typed on
+ * the page, and are shown on the page.
  *
- * Neither says whether the address has an account. "Wrong password" and "no
- * such account" are one answer from WorkOS, and one sentence here.
+ * None says whether the address has an account. "Wrong password" and "no
+ * such account" are one answer from WorkOS, and one sentence here; a weak
+ * password is only ever reported to somebody who has just proven the inbox
+ * (the sign-up's code, the reset's link), and a reset link that will not work
+ * is one sentence whether WorkOS never issued it or it expired.
  */
 export const SIGN_IN_FORM_MESSAGES = {
   'wrong-password':
-    'That email and password don’t match. Try again, or email yourself a sign-in code instead.',
+    'That email and password don’t match. Try again, or reset your password if you’ve forgotten it.',
   'wrong-code': 'That code isn’t right, or it has expired. Check the email, or send a new code.',
+  'weak-password':
+    'That password is too easy to guess. Choose a longer one — a few unrelated words work well.',
+  'reset-link-invalid':
+    'That reset link has expired or has already been used. Ask for a new one below.',
 } as const;
 
 /** The sentence for a code taken from a URL, or `null` for anything not in the table. */

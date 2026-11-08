@@ -3,7 +3,8 @@
 What an operator does when an organisation's single sign-on link belongs to the wrong WorkOS
 environment, and the checks that keep it from happening — and (§4) the logout redirect each
 environment needs before the build that ends AuthKit sessions at sign-out is deployed, with the
-checks to make on Staging. The design is in
+checks to make on Staging — and (§5) the password reset URL each environment needs before the
+in-app "Forgot password?" is deployed, and what the in-app sign-in page refuses. The design is in
 `docs/architecture/database-schema.md` (§2, `workos_org_id`, `workos_client_id` and
 `workos_home`) and `docs/security/threat-model.md` (T13).
 
@@ -156,26 +157,70 @@ WorkOS returns the browser only to a logout redirect configured for that environ
      WorkOS really does without it (step 2). That is what Production would do if step 1 were
      missed.
 
-## 5. When the in-app sign-in page cannot finish a sign-in
+## 5. The in-app sign-in, sign-up and password reset
 
-The sign-in page checks a password or an emailed code itself, through WorkOS's headless API, and
-refuses — with a fixed sentence, by design — anything WorkOS asks for that the page cannot show:
+### Before deploying: the password reset URL, in both environments
+
+> **Owner step — the reset email links wherever this setting says, and its default is AuthKit.**
+> In the WorkOS dashboard, for **each** environment: **Applications → the application →
+> Redirects → Password reset URL** = `<origin>/sign-in/reset-password` —
+> `https://xecret.playxoft.com/sign-in/reset-password` for Production,
+> `https://xecret-staging.playxoft.com/sign-in/reset-password` for Staging. WorkOS builds the
+> emailed link from this setting, appending `?token=…`; left at its default, every reset email
+> sends the person to AuthKit's hosted page instead of xecret's. (Testing a reset on
+> `localhost:3030` against the Staging environment: either point Staging's setting at
+> `http://localhost:3030/sign-in/reset-password` for the session and put it back, or open the
+> emailed link and change its origin to `localhost:3030` — the token is all that matters.)
+> And in **Emails → Configuration**, keep the **password reset** email on: the in-app "Forgot
+> password?" asks WorkOS to send it (`createPasswordReset`, which the API marks "sends email") and
+> never sends one itself.
+
+Not `/reset-password`: that path, and `/forgot-password`, are permanent (308) redirects to
+`/sign-in` for the Firebase-era emails still in inboxes (`next.config.ts`), and a browser that has
+followed one remembers it for good.
+
+**What the reset does.** `/sign-in/forgot-password` posts an address to
+`POST /api/auth/password-reset`, which answers the same 204 for every address — WorkOS's 404 for an
+address with no user, its refusals and its per-address rate limit included — after the same
+1.2-second floor, so neither the answer nor its timing names an account. The link lands on
+`/sign-in/reset-password`, which drops the token from the address bar, sends no referrer, and posts
+it with the new password to `POST /api/auth/password-reset/confirm`. WorkOS sets the password,
+**verifies the address** (it documents both) and ends its own sessions; xecret ends every session
+of the account and clears the address's shared throttle pool, and sends the person to sign in with
+the new password — it never signs them in itself, because a reset link that signed its user in
+would let somebody send a victim the link to their own account (login CSRF). Reset tokens last 15
+minutes and are single use. A reset works for an account that has never had a password (made by an
+emailed code, or by Google): it sets the first one.
+
+The reset is never held back by the sign-in lockout, and its token is not counted in
+`sign_in_failures`: the token names no address until WorkOS has accepted it, and the reset is how
+an owner gets in while somebody keeps their address's shared pool locked.
+
+### When the in-app sign-in page cannot finish a sign-in
+
+The sign-in page checks a password itself, through WorkOS's headless API, and refuses — with a fixed
+sentence, by design — anything WorkOS asks for that the page cannot show:
 
 | The person sees | WorkOS asked for | What it means |
 | --- | --- | --- |
 | "This account signs in with an authenticator app, which this page can't ask for yet…" | `mfa_challenge`, `mfa_enrollment` | The account has (or must set up) a TOTP factor. MFA is off in both environments today, so this means somebody turned it on. |
 | "The sign-in service asked for an extra check this page can't show yet…" | `radar_email_challenge`, `radar_sms_challenge` | WorkOS Radar challenged the attempt. |
-| "That email and password don't match…" for a right password | `email_verification_required`, or `organization_authentication_methods_required` | Answered as a wrong password on purpose, so the page is not an oracle for unverified or policy-bound accounts. The way in is "email me a code". |
-| "Too many sign-in attempts…" | nothing — xecret's own throttle | The address's shared pool is locked by repeated failures (`sign_in_failures`): up to 15 minutes after the latest. The person's own browser, if it has signed in before, is counted separately and is not locked. "Email me a code" answers the same while the pool is locked. |
+| "That email and password don't match…" for a right password | `email_verification_required`, or `organization_authentication_methods_required` | Answered as a wrong password on purpose, so the page is not an oracle for unverified or policy-bound accounts. The way in is "Forgot password?" — the reset verifies the address. |
+| "Too many sign-in attempts…" | nothing — xecret's own throttle | The address's shared pool is locked by repeated failures (`sign_in_failures`): up to 15 minutes after the latest. The person's own browser, if it has signed in before, is counted separately and is not locked. "Forgot password?" still works, and a finished reset clears the shared pool. |
 
 **The unverified-address case, in full.** While `EMAIL_VERIFICATION_STEP` is off, a person whose
 WorkOS address is unverified and who types the **right** password is told it is wrong, has the
 attempt counted, and is mailed a verification code by WorkOS that the page cannot accept (there is
-no box for it). Their way in is "email me a code": the Magic Auth code verifies the address and
-signs them in. Retrying the password instead locks their own shared pool after five tries — the
-counting is deliberate, because not counting it would make the lockout arrive later for unverified
-addresses than for any other, which would itself name them. Once Staging proves WorkOS checks the
-password before asking for verification, turning the step on ends this.
+no box for it). Their way in is "Forgot password?": the reset link verifies the address and sets a
+password they then sign in with. Retrying the password instead locks their own shared pool after
+five tries — the counting is deliberate, because not counting it would make the lockout arrive
+later for unverified addresses than for any other, which would itself name them. Once Staging
+proves WorkOS checks the password before asking for verification, turning the step on ends this.
+
+**Signing in by an emailed code** (`POST /api/auth/sign-in/code/verify`) is still served, hardened
+and tested, but no page links to it any more — the sign-in page's "email me a code" became
+"Forgot password?". The sign-up page uses the code request (`POST /api/auth/sign-in/code`) for its
+own emailed code, which `POST /api/auth/sign-up` checks before it sets the chosen password.
 
 **The escape hatch.** AuthKit's hosted page is still reachable, and it can complete every one of
 those challenges: send the person — and only that person, from support — to
@@ -188,12 +233,14 @@ should not be taught. It also sits **outside** xecret's sign-in throttle — a p
 AuthKit's page is never counted in `sign_in_failures` — so WorkOS's own limits (and Radar, once
 enabled) are the only brake on guessing there. That is one more reason nothing links to it.
 
-Keep the hosted page's own settings in step with the in-app page. In particular, xecret's sign-up
-is passwordless (an emailed code), but AuthKit's page — reachable by that URL and by any old
-`?hint=sign-up` link — offers whatever sign-up methods the dashboard enables. **Turn off password
-sign-up in the WorkOS dashboard's authentication settings**, in both environments, if new accounts
-should never choose a password (leave password *sign-in* on: migrated accounts use it). Check on
-Staging what that setting leaves on AuthKit's page before relying on it.
+Keep the hosted page's own settings in step with the in-app page. xecret's sign-up sets a password
+only after the emailed code has proven the inbox — a password set on an address nobody has proven
+is a pre-account takeover (PR #100, note 12): the stranger's password survives the owner's later
+verification by Google or a code. AuthKit's own sign-up form, reachable by that URL and by any old
+`?hint=sign-up` link, sets the password first. **Turn off password sign-up in the WorkOS
+dashboard's authentication settings**, in both environments (leave password *sign-in* on: migrated
+accounts and in-app sign-ups use it). Check on Staging that the setting leaves the in-app sign-up's
+password step (`updateUser`) and the reset working, and what it leaves on AuthKit's page.
 
 ## 6. What still needs a person
 

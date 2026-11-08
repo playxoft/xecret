@@ -316,13 +316,22 @@ redirects to `/sign-in?error=unavailable` rather than answering a JSON 503 on a 
 
 ### Signing in on xecret's own page *(amended 2026-11-07)*
 
-People no longer see AuthKit's hosted page to sign in or sign up. `/sign-in` takes an email and
-password, or a six-digit code WorkOS emails (Magic Auth); `/sign-up` is the code alone — it
-proves the address in the step that creates the account, and answers an address that already
-has one exactly like one that does not. Both are checked by WorkOS's headless User Management
-API (`authenticateWithPassword`, `createMagicAuth` + `authenticateWithMagicAuth`), posted by
-the page's `fetch` to `POST /api/auth/sign-in/{password,code,code/verify}`
-(`apps/web/src/server/in-app-sign-in.ts`). Those routes refuse anything that is not this origin
+People no longer see AuthKit's hosted page to sign in, sign up or reset a password. `/sign-in`
+takes an email and password, with "Forgot password?" beside it; `/sign-up` takes an email and a
+password, then the six-digit code WorkOS emails (Magic Auth) — the code proves the inbox, and
+only then is the password set (`updateUser`), so no password ever sits on an address nobody has
+proven (the pre-account takeover PR #100's note 12 rules out), and an address that already has an
+account is answered exactly like one that does not at every step (it is signed in to, with the
+new password). `createUser` is never called: it would set the password first, and its
+`email_not_available` would split the answer. A forgotten password is reset in-app
+(`createPasswordReset`, which emails a link built from the environment's password reset URL, and
+`resetPassword`), after which the person signs in — the reset never signs them in itself, which
+would make a reset link a login-CSRF primitive. Sign-in and sign-up are checked by WorkOS's
+headless User Management API (`authenticateWithPassword`, `createMagicAuth` +
+`authenticateWithMagicAuth`), posted by the page's `fetch` to
+`POST /api/auth/sign-in/{password,code}` and `POST /api/auth/sign-up`
+(`apps/web/src/server/in-app-sign-in.ts`; `POST /api/auth/sign-in/code/verify`, a code alone,
+is still served but linked from nowhere). Those routes refuse anything that is not this origin
 posting JSON — login CSRF, the in-app twin of the planted-session attack (not a bot defence: a
 script outside a browser sets any `Origin`) — spend `RL_LOGIN` per address and per subject,
 and count every attempt **first** in a durable throttle in the database (`sign_in_failures`,
