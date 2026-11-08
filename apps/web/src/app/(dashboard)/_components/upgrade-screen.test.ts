@@ -40,6 +40,8 @@ vi.mock('../_lib/use-api-resource', () => ({
 
 const { ApiError } = await import('@/lib/api');
 const { UpgradeScreen } = await import('./upgrade-screen');
+const { PLAN_COMPARISON } = await import('@/components/plans/pricing-content');
+const { PURCHASE_FAQ } = await import('./upgrade-plans');
 
 function organization(role: OrgRole): SessionOrganization {
   return {
@@ -240,14 +242,148 @@ describe('UpgradeScreen, for an owner', () => {
     expect(render('owner')).not.toMatch(/\btrial\b/i);
   });
 
-  it('sells per-environment access nowhere, and custom roles only where they are gated', () => {
+  it('says what /pricing says about per-environment access and custom roles, and no more', () => {
     const html = render('owner');
 
-    // Nothing enforces the per-environment gate, so nothing here sells it.
-    expect(html).not.toMatch(/per-environment (access|grants)/i);
+    // The shared table's rows and the shared answer, as the owner asked —
+    // unenforced, and the open decision in the note atop upgrade-plans.ts.
+    expect(html).toContain('Per-project and per-environment grants');
+    expect(html).toContain('Team adds roles and per-environment grants');
+    // The cards were not part of that, and still do not sell it.
     expect(html).not.toContain('everyone can read every environment');
-    // Custom roles are refused below Enterprise, so they are named there.
-    expect(html).toContain('Custom roles, no ceiling on projects');
+    // The table marks custom roles "Coming soon", so the Enterprise row no
+    // longer names them above it.
+    expect(html).toContain('Everything in Team, no ceiling on projects');
+    expect(html).not.toContain('Custom roles, no ceiling');
+  });
+});
+
+/** The comparison table's markup, from its container to its end. */
+function comparison(html: string): string {
+  const at = html.indexOf('aria-label="Plan comparison"');
+  if (at < 0) throw new Error('no comparison table rendered');
+  return html.slice(at, html.indexOf('</table>', at));
+}
+
+/** The table's header row only. */
+function head(html: string): string {
+  const table = comparison(html);
+  return table.slice(0, table.indexOf('</thead>'));
+}
+
+/** Text as `renderToStaticMarkup` escapes it. */
+function escaped(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&#x27;')
+    .replace(/"/g, '&quot;');
+}
+
+const ALL_ROWS = PLAN_COMPARISON.flatMap((group) => group.rows);
+const SALE_ROWS = ALL_ROWS.filter((row) => row.sale === true);
+
+describe('UpgradeScreen, the comparison table', () => {
+  it('shows every row of the pricing page’s table, in its groups, where it sells', () => {
+    const table = comparison(render('owner'));
+
+    for (const group of PLAN_COMPARISON) expect(table).toContain(escaped(group.title));
+    for (const row of ALL_ROWS) {
+      expect(table, row.label).toContain(escaped(row.label));
+      expect(table, row.label).toContain(escaped(row.hint));
+    }
+    // Four columns — self-hosting is the pricing page's alternative to buying.
+    expect(table.match(/<th scope="col"/g)).toHaveLength(5);
+    expect(head(render('owner'))).not.toContain('Self-hosted');
+  });
+
+  it('gives the header room: name, figure, unit, term and the action, each on its own line', () => {
+    const header = head(render('owner'));
+
+    // The cramped 36px header row is gone.
+    expect(header).not.toMatch(/\bh-9\b/);
+    // Yearly is what the page opens on, and the header says which term.
+    expect(header).toContain('$12');
+    expect(header).toContain('billed yearly');
+    expect(header).toContain('Custom');
+    expect(header).toContain('invoiced, with an SLA');
+  });
+
+  it('offers an owner the same purchase at the head of a column as on its card', () => {
+    const html = render('owner');
+    const header = head(html);
+
+    expect(header).toContain('Upgrade to Pro');
+    expect(header).toContain('Upgrade to Team');
+    expect(header).toContain('Current plan');
+    expect(header).toContain('href="/contact"');
+    // Twice each: once on the card, once at the head of the column.
+    expect(html.match(/Upgrade to Team/g)).toHaveLength(2);
+  });
+
+  it('offers a subscriber the switch at the head of a column, with the period chosen here', () => {
+    answers(
+      billing({
+        plan: 'pro',
+        interval: 'yearly',
+        managedBy: 'checkout',
+        actions: { checkout: false, changePlan: true, portal: true },
+      }),
+    );
+    const header = head(render('owner'));
+
+    expect(header).toContain('Switch to Team');
+    expect(header).toContain('href="/app/acme/settings/billing?plan=team&amp;interval=yearly"');
+    expect(header).not.toContain('Upgrade to');
+  });
+
+  it.each(['admin', 'viewer'] as const)(
+    'shows a %s the figures and no purchase at the head of a column',
+    (role) => {
+      const header = head(render(role));
+
+      expect(header).toContain('$12');
+      expect(header).not.toContain('Upgrade to');
+      expect(header).not.toContain('Switch to');
+      expect(header).not.toContain('Current plan');
+    },
+  );
+
+  it('leaves out the terms of a sale, and every figure, where nothing is sold', () => {
+    const table = comparison(render('owner', { taken: false }));
+
+    for (const row of SALE_ROWS) expect(table, row.label).not.toContain(escaped(row.label));
+    for (const row of ALL_ROWS.filter((candidate) => candidate.sale !== true)) {
+      expect(table, row.label).toContain(escaped(row.label));
+    }
+    expect(table).not.toMatch(/\$\d/);
+    expect(table).not.toContain('billed yearly');
+    expect(table).not.toContain('href="/contact"');
+  });
+});
+
+describe('UpgradeScreen, the questions', () => {
+  it('asks every one of the pricing page’s questions, paying first, where it sells', () => {
+    const html = render('owner');
+
+    expect(html).toContain('Questions before you buy');
+    expect(html.match(/<details/g)).toHaveLength(PURCHASE_FAQ.length);
+    for (const item of PURCHASE_FAQ) expect(html, item.id).toContain(escaped(item.question));
+    expect(html.indexOf('How do I pay?')).toBeLessThan(html.indexOf('What counts as a member?'));
+    // This page's answer, not the one that sends the reader elsewhere to pay.
+    expect(html).toContain('From this page, as an owner of the organisation');
+    expect(html).not.toContain('Do you take a card during pre-alpha?');
+  });
+
+  it('asks them of everybody where it sells, owner or not', () => {
+    expect(render('developer')).toContain('Questions before you buy');
+  });
+
+  it('asks none where nothing is sold', () => {
+    const html = render('owner', { taken: false });
+    expect(html).not.toContain('Questions before you buy');
+    expect(html).not.toContain('<details');
   });
 });
 

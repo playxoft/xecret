@@ -23,9 +23,22 @@ import { PLANS } from '@xecret/core/entitlements';
  * The page is a server component with marketing imports; rendering it here
  * would test the framework. What is worth pinning is narrower and is visible in
  * the source: which numbers are written down, and which are derived.
+ *
+ * ── Two files, one page ──
+ * The comparison matrix, the FAQ and the limits they are composed from live in
+ * `components/plans/pricing-content.ts`, which the in-app plans page renders
+ * too. What this page publishes is therefore two files, and `SOURCE` is both:
+ * the page first, then the module, so a rule about what the page says holds
+ * wherever the sentence now lives. `PAGE` is the page alone, for the rules
+ * about the page's own markup and directives.
  */
 
-const SOURCE = readFileSync(join(import.meta.dirname, 'page.tsx'), 'utf8');
+const PAGE = readFileSync(join(import.meta.dirname, 'page.tsx'), 'utf8');
+const CONTENT = readFileSync(
+  join(import.meta.dirname, '..', '..', 'components', 'plans', 'pricing-content.ts'),
+  'utf8',
+);
+const SOURCE = `${PAGE}\n${CONTENT}`;
 
 /**
  * The body of `pricingDescription`, which builds the meta description.
@@ -262,7 +275,7 @@ describe('the honesty rules this page is built on', () => {
   });
 
   it('gives every answer that mentions pre-alpha billing a live counterpart that does not', () => {
-    const entries = SOURCE.slice(locate('const FAQ: readonly PricingFaqItem[] = ['));
+    const entries = SOURCE.slice(locate('export const PRICING_FAQ: readonly PricingFaqItem[] = ['));
     const list = entries.slice(0, entries.indexOf('\n];\n'));
     const blocks = list.split(/\n {2}\{\n/).slice(1);
     let conditional = 0;
@@ -366,10 +379,29 @@ describe('the honesty rules this page is built on', () => {
     // hydration. A price that moves on its own is the last thing it can afford.
     // The directive, not the word: the file discusses `'use client'` in a
     // comment explaining why it does not use one, and a naive substring match
-    // would fail on the very explanation that documents the rule.
-    expect(SOURCE.trimStart().startsWith("'use client'")).toBe(false);
-    expect(SOURCE.trimStart().startsWith('"use client"')).toBe(false);
-    expect(SOURCE).not.toMatch(/useState\s*[(<]/);
+    // would fail on the very explanation that documents the rule. Both files:
+    // the shared module is data, and a directive there would make every row
+    // of the table client-side.
+    for (const file of [PAGE, CONTENT]) {
+      expect(file.trimStart().startsWith("'use client'")).toBe(false);
+      expect(file.trimStart().startsWith('"use client"')).toBe(false);
+    }
+    expect(SOURCE).not.toMatch(/\buseState\s*[(<]/);
+  });
+
+  it('renders the shared matrix and FAQ, and keeps no copy of either', () => {
+    // The in-app plans page shows the same rows and questions, read from the
+    // same module; a second copy here is two tables that agree only until
+    // somebody edits one of them.
+    const code = withoutComments(PAGE);
+    expect(code).toContain("from '@/components/plans/pricing-content';");
+    expect(code).toContain('PLAN_COMPARISON.map((group)');
+    expect(code).toContain('PRICING_FAQ.map((item)');
+    expect(code).not.toMatch(/\bconst (MATRIX|FAQ)\b/);
+    // The module is data: no markup, no icons, nothing of the marketing kit
+    // but a type.
+    expect(CONTENT).not.toMatch(/from 'react'|components\/ui|\.tsx'/);
+    expect(CONTENT).toMatch(/import type \{[^}]*\} from '@\/components\/marketing\/faq';/);
   });
 });
 
@@ -423,7 +455,7 @@ describe('one fact, rendered in one place', () => {
    */
   it('has no trace of the retired Scale tier', () => {
     expect(SOURCE).not.toMatch(/id: 'scale'/);
-    expect(SOURCE).not.toMatch(/scale:/);
+    expect(SOURCE).not.toMatch(/\bscale:/);
     expect(SOURCE).not.toContain('LIMITS.scale');
   });
 
@@ -462,7 +494,7 @@ describe('one fact, rendered in one place', () => {
   });
 
   it('counts the FAQ rather than stating a number beside it', () => {
-    expect(SOURCE).toContain('${FAQ.length}');
+    expect(PAGE).toContain('${PRICING_FAQ.length}');
   });
 
   it('reads the Free ceilings into the prose that restates them', () => {

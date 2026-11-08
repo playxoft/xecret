@@ -5,17 +5,26 @@ import { describe, expect, it } from 'vitest';
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 import type { PlanFeatures } from '@xecret/core/entitlements';
 import {
+  NOT_YET,
+  PLAN_COMPARISON,
+  PRICING_FAQ,
+  seatFloorCaveat,
+} from '@/components/plans/pricing-content';
+import type { MatrixRow, PricingFaqId } from '@/components/plans/pricing-content';
+import {
   billingChoiceFromQuery,
-  CAPABILITY_ROWS,
+  billingTerm,
+  COMPARISON_COLUMNS,
+  comparisonFor,
   ENTERPRISE_CAVEAT,
+  ENTERPRISE_PRICE,
   FREE_PRICE,
   nextCeiling,
   pastTheAllowance,
   PLAN_OFFERS,
-  SHIPPED_CAPABILITIES,
+  PURCHASE_FAQ,
   switchPlanHref,
   USD_PRICES,
-  WEBHOOKS_ROW,
   YEARLY_SAVING_UP_TO,
   yearlySaving,
 } from './upgrade-plans';
@@ -25,14 +34,26 @@ import type { OfferPlanId, PaidPlanId } from './upgrade-plans';
  * The in-app plans page against the public pricing page, the engine, and the
  * server that enforces the engine.
  *
- * ── Why sources are read ──
- * The pricing page is the one place a price is written, and it cannot export
- * its sheets — a `page.tsx` exports only what Next allows. So the in-app page
- * restates the US-dollar figures and this file reads `pricing/page.tsx` the way
- * `pricing-page.test.ts` does, and fails the moment the two say different
- * things. And a capability is only worth a tick if the server refuses it
- * without the plan, which only the route handlers can say — so they are read
- * too, for the `requireFeature` behind every capability the page lists.
+ * ── What is shared, and what is still cross-checked ──
+ * The comparison table and the FAQ are one module now
+ * (`components/plans/pricing-content.ts`), rendered by both pages. Checking
+ * this page's rows against `/pricing`'s cell by cell, as this file used to by
+ * parsing `pricing/page.tsx`, would compare the module with itself — so those
+ * checks are gone, replaced by direct imports and by asserting that the pricing
+ * page really does render the module and keeps no rows or questions of its
+ * own.
+ *
+ * The prices are not shared: the pricing page keeps its five currency sheets
+ * beside the CSS that reveals them, and a `page.tsx` exports only what Next
+ * allows. So this page restates the US-dollar figures, and this file still
+ * reads `pricing/page.tsx` and fails the moment the two say different things —
+ * on the cards, in the table header, and in the shared answers that quote a
+ * price written in a sheet the module cannot see.
+ *
+ * ── Why the server is read ──
+ * A tick is only worth drawing if the server refuses the capability without
+ * the plan, which only the route handlers can say — so they are read for the
+ * `requireFeature` behind every flag the shared table ticks from `PLANS`.
  */
 
 const SRC = join(import.meta.dirname, '..', '..', '..');
@@ -64,7 +85,7 @@ function gated(feature: keyof PlanFeatures): boolean {
 }
 
 /** One plan's dollar sheet on the pricing page, split into its two periods. */
-function pricingSheet(id: PaidPlanId | 'free'): { monthly: string; yearly: string } {
+function pricingSheet(id: PaidPlanId | 'free' | 'enterprise'): { monthly: string; yearly: string } {
   const card = PRICING.slice(PRICING.indexOf(`id: '${id}'`));
   const usd = card.slice(card.indexOf('usd:'), card.indexOf('eur:'));
   if (usd.length === 0) throw new Error(`no USD sheet for ${id} — this anchor needs updating`);
@@ -75,6 +96,7 @@ function pricingSheet(id: PaidPlanId | 'free'): { monthly: string; yearly: strin
 }
 
 const PAID: readonly PaidPlanId[] = ['pro', 'team'];
+const HOSTED = ['free', 'pro', 'team', 'enterprise'] as const;
 
 function offer(id: OfferPlanId) {
   const found = PLAN_OFFERS.find((candidate) => candidate.id === id);
@@ -82,11 +104,24 @@ function offer(id: OfferPlanId) {
   return found;
 }
 
-/** Every sentence the plan data puts on the page. */
-const COPY = [
-  ...PLAN_OFFERS.flatMap((o) => [o.name, o.audience, o.caveat ?? '', ...o.features]),
-  ...CAPABILITY_ROWS.flatMap((row) => [row.label, row.hint]),
-].join('\n');
+const ROWS: readonly MatrixRow[] = PLAN_COMPARISON.flatMap((group) => group.rows);
+
+function row(label: string): MatrixRow {
+  const found = ROWS.find((candidate) => candidate.label === label);
+  if (found === undefined) throw new Error(`"${label}" is no longer a row of the shared table`);
+  return found;
+}
+
+function question(id: PricingFaqId) {
+  const found = PRICING_FAQ.find((candidate) => candidate.id === id);
+  if (found === undefined) throw new Error(`no question ${id}`);
+  return found;
+}
+
+/** Every sentence this page's own cards put on the page. */
+const COPY = PLAN_OFFERS.flatMap((o) => [o.name, o.audience, o.caveat ?? '', ...o.features]).join(
+  '\n',
+);
 
 describe('the prices agree with the pricing page', () => {
   it.each(PAID)('%s, monthly', (id) => {
@@ -116,6 +151,14 @@ describe('the prices agree with the pricing page', () => {
     expect(theirs).toContain(`unit: '${FREE_PRICE.unit}'`);
   });
 
+  it('Enterprise, at the head of its column', () => {
+    for (const period of ['monthly', 'yearly'] as const) {
+      const theirs = pricingSheet('enterprise')[period];
+      expect(theirs).toContain(`price: '${ENTERPRISE_PRICE.price}'`);
+      expect(theirs).toContain(`unit: '${ENTERPRISE_PRICE.unit}'`);
+    }
+  });
+
   it('says "save up to" the same percentage as the dollar sheet', () => {
     const block = /const YEARLY_SAVING[^=]*=\s*\{([\s\S]*?)\};/.exec(PRICING)?.[1] ?? '';
     const usd = /usd: (\d+)/.exec(block)?.[1];
@@ -131,7 +174,9 @@ describe('the prices agree with the pricing page', () => {
   });
 
   it('states the seat floors the engine bills from, in the pricing page’s words', () => {
-    expect(PRICING).toContain('return `Billed from ${seats} members up`;');
+    // One helper for both pages now, so agreement is by construction; what is
+    // pinned is that it is the helper, and what it says.
+    expect(offer('team').caveat).toBe(seatFloorCaveat(MINIMUM_SEATS.team));
     expect(offer('team').caveat).toBe(`Billed from ${MINIMUM_SEATS.team} members up`);
     expect(offer('free').caveat).toBeNull();
     expect(offer('pro').caveat).toBeNull();
@@ -144,6 +189,53 @@ describe('the prices agree with the pricing page', () => {
     expect(PLAN_OFFERS.filter((candidate) => candidate.recommended).map((o) => o.id)).toEqual([
       'team',
     ]);
+  });
+
+  /**
+   * The shared answer about the annual price quotes figures that live in the
+   * pricing page's dollar sheet, which the module cannot import. Every version
+   * of it — pre-alpha, payments-live, and this page's — is held to the sheet.
+   */
+  it('quotes the dollar sheet in every answer about the annual price', () => {
+    const entry = question('annual-price');
+    const total = (id: PaidPlanId) => /^(\$\d+)/.exec(USD_PRICES[id].yearly.note ?? '')?.[1];
+    const answers = [entry.answer, entry.whenPaymentsLive?.answer, entry.inApp?.answer];
+
+    for (const answer of answers) {
+      expect(answer).toContain(`Pro is ${USD_PRICES.pro.yearly.price} a member a month`);
+      expect(answer).toContain(`Team is ${USD_PRICES.team.yearly.price}`);
+      expect(answer).toContain(`charged as ${total('pro')} and ${total('team')} a member a year`);
+    }
+    expect(entry.inApp?.answer).toContain(
+      `against ${USD_PRICES.pro.monthly.price} and ${USD_PRICES.team.monthly.price} month to month`,
+    );
+  });
+
+  it('quotes the SAML add-on at the price its band publishes', () => {
+    const usd = /name: 'SAML single sign-on',\s*prices: \{ usd: '([^']+)'/.exec(PRICING)?.[1];
+    expect(usd, 'the SAML add-on price could not be read out of the pricing page').toBeDefined();
+    expect(question('single-sign-on').answer).toContain(`${usd} per connection per month`);
+  });
+});
+
+describe('the pricing page renders the shared table and questions', () => {
+  const code = withoutComments(PRICING);
+
+  it('imports both from the shared module and draws them', () => {
+    expect(code).toMatch(
+      /import \{[^}]*\bPLAN_COMPARISON\b[^}]*\bPRICING_FAQ\b[^}]*\} from '@\/components\/plans\/pricing-content';/,
+    );
+    expect(code).toContain('PLAN_COMPARISON.map((group)');
+    expect(code).toContain('PRICING_FAQ.map((item)');
+  });
+
+  it('keeps no rows or questions of its own', () => {
+    // A row or a question written into the page again would be one only the
+    // pricing page shows — the reduced-copy arrangement the module replaced.
+    expect(code, 'the pricing page has a matrix of its own again').not.toMatch(/\bconst MATRIX\b/);
+    expect(code, 'the pricing page has an FAQ of its own again').not.toMatch(/\bconst FAQ\b/);
+    expect(code, 'a matrix row is written in the page').not.toMatch(/^\s+hint: ['`]/m);
+    expect(code, 'an FAQ entry is written in the page').not.toMatch(/^\s+question: ['`]/m);
   });
 });
 
@@ -203,37 +295,114 @@ describe('every claim is one the product keeps', () => {
   });
 
   /**
-   * The flags behind every bullet above and every tick in the table, read from
-   * the server: each one is refused somewhere without the plan. A flag in
-   * `PLANS` that nothing checks would be selling something everybody has.
+   * The rows whose ticks the shared table reads from `PLANS`, each one a flag
+   * the server refuses without the plan. Listed, so a row that loses its flag
+   * — and goes back to hand-written cells — fails here rather than drifting.
    */
-  it('lists only capabilities a route refuses without the plan', () => {
-    for (const { feature } of SHIPPED_CAPABILITIES) {
+  const FLAGGED: Readonly<Record<string, keyof PlanFeatures>> = {
+    'Secret referencing and environment inheritance': 'secretReferencing',
+    'Personal local overrides': 'personalOverrides',
+    'Environment promotion, with a diff': 'environmentPromotion',
+    'Point-in-time restore': 'pointInTimeRestore',
+    'A secret policy for names and values': 'secretPolicy',
+    'Plaintext export switched off per environment': 'disableEnvExport',
+    'Token IP allowlists and lifetime policy': 'tokenIpAllowlist',
+    'Alerts on reads from new addresses': 'newIpReadAlerts',
+  };
+
+  it('ticks a flag only where a route refuses it without the plan', () => {
+    expect(
+      Object.fromEntries(
+        ROWS.filter((r) => r.feature !== undefined).map((r) => [r.label, r.feature]),
+      ),
+    ).toEqual(FLAGGED);
+    for (const feature of Object.values(FLAGGED)) {
       expect(gated(feature), `${feature} has no requireFeature behind it`).toBe(true);
     }
-    // The one limit-shaped row: refused at the plan's webhook ceiling.
+    // The one ceiling-shaped row: refused at the plan's webhook ceiling.
     expect(SERVER).toMatch(/requireCapacity\(\s*\w+,\s*'webhooks'/);
   });
 
-  it('lists no capability the engine names but nobody has built', () => {
-    const unbuilt: (keyof PlanFeatures)[] = [
-      'oidcSso',
-      'changeApprovals',
-      'breakGlass',
-      'bulkRotate',
-      'githubOidcFederation',
-      'scheduledSecrets',
-      'siemStreaming',
-    ];
-    const listed = SHIPPED_CAPABILITIES.map((capability) => capability.feature);
-    for (const feature of unbuilt) expect(listed, feature).not.toContain(feature);
+  it('reads every flagged tick from the engine', () => {
+    for (const [label, feature] of Object.entries(FLAGGED)) {
+      for (const plan of HOSTED) {
+        expect(row(label).values[plan], `${label} on ${plan}`).toBe(PLANS[plan].features[feature]);
+      }
+    }
+    for (const plan of HOSTED) {
+      expect(row('Webhooks on secret change').values[plan], `webhooks on ${plan}`).toBe(
+        PLANS[plan].limits.webhooks !== 0,
+      );
+    }
   });
 
   /**
-   * Per-environment access: `PLANS` gives it to Team and `/pricing` sells it
-   * there, but no route checks the flag — every plan can grant it. Until the
-   * owner decides between enforcing the gate and rewording `/pricing`, this
-   * page claims it nowhere, directly or by implication.
+   * Every row that ticks a hosted plan and dashes another is a plan boundary —
+   * a reason to pay. Each is one the server holds, or one named here with why
+   * it is not. A new boundary row with neither fails until it is one or the
+   * other.
+   */
+  it('draws no plan boundary that is neither enforced nor accounted for', () => {
+    const UNGATED: Readonly<Record<string, string>> = {
+      'Roles for members': 'the open per-environment decision — see the note in upgrade-plans.ts',
+      'Per-project and per-environment grants':
+        'the open per-environment decision — see the note in upgrade-plans.ts',
+      'Runs on your own infrastructure': 'a contract term — the commercial self-hosting licence',
+      'Webhooks on secret change': 'a ceiling, refused by requireCapacity at the plan’s limit',
+    };
+
+    const boundaries = ROWS.filter((r) => {
+      const cells = HOSTED.map((plan) => r.values[plan]);
+      return cells.includes(true) && cells.includes(false);
+    });
+    for (const boundary of boundaries) {
+      if (boundary.feature !== undefined) {
+        expect(gated(boundary.feature), boundary.label).toBe(true);
+      } else {
+        expect(UNGATED, `"${boundary.label}" is a plan boundary nothing enforces`).toHaveProperty([
+          boundary.label,
+        ]);
+      }
+    }
+    // And no exception outlives its row.
+    for (const label of Object.keys(UNGATED)) {
+      expect(boundaries.map((b) => b.label)).toContain(label);
+    }
+  });
+
+  /**
+   * The engine names these and nobody has built them, so `PLANS` grants them
+   * and the table must not: every column reads a dash or "Coming soon". The
+   * last assertion is a tripwire — a gate appearing means somebody built one,
+   * and its row is what to revisit.
+   */
+  it('ticks no capability the engine names but nobody has built', () => {
+    const UNBUILT: Readonly<Record<string, keyof PlanFeatures>> = {
+      'Scheduled and expiring secrets': 'scheduledSecrets',
+      'Change approvals': 'changeApprovals',
+      'Break-glass emergency access': 'breakGlass',
+      'Single sign-on with OIDC': 'oidcSso',
+      'GitHub OIDC federation, with no static token': 'githubOidcFederation',
+      'Audit streaming to a SIEM': 'siemStreaming',
+    };
+    for (const [label, feature] of Object.entries(UNBUILT)) {
+      for (const [plan, cell] of Object.entries(row(label).values)) {
+        expect(cell === false || cell === NOT_YET, `${label} on ${plan}: ${String(cell)}`).toBe(
+          true,
+        );
+      }
+      expect(gated(feature), `${feature} is gated now — revisit its row`).toBe(false);
+      expect(Object.values(FLAGGED)).not.toContain(feature);
+    }
+  });
+
+  /**
+   * Per-environment access: `PLANS` gives it to Team and both pages sell it
+   * there — the shared table's two rows and the shared Pro-or-Team answer —
+   * but no route checks the flag, so every plan can grant it. The owner asked
+   * for this page to say what `/pricing` says, so it does; the decision between
+   * enforcing the gate and rewording the copy is still pending, and it is one
+   * edit to the shared module whichever way it goes.
    *
    * The first three assertions are a tripwire, not a wish: when somebody adds
    * the gate they fail, and the note at the top of `upgrade-plans.ts` — and
@@ -243,97 +412,138 @@ describe('every claim is one the product keeps', () => {
    * appears nowhere in server code at all — not as a string, a property or a
    * destructured binding — so any gate, however written, trips it.
    */
-  it('claims per-environment access nowhere while nothing enforces it', () => {
-    const REVISIT = 'perEnvironmentGrants is enforced now — revisit the note in upgrade-plans.ts';
+  it('claims per-environment access only as /pricing does, while nothing enforces it', () => {
+    const REVISIT =
+      'perEnvironmentGrants is enforced now — revisit the note in upgrade-plans.ts and the rows in pricing-content.ts';
     expect(gated('perEnvironmentGrants'), REVISIT).toBe(false);
     expect(SERVER, REVISIT).not.toMatch(
       /\bfeatures\s*\??\.\s*perEnvironmentGrants\b|\bfeatures\s*\??\.?\s*\[\s*['"`]perEnvironmentGrants['"`]\s*\]/,
     );
     expect(SERVER, REVISIT).not.toMatch(/\bperEnvironmentGrants\b/);
-    expect(SHIPPED_CAPABILITIES.map((c) => c.feature)).not.toContain('perEnvironmentGrants');
+
+    // The claim, where it is made: the shared rows, both shown on this page
+    // whether or not it sells, and never ticked from the ungated flag.
+    for (const label of ['Roles for members', 'Per-project and per-environment grants']) {
+      const claim = row(label);
+      expect(claim.feature, label).toBeUndefined();
+      expect(
+        HOSTED.map((plan) => claim.values[plan]),
+        label,
+      ).toEqual([false, false, true, true]);
+      for (const selling of [true, false]) {
+        expect(comparisonFor(selling).flatMap((g) => g.rows)).toContain(claim);
+      }
+    }
+    expect(question('pro-or-team').answer).toContain('Team adds roles and per-environment grants');
+
+    // The cards were not part of the request, and still make no such claim.
     expect(COPY).not.toMatch(/per-environment (access|grants)/i);
     expect(COPY).not.toMatch(/every environment/i);
     expect(COPY).not.toMatch(/out of production|must not see production/i);
   });
 
-  it('places custom roles where the engine gates them: Enterprise, not Team', () => {
+  /**
+   * Custom roles are built and gated at Enterprise, and both pages still say
+   * "Coming soon" there. A tripwire for the note: when the shared cell
+   * changes, the Enterprise row on this page can name them again.
+   */
+  it('places custom roles where the engine gates them, and says what /pricing says', () => {
     expect(gated('customRoles')).toBe(true);
     expect(PLANS.team.features.customRoles).toBe(false);
     expect(PLANS.enterprise.features.customRoles).toBe(true);
+    expect(
+      row('Custom roles').values.enterprise,
+      'the shared custom-roles cell changed — revisit the note in upgrade-plans.ts and the Enterprise row',
+    ).toBe(NOT_YET);
+    expect(row('Custom roles').values.team).toBe(false);
     expect(COPY).not.toMatch(/custom roles/i);
   });
 
-  it('reads every tick in the table from the engine', () => {
-    for (const capability of SHIPPED_CAPABILITIES) {
-      const row = CAPABILITY_ROWS.find((candidate) => candidate.label === capability.label);
-      expect(row, capability.label).toBeDefined();
-      for (const plan of ['free', 'pro', 'team'] as const) {
-        expect(row?.on[plan], `${capability.label} on ${plan}`).toBe(
-          PLANS[plan].features[capability.feature],
-        );
-      }
-    }
-  });
-
   it('mentions a trial if and only if the pricing page does', () => {
-    expect(/\btrial\b/i.test(COPY)).toBe(/\btrial\b/i.test(PRICING));
+    const ours = [COPY, ...PURCHASE_FAQ.map((item) => item.answer)].join('\n');
+    const theirs = [PRICING, ...PRICING_FAQ.map((item) => item.answer)].join('\n');
+    expect(/\btrial\b/i.test(ours)).toBe(/\btrial\b/i.test(theirs));
   });
 });
 
-/**
- * The table's rows, split by whether the pricing page's comparison table names
- * them too. Listed by hand so the boundary of the guarantee is visible: a row
- * on the left is checked against `/pricing` cell by cell; a row on the right
- * exists only in the app, and is checked against `PLANS` (the ticks) and the
- * server (the gate) above — there is nothing on `/pricing` to agree with.
- */
-const NAMED_ON_PRICING = [
-  'Secret referencing and environment inheritance',
-  'Personal local overrides',
-  'Environment promotion, with a diff',
-  'Point-in-time restore',
-  'Token IP allowlists and lifetime policy',
-  WEBHOOKS_ROW,
-] as const;
+describe('the table this page shows', () => {
+  const SALE_TERMS = [
+    'Smallest billable team',
+    'Cost per service token, CI runner or AI agent',
+    'What happens past the allowance',
+  ];
 
-const IN_APP_ONLY = {
-  'Alerts on reads from new addresses': 'newIpReadAlerts',
-  'A secret policy for names and values': 'secretPolicy',
-  'Plaintext export switched off per environment': 'disableEnvExport',
-} as const satisfies Record<string, keyof PlanFeatures>;
-
-describe('the table against the pricing page’s comparison table', () => {
-  it('accounts for every row, on one side of the boundary or the other', () => {
-    expect([...CAPABILITY_ROWS.map((row) => row.label)].sort()).toEqual(
-      [...NAMED_ON_PRICING, ...Object.keys(IN_APP_ONLY)].sort(),
+  it('shows the four plans an organisation on the hosted service can be on, in the pricing page’s order', () => {
+    expect(COMPARISON_COLUMNS.map((column) => column.id)).toEqual(HOSTED);
+    expect(COMPARISON_COLUMNS.map((column) => column.name)).toEqual(
+      HOSTED.map((plan) => PLANS[plan].name),
     );
   });
 
-  it.each(NAMED_ON_PRICING)('agrees with /pricing on "%s"', (label) => {
-    const row = CAPABILITY_ROWS.find((candidate) => candidate.label === label);
-    const at = PRICING.indexOf(`label: '${label}'`);
-    expect(at, `"${label}" is no longer a row on the pricing page`).toBeGreaterThan(-1);
-    const block = PRICING.slice(at, PRICING.indexOf('label:', at + 1));
+  it('shows every group and every row of the shared table where it sells', () => {
+    expect(comparisonFor(true)).toEqual(PLAN_COMPARISON);
+  });
 
-    expect(block, `"${label}" is "Coming soon" on the pricing page`).not.toContain('NOT_YET');
-    for (const plan of ['free', 'pro', 'team'] as const) {
-      const value = new RegExp(`\\b${plan}: (true|false)`).exec(block)?.[1];
-      expect(value, `${label}: no ${plan} value on the pricing page`).toBeDefined();
-      expect(row?.on[plan], `${label} on ${plan}`).toBe(value === 'true');
+  it('leaves out only the terms of a sale where nothing is sold', () => {
+    expect(ROWS.filter((r) => r.sale === true).map((r) => r.label)).toEqual(SALE_TERMS);
+    const shown = comparisonFor(false).flatMap((group) => group.rows.map((r) => r.label));
+    expect(shown).toEqual(ROWS.map((r) => r.label).filter((label) => !SALE_TERMS.includes(label)));
+  });
+
+  it('carries the rows only this page used to have, for both pages now', () => {
+    expect(row('Alerts on reads from new addresses').feature).toBe('newIpReadAlerts');
+    expect(row('A secret policy for names and values').feature).toBe('secretPolicy');
+    expect(row('Plaintext export switched off per environment').feature).toBe('disableEnvExport');
+  });
+
+  it('names the billing term under a paid plan’s figure, and none under the others', () => {
+    expect(billingTerm('pro', 'yearly')).toBe('billed yearly');
+    expect(billingTerm('team', 'monthly')).toBe('month to month');
+    expect(billingTerm('free', 'yearly')).toBeNull();
+    expect(billingTerm('enterprise', 'monthly')).toBeNull();
+  });
+});
+
+describe('the questions this page asks', () => {
+  it('asks every shared question, once', () => {
+    const ids = PRICING_FAQ.map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(PURCHASE_FAQ.map((item) => item.id).sort()).toEqual([...ids].sort());
+  });
+
+  it('asks about paying first and self-hosting last', () => {
+    expect(PURCHASE_FAQ.map((item) => item.id).slice(0, 2)).toEqual(['paying', 'annual-price']);
+    expect(PURCHASE_FAQ.at(-1)?.id).toBe('self-hosting');
+  });
+
+  it('gives this page’s answer where there is one, and the payments-live one otherwise', () => {
+    for (const item of PURCHASE_FAQ) {
+      const shared = question(item.id);
+      const expected = shared.inApp ?? shared.whenPaymentsLive ?? shared;
+      expect(item.question).toBe(expected.question);
+      expect(item.answer).toBe(expected.answer);
+      // Shown only where something is sold, so nothing here may say otherwise.
+      expect(item.answer, item.id).not.toMatch(
+        /pre-alpha|nothing is billed|no plan is billed|neither is billed|no card/,
+      );
     }
   });
 
-  it.each(Object.entries(IN_APP_ONLY))(
-    '"%s" is not on /pricing, and stands on PLANS and its gate',
-    (label, feature) => {
-      expect(PRICING).not.toContain(`label: '${label}'`);
-      const row = CAPABILITY_ROWS.find((candidate) => candidate.label === label);
-      for (const plan of ['free', 'pro', 'team'] as const) {
-        expect(row?.on[plan], `${label} on ${plan}`).toBe(PLANS[plan].features[feature]);
-      }
-      expect(gated(feature)).toBe(true);
-    },
-  );
+  it('adapts only the answers that describe the public page', () => {
+    expect(
+      PRICING_FAQ.filter((item) => item.inApp !== undefined)
+        .map((item) => item.id)
+        .sort(),
+    ).toEqual(['annual-price', 'paying']);
+    const annual = question('annual-price').inApp?.answer ?? '';
+    // No currency sheets and no second price control on this page.
+    expect(annual).not.toMatch(/sheet|controls above|comparison table/);
+    expect(question('paying').inApp?.answer).toMatch(/^From this page, as an owner/);
+    // The reader is signed in already.
+    for (const item of PURCHASE_FAQ) {
+      expect(item.answer, item.id).not.toMatch(/sign up|sign-up|create an account/i);
+    }
+  });
 });
 
 describe('what happens past the allowance', () => {

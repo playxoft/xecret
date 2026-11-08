@@ -7,16 +7,26 @@ import type { ReactNode } from 'react';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { PageHeader } from '@/components/layout';
+import { ADDON_NOT_YET, formatCount, NOT_YET } from '@/components/plans/pricing-content';
+import type { Cell } from '@/components/plans/pricing-content';
 import {
   Alert,
   ArrowRightIcon,
   Badge,
   Button,
   CheckIcon,
+  ChevronDownIcon,
   HistoryIcon,
   MinusIcon,
   ShieldCheckIcon,
   Skeleton,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableHeader,
+  TableRow,
   TerminalIcon,
 } from '@/components/ui';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
@@ -26,19 +36,28 @@ import { ErrorState } from './resource-states';
 import { Segmented } from './segmented';
 import { canAdminister, useOrganization } from './session';
 import {
-  CAPABILITY_ROWS,
+  billingTerm,
+  COMPARISON_COLUMNS,
+  comparisonFor,
   ENTERPRISE_CAVEAT,
-  formatCount,
+  ENTERPRISE_PRICE,
   FREE_PRICE,
   nextCeiling,
   pastTheAllowance,
   PLAN_OFFERS,
+  PURCHASE_FAQ,
   switchPlanHref,
   USD_PRICES,
   YEARLY_SAVING_UP_TO,
   yearlySaving,
 } from './upgrade-plans';
-import type { BillingPeriod, OfferPlanId, PaidPlanId, PlanOffer } from './upgrade-plans';
+import type {
+  BillingPeriod,
+  ComparisonPlanId,
+  OfferPlanId,
+  PaidPlanId,
+  PlanOffer,
+} from './upgrade-plans';
 
 /**
  * The plans, inside the app — `/app/{org}/settings/plans`, where "Upgrade
@@ -46,10 +65,18 @@ import type { BillingPeriod, OfferPlanId, PaidPlanId, PlanOffer } from './upgrad
  * lead.
  *
  * ── Who sees what ──
- * Every member sees the whole page: the three self-serve plans, what each one
- * unlocks, and what stays true on all of them. Somebody who has just met a
- * locked switch deserves the answer to "what would it take?" whether or not
- * they hold the card.
+ * Every member sees the whole page: the three self-serve plans, the pricing
+ * page's whole comparison table, what stays true on all of them, and — where
+ * anything is sold — the pricing page's questions about the money. Somebody
+ * who has just met a locked switch deserves the answer to "what would it
+ * take?" whether or not they hold the card.
+ *
+ * ── The same table and questions as /pricing ──
+ * The rows and the answers are the pricing page's, read from the module both
+ * pages render (`components/plans/pricing-content.ts`), so the two cannot
+ * drift apart; what is this page's is the markup, the four columns an
+ * organisation on the hosted service can be on, and the purchase at the top
+ * of each column. `upgrade-plans.ts` says what is left out where, and why.
  *
  * Only an owner is offered anything to press. `GET …/billing` and the checkout
  * are owner-only (`billing.manage`) and `/api/auth/me` carries no plan, so for
@@ -163,9 +190,17 @@ export function UpgradeScreen({
   // changes. The billing screen's rule, for the same request.
   const decision = useRef<{ plan: PaidPlanId; period: BillingPeriod; key: string } | null>(null);
   const [busy, setBusy] = useState<PaidPlanId | null>(null);
-  const [failure, setFailure] = useState<{ plan: PaidPlanId; error: unknown } | null>(null);
+  // Where the button that failed was — a card, or the head of a table column —
+  // so the sentence lands beside the button that was pressed rather than a
+  // screen away from it. The key is the decision's, not the button's: either
+  // button for one plan and period retries the same checkout.
+  const [failure, setFailure] = useState<{
+    plan: PaidPlanId;
+    at: CheckoutButton;
+    error: unknown;
+  } | null>(null);
 
-  async function checkout(plan: PaidPlanId) {
+  async function checkout(plan: PaidPlanId, at: CheckoutButton) {
     const previous = decision.current;
     const key =
       previous !== null && previous.plan === plan && previous.period === period
@@ -185,7 +220,7 @@ export function UpgradeScreen({
       window.location.assign(url);
     } catch (cause) {
       if (isNotOwner(cause)) setRefused(true);
-      else setFailure({ plan, error: cause });
+      else setFailure({ plan, at, error: cause });
       setBusy(null);
     }
   }
@@ -224,21 +259,13 @@ export function UpgradeScreen({
               className="w-full"
               loading={busy === offered.plan}
               disabled={busy !== null && busy !== offered.plan}
-              onClick={() => void checkout(offered.plan)}
+              onClick={() => void checkout(offered.plan, 'card')}
             >
               Upgrade to {offer.name}
               <ArrowRightIcon className="size-4" />
             </Button>
-            {failure?.plan === offered.plan ? (
-              <div role="alert" className="text-danger-text text-sm leading-5">
-                <p>Nothing was changed. {errorMessage(failure.error)}</p>
-                {isApiError(failure.error) && failure.error.requestId ? (
-                  <p className="text-fg-subtle mt-1">
-                    Request id:{' '}
-                    <code className="font-mono select-all">{failure.error.requestId}</code>
-                  </p>
-                ) : null}
-              </div>
+            {failure?.plan === offered.plan && failure.at === 'card' ? (
+              <CheckoutFailure error={failure.error} />
             ) : null}
           </div>
         );
@@ -266,6 +293,65 @@ export function UpgradeScreen({
   }
 
   const currentPlan = billing?.plan ?? null;
+
+  /**
+   * What the head of a table column offers: the card's action, compact. The
+   * same decision as `footFor` — `offerFor` makes it for both — so a column
+   * can never offer what its card refuses. Enterprise has no checkout and
+   * never will here: it is a conversation, offered wherever anything is sold.
+   */
+  function headFor(plan: ComparisonPlanId): ReactNode {
+    if (plan === 'enterprise') {
+      if (currentPlan === 'enterprise') return <CurrentPlanMark />;
+      if (!selling) return null;
+      return (
+        <Button variant="secondary" size="sm" className="w-full" asChild>
+          <Link href="/contact">Talk to us</Link>
+        </Button>
+      );
+    }
+
+    const offered = offerFor(plan);
+    const name = PLAN_NAME[plan];
+    // The card's emphasis, so the recommended plan's button is the loud one in
+    // both places it appears.
+    const variant = PLAN_OFFERS.some((offer) => offer.id === plan && offer.recommended)
+      ? 'primary'
+      : 'secondary';
+    switch (offered.kind) {
+      case 'none':
+        return null;
+      case 'loading':
+        return <Skeleton className="h-8 w-full" />;
+      case 'current':
+        return <CurrentPlanMark />;
+      case 'checkout':
+        return (
+          <div className="flex flex-col gap-2">
+            <Button
+              variant={variant}
+              size="sm"
+              className="w-full"
+              loading={busy === offered.plan}
+              disabled={busy !== null && busy !== offered.plan}
+              onClick={() => void checkout(offered.plan, 'table')}
+            >
+              Upgrade to {name}
+            </Button>
+            {failure?.plan === offered.plan && failure.at === 'table' ? (
+              <CheckoutFailure error={failure.error} compact />
+            ) : null}
+          </div>
+        );
+      case 'change':
+        return (
+          <Button variant={variant} size="sm" className="w-full" asChild>
+            <Link href={switchPlanHref(orgSlug, offered.plan, period)}>Switch to {name}</Link>
+          </Button>
+        );
+    }
+  }
+
   const statusLabel =
     billing !== null && billing.plan !== 'free' ? (STATUS_LABEL[billing.status] ?? null) : null;
 
@@ -371,11 +457,46 @@ export function UpgradeScreen({
         ) : null}
       </section>
 
-      <CapabilityTable current={currentPlan} />
+      <ComparisonTable selling={selling} period={period} headFor={headFor} />
 
       {/* About money, so only where money is taken. */}
       {selling ? <Promises overageRate={payments.overageRate} /> : null}
+      {selling ? <PurchaseQuestions /> : null}
     </div>
+  );
+}
+
+/** Which of the two buttons for one plan a checkout was started from. */
+type CheckoutButton = 'card' | 'table';
+
+/** Why a checkout did not start, beside the button that started it. */
+function CheckoutFailure({ error, compact = false }: { error: unknown; compact?: boolean }) {
+  return (
+    <div
+      role="alert"
+      className={cn(
+        'text-danger-text text-left',
+        compact ? 'text-xs leading-5' : 'text-sm leading-5',
+      )}
+    >
+      <p>Nothing was changed. {errorMessage(error)}</p>
+      {isApiError(error) && error.requestId ? (
+        <p className="text-fg-subtle mt-1">
+          Request id: <code className="font-mono break-all select-all">{error.requestId}</code>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The current plan, at the head of its column, where a button would otherwise be. */
+function CurrentPlanMark() {
+  return (
+    <span className="flex h-8 items-center justify-center">
+      <Badge tone="success" className="text-xs">
+        Current plan
+      </Badge>
+    </span>
   );
 }
 
@@ -644,11 +765,14 @@ function Price({ plan, period }: { plan: OfferPlanId; period: BillingPeriod }) {
 /**
  * Enterprise, slim: there is no price to show and nothing to check out.
  *
- * Its sentence names only what is available today. Custom roles are among
- * them — built, and gated to this plan by `requireFeature(…, 'customRoles')` —
- * even though `/pricing` still marks them "Coming soon"; see the note at the
- * top of `upgrade-plans.ts`. What that page marks "Coming soon" and is in fact
- * unbuilt (SAML, SCIM, residency, a customer-held root key, SIEM) is left out.
+ * Its sentence names only what the pricing page's Enterprise card names
+ * without a "Coming soon" chip — the comparison table below is that page's,
+ * and a sentence here claiming more than the table would be the page arguing
+ * with itself. Custom roles are left out for that reason, though they are
+ * built and gated to this plan: the shared table still marks them "Coming
+ * soon", and the note at the top of `upgrade-plans.ts` has that decision. What
+ * is marked "Coming soon" and is in fact unbuilt (SAML, SCIM, residency, a
+ * customer-held root key, SIEM) is left out too.
  */
 function EnterpriseRow({ selling, current }: { selling: boolean; current: boolean }) {
   return (
@@ -671,7 +795,7 @@ function EnterpriseRow({ selling, current }: { selling: boolean; current: boolea
           ) : null}
         </div>
         <p className="text-fg-muted mt-1.5 text-sm leading-6">
-          Custom roles, no ceiling on projects, environments, secrets or tokens, custom audit
+          Everything in Team, no ceiling on projects, environments, secrets or tokens, custom audit
           retention, a commercial self-hosting licence, and a contractual SLA with a named contact.
           {selling && ENTERPRISE_CAVEAT !== null ? ` ${ENTERPRISE_CAVEAT}.` : ''}
         </p>
@@ -690,71 +814,243 @@ function EnterpriseRow({ selling, current }: { selling: boolean; current: boolea
 
 /* ── What each plan unlocks ────────────────────────────────────────────────── */
 
-const COLUMNS: readonly { id: OfferPlanId; name: string }[] = PLAN_OFFERS.map((offer) => ({
-  id: offer.id,
-  name: offer.name,
-}));
+/**
+ * The pricing page's comparison table — every group and every row of the
+ * shared `PLAN_COMPARISON` — in the dashboard's own table, with what can be
+ * done about each plan at the head of its column.
+ *
+ * ── The header ──
+ * It used to be one 36px row with the plan's name and a "Current" squeezed in
+ * under it: the most cramped thing on the page. Each column now has a line for
+ * the name, the figure for the period chosen above, what the figure is per,
+ * the term it is billed on, and the column's action, with room above and below
+ * — and every column keeps the same lines in the same order, a missing one held
+ * open, so the figures and the buttons sit level across the row.
+ *
+ * ── Who is offered what ──
+ * The cards' rules exactly, through `headFor` and the same `offerFor`: an owner
+ * gets a checkout or a switch at the head of a column they have just read
+ * down, everybody else gets the figures and no button, and Enterprise is a
+ * conversation wherever anything is sold. Where nothing is, there is no figure
+ * either — and no row that is a term of a sale (`comparisonFor`).
+ *
+ * ── The cells ──
+ * Read from the shared rows, never restated here. A tick and a dash each carry
+ * the word a screen reader needs, and "Coming soon" wears the same outlined
+ * chip as on the pricing page's cards: named on the plan, not built.
+ */
+function ComparisonTable({
+  selling,
+  period,
+  headFor,
+}: {
+  selling: boolean;
+  period: BillingPeriod;
+  headFor: (plan: ComparisonPlanId) => ReactNode;
+}) {
+  const groups = comparisonFor(selling);
+  const heads = COMPARISON_COLUMNS.map((column) => ({ ...column, action: headFor(column.id) }));
+  const anyAction = heads.some((head) => head.action !== null);
 
-function CapabilityTable({ current }: { current: Billing['plan'] | null }) {
   return (
     <section aria-labelledby="unlocks-heading" className="flex flex-col gap-3">
       <div>
         <h2 id="unlocks-heading" className="text-fg text-base font-semibold">
           What each plan unlocks
         </h2>
-        <p className="text-fg-muted mt-1 text-sm">
-          Every plan, Free included, has zero-knowledge encryption, version history and rollback,
-          the CLI with <code className="font-mono">xecret run</code>, and the HTTP API.
+        <p className="text-fg-muted mt-1 text-sm leading-6">
+          Every plan compared, including the limits
+          {/* Only where it is true: where nothing is sold the terms of a sale
+              are left out, and the table is no longer the pricing page's. */}
+          {selling ? (
+            <>
+              {' '}
+              — the same table as the{' '}
+              <Link
+                href="/pricing#compare"
+                className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
+              >
+                pricing page
+              </Link>
+            </>
+          ) : null}
+          . Where a plan does not have something the row says so, and where nobody has it yet the
+          row says that too.
         </p>
       </div>
 
-      <div className="border-line bg-surface shadow-raised overflow-x-auto rounded-xl border">
-        <table className="w-full text-sm">
-          <thead className="bg-canvas-inset border-line-subtle border-b">
-            <tr>
-              <th scope="col" className="text-fg-subtle h-9 px-4 text-left font-medium">
+      {/* `relative`, so the scroll box contains its own `sr-only` words. They
+          are absolutely positioned, and without a positioned ancestor the ones
+          in cells past the right edge escape the box and scroll the page
+          sideways on a phone. */}
+      <TableContainer aria-label="Plan comparison" className="shadow-raised relative">
+        {/* Fixed layout, so the four plan columns are one width whatever their
+            cells say and the capability column takes the rest. Wider than a
+            phone, deliberately: it scrolls inside its own box. */}
+        <Table className="min-w-[52rem] table-fixed">
+          <caption className="sr-only">
+            Every plan compared, capability by capability, in {groups.length} groups.
+            {selling
+              ? ' Each column’s header shows the plan’s price for the billing period chosen above the plans.'
+              : ''}
+          </caption>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="h-auto px-4 py-5 align-bottom">
                 <span className="sr-only">Capability</span>
-              </th>
-              {COLUMNS.map((column) => (
-                <th
-                  key={column.id}
-                  scope="col"
-                  className="text-fg-subtle h-9 w-20 px-3 text-center font-medium whitespace-nowrap sm:w-28"
+              </TableHead>
+              {heads.map((head) => (
+                <TableHead
+                  key={head.id}
+                  className="h-auto w-40 px-3 pt-5 pb-4 text-center align-top tracking-normal whitespace-normal"
                 >
-                  {column.name}
-                  {current === column.id ? (
-                    <span className="text-success-text block text-xs font-normal">Current</span>
+                  <span className="text-fg block text-sm leading-6 font-semibold">{head.name}</span>
+                  {selling ? <HeadPrice plan={head.id} period={period} /> : null}
+                  {anyAction ? (
+                    // Held open in a column with nothing to offer, so the row
+                    // of buttons is level wherever one is missing.
+                    <span className="mt-4 block min-h-8">{head.action}</span>
                   ) : null}
-                </th>
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody className="divide-line-subtle divide-y">
-            {CAPABILITY_ROWS.map((row) => (
-              <tr key={row.label}>
-                <th scope="row" className="px-4 py-3 text-left font-normal">
-                  <span className="text-fg block font-medium">{row.label}</span>
-                  <span className="text-fg-subtle mt-0.5 block text-sm leading-5">{row.hint}</span>
+            </TableRow>
+          </TableHeader>
+          {groups.map((group) => (
+            <TableBody key={group.title}>
+              <tr className="bg-canvas-inset border-line-subtle border-t">
+                {/* `colgroup`: it names the rows beneath it across every
+                    column, and is read out before each of them. */}
+                <th
+                  scope="colgroup"
+                  colSpan={COMPARISON_COLUMNS.length + 1}
+                  className="text-fg-subtle px-4 pt-4 pb-2 text-left text-xs font-semibold tracking-[0.08em] uppercase"
+                >
+                  {group.title}
                 </th>
-                {COLUMNS.map((column) => (
-                  <td key={column.id} className="px-3 py-3 text-center align-middle">
-                    {row.on[column.id] ? (
-                      <>
-                        <CheckIcon className="text-success-text inline size-4" />
-                        <span className="sr-only">Included</span>
-                      </>
-                    ) : (
-                      <>
-                        <MinusIcon className="text-fg-subtle inline size-4" />
-                        <span className="sr-only">Not included</span>
-                      </>
-                    )}
-                  </td>
-                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+              {group.rows.map((row) => (
+                <TableRow key={row.label}>
+                  <th scope="row" className="px-4 py-3 text-left align-top font-normal">
+                    <span className="text-fg block text-sm font-medium">{row.label}</span>
+                    <span className="text-fg-subtle mt-0.5 block text-sm leading-5">
+                      {row.hint}
+                    </span>
+                  </th>
+                  {COMPARISON_COLUMNS.map((column) => (
+                    <TableCell key={column.id} className="px-3 py-3 text-center">
+                      <ComparisonCell value={row.values[column.id]} />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          ))}
+        </Table>
+      </TableContainer>
+
+      <p className="text-fg-subtle text-sm leading-6">
+        <span className="text-fg-muted font-medium">{NOT_YET}</span> marks something a plan names
+        that is not built for anybody yet, at any price — plan as though it does not exist.
+      </p>
+    </section>
+  );
+}
+
+/** One plan's figure in its column header, for the period chosen above. */
+function HeadPrice({ plan, period }: { plan: ComparisonPlanId; period: BillingPeriod }) {
+  const figure =
+    plan === 'free'
+      ? FREE_PRICE
+      : plan === 'enterprise'
+        ? ENTERPRISE_PRICE
+        : USD_PRICES[plan][period];
+  const term = billingTerm(plan, period);
+
+  return (
+    <span className="mt-3 block font-normal">
+      <span className="text-fg block text-xl leading-7 font-semibold tracking-[-0.02em]">
+        {figure.price}
+      </span>
+      <span className="text-fg-subtle block text-xs leading-5">{figure.unit}</span>
+      {/* Every column keeps this line, shown or not, so pressing the toggle —
+          or a column without a term — never moves the buttons under it. */}
+      {term !== null ? (
+        <span className="text-fg-subtle block text-xs leading-5">{term}</span>
+      ) : (
+        <span aria-hidden="true" className="invisible block text-xs leading-5">
+          &nbsp;
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** A single comparison cell: a tick, a dash, "Coming soon", or what the row says. */
+function ComparisonCell({ value }: { value: Cell }) {
+  if (value === true) {
+    return (
+      <>
+        <CheckIcon className="text-success-text inline size-4" />
+        <span className="sr-only">Included</span>
+      </>
+    );
+  }
+  if (value === false) {
+    return (
+      <>
+        <MinusIcon className="text-fg-subtle inline size-4" />
+        <span className="sr-only">Not included</span>
+      </>
+    );
+  }
+  // Compared against the constants rather than the words, so a reworded chip
+  // cannot lose its treatment.
+  if (value === NOT_YET || value === ADDON_NOT_YET) {
+    return (
+      <span className="border-line text-fg-subtle inline-block rounded-full border px-1.5 py-0.5 text-xs font-medium whitespace-nowrap">
+        {value}
+      </span>
+    );
+  }
+  return <span className="text-fg-muted text-sm leading-5">{value}</span>;
+}
+
+/* ── Questions before buying ───────────────────────────────────────────────── */
+
+/**
+ * The pricing page's questions about the money — all of them, from the module
+ * both pages render — in the order somebody about to buy asks them
+ * (`PURCHASE_FAQ`). Shown only where the installation sells: the answers quote
+ * prices and describe a checkout.
+ *
+ * `<details>`, as on the pricing page: it opens without script, says whether it
+ * is open to a screen reader by itself, and the browser's find-in-page opens a
+ * closed one to show a match. None is grouped by `name`, so opening a second
+ * answer never closes the one being read.
+ */
+function PurchaseQuestions() {
+  return (
+    <section aria-labelledby="questions-heading" className="flex flex-col gap-3">
+      <div>
+        <h2 id="questions-heading" className="text-fg text-base font-semibold">
+          Questions before you buy
+        </h2>
+        <p className="text-fg-muted mt-1 text-sm leading-6">
+          The {PURCHASE_FAQ.length} the pricing page answers about the money, asked in the order
+          they come up when you are about to choose.
+        </p>
+      </div>
+      <div className="border-line bg-surface shadow-raised divide-line-subtle divide-y overflow-hidden rounded-xl border">
+        {PURCHASE_FAQ.map((item) => (
+          <details key={item.id} className="group">
+            {/* The ring is drawn inside: the list clips to its rounded border. */}
+            <summary className="text-fg hover:bg-surface-hover flex cursor-pointer list-none items-start gap-3 px-5 py-3.5 text-sm leading-6 font-medium transition-colors focus-visible:-outline-offset-2 [&::-webkit-details-marker]:hidden">
+              <span className="flex-1">{item.question}</span>
+              <ChevronDownIcon className="text-fg-subtle mt-1 size-4 shrink-0 transition-transform group-open:rotate-180" />
+            </summary>
+            <p className="text-fg-muted px-5 pb-4 text-sm leading-6 sm:pr-12">{item.answer}</p>
+          </details>
+        ))}
       </div>
     </section>
   );
