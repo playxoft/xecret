@@ -306,12 +306,22 @@ describe('the honesty rules this page is built on', () => {
       'Single sign-on with OIDC',
       'SAML single sign-on',
       'Directory sync (SCIM)',
-      'Custom roles',
       'Change approvals',
       'Point-in-time restore',
     ]) {
       expect(SOURCE, `${capability} is not named on the page`).toContain(capability);
     }
+  });
+
+  it('claims custom roles at Enterprise, where they are built and gated', () => {
+    // They wore the chip on the card and in the matrix until 2026-11-08 while
+    // `requireFeature(…, 'customRoles')` already gated them — the page
+    // underselling a shipped feature. The card bullet carries no `notYet`, and
+    // the matrix row ticks from the engine flag.
+    const code = withoutComments(SOURCE);
+    expect(code).toContain("{ text: 'Custom roles' }");
+    expect(code).not.toMatch(/text: 'Custom roles', notYet: true/);
+    expect(code).toMatch(/flagRow\(\s*'Custom roles',\s*'customRoles',/);
   });
 
   it('distinguishes an add-on from a capability a plan does not carry', () => {

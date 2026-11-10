@@ -36,16 +36,17 @@ import type { ConditionalFaqItem, FaqItem } from '@/components/marketing/faq';
  * ── What came with it ──
  * The rows, the questions and the helpers that compose them came from
  * `page.tsx` with their commentary, which explains decisions about the data and
- * belongs beside it wherever it lives. Three things are new with the move: the
- * gated rows read their ticks from `PLANS` (`flagRow`), three rows only the
- * plans page used to show are in the table for both, and each question has an
- * `id` — and, where the plans page needs one, an `inApp` answer.
+ * belongs beside it wherever it lives. New with the move: the gated rows read
+ * their ticks from `PLANS` (`flagRow`), three rows only the plans page used to
+ * show are in the table for both, each row says whether it is a term of a sale
+ * (`sale`) or a fact about the hosted service (`hosted`), and each question has
+ * an `id` — and, where the plans page needs one, an `inApp` answer.
  *
- * Several claims here are open decisions rather than settled facts —
- * per-environment access sold at Team though nothing enforces it, custom roles
- * marked "Coming soon" though built. The note at the top of
- * `app/(dashboard)/_components/upgrade-plans.ts` has them; the correction for
- * either is an edit to this file, and it reaches both pages.
+ * One claim here is an open decision rather than a settled fact: per-environment
+ * access, sold at Team though nothing enforces it. The note at the top of
+ * `app/(dashboard)/_components/upgrade-plans.ts` has it; the correction is an
+ * edit to this file, and it reaches both pages. Custom roles were the other,
+ * marked "Coming soon" though built, and are corrected (2026-11-08).
  */
 
 /* ── Words and numbers ────────────────────────────────────────────────────── */
@@ -320,6 +321,20 @@ export interface MatrixRow {
    * a sale nobody can make is a promise about a bill that does not exist.
    */
   readonly sale?: true | undefined;
+  /**
+   * A fact about xecret's hosted service rather than about the product: where
+   * the ciphertext sits, who answers support, what the contract guarantees,
+   * whether it runs on your hardware.
+   *
+   * True on the pricing page, which always describes the hosted service, and
+   * false on an installation somebody else runs — where the data sits on their
+   * infrastructure and nobody here owes anyone an SLA. The in-app plans page
+   * leaves these out where nothing is sold, beside the `sale` rows: an
+   * installation that takes no payments is a self-hoster's, or the hosted
+   * service before it sells, and the first would be told things that are not
+   * true of it.
+   */
+  readonly hosted?: true | undefined;
 }
 
 export interface MatrixGroup {
@@ -682,17 +697,17 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           'self-hosted': NOT_YET,
         },
       },
-      {
-        label: 'Custom roles',
-        hint: 'Define your own permission sets when the four built-in roles do not fit.',
-        values: {
-          free: false,
-          pro: false,
-          team: false,
-          enterprise: NOT_YET,
-          'self-hosted': NOT_YET,
-        },
-      },
+      // Built, and gated at Enterprise: `requireFeature(…, 'customRoles')` on
+      // defining, changing and assigning one. This row read "Coming soon" at
+      // Enterprise until 2026-11-08, which undersold a shipped feature on both
+      // pages that render it — an Enterprise organisation saw "Current plan"
+      // above a row saying its feature did not exist. Read from `PLANS` now,
+      // like every other gated row.
+      flagRow(
+        'Custom roles',
+        'customRoles',
+        'Name roles of your own, each a built-in role narrowed to the actions you choose.',
+      ),
       // Included, not charged. Google Workspace, Entra ID, Okta, Auth0 and
       // JumpCloud all speak OIDC, and implementing it ourselves is what makes
       // giving it away at this tier affordable.
@@ -720,6 +735,9 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
+        // A priced add-on, so a term of a sale: on an installation that sells
+        // nothing there is no add-on to buy.
+        sale: true,
       },
       {
         label: 'Directory sync (SCIM)',
@@ -845,6 +863,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: "Cloudflare's network",
           'self-hosted': 'Wherever you host it',
         },
+        hosted: true,
       },
       // Both rows exist because the Enterprise card names both capabilities,
       // and a claim on a card that a reader cannot find in this table is the
@@ -862,6 +881,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: NOT_YET,
           'self-hosted': true,
         },
+        hosted: true,
       },
       {
         label: 'Your own root key',
@@ -873,6 +893,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: NOT_YET,
           'self-hosted': true,
         },
+        hosted: true,
       },
       {
         label: 'Runs on your own infrastructure',
@@ -884,6 +905,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: true,
           'self-hosted': true,
         },
+        hosted: true,
       },
       {
         label: 'Support channel',
@@ -895,6 +917,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: 'Contracted',
           'self-hosted': 'GitHub issues',
         },
+        hosted: true,
       },
       // Identical in all six columns, and that is the point of including it:
       // the licence is not a tier. A reader scanning for the catch finds this.
@@ -919,6 +942,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
           enterprise: 'Contractual',
           'self-hosted': 'Yours to set',
         },
+        hosted: true,
       },
     ],
   },
@@ -1017,6 +1041,12 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     whenPaymentsLive: {
       question: 'What happens when I exceed the free tier?',
       answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named, and an owner can move up from the billing page. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
+    },
+    // The plans page is where an owner moves up, so its answer says so
+    // rather than sending them to the billing page to start.
+    inApp: {
+      question: 'What happens when I exceed the free tier?',
+      answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named, and an owner can move up from this page. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
     },
   },
   {

@@ -2,6 +2,7 @@ import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 
 import {
   formatRetention,
+  LIMITS,
   PLAN_COMPARISON,
   PRICING_FAQ,
   seatFloorCaveat,
@@ -104,16 +105,15 @@ import { appPath, withQuery } from '../_lib/paths';
  * per-environment access" guide link; and the FAQ category title "Members,
  * roles and per-environment access" in `app/faq/page.tsx`.
  *
- * ── Custom roles: the opposite discrepancy ──
+ * ── Custom roles: resolved, corrected to match the gates (2026-11-08) ──
  * Custom roles are the gate that does exist (`requireFeature(…, 'customRoles')`
- * on the roles routes and on assigning one) — at Enterprise, per `PLANS`. The
- * shared table still marks them "Coming soon" there, and so does the pricing
- * page's Enterprise card, which the code no longer bears out. This page used to
- * name them in its Enterprise row regardless; rendering the shared table, that
- * sentence would contradict the row below it, so it now leaves them out, as
- * `/pricing` does. Flipping the shared row's Enterprise cell — and the pricing
- * page's card bullet — says it on both pages at once, and the Enterprise row
- * here can name them again then. That is the same pending decision.
+ * on defining, changing and assigning one) — at Enterprise, per `PLANS`. The
+ * shared table and the pricing page's Enterprise card marked them "Coming
+ * soon" anyway, so an Enterprise organisation here saw "Current plan" above a
+ * row saying its own feature did not exist. Corrected in review of #156 (the
+ * coordinator's call, which the owner may veto): the shared row reads its
+ * ticks from `PLANS` like every other gated row, the pricing page's card bullet
+ * lost its chip, and this page's Enterprise row names them again.
  */
 
 export type PaidPlanId = 'pro' | 'team';
@@ -187,11 +187,9 @@ export const YEARLY_SAVING_UP_TO = Math.max(yearlySaving('pro'), yearlySaving('t
 
 /* ── Limits, as sentences ──────────────────────────────────────────────────── */
 
-const LIMITS = {
-  free: PLANS.free.limits,
-  pro: PLANS.pro.limits,
-  team: PLANS.team.limits,
-} as const;
+// The limits are the shared module's `LIMITS` — `PLANS`' own, per plan — so
+// this page and the pricing page read one constant rather than two of the same
+// name.
 
 /** `3` → "3 members", `1` → "1 organisation", `null` → "Unlimited members". */
 function many(limit: number | null, one: string, other: string): string {
@@ -200,12 +198,13 @@ function many(limit: number | null, one: string, other: string): string {
 }
 
 /**
- * The seat floor as a condition on the price — "Billed from 3 members up" — or
- * nothing for a plan without one. Under the figure, never as a tick: a minimum
+ * The card's condition on its price — "Billed from 3 members up" — or `null`
+ * for a plan without a seat floor. Under the figure, never as a tick: a minimum
  * charge is the opposite of an inclusion. The pricing page's own sentence,
- * from the module both pages share.
+ * `seatFloorCaveat`; not to be confused with the shared module's `seatFloor`,
+ * which is the comparison table's cell ("3 members", "No minimum").
  */
-function seatFloor(seats: number): string | null {
+function priceCaveat(seats: number): string | null {
   return seatFloorCaveat(seats) ?? null;
 }
 
@@ -243,7 +242,7 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       `${formatRetention(LIMITS.free.auditRetentionDays)} of audit history`,
     ],
     includedFetches: LIMITS.free.includedFetchesPerMonth,
-    caveat: seatFloor(MINIMUM_SEATS.free),
+    caveat: priceCaveat(MINIMUM_SEATS.free),
     recommended: false,
   },
   {
@@ -263,7 +262,7 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       'Secret referencing, overrides, promotion and point-in-time restore',
     ],
     includedFetches: LIMITS.pro.includedFetchesPerMonth,
-    caveat: seatFloor(MINIMUM_SEATS.pro),
+    caveat: priceCaveat(MINIMUM_SEATS.pro),
     recommended: false,
   },
   {
@@ -282,13 +281,13 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       'Plaintext export switched off per environment',
     ],
     includedFetches: LIMITS.team.includedFetchesPerMonth,
-    caveat: seatFloor(MINIMUM_SEATS.team),
+    caveat: priceCaveat(MINIMUM_SEATS.team),
     recommended: true,
   },
 ];
 
 /** The Enterprise row's condition on the (unpublished) price. */
-export const ENTERPRISE_CAVEAT = seatFloor(MINIMUM_SEATS.enterprise);
+export const ENTERPRISE_CAVEAT = priceCaveat(MINIMUM_SEATS.enterprise);
 
 /**
  * What happens past a plan's fetch allowance, as the line under it says it.
@@ -331,14 +330,22 @@ export const COMPARISON_COLUMNS: readonly {
 ];
 
 /**
- * The shared table as this page shows it: every group and every row, except
- * the terms of a sale (`sale` on the row) where the installation sells nothing
- * — the rule the cards follow for the price and the seat floor.
+ * The shared table as this page shows it: every group and every row where the
+ * installation sells. Where it sells nothing, two kinds of row are left out:
+ *
+ *  - the terms of a sale (`sale`) — the seat floor, what a machine costs, the
+ *    overage, the SAML add-on — by the rule the cards follow for the price;
+ *  - the facts about xecret's hosted service (`hosted`) — where the data sits,
+ *    support, the SLA, running on your own hardware — which are false on an
+ *    installation somebody else runs, and that is mostly who is reading here.
+ *
+ * What is left is the product: the limits the engine holds and the
+ * capabilities it gates, true on any installation.
  */
 export function comparisonFor(selling: boolean): readonly MatrixGroup[] {
   return PLAN_COMPARISON.map((group) => ({
     title: group.title,
-    rows: group.rows.filter((row) => selling || row.sale !== true),
+    rows: group.rows.filter((row) => selling || (row.sale !== true && row.hosted !== true)),
   })).filter((group) => group.rows.length > 0);
 }
 

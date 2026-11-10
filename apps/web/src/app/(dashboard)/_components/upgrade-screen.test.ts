@@ -242,7 +242,7 @@ describe('UpgradeScreen, for an owner', () => {
     expect(render('owner')).not.toMatch(/\btrial\b/i);
   });
 
-  it('says what /pricing says about per-environment access and custom roles, and no more', () => {
+  it('says what /pricing says about per-environment access, and no more', () => {
     const html = render('owner');
 
     // The shared table's rows and the shared answer, as the owner asked —
@@ -251,10 +251,24 @@ describe('UpgradeScreen, for an owner', () => {
     expect(html).toContain('Team adds roles and per-environment grants');
     // The cards were not part of that, and still do not sell it.
     expect(html).not.toContain('everyone can read every environment');
-    // The table marks custom roles "Coming soon", so the Enterprise row no
-    // longer names them above it.
-    expect(html).toContain('Everything in Team, no ceiling on projects');
-    expect(html).not.toContain('Custom roles, no ceiling');
+  });
+
+  it('names custom roles at Enterprise, where they are built and gated', () => {
+    const html = render('owner');
+
+    expect(html).toContain('Everything in Team, custom roles, no ceiling on projects');
+    // And the table agrees: ticked at Enterprise, dashed below it.
+    const table = comparison(html);
+    const at = table.indexOf('>Custom roles<');
+    expect(at, 'no custom roles row').toBeGreaterThan(-1);
+    const cells = table.slice(at, table.indexOf('</tr>', at));
+    expect(cells.match(/sr-only">(Included|Not included)</g)).toEqual([
+      'sr-only">Not included<',
+      'sr-only">Not included<',
+      'sr-only">Not included<',
+      'sr-only">Included<',
+    ]);
+    expect(cells).not.toContain('Coming soon');
   });
 });
 
@@ -282,7 +296,13 @@ function escaped(text: string): string {
 }
 
 const ALL_ROWS = PLAN_COMPARISON.flatMap((group) => group.rows);
-const SALE_ROWS = ALL_ROWS.filter((row) => row.sale === true);
+/** The rows an installation that sells nothing leaves out: terms of a sale, and the hosted service's own facts. */
+const NOT_FOR_SELF_HOSTERS = ALL_ROWS.filter((row) => row.sale === true || row.hosted === true);
+
+/** Whether the table has a row with this exact label — not merely the words somewhere in it. */
+function hasRow(table: string, label: string): boolean {
+  return table.includes(`>${escaped(label)}</span>`);
+}
 
 describe('UpgradeScreen, the comparison table', () => {
   it('shows every row of the pricing page’s table, in its groups, where it sells', () => {
@@ -290,12 +310,16 @@ describe('UpgradeScreen, the comparison table', () => {
 
     for (const group of PLAN_COMPARISON) expect(table).toContain(escaped(group.title));
     for (const row of ALL_ROWS) {
-      expect(table, row.label).toContain(escaped(row.label));
+      expect(hasRow(table, row.label), row.label).toBe(true);
       expect(table, row.label).toContain(escaped(row.hint));
     }
     // Four columns — self-hosting is the pricing page's alternative to buying.
     expect(table.match(/<th scope="col"/g)).toHaveLength(5);
     expect(head(render('owner'))).not.toContain('Self-hosted');
+    // Each group's heading heads the rows of its own body; the table has no
+    // `<colgroup>` for a `colgroup` scope to name.
+    expect(table.match(/<th scope="rowgroup"/g)).toHaveLength(PLAN_COMPARISON.length);
+    expect(table).not.toContain('scope="colgroup"');
   });
 
   it('gives the header room: name, figure, unit, term and the action, each on its own line', () => {
@@ -350,16 +374,26 @@ describe('UpgradeScreen, the comparison table', () => {
     },
   );
 
-  it('leaves out the terms of a sale, and every figure, where nothing is sold', () => {
+  it('leaves out the terms of a sale, the hosted service’s rows and every figure, where nothing is sold', () => {
     const table = comparison(render('owner', { taken: false }));
 
-    for (const row of SALE_ROWS) expect(table, row.label).not.toContain(escaped(row.label));
-    for (const row of ALL_ROWS.filter((candidate) => candidate.sale !== true)) {
-      expect(table, row.label).toContain(escaped(row.label));
+    for (const row of NOT_FOR_SELF_HOSTERS) expect(hasRow(table, row.label), row.label).toBe(false);
+    for (const row of ALL_ROWS.filter((candidate) => !NOT_FOR_SELF_HOSTERS.includes(candidate))) {
+      expect(hasRow(table, row.label), row.label).toBe(true);
     }
+    // Nothing a self-hoster's installation would be told falsely: where the
+    // data sits, who answers support, that it does not run on their hardware.
+    expect(table).not.toContain('Cloudflare');
+    expect(table).not.toContain('Priority email');
     expect(table).not.toMatch(/\$\d/);
     expect(table).not.toContain('billed yearly');
     expect(table).not.toContain('href="/contact"');
+  });
+
+  it('keeps the hosted service’s rows where it sells', () => {
+    const table = comparison(render('owner'));
+    expect(hasRow(table, 'Where your data sits')).toBe(true);
+    expect(table).toContain('Cloudflare');
   });
 });
 

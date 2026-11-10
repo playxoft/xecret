@@ -735,7 +735,11 @@ const PRICED_PLANS: readonly Plan[] = [
     features: [
       { text: 'Everything in Team' },
       { text: 'No ceiling on projects, environments, secrets or tokens' },
-      { text: 'Custom roles', notYet: true },
+      // Built and gated here (`requireFeature(…, 'customRoles')`). It wore the
+      // chip until 2026-11-08; the matrix row was corrected with it, because a
+      // tick on one and "Coming soon" on the other is the contradiction
+      // `NOT_YET` exists to prevent.
+      { text: 'Custom roles' },
       { text: 'Audit streamed to your SIEM', notYet: true },
       // Both included, which is what `pricing-plan.md` §3 and §8.4 say: the
       // $1,500 Enterprise floor is sized to absorb the two WorkOS connections.

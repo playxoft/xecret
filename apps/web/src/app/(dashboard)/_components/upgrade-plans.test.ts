@@ -306,6 +306,7 @@ describe('every claim is one the product keeps', () => {
     'Point-in-time restore': 'pointInTimeRestore',
     'A secret policy for names and values': 'secretPolicy',
     'Plaintext export switched off per environment': 'disableEnvExport',
+    'Custom roles': 'customRoles',
     'Token IP allowlists and lifetime policy': 'tokenIpAllowlist',
     'Alerts on reads from new addresses': 'newIpReadAlerts',
   };
@@ -443,19 +444,23 @@ describe('every claim is one the product keeps', () => {
   });
 
   /**
-   * Custom roles are built and gated at Enterprise, and both pages still say
-   * "Coming soon" there. A tripwire for the note: when the shared cell
-   * changes, the Enterprise row on this page can name them again.
+   * Custom roles are built and gated at Enterprise, and since 2026-11-08 both
+   * pages say so: the shared row is ticked from `PLANS`, not marked "Coming
+   * soon", and the pricing page's Enterprise card names them without the chip.
    */
-  it('places custom roles where the engine gates them, and says what /pricing says', () => {
+  it('places custom roles where the engine gates them — included at Enterprise, on both pages', () => {
     expect(gated('customRoles')).toBe(true);
     expect(PLANS.team.features.customRoles).toBe(false);
     expect(PLANS.enterprise.features.customRoles).toBe(true);
-    expect(
-      row('Custom roles').values.enterprise,
-      'the shared custom-roles cell changed — revisit the note in upgrade-plans.ts and the Enterprise row',
-    ).toBe(NOT_YET);
-    expect(row('Custom roles').values.team).toBe(false);
+
+    const customRoles = row('Custom roles');
+    expect(customRoles.feature).toBe('customRoles');
+    expect(HOSTED.map((plan) => customRoles.values[plan])).toEqual([false, false, false, true]);
+    expect(Object.values(customRoles.values)).not.toContain(NOT_YET);
+
+    const card = withoutComments(PRICING.slice(PRICING.indexOf("id: 'enterprise'")));
+    expect(card.slice(0, card.indexOf('cta:'))).toContain("{ text: 'Custom roles' }");
+    // This page's cards stop at Team, so they have no reason to name them.
     expect(COPY).not.toMatch(/custom roles/i);
   });
 
@@ -471,6 +476,17 @@ describe('the table this page shows', () => {
     'Smallest billable team',
     'Cost per service token, CI runner or AI agent',
     'What happens past the allowance',
+    'SAML single sign-on',
+  ];
+
+  /** True of xecret's hosted service, and false of an installation somebody else runs. */
+  const HOSTED_SERVICE = [
+    'Where your data sits',
+    'Choose your data region',
+    'Your own root key',
+    'Runs on your own infrastructure',
+    'Support channel',
+    'SLA',
   ];
 
   it('shows the four plans an organisation on the hosted service can be on, in the pricing page’s order', () => {
@@ -484,10 +500,26 @@ describe('the table this page shows', () => {
     expect(comparisonFor(true)).toEqual(PLAN_COMPARISON);
   });
 
-  it('leaves out only the terms of a sale where nothing is sold', () => {
+  it('leaves out the terms of a sale and the hosted service’s rows where nothing is sold', () => {
     expect(ROWS.filter((r) => r.sale === true).map((r) => r.label)).toEqual(SALE_TERMS);
+    expect(ROWS.filter((r) => r.hosted === true).map((r) => r.label)).toEqual(HOSTED_SERVICE);
+    const hidden = [...SALE_TERMS, ...HOSTED_SERVICE];
     const shown = comparisonFor(false).flatMap((group) => group.rows.map((r) => r.label));
-    expect(shown).toEqual(ROWS.map((r) => r.label).filter((label) => !SALE_TERMS.includes(label)));
+    expect(shown).toEqual(ROWS.map((r) => r.label).filter((label) => !hidden.includes(label)));
+    // 51 rows where it sells; 41 where it does not.
+    expect([ROWS.length, shown.length]).toEqual([51, 41]);
+  });
+
+  it('keeps every gated capability and every per-plan limit where nothing is sold', () => {
+    // What is left out is about money and the hosted service — never the
+    // product: a row the engine ticks or counts stays.
+    const shown = comparisonFor(false).flatMap((group) => group.rows);
+    for (const flagged of ROWS.filter((r) => r.feature !== undefined)) {
+      expect(shown, flagged.label).toContain(flagged);
+    }
+    for (const label of ['Organisations', 'Projects', 'Members', 'Audit history']) {
+      expect(shown.map((r) => r.label)).toContain(label);
+    }
   });
 
   it('carries the rows only this page used to have, for both pages now', () => {
@@ -534,11 +566,17 @@ describe('the questions this page asks', () => {
       PRICING_FAQ.filter((item) => item.inApp !== undefined)
         .map((item) => item.id)
         .sort(),
-    ).toEqual(['annual-price', 'paying']);
+    ).toEqual(['annual-price', 'past-free', 'paying']);
     const annual = question('annual-price').inApp?.answer ?? '';
     // No currency sheets and no second price control on this page.
     expect(annual).not.toMatch(/sheet|controls above|comparison table/);
     expect(question('paying').inApp?.answer).toMatch(/^From this page, as an owner/);
+    // Moving up past Free starts at this page's checkout, not the billing page.
+    const pastFree = question('past-free');
+    expect(pastFree.inApp?.answer).toContain('an owner can move up from this page');
+    expect(pastFree.inApp?.answer).toBe(
+      pastFree.whenPaymentsLive?.answer.replace('from the billing page', 'from this page'),
+    );
     // The reader is signed in already.
     for (const item of PURCHASE_FAQ) {
       expect(item.answer, item.id).not.toMatch(/sign up|sign-up|create an account/i);

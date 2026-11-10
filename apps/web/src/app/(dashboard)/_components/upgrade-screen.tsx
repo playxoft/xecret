@@ -768,11 +768,11 @@ function Price({ plan, period }: { plan: OfferPlanId; period: BillingPeriod }) {
  * Its sentence names only what the pricing page's Enterprise card names
  * without a "Coming soon" chip — the comparison table below is that page's,
  * and a sentence here claiming more than the table would be the page arguing
- * with itself. Custom roles are left out for that reason, though they are
- * built and gated to this plan: the shared table still marks them "Coming
- * soon", and the note at the top of `upgrade-plans.ts` has that decision. What
- * is marked "Coming soon" and is in fact unbuilt (SAML, SCIM, residency, a
- * customer-held root key, SIEM) is left out too.
+ * with itself. Custom roles are among them: built, gated to this plan by
+ * `requireFeature(…, 'customRoles')`, and ticked at Enterprise in the shared
+ * table since 2026-11-08 (the note at the top of `upgrade-plans.ts`). What is
+ * marked "Coming soon" and is in fact unbuilt (SAML, SCIM, residency, a
+ * customer-held root key, SIEM) is left out.
  */
 function EnterpriseRow({ selling, current }: { selling: boolean; current: boolean }) {
   return (
@@ -795,8 +795,9 @@ function EnterpriseRow({ selling, current }: { selling: boolean; current: boolea
           ) : null}
         </div>
         <p className="text-fg-muted mt-1.5 text-sm leading-6">
-          Everything in Team, no ceiling on projects, environments, secrets or tokens, custom audit
-          retention, a commercial self-hosting licence, and a contractual SLA with a named contact.
+          Everything in Team, custom roles, no ceiling on projects, environments, secrets or tokens,
+          custom audit retention, a commercial self-hosting licence, and a contractual SLA with a
+          named contact.
           {selling && ENTERPRISE_CAVEAT !== null ? ` ${ENTERPRISE_CAVEAT}.` : ''}
         </p>
       </div>
@@ -832,7 +833,8 @@ function EnterpriseRow({ selling, current }: { selling: boolean; current: boolea
  * gets a checkout or a switch at the head of a column they have just read
  * down, everybody else gets the figures and no button, and Enterprise is a
  * conversation wherever anything is sold. Where nothing is, there is no figure
- * either — and no row that is a term of a sale (`comparisonFor`).
+ * either — and no row that is a term of a sale or a fact about the hosted
+ * service, which a self-hoster's installation is not (`comparisonFor`).
  *
  * ── The cells ──
  * Read from the shared rows, never restated here. A tick and a dash each carry
@@ -861,7 +863,8 @@ function ComparisonTable({
         <p className="text-fg-muted mt-1 text-sm leading-6">
           Every plan compared, including the limits
           {/* Only where it is true: where nothing is sold the terms of a sale
-              are left out, and the table is no longer the pricing page's. */}
+              and the hosted service's rows are left out, and the table is no
+              longer the pricing page's. */}
           {selling ? (
             <>
               {' '}
@@ -908,8 +911,11 @@ function ComparisonTable({
                   {selling ? <HeadPrice plan={head.id} period={period} /> : null}
                   {anyAction ? (
                     // Held open in a column with nothing to offer, so the row
-                    // of buttons is level wherever one is missing.
-                    <span className="mt-4 block min-h-8">{head.action}</span>
+                    // of buttons is level wherever one is missing. A `div`:
+                    // an action can be a block of its own (a button and the
+                    // sentence saying why it failed), and a block may not sit
+                    // inside a `span`.
+                    <div className="mt-4 min-h-8">{head.action}</div>
                   ) : null}
                 </TableHead>
               ))}
@@ -918,10 +924,13 @@ function ComparisonTable({
           {groups.map((group) => (
             <TableBody key={group.title}>
               <tr className="bg-canvas-inset border-line-subtle border-t">
-                {/* `colgroup`: it names the rows beneath it across every
-                    column, and is read out before each of them. */}
+                {/* `rowgroup`: it heads the rows of its own `<tbody>`, and is
+                    read out before each of them. Not `colgroup`, which names
+                    a `<colgroup>` this table does not have. (/pricing's matrix
+                    has the same `colgroup` mistake — left for a pass over the
+                    marketing markup.) */}
                 <th
-                  scope="colgroup"
+                  scope="rowgroup"
                   colSpan={COMPARISON_COLUMNS.length + 1}
                   className="text-fg-subtle px-4 pt-4 pb-2 text-left text-xs font-semibold tracking-[0.08em] uppercase"
                 >
@@ -947,11 +956,6 @@ function ComparisonTable({
           ))}
         </Table>
       </TableContainer>
-
-      <p className="text-fg-subtle text-sm leading-6">
-        <span className="text-fg-muted font-medium">{NOT_YET}</span> marks something a plan names
-        that is not built for anybody yet, at any price — plan as though it does not exist.
-      </p>
     </section>
   );
 }
