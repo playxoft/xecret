@@ -195,7 +195,10 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 
       setPhase('approved');
       window.location.replace(
-        callbackUrl(request, handoff === null ? { code: result.code } : { code: result.code, handoff }),
+        callbackUrl(
+          request,
+          handoff === null ? { code: result.code } : { code: result.code, handoff },
+        ),
       );
     } catch (cause) {
       setPhase('idle');

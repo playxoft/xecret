@@ -92,6 +92,25 @@ paths = [
   '''^cli/internal/envkeys/envkeys_test\.go$''',
 ]
 
+# The in-app sign-in tests' stand-ins, not credentials. `pending_tok_01` to
+# `pending_tok_09` play WorkOS's pending-authentication tokens — real ones are
+# opaque strings WorkOS mints per paused sign-in and never shaped like this, so
+# the family is closed — and `the-wrong-one-zq81` is the deliberately wrong
+# password the never-logged test sends to prove it never reaches a log. Each
+# flagged as generic-api-key only because it sits beside the word "token" or
+# "password" (apps/web/src/server/in-app-sign-in-route.test.ts, and the core
+# email-verification cookie's test). Matched on the exact values, as the blocks
+# above are, because `gitleaks git` reads the commits that introduced them for
+# as long as the history exists; a new fixture outside this family fails the
+# scan and needs its own decision.
+[[allowlists]]
+description = "the in-app sign-in tests' pending-token stand-ins and their deliberately wrong password"
+regexTarget = "secret"
+regexes = [
+  '''^pending_tok_0[1-9]$''',
+  '''^the-wrong-one-zq81$''',
+]
+
 # A display fixture, not a credential. The tokens screen lists a service
 # token by the short prefix the API returns for it — never the token — and its
 # test needs one to render. `xst_live_ab12` is that prefix and nothing more: a

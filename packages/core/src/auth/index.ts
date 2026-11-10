@@ -97,6 +97,39 @@ export type {
 } from './oauth-state';
 
 export {
+  clearedEmailVerificationCookie,
+  deriveEmailVerificationKey,
+  EMAIL_VERIFICATION_COOKIE_NAME,
+  EMAIL_VERIFICATION_TTL_SECONDS,
+  emailVerificationCookie,
+  isSameVerificationAddress,
+  MAX_SEALED_EMAIL_LENGTH,
+  MAX_SEALED_PENDING_TOKEN_LENGTH,
+  openEmailVerification,
+  sealEmailVerification,
+} from './email-verification';
+export type {
+  EmailVerification,
+  EmailVerificationRejection,
+  EmailVerificationResult,
+} from './email-verification';
+
+export {
+  deriveKnownDeviceAddressKey,
+  deriveKnownDeviceKey,
+  deriveSignInThrottleKey,
+  knownDeviceAddressTag,
+  foldAddress,
+  generateDeviceId,
+  KNOWN_DEVICE_COOKIE_NAME,
+  KNOWN_DEVICE_TTL_SECONDS,
+  knownDeviceCookie,
+  openKnownDevice,
+  sealKnownDevice,
+} from './known-device';
+export type { KnownDevice } from './known-device';
+
+export {
   clearedSignInConfirmationCookie,
   deriveSignInConfirmationKey,
   generateConfirmationNonce,

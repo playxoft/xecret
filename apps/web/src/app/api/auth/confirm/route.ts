@@ -18,7 +18,7 @@ import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import { publicOrigin } from '@/server/bindings';
 import type { ServiceContext } from '@/server/context';
-import { parseCookies } from '@/server/http';
+import { isSameOriginPost, parseCookies } from '@/server/http';
 import { describeError } from '@/server/logging';
 import { attemptKey, consume } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
@@ -30,6 +30,7 @@ import {
   writeEvents,
 } from '@/server/sign-in';
 import { refusedSignIn, seeOther } from '@/server/sign-in-responses';
+import { knownDeviceCookies } from '@/server/sign-in-throttle';
 import { workosProvider } from '@/server/workos';
 import type { WorkosIdentityProvider } from '@/server/workos';
 
@@ -142,7 +143,13 @@ export const POST = publicRoute(async ({ request, services }) => {
     });
 
     services.bindLog({ signInOutcome: result.outcome, signInPurpose: parked.purpose });
-    return seeOther(next, [...result.cookies, ...cleared]);
+    // Known to this address from now on, as after any sign-in that issues a
+    // session (`completeSignIn`; `server/sign-in-throttle.ts`).
+    return seeOther(next, [
+      ...result.cookies,
+      ...(await knownDeviceCookies(services, user.email)),
+      ...cleared,
+    ]);
   } catch (cause) {
     return refusedSignIn(services, cause, next, cleared);
   }
@@ -219,17 +226,6 @@ async function declined(
     return seeOther(landing, cleared);
   }
   return seeOther(logout, cleared);
-}
-
-/**
- * Same origin for a POST, failing closed — the opposite of `isSameOrigin`,
- * which lets a missing `Origin` through for the CLI. Nothing but our own page
- * ever posts here.
- */
-function isSameOriginPost(request: Request, expectedOrigin: string): boolean {
-  if (request.headers.get('origin') !== expectedOrigin) return false;
-  const site = request.headers.get('sec-fetch-site');
-  return site === null || site === 'same-origin';
 }
 
 /** The urlencoded form, bounded, or `null` for anything that is not one. */

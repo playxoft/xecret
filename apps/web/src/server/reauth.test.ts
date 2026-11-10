@@ -297,6 +297,39 @@ function mfaChallenge(status = 403) {
   );
 }
 
+/**
+ * The error the real SDK raises when its timeout fires — a `fetch` that never
+ * answers, a 20 ms timeout, no retries — produced rather than restated.
+ */
+async function realSdkTimeout(): Promise<unknown> {
+  const { WorkOS } = await import('@workos-inc/node');
+  vi.stubGlobal(
+    'fetch',
+    (_url: unknown, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+        );
+      }),
+  );
+  try {
+    const sdk = new WorkOS('sk_test_not_a_real_key', {
+      clientId: 'client_01TESTCLIENT',
+      timeout: 20,
+      maxRetries: 0,
+    });
+    return await sdk.userManagement
+      .authenticateWithMagicAuth({
+        clientId: 'client_01TESTCLIENT',
+        email: 'a@b.example',
+        code: '123456',
+      })
+      .catch((error: unknown) => error);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
 function wrongCode() {
   workos.authenticateWithMagicAuth.mockRejectedValue(
     Object.assign(new Error('Invalid code'), { status: 400, code: 'invalid_one_time_code' }),
@@ -609,6 +642,18 @@ describe('checking the code', () => {
     );
     expect(responses.every((r) => r.status === 403)).toBe(true);
     expect((await attempt(who))?.code_attempts).toBe(REAUTH_MAX_CODE_ATTEMPTS);
+  });
+
+  it('gives back a guess WorkOS never judged: the real SDK’s timeout answers 503 and spends nothing', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await verify(who, '123456');
+
+    expect(answer.status).toBe(503);
+    expect((await errorOf(answer)).message).not.toMatch(/code is not right/);
+    expect((await attempt(who))?.code_attempts).toBe(0);
   });
 
   it('charges a guess for an answer it cannot classify, too', async () => {

@@ -2,6 +2,7 @@ import { GenerateLinkIntent, WorkOS } from '@workos-inc/node';
 import {
   IdentityVerificationError,
   WORKOS_SESSION_ID_PATTERN,
+  WORKOS_USER_ID_PATTERN,
   workosIdentity,
 } from '@xecret/core/auth';
 import { fromBase64Url } from '@xecret/core/crypto';
@@ -18,12 +19,15 @@ import { MissingBindingError, publicOrigin } from './bindings';
 /**
  * WorkOS, at the one boundary where xecret talks to it.
  *
- * WorkOS authenticates a person; xecret decides what that person may do. The
- * authorization code AuthKit hands back is exchanged **exactly once**, in the
- * sign-in callback, for the WorkOS user it names — and the access and refresh
- * tokens that come with it are dropped on the floor. From there the credential
- * is an xecret session, which can be listed and revoked instantly. ADR 0010 has
- * the reasoning; it is ADR 0003's, with the provider swapped.
+ * WorkOS authenticates a person; xecret decides what that person may do. An
+ * authorization code — from Google, an organisation's single sign-on, or
+ * AuthKit's hosted page — is exchanged **exactly once**, in the sign-in
+ * callback, for the WorkOS user it names; a password or an emailed code typed
+ * on xecret's own sign-in page is checked by one headless authenticate call
+ * (`server/in-app-sign-in.ts`). Either way the access and refresh tokens that
+ * come back are dropped on the floor. From there the credential is an xecret
+ * session, which can be listed and revoked instantly. ADR 0010 has the
+ * reasoning; it is ADR 0003's, with the provider swapped.
  *
  * ── Why `@workos-inc/node` and not `@workos-inc/authkit-nextjs` ──
  * The Next.js package is built around `authkitMiddleware` and its own sealed
@@ -65,10 +69,16 @@ export interface WorkosApi {
     WorkOS['userManagement'],
     | 'getAuthorizationUrl'
     | 'authenticateWithCode'
+    | 'authenticateWithPassword'
+    | 'authenticateWithEmailVerification'
+    | 'authenticateWithOrganizationSelection'
     | 'createMagicAuth'
     | 'authenticateWithMagicAuth'
     | 'authenticateWithTotp'
     | 'getLogoutUrl'
+    | 'createPasswordReset'
+    | 'resetPassword'
+    | 'updateUser'
   >;
   multiFactorAuth: Pick<WorkOS['multiFactorAuth'], 'challengeFactor'>;
   organizations: Pick<
@@ -129,6 +139,48 @@ const CODE_PATTERN = /^[A-Za-z0-9._~-]+$/;
 const MAGIC_AUTH_CODE_PATTERN = /^[0-9]{6}$/;
 
 /**
+ * The longest password forwarded to WorkOS. Far beyond any passphrase a person
+ * types or a manager generates; the bound exists so that a hostile body is
+ * refused on shape rather than forwarded.
+ */
+export const MAX_PASSWORD_LENGTH = 1024;
+
+/** The longest address forwarded to WorkOS — the standard's own ceiling. */
+export const MAX_EMAIL_LENGTH = 320;
+
+/**
+ * The longest pending-authentication token accepted back from a browser. WorkOS
+ * hands these out with an `email_verification_required` answer; they are opaque
+ * and short, and anything far longer is not one.
+ */
+export const MAX_PENDING_TOKEN_LENGTH = 2048;
+
+/** Printable ASCII without spaces: what an opaque WorkOS token can be made of. */
+const PENDING_TOKEN_PATTERN = /^[\x21-\x7e]+$/;
+
+/**
+ * The longest password-reset token accepted from a browser. WorkOS's are short
+ * and opaque (about 25 characters); the bound exists so that a hostile body is
+ * refused on shape before it is forwarded.
+ */
+export const MAX_RESET_TOKEN_LENGTH = 256;
+
+/**
+ * What a reset token can be made of: RFC 3986's unreserved characters, because
+ * it arrives as a query parameter in the link WorkOS emails, unencoded.
+ */
+export const RESET_TOKEN_PATTERN = /^[A-Za-z0-9._~-]+$/;
+
+/**
+ * The shortest password a new one may be — WorkOS's own default policy
+ * (`min_length` 10, beside a zxcvbn score of 3 and "does not contain the
+ * address"). Held here, on the server, so that the commonest refusal is the
+ * same answer for every address and never needs WorkOS to give it; the page
+ * also estimates the score before it lets the form go.
+ */
+export const MIN_NEW_PASSWORD_LENGTH = 10;
+
+/**
  * The provider could not be asked, as opposed to answering "no".
  *
  * Its own class because the two need opposite responses: a refused code is the
@@ -183,6 +235,12 @@ export class AuthenticationStepRequired extends IdentityVerificationError {
     readonly pendingAuthenticationToken: string | null,
     /** The user's TOTP factor, for `mfa_challenge`. */
     readonly totpFactorId: string | null,
+    /**
+     * For `organization_selection_required`: the WorkOS organisations the user
+     * may continue into, in the order WorkOS listed them. Ids only — the names
+     * WorkOS sends beside them are never read.
+     */
+    readonly organizationIds: readonly string[] = [],
   ) {
     super(code);
     this.name = 'AuthenticationStepRequired';
@@ -218,6 +276,14 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
     codeChallenge: string;
     /** A WorkOS organisation id, to start that organisation's SSO directly. */
     organizationId?: string | undefined;
+    /**
+     * Go straight to one OAuth provider — `GoogleOAuth`, the in-app sign-in
+     * page's "Continue with Google" — instead of AuthKit's hosted page. WorkOS
+     * redirects to Google itself and back to the callback; the person never
+     * sees a WorkOS screen. Ignored beside `organizationId`, which wins.
+     */
+    provider?: 'GoogleOAuth' | undefined;
+    /** For AuthKit's hosted page only; meaningless beside a provider. */
     screenHint?: 'sign-up' | 'sign-in' | undefined;
     /**
      * Ask the provider to make the person authenticate again even if it holds a
@@ -226,18 +292,19 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
      */
     maxAge?: number | undefined;
   }): string {
+    const viaAuthKit = params.organizationId === undefined && params.provider === undefined;
     return this.#api.userManagement.getAuthorizationUrl({
       // An SSO deep link names the organisation instead of the provider:
       // WorkOS takes exactly one of the two.
-      ...(params.organizationId === undefined
-        ? { provider: 'authkit' }
-        : { organizationId: params.organizationId }),
+      ...(params.organizationId !== undefined
+        ? { organizationId: params.organizationId }
+        : { provider: params.provider ?? 'authkit' }),
       clientId: this.#config.clientId,
       redirectUri: this.#config.redirectUri,
       state: params.state,
       codeChallenge: params.codeChallenge,
       codeChallengeMethod: 'S256',
-      ...(params.screenHint === undefined ? {} : { screenHint: params.screenHint }),
+      ...(params.screenHint === undefined || !viaAuthKit ? {} : { screenHint: params.screenHint }),
       ...(params.maxAge === undefined ? {} : { maxAge: params.maxAge }),
     });
   }
@@ -257,19 +324,115 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
   ): Promise<AuthorizationCodeExchange<WorkosIdentity>> {
     assertCodeShape(code, CODE_PATTERN);
 
-    let response: WorkosAuthentication;
-    try {
-      response = await this.#api.userManagement.authenticateWithCode({
-        clientId: this.#config.clientId,
-        code,
-        codeVerifier: context.codeVerifier,
-        ...requestFacts(context),
-      });
-    } catch (cause) {
-      throw providerFailure(cause);
+    return this.#authenticate(
+      () =>
+        this.#api.userManagement.authenticateWithCode({
+          clientId: this.#config.clientId,
+          code,
+          codeVerifier: context.codeVerifier,
+          ...requestFacts(context),
+        }),
+      context,
+      { credential: false },
+    );
+  }
+
+  /**
+   * Signs a person in with the email and password they typed on xecret's own
+   * sign-in page — WorkOS's headless password authentication, the same
+   * identity a code exchange would have produced, minted the same way.
+   *
+   * The password is forwarded once, over this authenticated call, and kept
+   * nowhere: not in a variable that outlives the call, not in an error, not in
+   * a log. A wrong one, or an address with no account, is the same
+   * `IdentityVerificationError` — WorkOS does not tell them apart, and neither
+   * does anything above this.
+   *
+   * WorkOS can answer "one more step" instead of a user: most often
+   * `email_verification_required`, for an address it has not verified, which
+   * reaches the caller as an {@link AuthenticationStepRequired} carrying the
+   * pending token that {@link completeEmailVerification} finishes with.
+   */
+  async signInWithPassword(
+    params: { email: string; password: string },
+    context: Omit<CodeExchangeContext, 'codeVerifier'>,
+  ): Promise<AuthorizationCodeExchange<WorkosIdentity>> {
+    assertEmailShape(params.email);
+    if (
+      typeof params.password !== 'string' ||
+      params.password === '' ||
+      params.password.length > MAX_PASSWORD_LENGTH
+    ) {
+      throw new IdentityVerificationError('malformed-password');
     }
 
-    return this.#toExchange(response);
+    return this.#authenticate(
+      () =>
+        this.#api.userManagement.authenticateWithPassword({
+          clientId: this.#config.clientId,
+          email: params.email,
+          password: params.password,
+          ...requestFacts(context),
+        }),
+      context,
+      { credential: true },
+    );
+  }
+
+  /**
+   * Signs a person in with the six-digit code WorkOS emailed them
+   * ({@link createMagicAuth}) — the sign-up page's code, which proves the inbox
+   * before the chosen password is set ({@link setPassword}), and the
+   * code-only sign-in no page links to any more. Unlike
+   * {@link authenticateWithMagicAuth}, which only says whose inbox a code
+   * reached (the vault reset's second lock), this answers the whole exchange,
+   * for the sign-in to be built on.
+   */
+  async signInWithMagicAuth(
+    params: { email: string; code: string },
+    context: Omit<CodeExchangeContext, 'codeVerifier'>,
+  ): Promise<AuthorizationCodeExchange<WorkosIdentity>> {
+    assertEmailShape(params.email);
+    assertCodeShape(params.code, MAGIC_AUTH_CODE_PATTERN);
+
+    return this.#authenticate(
+      () =>
+        this.#api.userManagement.authenticateWithMagicAuth({
+          clientId: this.#config.clientId,
+          code: params.code,
+          email: params.email,
+          ...requestFacts(context),
+        }),
+      context,
+      { credential: true },
+    );
+  }
+
+  /**
+   * Finishes a sign-in WorkOS paused with `email_verification_required`: the
+   * code WorkOS emailed to the address, with the pending token from the paused
+   * answer. A right code verifies the address at WorkOS and authenticates in
+   * one call, and the user it answers is verified — which is what lets the
+   * sign-in past `prepareSignIn`'s step 2.
+   */
+  async completeEmailVerification(
+    params: { code: string; pendingAuthenticationToken: string },
+    context: Omit<CodeExchangeContext, 'codeVerifier'>,
+  ): Promise<AuthorizationCodeExchange<WorkosIdentity>> {
+    assertCodeShape(params.code, MAGIC_AUTH_CODE_PATTERN);
+    assertPendingTokenShape(params.pendingAuthenticationToken);
+
+    return this.#authenticate(
+      () =>
+        this.#api.userManagement.authenticateWithEmailVerification({
+          clientId: this.#config.clientId,
+          code: params.code,
+          pendingAuthenticationToken: params.pendingAuthenticationToken,
+          ...requestFacts(context),
+        }),
+      context,
+      { credential: true },
+    );
   }
 
   /**
@@ -294,7 +457,110 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
       });
       return { workosUserId: created.userId, expiresAt: created.expiresAt };
     } catch (cause) {
-      throw providerFailure(cause);
+      // `credential`: a 403 that names its reason is about the address — WorkOS
+      // declining it — not this deployment's key, and the sign-in page answers
+      // every address the same. A bare 403, and a method switched off, are
+      // still read as configuration.
+      throw providerFailure(cause, { credential: true });
+    }
+  }
+
+  /**
+   * Has WorkOS email a password-reset link to `email` — the API is marked
+   * "sends email", and the link is the environment's **password reset URL**
+   * (a dashboard setting: Applications → the application → Redirects) with
+   * `?token=` appended. That URL must be this deployment's
+   * `/sign-in/reset-password`; its default is AuthKit's own page
+   * (`docs/operations/workos-environments.md` §5).
+   *
+   * WorkOS answers the reset object with the token and the finished link in
+   * it, so that an application which sends its own email can. This one does
+   * not, and both are dropped here, unread, exactly as {@link createMagicAuth}
+   * drops its code: nothing that can complete a reset reaches a caller, a log
+   * or a row. Nothing is returned at all — not even whose user it was, which
+   * the route must not be able to tell apart from an address with none.
+   *
+   * A reset works for any WorkOS user, including one that has never had a
+   * password — one made by an emailed code, or by Google: the password it sets
+   * is then their first. That is WorkOS's documented answer for users imported
+   * without passwords ("trigger a password reset flow using the WorkOS Password
+   * Reset API"), and it is what lets a code-only account arm the vault reset's
+   * first lock with a password.
+   */
+  async sendPasswordReset(email: string): Promise<void> {
+    assertEmailShape(email);
+    try {
+      await this.#api.userManagement.createPasswordReset({ email });
+    } catch (cause) {
+      // `credential`: a named 403 is WorkOS declining the address, not this
+      // deployment's key — the same reading as a Magic Auth request. An address
+      // with no user is a 404 whose message names the address; only the code
+      // is ever read from it.
+      throw providerFailure(cause, { credential: true });
+    }
+  }
+
+  /**
+   * Sets a new password with the token from the emailed link
+   * (`/user_management/password_reset/confirm`). WorkOS verifies the address
+   * as it does — the link reached the inbox — and revokes the WorkOS user's
+   * own sessions; xecret's are ended by the caller.
+   *
+   * Answers whose user it was, from WorkOS's answer, and nothing else. No
+   * session comes back from WorkOS, and none is made here: the person signs in
+   * with the new password (see `server/password-reset.ts` for why).
+   *
+   * ── Its refusals, sorted ──
+   * WorkOS reports a token it never issued as a 404 whose *message quotes the
+   * token* — so no message is ever read, only codes — and an expired token and
+   * a password its policy refuses together, as one 400 `password_reset_error`
+   * with the reasons in `errors`. Either the token is unusable
+   * (`reset-token-invalid`) or, with a good token, the password is
+   * (`weak-password`). Everything else is {@link providerFailure}'s.
+   */
+  async resetPassword(params: {
+    token: string;
+    newPassword: string;
+  }): Promise<{ workosUserId: string; email: string }> {
+    assertResetTokenShape(params.token);
+    assertNewPasswordShape(params.newPassword);
+
+    let user: { id: string; email: string };
+    try {
+      ({ user } = await this.#api.userManagement.resetPassword({
+        token: params.token,
+        newPassword: params.newPassword,
+      }));
+    } catch (cause) {
+      throw passwordFailure(cause, { reset: true });
+    }
+    if (typeof user.email !== 'string' || user.email === '') {
+      throw new IdentityVerificationError('no-email');
+    }
+    return { workosUserId: user.id, email: user.email };
+  }
+
+  /**
+   * Sets the password of a WorkOS user whose inbox was **just** proven — the
+   * in-app sign-up's last step, after its emailed code was accepted
+   * (`POST /api/auth/sign-up`). Never called before that proof: a password set
+   * on an address nobody has proven is the pre-account takeover PR #100's
+   * note 12 rules out (the attacker's password would survive the owner's
+   * verification, by whatever route it came).
+   *
+   * A password WorkOS's policy refuses is `weak-password`; anything else is
+   * {@link providerFailure}'s, read as this deployment's call (a 401 or 403 here
+   * is the key, never the person).
+   */
+  async setPassword(workosUserId: string, password: string): Promise<void> {
+    if (typeof workosUserId !== 'string' || !WORKOS_USER_ID_PATTERN.test(workosUserId)) {
+      throw new IdentityVerificationError('malformed-subject');
+    }
+    assertNewPasswordShape(password);
+    try {
+      await this.#api.userManagement.updateUser({ userId: workosUserId, password });
+    } catch (cause) {
+      throw passwordFailure(cause, { reset: false });
     }
   }
 
@@ -562,6 +828,64 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
     return this.#config.clientId;
   }
 
+  /**
+   * One authenticate call, its failure sorted ({@link providerFailure}), and
+   * its answer minted into an exchange — the path every way of signing in
+   * shares, so a password, an emailed code and an authorization code all reach
+   * `prepareSignIn` as the same object, minted in the same place.
+   *
+   * ── Organisation selection ──
+   * WorkOS answers `organization_selection_required` for a user who belongs to
+   * more than one *WorkOS* organisation — which a person does once they have
+   * signed in through more than one organisation's single sign-on. AuthKit's
+   * hosted page asks the person to pick; nothing here does, because nothing
+   * here reads the choice: xecret decides its own organisations, and the
+   * organisation of a sign-in that was not single sign-on is ignored by every
+   * step that grants anything (`signInFactsOf` keys on `SSO` *and* the
+   * organisation). So the first organisation WorkOS listed is selected and the
+   * authentication finished. Its answer names that organisation, which the
+   * sign-in did not ask for — so the sign-in is held back for the person to
+   * confirm, exactly as it was when AuthKit asked them to pick.
+   */
+  async #authenticate(
+    call: () => Promise<WorkosAuthentication>,
+    context: Omit<CodeExchangeContext, 'codeVerifier'>,
+    options: { credential: boolean },
+  ): Promise<AuthorizationCodeExchange<WorkosIdentity>> {
+    let response: WorkosAuthentication;
+    try {
+      response = await call();
+    } catch (cause) {
+      const failure = providerFailure(cause, options);
+      if (
+        !(failure instanceof AuthenticationStepRequired) ||
+        failure.code !== 'organization_selection_required'
+      ) {
+        throw failure;
+      }
+      response = await this.#selectOrganization(failure, context);
+    }
+    return this.#toExchange(response);
+  }
+
+  async #selectOrganization(
+    step: AuthenticationStepRequired,
+    context: Omit<CodeExchangeContext, 'codeVerifier'>,
+  ): Promise<WorkosAuthentication> {
+    const organizationId = step.organizationIds[0];
+    if (step.pendingAuthenticationToken === null || organizationId === undefined) throw step;
+    try {
+      return await this.#api.userManagement.authenticateWithOrganizationSelection({
+        clientId: this.#config.clientId,
+        pendingAuthenticationToken: step.pendingAuthenticationToken,
+        organizationId,
+        ...requestFacts(context),
+      });
+    } catch (cause) {
+      throw providerFailure(cause);
+    }
+  }
+
   #toExchange(response: WorkosAuthentication): AuthorizationCodeExchange<WorkosIdentity> {
     const user = response.user;
     if (typeof user.email !== 'string' || user.email === '') {
@@ -685,6 +1009,109 @@ function assertCodeShape(code: string, pattern: RegExp): void {
   if (!pattern.test(code)) throw new IdentityVerificationError('malformed-code');
 }
 
+/** An address on shape alone — an `@` with something either side, bounded. */
+function assertEmailShape(email: string): void {
+  if (
+    typeof email !== 'string' ||
+    email.length > MAX_EMAIL_LENGTH ||
+    !/^[^\s@]+@[^\s@]+$/.test(email)
+  ) {
+    throw new IdentityVerificationError('malformed-email');
+  }
+}
+
+function assertPendingTokenShape(token: string): void {
+  if (
+    typeof token !== 'string' ||
+    token.length > MAX_PENDING_TOKEN_LENGTH ||
+    !PENDING_TOKEN_PATTERN.test(token)
+  ) {
+    throw new IdentityVerificationError('malformed-pending-token');
+  }
+}
+
+function assertResetTokenShape(token: string): void {
+  if (
+    typeof token !== 'string' ||
+    token === '' ||
+    token.length > MAX_RESET_TOKEN_LENGTH ||
+    !RESET_TOKEN_PATTERN.test(token)
+  ) {
+    throw new IdentityVerificationError('reset-token-invalid');
+  }
+}
+
+/** A password about to be *set*: WorkOS's own length floor, and the forwarding bound. */
+function assertNewPasswordShape(password: string): void {
+  if (
+    typeof password !== 'string' ||
+    password.length < MIN_NEW_PASSWORD_LENGTH ||
+    password.length > MAX_PASSWORD_LENGTH
+  ) {
+    throw new IdentityVerificationError('weak-password');
+  }
+}
+
+/** WorkOS's codes for a password its policy refuses, on a user update and inside a reset. */
+const PASSWORD_POLICY_CODES: ReadonlySet<string> = new Set([
+  'password_strength_error',
+  'password_too_short',
+  'password_too_long',
+  'password_too_weak',
+  'password_contains_email',
+  'password_pwned',
+]);
+
+/**
+ * Sorts a failed password reset or password update. Read from codes only —
+ * never from a message, which for an unknown reset token quotes the token.
+ *
+ *  - `reset-token-invalid`: a token WorkOS never issued (404,
+ *    `password_reset_token_not_found`), or one past its fifteen minutes
+ *    (`password_reset_token_expired` inside `password_reset_error`). The token
+ *    wins over a weak password reported beside it: either way the person needs
+ *    a new link.
+ *  - `weak-password`: WorkOS's password policy, alone.
+ *  - Anything else: {@link providerFailure}'s — a timeout or an outage
+ *    unavailable, never a refusal; for the reset (a credential, of sorts), a
+ *    named 403 is the token's problem, not this deployment's key.
+ */
+function passwordFailure(cause: unknown, options: { reset: boolean }): Error {
+  if (cause instanceof IdentityVerificationError) return cause;
+  const code = readString(cause, 'code') ?? readString(cause, 'error');
+  const items = errorItemCodes(cause);
+  const status = readNumber(cause, 'status');
+
+  if (options.reset) {
+    if (
+      code === 'password_reset_token_not_found' ||
+      items.includes('password_reset_token_expired') ||
+      (status === 404 && code !== undefined)
+    ) {
+      return new IdentityVerificationError('reset-token-invalid');
+    }
+  }
+  if (
+    (code !== undefined && PASSWORD_POLICY_CODES.has(code)) ||
+    ((code === 'password_reset_error' || code === undefined) &&
+      items.length > 0 &&
+      items.every((item) => PASSWORD_POLICY_CODES.has(item)))
+  ) {
+    return new IdentityVerificationError('weak-password');
+  }
+  return providerFailure(cause, { credential: options.reset });
+}
+
+/** The `code` of each entry in a WorkOS error's `errors` list, where it has one. */
+function errorItemCodes(cause: unknown): string[] {
+  if (typeof cause !== 'object' || cause === null) return [];
+  const list = (cause as Record<string, unknown>)['errors'];
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((item: unknown) => readString(item, 'code'))
+    .filter((code): code is string => code !== undefined);
+}
+
 function requestFacts(context: { ipAddress: string | null; userAgent: string | null }) {
   return {
     ...(context.ipAddress === null ? {} : { ipAddress: context.ipAddress }),
@@ -706,8 +1133,17 @@ function nonEmpty(value: string | undefined): string | null {
  * The categories are for logs and metrics only — a wave of `invalid_grant` is
  * people double-clicking, a wave of `misconfigured` is a rotated key — and the
  * caller tells a person only that sign-in failed or is unavailable.
+ *
+ * ── `credential` ──
+ * For the calls that check something a person typed — a password, an emailed
+ * code. WorkOS answers its authenticate endpoint's refusals with 400 *or* 403
+ * (the step answers show both), and a 403 there that names its reason —
+ * `invalid_credentials`, a wrong or expired code — is the person's mistake,
+ * not this deployment's key. Without a reason it is still read as the key: a
+ * refused API key is what a bare 401 or 403 means everywhere else, and the SDK
+ * strips every 401 of its body, so a 401 is never read as a wrong password.
  */
-export function providerFailure(cause: unknown): Error {
+export function providerFailure(cause: unknown, options: { credential?: boolean } = {}): Error {
   if (cause instanceof IdentityVerificationError) return cause;
 
   // WorkOS's "one more step" answers first, by their code: their HTTP status
@@ -729,9 +1165,20 @@ export function providerFailure(cause: unknown): Error {
   }
 
   const status = readNumber(cause, 'status');
+  const named = readString(cause, 'error') ?? readString(cause, 'code');
+  if (options.credential === true && status === 403 && named !== undefined) {
+    return new IdentityVerificationError(
+      named.replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'rejected',
+    );
+  }
   if (status === 401 || status === 403)
     return new IdentityProviderUnavailableError('misconfigured');
   if (status === 429) return new IdentityProviderUnavailableError('rate-limited');
+  // The SDK's own timeout: it aborts the fetch and raises an `OauthException`
+  // with status 408 and `error: "Request timeout"` — a request WorkOS never
+  // answered, not one it refused. Before the 4xx branch below, which would
+  // otherwise read it as a wrong password or code, and count it.
+  if (status === 408) return new IdentityProviderUnavailableError('unreachable');
   if (status === undefined || status >= 500) {
     return new IdentityProviderUnavailableError('unreachable');
   }
@@ -763,7 +1210,18 @@ function authenticationStep(cause: unknown): AuthenticationStepRequired | null {
           readString(factor, 'type') === 'totp' && readString(factor, 'id') !== undefined,
       )
     : undefined;
-  return new AuthenticationStepRequired(code, pending, readString(totp, 'id') ?? null);
+  const organizations = raw?.['organizations'];
+  const organizationIds = Array.isArray(organizations)
+    ? organizations
+        .map((organization: unknown) => readString(organization, 'id'))
+        .filter((id): id is string => id !== undefined)
+    : [];
+  return new AuthenticationStepRequired(
+    code,
+    pending,
+    readString(totp, 'id') ?? null,
+    organizationIds,
+  );
 }
 
 function readRecord(value: unknown, key: string): Record<string, unknown> | undefined {
@@ -786,8 +1244,39 @@ function readString(value: unknown, key: string): string | undefined {
   return typeof field === 'string' && field !== '' ? field : undefined;
 }
 
-/** The isolate's client, keyed by the credentials it was built with. */
-let cachedClient: { key: string; api: WorkosApi } | undefined;
+/**
+ * How long a call a person is waiting on may take, in milliseconds. The SDK's
+ * own default is a minute.
+ */
+export const INTERACTIVE_TIMEOUT_MS = 10_000;
+
+/**
+ * How often such a call is retried: never. The SDK retries 408, 429 and 5xx
+ * three times by default, sleeping for whatever `Retry-After` says (up to a
+ * minute each) — so a WorkOS that stops answering held a sign-in page for about
+ * four minutes, and a 429 anybody could provoke for an address (WorkOS limits
+ * attempts per address) put the request to sleep for three. And none of these
+ * calls is safe to repeat blind: an authorization code is single-use, a
+ * password or code attempt counts against the address at WorkOS, and a Magic
+ * Auth request sends mail.
+ */
+export const INTERACTIVE_MAX_RETRIES = 0;
+
+/** The SDK client options for one kind of caller. */
+export function workosClientOptions(
+  clientId: string,
+  kind: 'interactive' | 'background',
+): { clientId: string; timeout?: number; maxRetries?: number } {
+  return kind === 'interactive'
+    ? { clientId, timeout: INTERACTIVE_TIMEOUT_MS, maxRetries: INTERACTIVE_MAX_RETRIES }
+    : { clientId };
+}
+
+/** The isolate's clients, one per kind, each keyed by the credentials it was built with. */
+const cachedClients: Record<
+  'interactive' | 'background',
+  { key: string; api: WorkosApi } | undefined
+> = { interactive: undefined, background: undefined };
 
 /**
  * Builds the provider from the request's bindings.
@@ -796,22 +1285,38 @@ let cachedClient: { key: string; api: WorkosApi } | undefined;
  * per-request state, and building it is not free. Keyed on the credentials, so
  * an isolate can never answer with a client configured for different ones.
  *
+ * ── `interactive` ──
+ * For every call a person is watching a page wait on — every sign-in path,
+ * the callback's code exchange included, and the vault reset's emailed code:
+ * {@link INTERACTIVE_TIMEOUT_MS} and no retries. Failing fast is the kind
+ * answer there: "sign-in is temporarily unavailable, try again" in ten seconds
+ * beats a spinner for four minutes, and the person's own retry is a fresh,
+ * deliberate attempt. Everything else — the SSO settings' organisation and
+ * connection calls — keeps the SDK's defaults, where a retry is harmless and
+ * patience is cheap.
+ *
  * A missing API key or client id is a `MissingBindingError`, which the route
  * wrapper turns into a 503 — this deployment cannot sign anybody in, and that
  * is an operator's problem rather than the person's at the door.
  */
-export function workosProvider(env: Bindings): WorkosIdentityProvider {
+export function workosProvider(
+  env: Bindings,
+  options: { interactive?: boolean } = {},
+): WorkosIdentityProvider {
   const apiKey = env.WORKOS_API_KEY;
   if (!apiKey) throw new MissingBindingError('WORKOS_API_KEY');
   const clientId = env.WORKOS_CLIENT_ID;
   if (!clientId) throw new MissingBindingError('WORKOS_CLIENT_ID');
 
+  const kind = options.interactive === true ? 'interactive' : 'background';
   const cacheKey = `${clientId}\u0000${apiKey}`;
-  if (cachedClient?.key !== cacheKey) {
-    cachedClient = { key: cacheKey, api: new WorkOS(apiKey, { clientId }) };
+  let cached = cachedClients[kind];
+  if (cached?.key !== cacheKey) {
+    cached = { key: cacheKey, api: new WorkOS(apiKey, workosClientOptions(clientId, kind)) };
+    cachedClients[kind] = cached;
   }
 
-  return new WorkosIdentityProvider(cachedClient.api, {
+  return new WorkosIdentityProvider(cached.api, {
     clientId,
     redirectUri: callbackUrl(env),
   });
@@ -830,5 +1335,6 @@ export function callbackUrl(env: Bindings): string {
 
 /** Exists for tests. */
 export function resetWorkosClientForTesting(): void {
-  cachedClient = undefined;
+  cachedClients.interactive = undefined;
+  cachedClients.background = undefined;
 }

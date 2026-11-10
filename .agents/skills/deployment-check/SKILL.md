@@ -210,10 +210,23 @@ Look at them in **both** WorkOS environments.
   offers "email me a code" on the hosted sign-in page; the sign-in callback
   deliberately does not count such a sign-in as the reset's first lock.
 - **The default Magic Auth email is enabled** (Emails → Configuration). The
-  vault-reset re-authentication creates a Magic Auth code through the API, and
-  it is WorkOS, not xecret, that emails it — xecret never sees the code. With
-  that email turned off the code is created and never arrives, and nobody can
-  reset a vault.
+  vault-reset re-authentication and the in-app sign-up create a Magic Auth code
+  through the API, and it is WorkOS, not xecret, that emails it — xecret never
+  sees the code. With that email turned off the code is created and never
+  arrives, and nobody can sign up or reset a vault.
+- **The password reset URL is this deployment's** (Applications → the
+  application → Redirects → Password reset URL =
+  `<XECRET_PUBLIC_URL>/sign-in/reset-password`), and **the default password
+  reset email is enabled** (Emails → Configuration). The in-app "Forgot
+  password?" has WorkOS send the reset email, whose link WorkOS builds from that
+  setting; its default is AuthKit's hosted reset page, which would take every
+  reset away from xecret. Not `/reset-password` — a permanent redirect for the
+  Firebase-era links.
+- **Password sign-up is off** in the authentication settings (password
+  *sign-in* stays on). AuthKit's hosted page, still reachable, would otherwise
+  let a stranger create an account at somebody else's address with a password
+  of their choosing — a pre-account takeover the in-app sign-up avoids by
+  setting the password only after the emailed code is accepted.
 - **MFA, if enabled, changes the vault reset.** With MFA on in WorkOS and an
   authenticator app enrolled on the account, WorkOS answers the emailed code
   with an MFA challenge, and the reset also needs the user's authenticator

@@ -3,13 +3,15 @@ import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 
 /**
- * The links that start a sign-in, and the links between the two screens that
- * offer one.
+ * The links that start a sign-in that leaves the site, and the links between
+ * the two screens that offer one.
  *
- * Sign-in itself happens on AuthKit's hosted page. Every screen here does one
- * thing — sends the browser to `GET /api/auth/login` — and the only part of
- * that worth getting wrong is the query string, because it carries `next`
- * through a hop the person never sees. That matters most for `xecret login`:
+ * A password, or a sign-up's emailed code, is typed on the page itself. What
+ * leaves the site — "Continue with Google", an organisation's single sign-on,
+ * and the re-authentication flows that still use AuthKit's hosted page — goes
+ * through `GET /api/auth/login`, and the only part of that worth getting wrong
+ * is the query string, because it carries `next` through a hop the person
+ * never sees. That matters most for `xecret login`:
  * the CLI opens `/cli/authorize?challenge=…&port=…&device=…&state=…`, the API
  * client's 401 bounce turns that into `/sign-in?next=<the whole thing,
  * encoded>`, and the consent screen only comes back if every byte of its query
@@ -27,7 +29,7 @@ import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
  * page, a client card on the security screen and a unit test can all call it.
  */
 
-/** `GET` — validates `next`, writes the state cookie, and 307s to AuthKit. */
+/** `GET` — validates `next`, writes the state cookie, and 307s to WorkOS. */
 export const LOGIN_ROUTE = '/api/auth/login';
 
 export interface LoginHrefOptions {
@@ -42,6 +44,12 @@ export interface LoginHrefOptions {
    * destination and get the same link.
    */
   next?: string | null | undefined;
+  /**
+   * Go straight to Google — "Continue with Google". WorkOS redirects to
+   * Google itself, and Google back to the callback; no WorkOS page is shown.
+   * Ignored with `reauth` and `org`, as the login route ignores it.
+   */
+  provider?: 'google' | undefined;
   /** Open AuthKit on its sign-up screen rather than its sign-in screen. */
   signUp?: boolean;
   /**
@@ -70,9 +78,10 @@ export interface LoginHrefOptions {
   continueToken?: string | null | undefined;
 }
 
-/** The `/api/auth/login` link for one way into AuthKit. */
+/** The `/api/auth/login` link for one way out to WorkOS. */
 export function loginHref({
   next,
+  provider,
   signUp = false,
   reauth = false,
   org = null,
@@ -86,7 +95,7 @@ export function loginHref({
   else if (org !== null && isOrgSlug(org)) {
     query.set('org', org);
     if (continueToken !== null && continueToken !== '') query.set('continue', continueToken);
-  }
+  } else if (provider === 'google') query.set('provider', 'google');
   appendNext(query, next);
   return withQuery(LOGIN_ROUTE, query);
 }
@@ -107,11 +116,14 @@ function isOrgSlug(value: string): boolean {
   return value.length <= SLUG_MAX_LENGTH && SLUG_PATTERN.test(value);
 }
 
-/** The two screens that start a sign-in, for the cross-link each shows the other. */
-export type AuthScreen = '/sign-in' | '/sign-up';
+/**
+ * The screens that start a sign-in, for the cross-links between them: the two
+ * that start one, and the reset request a forgotten password goes to.
+ */
+export type AuthScreen = '/sign-in' | '/sign-up' | '/sign-in/forgot-password';
 
 /**
- * A link to the other authentication screen that keeps `next`.
+ * A link to another authentication screen that keeps `next`.
  *
  * Somebody bounced to `/sign-in?next=/cli/authorize?…` who has no account yet
  * clicks "Create an account"; dropping `next` there would sign them up and then

@@ -165,6 +165,20 @@ export type GuessReservation =
   | { ok: false; reason: 'user-budget' };
 
 /**
+ * Gives back a guess {@link reserveReauthGuess} took, when WorkOS never judged
+ * it — it timed out, or was unreachable or rate-limiting us. Such a guess told
+ * nobody anything, so charging it would only spend the person's allowance on
+ * WorkOS's outage. Any answer WorkOS *did* give keeps its charge, classified or
+ * not. One statement; never below zero, and never on a spent attempt.
+ */
+export async function releaseReauthGuess(exec: Executor, attemptId: string): Promise<void> {
+  await exec
+    .update(reauthentications)
+    .set({ codeAttempts: sql`greatest(${reauthentications.codeAttempts} - 1, 0)` })
+    .where(and(eq(reauthentications.id, attemptId), isNull(reauthentications.usedAt)));
+}
+
+/**
  * Step 3: reserves one guess, atomically, before anybody asks WorkOS whether it
  * is right.
  *
