@@ -1,62 +1,92 @@
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
-import type { PlanFeatures } from '@xecret/core/entitlements';
 
+import {
+  formatRetention,
+  LIMITS,
+  PLAN_COMPARISON,
+  PRICING_FAQ,
+  seatFloorCaveat,
+} from '@/components/plans/pricing-content';
+import type { MatrixGroup, PricingFaqId, PricingPlanId } from '@/components/plans/pricing-content';
+import type { FaqItem } from '@/components/marketing/faq';
 import { appPath, withQuery } from '../_lib/paths';
 
 /**
  * What the in-app plans page says about each plan.
  *
- * ── Two sources, and which one wins ──
+ * ── Where each thing on the page comes from ──
  * Every limit and every capability is read from `PLANS` in
  * `@xecret/core/entitlements` — the file the server enforces from — exactly as
  * the public pricing page reads them. A plans page inside the product that
  * promised a ceiling the server does not hold would be the worst place to
  * make that mistake: the reader is one click from paying for it.
  *
+ * The comparison table and the questions under it are not written here at
+ * all. They are `PLAN_COMPARISON` and `PRICING_FAQ` in
+ * `components/plans/pricing-content.ts`, the module the public pricing page
+ * renders its own matrix and FAQ from. The owner asked (2026-11-08) for this
+ * page to carry everything that table and that FAQ say rather than a reduced
+ * version of them, so both pages now render one set of rows and one set of
+ * answers, each in its own markup. What this file adds is only how this page
+ * uses them: the four columns an organisation on the hosted service can be on,
+ * the rows left out where nothing is sold, and the order the questions come in
+ * for somebody about to buy. A correction to a row or an answer is one edit
+ * there, and it reaches both pages.
+ *
  * The prices are the exception, for the reason `plans.ts` gives: a price is
  * typography and lives with the page that prints it. The public pricing page
- * cannot export its sheets (a `page.tsx` exports only what Next allows), so the
+ * keeps its five currency sheets beside the CSS that reveals them, so the
  * US-dollar figures are restated here and `upgrade-plans.test.ts` reads the
  * pricing page's source and fails if the two ever disagree — figure, unit,
  * yearly total and the "save up to" percentage alike. Dollars only: checkout
- * prices in the buyer's own currency, and the pricing page is where every
- * sheet is published. The overage rate is not restated at all: the page
- * receives `OVERAGE_RATE_TEXT` from its server component, the constant the
- * billing screen and the usage emails print.
+ * prices in the buyer's own currency. The overage rate is not restated at all:
+ * the page receives `OVERAGE_RATE_TEXT` from its server component, the constant
+ * the billing screen and the usage emails print.
  *
- * ── What is never said here ──
+ * ── What the cards never say ──
  * A capability the server does not enforce. A flag in `PLANS` is not enough:
  * the engine carries flags for things nobody has built (approvals, break-glass,
  * GitHub federation, scheduled secrets, single sign-on), and one for a thing
- * that is built and not gated — see `perEnvironmentGrants` below. A page whose
- * job is to persuade is exactly where either would quietly gain a tick, so the
- * capabilities listed are the flags with a `requireFeature` behind them, and
- * the test reads the server to prove each one has. Nor is a trial offered: the
- * pricing page offers none, so this page does not either.
+ * that is built and not gated — see `perEnvironmentGrants` below. The cards
+ * are this page's own copy, and their capability bullets name only flags with
+ * a `requireFeature` behind them. The shared table follows the same rule for
+ * its ticks — a gated row reads them from `PLANS` and names its flag, and the
+ * test reads the server for the gate behind each — and marks every announced,
+ * unbuilt capability "Coming soon" in every column that names it. Nor is a
+ * trial offered: the pricing page offers none, so this page does not either.
  *
  * ── Per-environment access: a discrepancy, and an open decision ──
  * `PLANS` gives `perEnvironmentGrants` to Team, and the public site sells
  * "roles and per-environment access" as a Team feature. But nothing checks the
  * flag — neither a `requireFeature` nor a read of `features.perEnvironmentGrants`
  * anywhere in the server: the grants routes write per-environment grants on
- * every plan. Selling it here, beside a checkout button, would charge people
- * for something they already have. Whether to enforce the gate or reword the
- * public copy is the owner's decision and is still pending; until it is made,
- * this page claims per-environment access nowhere — not as a Team bullet, not
- * as a table row, and not by implication ("everyone on Pro can read every
- * environment", or a Pro audience line about keeping people out of
- * production). The billing screen's plan sentences were cut back to the seat
- * floor for the same reason. Revisit this note when the decision lands.
+ * every plan. Selling it beside a checkout button charges people for something
+ * they already have.
+ *
+ * Until 2026-11-08 this page claimed it nowhere for that reason. The owner has
+ * since asked for this page to say what `/pricing` says, and it now does: the
+ * shared table's "Roles for members" and "Per-project and per-environment
+ * grants" rows (dashed on Free and Pro) and the shared answer to "What is the
+ * difference between Pro and Team?" appear here exactly as they appear there.
+ * The cards were not part of that request and still name neither, and the
+ * billing screen's plan sentences stay cut back to the seat floor. Whether to
+ * enforce the gate or reword the copy is still the owner's decision and still
+ * pending — and because both pages render one module, the correction is one
+ * edit that fixes both. The tripwire in `upgrade-plans.test.ts` fails the
+ * moment the server starts checking the flag, which is the signal to revisit
+ * this note.
  *
  * Where the claim lives today — the sweep that decision needs. Each of these
  * presents per-environment access as a Team plan boundary:
  *
+ *  - `components/plans/pricing-content.ts`, rendered by `/pricing` and by this
+ *    page — the matrix rows "Roles for members" and "Per-project and
+ *    per-environment grants", and the FAQ answer "What is the difference
+ *    between Pro and Team?" ("Team adds roles and per-environment grants …
+ *    That is the whole gate").
  *  - `app/pricing/page.tsx` — the Team card's "Roles and per-environment
  *    access" bullet; the Pro card's "Unlimited members — everyone can read
- *    every environment" and both audience lines; the matrix rows "Roles for
- *    members" and "Per-project and per-environment grants" (dashed on Free and
- *    Pro); and the FAQ answer "What is the difference between Pro and Team?"
- *    ("Team adds roles and per-environment grants … That is the whole gate").
+ *    every environment" and both audience lines.
  *  - `app/page.tsx` — the "What does it cost?" FAQ answer, both the pre-alpha
  *    and the payments-live versions ("Team … adds … roles and per-environment
  *    access").
@@ -75,11 +105,15 @@ import { appPath, withQuery } from '../_lib/paths';
  * per-environment access" guide link; and the FAQ category title "Members,
  * roles and per-environment access" in `app/faq/page.tsx`.
  *
- * Custom roles are the gate that does exist (`requireFeature(…,
- * 'customRoles')` on the roles routes and on assigning one) — at Enterprise,
- * per `PLANS`, so that is where this page names them. `/pricing` still marks
- * them "Coming soon" there, which the code no longer bears out; that page is
- * left for the same decision.
+ * ── Custom roles: resolved, corrected to match the gates (2026-11-08) ──
+ * Custom roles are the gate that does exist (`requireFeature(…, 'customRoles')`
+ * on defining, changing and assigning one) — at Enterprise, per `PLANS`. The
+ * shared table and the pricing page's Enterprise card marked them "Coming
+ * soon" anyway, so an Enterprise organisation here saw "Current plan" above a
+ * row saying its own feature did not exist. Corrected in review of #156 (the
+ * coordinator's call, which the owner may veto): the shared row reads its
+ * ticks from `PLANS` like every other gated row, the pricing page's card bullet
+ * lost its chip, and this page's Enterprise row names them again.
  */
 
 export type PaidPlanId = 'pro' | 'team';
@@ -153,11 +187,9 @@ export const YEARLY_SAVING_UP_TO = Math.max(yearlySaving('pro'), yearlySaving('t
 
 /* ── Limits, as sentences ──────────────────────────────────────────────────── */
 
-const LIMITS = {
-  free: PLANS.free.limits,
-  pro: PLANS.pro.limits,
-  team: PLANS.team.limits,
-} as const;
+// The limits are the shared module's `LIMITS` — `PLANS`' own, per plan — so
+// this page and the pricing page read one constant rather than two of the same
+// name.
 
 /** `3` → "3 members", `1` → "1 organisation", `null` → "Unlimited members". */
 function many(limit: number | null, one: string, other: string): string {
@@ -165,31 +197,15 @@ function many(limit: number | null, one: string, other: string): string {
   return `${limit.toLocaleString('en-GB')} ${limit === 1 ? one : other}`;
 }
 
-/** `20_000` → "20,000", `1_000_000` → "1 million" — the pricing page's rendering. */
-export function formatCount(value: number): string {
-  if (value >= 1_000_000) {
-    const millions = value / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)} million`;
-  }
-  return value.toLocaleString('en-GB');
-}
-
-/** `7` → "7 days", `365` → "1 year". */
-export function formatRetention(days: number): string {
-  if (days % 365 === 0) {
-    const years = days / 365;
-    return years === 1 ? '1 year' : `${years} years`;
-  }
-  return `${days} days`;
-}
-
 /**
- * The seat floor as a condition on the price — "Billed from 3 members up" — or
- * nothing for a plan without one. Under the figure, never as a tick: a minimum
- * charge is the opposite of an inclusion.
+ * The card's condition on its price — "Billed from 3 members up" — or `null`
+ * for a plan without a seat floor. Under the figure, never as a tick: a minimum
+ * charge is the opposite of an inclusion. The pricing page's own sentence,
+ * `seatFloorCaveat`; not to be confused with the shared module's `seatFloor`,
+ * which is the comparison table's cell ("3 members", "No minimum").
  */
-function seatFloor(seats: number): string | null {
-  return seats <= 1 ? null : `Billed from ${seats} members up`;
+function priceCaveat(seats: number): string | null {
+  return seatFloorCaveat(seats) ?? null;
 }
 
 /* ── The cards ─────────────────────────────────────────────────────────────── */
@@ -226,7 +242,7 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       `${formatRetention(LIMITS.free.auditRetentionDays)} of audit history`,
     ],
     includedFetches: LIMITS.free.includedFetchesPerMonth,
-    caveat: seatFloor(MINIMUM_SEATS.free),
+    caveat: priceCaveat(MINIMUM_SEATS.free),
     recommended: false,
   },
   {
@@ -246,7 +262,7 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       'Secret referencing, overrides, promotion and point-in-time restore',
     ],
     includedFetches: LIMITS.pro.includedFetchesPerMonth,
-    caveat: seatFloor(MINIMUM_SEATS.pro),
+    caveat: priceCaveat(MINIMUM_SEATS.pro),
     recommended: false,
   },
   {
@@ -265,13 +281,13 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
       'Plaintext export switched off per environment',
     ],
     includedFetches: LIMITS.team.includedFetchesPerMonth,
-    caveat: seatFloor(MINIMUM_SEATS.team),
+    caveat: priceCaveat(MINIMUM_SEATS.team),
     recommended: true,
   },
 ];
 
 /** The Enterprise row's condition on the (unpublished) price. */
-export const ENTERPRISE_CAVEAT = seatFloor(MINIMUM_SEATS.enterprise);
+export const ENTERPRISE_CAVEAT = priceCaveat(MINIMUM_SEATS.enterprise);
 
 /**
  * What happens past a plan's fetch allowance, as the line under it says it.
@@ -292,103 +308,107 @@ export function pastTheAllowance(
 
 /* ── What each plan unlocks ────────────────────────────────────────────────── */
 
+/** A column of the in-app comparison table. */
+export type ComparisonPlanId = Exclude<PricingPlanId, 'self-hosted'>;
+
 /**
- * The capabilities a paid plan adds that are built *and* enforced today, in
- * the order a reader meets them.
+ * The shared table's columns, less self-hosting.
  *
- * Keyed by the engine's own flag, so the ticks in the table are read from
- * `PLANS` rather than written here: move a capability to another plan in
- * `plans.ts` and the table follows. What is written here is only *which*
- * flags have a gate behind them — `upgrade-plans.test.ts` finds the
- * `requireFeature` call for every one. `perEnvironmentGrants` is deliberately
- * absent; the note at the top of this file says why.
+ * An organisation on this page is on the hosted service, and self-hosting is
+ * not a plan it can move to from here — on `/pricing` it is the alternative to
+ * buying, and it keeps its column there. The four left are the ones an
+ * organisation can be on: three to buy here, and Enterprise to ask about.
  */
-export const SHIPPED_CAPABILITIES: readonly {
-  readonly feature: keyof PlanFeatures;
-  readonly label: string;
-  readonly hint: string;
+export const COMPARISON_COLUMNS: readonly {
+  readonly id: ComparisonPlanId;
+  readonly name: string;
 }[] = [
-  {
-    feature: 'secretReferencing',
-    label: 'Secret referencing and environment inheritance',
-    hint: 'Point one secret at another instead of copying the value into both.',
-  },
-  {
-    feature: 'personalOverrides',
-    label: 'Personal local overrides',
-    hint: 'Replace a value on your own machine without changing it for the team.',
-  },
-  {
-    feature: 'environmentPromotion',
-    label: 'Environment promotion, with a diff',
-    hint: 'Move staging to production after seeing exactly what would change.',
-  },
-  {
-    feature: 'pointInTimeRestore',
-    label: 'Point-in-time restore',
-    hint: 'Roll a whole environment back to how it looked at a moment.',
-  },
-  {
-    feature: 'tokenIpAllowlist',
-    label: 'Token IP allowlists and lifetime policy',
-    hint: 'Restrict where a token may be used from, and how long it lives.',
-  },
-  {
-    feature: 'newIpReadAlerts',
-    label: 'Alerts on reads from new addresses',
-    hint: 'Owners and admins get an email the first time an environment is read from somewhere new.',
-  },
-  {
-    feature: 'secretPolicy',
-    label: 'A secret policy for names and values',
-    hint: 'Hold new secrets to a naming rule, a minimum strength and words they must not contain.',
-  },
-  {
-    feature: 'disableEnvExport',
-    label: 'Plaintext export switched off per environment',
-    hint: 'Stop an environment’s values being written to a file. xecret run keeps working.',
-  },
+  { id: 'free', name: PLANS.free.name },
+  { id: 'pro', name: PLANS.pro.name },
+  { id: 'team', name: PLANS.team.name },
+  { id: 'enterprise', name: PLANS.enterprise.name },
 ];
-
-export interface CapabilityRow {
-  readonly label: string;
-  readonly hint: string;
-  readonly on: Readonly<Record<OfferPlanId, boolean>>;
-}
-
-/** The label of the one row that is a limit rather than a flag. */
-export const WEBHOOKS_ROW = 'Webhooks on secret change';
 
 /**
- * The table under the cards: one row per shipped capability, plus webhooks —
- * a limit rather than a flag, carried by every plan whose ceiling is above
- * zero.
+ * The shared table as this page shows it: every group and every row where the
+ * installation sells. Where it sells nothing, two kinds of row are left out:
+ *
+ *  - the terms of a sale (`sale`) — the seat floor, what a machine costs, the
+ *    overage, the SAML add-on — by the rule the cards follow for the price;
+ *  - the facts about xecret's hosted service (`hosted`) — where the data sits,
+ *    support, the SLA, running on your own hardware — which are false on an
+ *    installation somebody else runs, and that is mostly who is reading here.
+ *
+ * What is left is the product: the limits the engine holds and the
+ * capabilities it gates, true on any installation.
  */
-export const CAPABILITY_ROWS: readonly CapabilityRow[] = [
-  ...SHIPPED_CAPABILITIES.slice(0, 5).map((capability) => rowFor(capability)),
-  {
-    label: WEBHOOKS_ROW,
-    hint: 'Notify your own systems when a value changes.',
-    on: {
-      free: (LIMITS.free.webhooks ?? 1) > 0,
-      pro: (LIMITS.pro.webhooks ?? 1) > 0,
-      team: (LIMITS.team.webhooks ?? 1) > 0,
-    },
-  },
-  ...SHIPPED_CAPABILITIES.slice(5).map((capability) => rowFor(capability)),
-];
-
-function rowFor(capability: (typeof SHIPPED_CAPABILITIES)[number]): CapabilityRow {
-  return {
-    label: capability.label,
-    hint: capability.hint,
-    on: {
-      free: PLANS.free.features[capability.feature],
-      pro: PLANS.pro.features[capability.feature],
-      team: PLANS.team.features[capability.feature],
-    },
-  };
+export function comparisonFor(selling: boolean): readonly MatrixGroup[] {
+  return PLAN_COMPARISON.map((group) => ({
+    title: group.title,
+    rows: group.rows.filter((row) => selling || (row.sale !== true && row.hosted !== true)),
+  })).filter((group) => group.rows.length > 0);
 }
+
+/** Enterprise's column header, in the pricing page's words. Must agree with `/pricing`; the test says so. */
+export const ENTERPRISE_PRICE = { price: 'Custom', unit: 'invoiced, with an SLA' } as const;
+
+/**
+ * The line under a paid plan's figure in the table header: which billing term
+ * the figure is for. Free and Enterprise have no term to name.
+ *
+ * In the header rather than left to the toggle above, because the yearly
+ * figure is a per-month rate that can only be bought twelve months at a time,
+ * and a reader who scrolled to the table should not have to scroll back up to
+ * find that out — the pricing page's header says it for the same reason.
+ */
+export function billingTerm(plan: ComparisonPlanId, period: BillingPeriod): string | null {
+  if (plan === 'free' || plan === 'enterprise') return null;
+  return period === 'yearly' ? 'billed yearly' : 'month to month';
+}
+
+/* ── The questions ─────────────────────────────────────────────────────────── */
+
+/**
+ * The order this page asks the shared questions in.
+ *
+ * Somebody on this page is deciding whether to buy, not whether to sign up, so
+ * how to pay and what it costs come first, then what is counted, then what
+ * changes later, and self-hosting — the way out of buying — last. A record
+ * over the questions' ids, so a question added to the shared FAQ fails to
+ * compile here until it is given a place: the page shows every question, and
+ * a new one cannot quietly fall off the end.
+ */
+const FAQ_ORDER: Readonly<Record<PricingFaqId, number>> = {
+  paying: 1,
+  'annual-price': 2,
+  members: 3,
+  machines: 4,
+  'pro-or-team': 5,
+  'moving-plans': 6,
+  'past-free': 7,
+  'billing-and-builds': 8,
+  'single-sign-on': 9,
+  'regional-prices': 10,
+  discounts: 11,
+  stopping: 12,
+  'self-hosting': 13,
+};
+
+/**
+ * The shared FAQ as this page answers it.
+ *
+ * Shown only where the installation sells — the questions are about money, and
+ * several quote prices — so every answer is the payments-live one, and where
+ * the public answer describes the public page (its currency sheets, its second
+ * price control) or sends the reader elsewhere to do what this page does, the
+ * entry's `inApp` answer instead.
+ */
+export const PURCHASE_FAQ: readonly (FaqItem & { readonly id: PricingFaqId })[] = [...PRICING_FAQ]
+  .sort((a, b) => FAQ_ORDER[a.id] - FAQ_ORDER[b.id])
+  .map((item) => {
+    const chosen = item.inApp ?? item.whenPaymentsLive ?? item;
+    return { id: item.id, question: chosen.question, answer: chosen.answer };
+  });
 
 /* ── Ceilings, and the plan that lifts one ─────────────────────────────────── */
 
