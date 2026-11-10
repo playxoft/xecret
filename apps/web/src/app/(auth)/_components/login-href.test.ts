@@ -120,6 +120,25 @@ describe('loginHref', () => {
     }
   });
 
+  it('goes straight to Google for "Continue with Google", carrying next intact', () => {
+    const url = new URL(loginHref({ provider: 'google', next: CLI_AUTHORIZE }), ORIGIN);
+    expect(url.pathname).toBe(LOGIN_ROUTE);
+    expect(url.searchParams.get('provider')).toBe('google');
+    expect(url.searchParams.get('next')).toBe(CLI_AUTHORIZE);
+    expect(url.searchParams.has('hint')).toBe(false);
+    expect(loginHref({ provider: 'google' })).toBe(`${LOGIN_ROUTE}?provider=google`);
+  });
+
+  it('never pairs Google with a re-authentication, a deep link or the sign-up hint', () => {
+    for (const options of [
+      { provider: 'google', reauth: true },
+      { provider: 'google', org: 'acme' },
+      { provider: 'google', signUp: true },
+    ] as const) {
+      expect(new URL(loginHref(options), ORIGIN).searchParams.has('provider')).toBe(false);
+    }
+  });
+
   it('never carries an API route as next (review round 2)', () => {
     expect(readLoginLink(loginHref({ next: '/api/auth/login?org=attacker-co' })).next).toBeNull();
   });

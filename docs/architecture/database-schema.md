@@ -914,6 +914,8 @@ users ──< retained_vaults ──< retained_vault_wraps, retained_vault_grant
 organizations ──< org_member_removals >── users — who was removed, so single sign-on does
   not re-admit them (0022, not drawn above)
 users ──< sign_in_confirmations — a held-back sign-in, spent once (0022, not drawn above)
+sign_in_failures — in-app sign-in attempts per throttle pool (HMAC-keyed); no FKs: most
+  rows name no account (0034, not drawn above)
 audit_logs — no FKs by design; references are soft
 ```
 
@@ -1009,7 +1011,20 @@ audit_logs — no FKs by design; references are soft
       three; every live Free organisation left above 3 is reported as a WARNING.
       lock_timeout 5s for the ALTER's ACCESS EXCLUSIVE. No column, no constraint;
       order against the build does not matter
+0034  sign_in_failures: in-app sign-in attempts per throttle pool — an address's shared
+      pool, or one known device's — keyed by an HMAC of the pool's name under a key
+      derived from the cookie secret (never the address), with the lockout they
+      earned and the id of the last admitted attempt; pruned hourly — additive;
+      grants. MUST be applied before the build that reads it: without the table every
+      password and code sign-in is refused
 ```
+
+Migration 0034 adds the durable brake on guessing at the in-app sign-in page. The web app's
+`server/sign-in-throttle.ts` counts each attempt **before** WorkOS is asked, in one statement that
+also refuses it while the pool is locked and opens the next lockout from the new count — so a
+concurrent burst cannot slip past the end of the free attempts together — then clears the pool on
+a success and refunds an attempt WorkOS never judged. The build that ships with it reads and
+writes it on every password and emailed-code sign-in, so it is applied first.
 
 Migration 0033 changes a default and backfills one column, and the build beside it writes 3
 itself wherever it writes a Free ceiling (`FREE_SEAT_LIMIT`, now read from the plan), so it may

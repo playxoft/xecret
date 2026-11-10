@@ -1,31 +1,27 @@
 import {
   clearedOAuthStateCookie,
-  LAST_ACCOUNT_COOKIE_NAME,
   OAUTH_STATE_COOKIE_NAME,
-  openLastAccount,
   openOAuthState,
-  SESSION_COOKIE_NAME,
 } from '@xecret/core/auth';
 import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import { parseCookies } from '@/server/http';
 import { attemptKey, consume } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
-import {
-  confirmationReason,
-  issueSignIn,
-  lastAccountKey,
-  oauthStateKey,
-  prepareSignIn,
-  SignInRefusal,
-} from '@/server/sign-in';
-import { parkSignIn, SIGN_IN_CONFIRM_PATH } from '@/server/sign-in-confirmation';
+import { oauthStateKey, SignInRefusal } from '@/server/sign-in';
+import { completeSignIn } from '@/server/sign-in-completion';
+import { SIGN_IN_CONFIRM_PATH } from '@/server/sign-in-confirmation';
 import { refusedSignIn, seeOther } from '@/server/sign-in-responses';
 import { workosProvider } from '@/server/workos';
 
 /**
- * Where AuthKit sends the browser back to — the only endpoint that turns an
- * outside identity into an xecret session.
+ * Where WorkOS sends the browser back to — from Google, from an organisation's
+ * single sign-on, or from AuthKit's hosted page (which only the
+ * re-authentication flows still use) — and the one endpoint that turns an
+ * authorization code into an xecret session. A password or an emailed code
+ * typed on the sign-in page never comes here: those are checked headlessly
+ * (`server/in-app-sign-in.ts`), and meet this route's steps 5–7 in
+ * `completeSignIn`.
  *
  * `publicRoute`, because it *establishes* authentication rather than requiring
  * it, which makes it the most exposed endpoint in the product. So the order is
@@ -83,7 +79,10 @@ export const GET = publicRoute(async ({ request, services }) => {
     );
     if (!byAddress.allowed) throw new SignInRefusal('rate-limited', 429, 'per-address limit');
 
-    const provider = workosProvider(services.env);
+    // Interactive: a person is watching this page load, and the code is
+    // single-use, so a blind retry after an ambiguous failure could only
+    // replay a code WorkOS may already have spent (`workosProvider`).
+    const provider = workosProvider(services.env, { interactive: true });
     const key = await oauthStateKey(services.env);
 
     // A parameter given twice is refused rather than resolved: "which one did
@@ -122,65 +121,18 @@ export const GET = publicRoute(async ({ request, services }) => {
       userAgent: services.meta.userAgent,
     });
 
-    const prepared = await prepareSignIn(services, {
+    // Steps 5–7: the tail every sign-in shares (`server/sign-in-completion.ts`).
+    const done = await completeSignIn(services, {
       exchange,
       purpose: flow.purpose,
       provider,
-      flowIssuedAt: flow.issuedAt,
-    });
-
-    const reason = confirmationReason({
       flow,
-      exchange,
-      prepared,
-      lastAccountUserId: await openLastAccount(
-        await lastAccountKey(services.env),
-        cookies.get(LAST_ACCOUNT_COOKIE_NAME),
-      ),
+      next,
+      cookies,
     });
-    if (reason !== null) {
-      // Logged at `info`, with what was asked against what came back: one of
-      // these is a person signing in through their company's identity
-      // provider from the plain button; a burst of them for one address is
-      // the planted-session attack being tried.
-      services.log
-        .at('callback')
-        .info(
-          'Held a sign-in back for the person to confirm: it came back through an organisation ' +
-            'this flow did not ask for, through the single sign-on of one the account is not in, ' +
-            'or from a session WorkOS reused without asking',
-          {
-            reason,
-            askedForOrganization: flow.organizationId !== null,
-            signInMethod: prepared.facts.signInMethod,
-          },
-        );
-      const parked = await parkSignIn(services, {
-        prepared,
-        purpose: flow.purpose,
-        next,
-        flowIssuedAt: flow.issuedAt,
-        reason,
-      });
-      services.bindLog({ signInOutcome: 'confirmation-required', signInPurpose: flow.purpose });
-      return seeOther(SIGN_IN_CONFIRM_PATH, [parked, clearedOAuthStateCookie()]);
-    }
-
-    const result = await issueSignIn(services, {
-      user: prepared.user,
-      outcome: prepared.outcome,
-      facts: prepared.facts,
-      purpose: flow.purpose,
-      lockOne: prepared.lockOne,
-      freshAuthAt: prepared.freshAuthAt,
-      providerSessionId: prepared.providerSessionId,
-      workosClientId: provider.clientId,
-      confirmation: null,
-      presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
-    });
-
-    services.bindLog({ signInOutcome: result.outcome, signInPurpose: flow.purpose });
-    return seeOther(next, [...result.cookies, clearedOAuthStateCookie()]);
+    return done.kind === 'parked'
+      ? seeOther(SIGN_IN_CONFIRM_PATH, [done.cookie, clearedOAuthStateCookie()])
+      : seeOther(next, [...done.cookies, clearedOAuthStateCookie()]);
   } catch (cause) {
     return refusedSignIn(services, cause, next, [clearedOAuthStateCookie()]);
   }

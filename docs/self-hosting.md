@@ -12,7 +12,7 @@ being honest about the one thing it sells.
 | **Cloudflare Workers (paid plan)** | Runs the web app and API (`@opennextjs/cloudflare`). The paid plan's CPU limits are assumed — see [ADR 0002](adr/0002-root-key-custody.md). | Yes |
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare; the Neon serverless HTTP driver is the fallback without Hyperdrive. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the Root KEK, bound to the Worker. | Yes |
-| **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise SSO sign-in (though SSO connections cannot be configured from xecret yet — see below). xecret exchanges the result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
+| **A WorkOS account** | Identity only — xecret's own sign-in page checks passwords and emailed codes through WorkOS's User Management API, and Google and enterprise SSO sign-in go through WorkOS redirects; AuthKit's hosted page is linked from no sign-in page, and serves re-authentication and a support escape hatch (see below). xecret checks each result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
 | **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | PIN-reset links, invitation emails, and the escape archive emailed before every vault reset (P23). | **Yes, for a production deployment** (`XECRET_ENV=production`): without one, every vault reset is refused with a 503 — a vault is never reset without its archive being emailed first — and `check:deploy production` fails. Elsewhere optional: invitations return a shareable link instead, PIN reset answers 200 with `sent: false` and a reason, and a vault resets only when the person ticks "Reset without the emailed archive". |
 | **Phase.dev** (or any secret source for deploy time) | Where *your* copy of the Root KEK lives between deploys. The Worker never calls it at runtime. | Your choice — any process that can populate deploy-time env vars works. |
 | **Dodo Payments** | Taking payment for plans — xecret's hosted service charges through it. | **No.** Leave every `DODO_*` variable unset and payments are switched off: plans are whatever `npm run plan:set` writes (every capability is yours to grant), the billing screen says the installation takes no payments, and nothing else changes. Every organisation starts on Free, **and Free's limits are enforced** — 5 projects, 3 members, 250 secrets per environment and the rest; give an organisation the room you want with `npm run plan:set` — a plan, or one limit raised with `--limit-override projects=2000`. Set *some* of them and the deployment refuses billing with a 503 until all are set — see [billing](operations/billing.md). |
@@ -161,10 +161,22 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
 
 ## Create a WorkOS account and configure AuthKit
 
-xecret sends people to WorkOS AuthKit's hosted pages to sign in, exchanges the
-authorization code AuthKit hands back once, server to server, and from then on
-uses its own session. WorkOS is asked nothing else except for the vault reset's
-emailed code. Everything below happens in the WorkOS dashboard.
+People sign in, sign up and reset a forgotten password on xecret's own pages
+(`/sign-in`, `/sign-up`, `/sign-in/forgot-password`, `/sign-in/reset-password`):
+a password, a sign-up's six-digit emailed code or a reset link is checked with
+WorkOS's headless User Management API, "Continue with Google" goes from xecret
+to WorkOS straight on to Google and back, and an organisation's single sign-on
+goes to its identity provider the same way. Each result is checked once, server
+to server, and from then on xecret uses its own session. Nothing on these pages
+leads to AuthKit's hosted page, but it is still reachable: the
+re-authentication flows use it (the vault reset's first check, the security
+settings' "Open sign-in page", the SSO setup portal's step-up), and so does
+`<XECRET_PUBLIC_URL>/api/auth/login` with no `provider` or `org` — and an old
+`?hint=sign-up` link. That bare URL is the support escape hatch for a challenge
+the in-app page cannot show (an authenticator, a Radar check), described in
+[WorkOS environments](operations/workos-environments.md), §5, along with the
+dashboard settings to keep in step with it. Everything below happens in the
+WorkOS dashboard.
 
 **Environments.** A WorkOS account has a **Staging** and a **Production**
 environment, and they share nothing — not users, not keys. Use Staging for local
@@ -205,6 +217,18 @@ AuthKit session the same way and returns to
 environment matches redirects exactly. The checks worth making on Staging are in
 [WorkOS environments and the organisation link](operations/workos-environments.md),
 §4.
+
+**Password reset URL — set it before deploying.** In Redirects, set the
+**password reset URL** to `<XECRET_PUBLIC_URL>/sign-in/reset-password`, in each
+WorkOS environment you use, and keep the **password reset** email on (Emails →
+Configuration). "Forgot password?" asks WorkOS to send the reset email, and
+WorkOS builds its link from this setting with `?token=…` appended; left at its
+default — AuthKit's own reset page — every reset email leads away from xecret.
+Not `/reset-password`, which is a permanent redirect for Firebase-era links.
+A finished reset ends every session of the account — one already linked to
+WorkOS, or a Firebase-era one found by the address the reset proved.
+[WorkOS environments](operations/workos-environments.md), §5, has what the reset
+does and does not do.
 
 **Authentication methods.** Enable email and password, and Google. In Staging
 WorkOS can use its own demonstration Google credentials; in **Production**,
@@ -254,10 +278,14 @@ To undo a link written from the wrong environment, see
 [WorkOS environments and the organisation link](operations/workos-environments.md).
 
 **Magic Auth.** Enable it, and leave WorkOS's default Magic Auth email on. The
-vault reset's second check is a one-time code that WorkOS creates and emails,
-and WorkOS refuses to create one at all while Magic Auth is disabled — so with
-it off, nobody on the deployment can reset a vault. Enabling it also offers
-"email me a code" as a way to sign in. That is a sign-in like any other, but it
+sign-up page's emailed code is a one-time code that WorkOS creates and emails —
+the account's password is set only once that code has proven the inbox, and
+only on an account the sign-up created (an existing account is signed in to,
+its password untouched) — and so is the vault reset's second check; WorkOS refuses to create one at all while
+Magic Auth is disabled — so with it off, nobody can sign up or reset a vault,
+and the pages say sign-in is unavailable. (The sign-in page offers no
+"email me a code": "Forgot password?" covers a forgotten password.) A code
+sign-in is a sign-in like any other, but it
 never counts as the vault reset's first check, which counts only a password, a
 passkey, Google or SSO sign-in — no other OAuth provider. (It does count as the
 fresh sign-in an owner needs before opening the SSO setup portal, which has no
@@ -277,12 +305,28 @@ defence — with one, the emailed code alone is not enough. That path is tested
 against WorkOS's documented behaviour; it has not yet been exercised against a
 WorkOS environment with MFA turned on.
 
-**Email verification.** AuthKit verifies every email address before it hands
-a sign-in back, and at the time of writing there is no switch to turn that off.
-xecret depends on it: the first time somebody signs in, an existing account
-holding the same *verified* address is adopted, and an unverified address is
-refused. If WorkOS ever adds such a switch, it must stay on in both
-environments.
+**Email verification.** Keep it on, with WorkOS's own verification email, in
+both environments. WorkOS answers a password sign-in to an address it has not
+verified with `email_verification_required`. Until it is shown that WorkOS
+checks the password *before* deciding that, the sign-in page answers it exactly
+like a wrong password — anything else could tell a stranger which addresses
+have unverified accounts — and the person resets their password, which
+verifies the address as it goes (`EMAIL_VERIFICATION_STEP` in
+`apps/web/src/server/in-app-sign-in.ts` turns the code step on once that is
+proven). xecret depends on verification: the first time somebody signs in, an
+existing account holding the same *verified* address is adopted, and an
+unverified address is refused.
+
+**Sign-in attempts** are counted in the database (`sign_in_failures`, migration
+0034), before WorkOS is asked: five are free, then 30 seconds, doubling to at
+most 15 minutes, until a success. A browser that has signed in to an address
+before carries a sealed `__Host-xecret_known_device` cookie and is counted on
+its own; everybody else shares the address's pool — so somebody guessing at an
+address can lock the shared pool, never the owner's own browser. Apply that
+migration before deploying the build that uses it — without the table, every
+password sign-in and sign-up is refused. Google, single sign-on and the password
+reset are not counted — the reset is how an owner gets in while somebody else
+holds their address's pool locked, and a finished reset clears it.
 
 **Credentials.** Three values per environment:
 

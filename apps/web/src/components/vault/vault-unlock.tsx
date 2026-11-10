@@ -1657,7 +1657,15 @@ function AllCodesLost({
           else has this browser. Then we’ll email you a code.
         </p>
         <p className="text-fg-subtle text-sm leading-6">
-          A sign-in with an emailed code doesn’t count for this step — the code comes next.
+          A sign-in with an emailed code doesn’t count for this step — the code comes next. Never
+          set a password? Choose one with{' '}
+          <a
+            href={`${SIGN_IN_PATH}/forgot-password`}
+            className="text-fg decoration-line-strong hover:decoration-fg rounded-sm underline underline-offset-4 transition-colors"
+          >
+            Forgot password?
+          </a>{' '}
+          first — it works for an account that has never had one — then sign in with it here.
         </p>
 
         <Button variant="danger" asChild>

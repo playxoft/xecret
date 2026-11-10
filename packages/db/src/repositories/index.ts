@@ -66,6 +66,15 @@ export type {
 } from './sessions';
 
 export {
+  clearSignInFailures,
+  findSignInFailures,
+  pruneSignInFailures,
+  refundSignInAttempt,
+  spendSignInAttempt,
+} from './sign-in-failures';
+export type { SignInAttempt, SignInFailureState, SignInThrottlePolicy } from './sign-in-failures';
+
+export {
   findRetainedRecoveryWrap,
   listRetainedVaults,
   loadRetainedVault,
@@ -395,6 +404,7 @@ export {
   recordFreshSignIn,
   recordReauthMfaPending,
   reserveReauthCodeSend,
+  releaseReauthGuess,
   reserveReauthGuess,
 } from './reauth';
 export type { CodeSendReservation, GuessReservation, Reauthentication } from './reauth';

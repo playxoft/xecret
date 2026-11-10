@@ -87,20 +87,30 @@ const nextConfig: NextConfig = {
   // ── Where Firebase's emails still point ──
   // Every email Firebase Auth sent — password resets, address verifications —
   // linked to `/reset-password?mode=…&oobCode=…`, and the screen that requested
-  // a reset lived at `/forgot-password`. Both pages are gone: AuthKit hosts
-  // password reset and verification now, and an `oobCode` has no successor
-  // here. The mail is still in people's inboxes, so both paths answer with a
-  // redirect to the sign-in page, whose hosted screen offers its own reset,
-  // rather than with a 404 that reads like the product broke.
+  // a reset lived at `/forgot-password`. Both Firebase pages are gone, and an
+  // `oobCode` has no successor here. The mail is still in people's inboxes, so
+  // both paths answer with a redirect rather than with a 404 that reads like
+  // the product broke.
   //
-  // Permanent (308) because nothing will ever live at either path again; a
-  // browser that caches the answer is right to. Next carries the query string
-  // across, so a stale link lands on `/sign-in?mode=resetPassword&oobCode=…`.
-  // That is harmless: the sign-in page reads only its own parameters, and the
-  // code belongs to a Firebase project nothing here talks to any more.
+  // The reset lives on xecret's own pages now, under `/sign-in/`
+  // (`/sign-in/forgot-password`, and `/sign-in/reset-password` where WorkOS's
+  // emailed link lands) — never at these two paths, because browsers that
+  // followed one of these 308s remember it for good:
+  //  - `/forgot-password` goes to the reset request, which is what anybody
+  //    typing it wants. A browser that cached the earlier answer (`/sign-in`)
+  //    keeps going there, which is harmless: the sign-in page links to the
+  //    reset request one click away.
+  //  - `/reset-password` stays on `/sign-in`: an `oobCode` link can reset
+  //    nothing, and the sign-in page's "Forgot password?" is the way on.
+  //
+  // Permanent (308) because neither path will hold a page again. Next carries
+  // the query string across, so a stale link lands on
+  // `/sign-in?mode=resetPassword&oobCode=…`. That is harmless: the pages read
+  // only their own parameters, and the code belongs to a Firebase project
+  // nothing here talks to any more.
   async redirects() {
     return [
-      { source: '/forgot-password', destination: '/sign-in', permanent: true },
+      { source: '/forgot-password', destination: '/sign-in/forgot-password', permanent: true },
       { source: '/reset-password', destination: '/sign-in', permanent: true },
     ];
   },

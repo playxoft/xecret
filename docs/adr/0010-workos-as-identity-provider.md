@@ -314,6 +314,55 @@ sentences keep the anti-enumeration discipline the old forms kept.
 `GET /api/auth/login` follows the same rule: a deployment missing its WorkOS configuration
 redirects to `/sign-in?error=unavailable` rather than answering a JSON 503 on a blank tab.
 
+### Signing in on xecret's own page *(amended 2026-11-07)*
+
+People no longer see AuthKit's hosted page to sign in, sign up or reset a password. `/sign-in`
+takes an email and password, with "Forgot password?" beside it; `/sign-up` takes an email and a
+password, then the six-digit code WorkOS emails (Magic Auth) — the code proves the inbox and signs
+in, and only then, and only on an account the linker says this sign-up `created`, is the password
+set (`updateUser`). So no password ever sits on an address nobody has proven (the pre-account
+takeover PR #100's note 12 rules out), an existing account's credentials are never changed by a
+sign-up (it is signed in to and told so; "Forgot password?" changes a password, with a reset's
+consequences), and an address that already has an account is answered exactly like one that does
+not until the code is accepted. `createUser` is never called: it would set the password first, and its
+`email_not_available` would split the answer. A forgotten password is reset in-app
+(`createPasswordReset`, which emails a link built from the environment's password reset URL, and
+`resetPassword`), after which the person signs in — the reset never signs them in itself, which
+would make a reset link a login-CSRF primitive. Sign-in and sign-up are checked by WorkOS's
+headless User Management API (`authenticateWithPassword`, `createMagicAuth` +
+`authenticateWithMagicAuth`), posted by the page's `fetch` to
+`POST /api/auth/sign-in/{password,code}` and `POST /api/auth/sign-up`
+(`apps/web/src/server/in-app-sign-in.ts`; `POST /api/auth/sign-in/code/verify`, a code alone,
+is still served but linked from nowhere). Those routes refuse anything that is not this origin
+posting JSON — login CSRF, the in-app twin of the planted-session attack (not a bot defence: a
+script outside a browser sets any `Origin`) — spend `RL_LOGIN` per address and per subject,
+and count every attempt **first** in a durable throttle in the database (`sign_in_failures`,
+migration 0034: one statement counts, refuses while locked, and opens the next lockout — five
+free, then 30 s doubling to a 15-minute ceiling; cleared by a success, refunded when WorkOS
+never judged the attempt). Attempts are counted per **pool**: a browser that has signed in to
+the address before carries a sealed `__Host-xecret_known_device` cookie (OWASP's device
+cookie) and has its own; everybody else shares the address's, so an attacker can lock only the
+shared pool. Rows are keyed by an HMAC under the cookie secret, never the address. The routes
+answer JSON with the same sentence `/sign-in?error=` shows.
+WorkOS answers that would say something about an address before the credential is known to be
+right — `email_verification_required`, `organization_authentication_methods_required` — are
+answered and counted exactly like a wrong password; the email-verification step
+(`POST /api/auth/sign-in/verify-email`, with WorkOS's pending token sealed beside the address
+in an `HttpOnly`, `SameSite=Strict` cookie) is built and tested but stays off until Staging
+shows WorkOS checks the password first. "Continue with Google" is `GET /api/auth/login?provider=
+google`: the state cookie and PKCE as before, WorkOS's Google OAuth instead of AuthKit, the
+callback unchanged. Every path hands its exchange, minted in `workos.ts`, to the one
+`completeSignIn` (`sign-in-completion.ts`): `prepareSignIn`, the confirmation question,
+`issueSignIn`. WorkOS's organisation selection, which AuthKit used to ask the person, is
+finished with the first organisation listed — nothing here reads a non-SSO sign-in's
+organisation — and the sign-in is held back for confirmation as before. An authenticator
+challenge (`mfa_challenge`) is refused with its own sentence until the page can take one;
+no account has MFA today. Every WorkOS call a person waits on uses a ten-second timeout and no
+retries. Nothing on a sign-in page links to AuthKit's hosted page; it remains reachable through
+`GET /api/auth/login` for the re-authentication flows (`reauth=1`), for a request naming no
+`provider` and no `org` (support's escape hatch for a challenge the in-app page cannot show), and
+for old `?hint=sign-up` links.
+
 ### Re-authentication for the vault reset: two locks
 
 The vault reset destroys a vault for good and must stay reachable from a locked session, so the

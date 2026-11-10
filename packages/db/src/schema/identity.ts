@@ -1,5 +1,14 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { SignInMethod } from '@xecret/core/audit';
 import { bytea, citext, inet } from './columns';
@@ -167,6 +176,30 @@ export const sessions = pgTable(
 export function signInMethodCheck(column: AnyPgColumn) {
   return sql`${column} is null or ${column} in ('password', 'oauth', 'sso', 'magic_auth', 'passkey', 'other')`;
 }
+
+/**
+ * Attempts against one in-app sign-in throttle pool — an address's shared
+ * pool, or one known device's — and the lockout they earned (migration 0034).
+ * Keyed by an HMAC of the pool's name under a key derived from the cookie
+ * secret, never the address. Counted before WorkOS is asked, in one statement;
+ * `lastAttemptId` tells that statement's caller whether its attempt was
+ * admitted. The policy is the web app's `server/sign-in-throttle.ts`.
+ */
+export const signInFailures = pgTable(
+  'sign_in_failures',
+  {
+    subjectHash: bytea('subject_hash').primaryKey(),
+    failedAttempts: integer('failed_attempts').notNull().default(0),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    lastFailedAt: timestamp('last_failed_at', { withTimezone: true }).notNull().defaultNow(),
+    lastAttemptId: uuid('last_attempt_id'),
+  },
+  (t) => [
+    check('sign_in_failures_subject_hash_length_check', sql`octet_length(${t.subjectHash}) = 32`),
+    check('sign_in_failures_failed_attempts_check', sql`${t.failedAttempts} >= 0`),
+    index('sign_in_failures_last_failed_at_idx').on(t.lastFailedAt),
+  ],
+);
 
 /**
  * A sign-in confirmation that has been spent — continued or cancelled — by

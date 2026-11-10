@@ -5,14 +5,20 @@ import { MissingBindingError } from './bindings';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
 import { SignInRefusal } from './sign-in';
-import { IdentityProviderUnavailableError } from './workos';
+import { AuthenticationStepRequired, IdentityProviderUnavailableError } from './workos';
+import type { AuthenticationStepCode } from './workos';
 
 /**
- * How the two routes that finish a sign-in answer — the callback, and the
- * confirmation that a held-back sign-in finishes at. Both are top-level
- * navigations a person is watching, so both answer every outcome with a 303:
- * to `next` on success, to `/sign-in?error=<code>` on any refusal. A JSON error
- * on a blank tab is a dead end.
+ * How the routes that finish a sign-in answer a failure.
+ *
+ * Two shapes, one judgement. The callback, and the confirmation a held-back
+ * sign-in finishes at, are top-level navigations a person is watching, so they
+ * answer every outcome with a 303: to `next` on success, to
+ * `/sign-in?error=<code>` on any refusal — a JSON error on a blank tab is a dead
+ * end. The in-app sign-in routes answer the sign-in page's own form, in JSON
+ * (`server/in-app-sign-in.ts`). Both decide *which* refusal it was, and what to
+ * log about it, in {@link classifySignInFailure}, so a refusal is the same code,
+ * the same sentence and the same log line whichever way the person came in.
  */
 
 /** A 303 to `location`, setting `cookies`, never cached. */
@@ -39,30 +45,159 @@ function verificationFailure(reason: string): string {
   if (reason === 'malformed-code') {
     return 'Refused a sign-in before asking WorkOS: the code in the callback URL was malformed.';
   }
-  if (reason === 'no-email' || reason === 'malformed-subject' || reason === 'malformed-identity') {
+  if (UNUSABLE_ANSWERS.has(reason)) {
     return `Refused a sign-in because WorkOS's answer could not be used (${reason}).`;
   }
   return `Refused a sign-in because WorkOS would not exchange its code (${reason}).`;
 }
 
 /**
- * Turns any failure into a redirect to the sign-in page's error surface — and a
- * log line that says what really happened.
+ * The verification failures that are WorkOS's *answer* being unusable rather
+ * than WorkOS refusing what was presented — never "your password is wrong".
+ */
+export const UNUSABLE_ANSWERS: ReadonlySet<string> = new Set([
+  'no-email',
+  'malformed-subject',
+  'malformed-identity',
+]);
+
+/**
+ * What the person is told when WorkOS answered with a step instead of a user.
+ * Each is specific, because "that attempt expired" for a right password is the
+ * answer that sends somebody round in circles.
+ *
+ *  - The authenticator steps: no account has multi-factor today (it is off in
+ *    both WorkOS environments), and the sign-in page cannot take a TOTP code
+ *    yet. A clear refusal rather than a half-built challenge screen; the
+ *    challenge itself is a documented follow-up.
+ *  - `email_verification_required`: the password route answers this one with
+ *    a code step of its own; anywhere else it is the "verify your address"
+ *    refusal the linker would give.
+ *  - `sso_required`, `organization_authentication_methods_required`: WorkOS's
+ *    own domain policy — this address belongs to an organisation that signs in
+ *    only through its identity provider.
+ *  - `organization_selection_required`: completed by the provider itself
+ *    (`WorkosIdentityProvider`); one that escapes it named no organisation to
+ *    continue into, which is a failure, not the person's.
+ *  - The Radar challenges: bot protection this page cannot show (Radar is not
+ *    integrated with the in-app page yet — a documented follow-up).
+ */
+const STEP_REFUSALS: Record<AuthenticationStepCode, SignInErrorCode> = {
+  mfa_challenge: 'authenticator-required',
+  mfa_enrollment: 'authenticator-required',
+  mfa_verification: 'authenticator-required',
+  email_verification_required: 'verify-email',
+  sso_required: 'sso-required',
+  organization_authentication_methods_required: 'sso-required',
+  organization_selection_required: 'failed',
+  radar_email_challenge: 'extra-check',
+  radar_sms_challenge: 'extra-check',
+};
+
+/** The refusal a WorkOS step stands for. */
+export function stepRefusal(step: AuthenticationStepRequired): SignInRefusal {
+  return new SignInRefusal(
+    STEP_REFUSALS[step.code],
+    403,
+    `WorkOS asked for a step this sign-in does not take (${step.code})`,
+  );
+}
+
+/** A failure, judged: the code the person is told, and the status it stands for. */
+export interface ClassifiedSignInFailure {
+  code: SignInErrorCode;
+  status: number;
+}
+
+/**
+ * Turns any failure into the refusal the person is told about — and a log
+ * line that says what really happened.
  *
  * Three kinds of failure, and the log level follows them:
  *
- *  - **A refusal** (`SignInRefusal`): the system working. Logged at `warn` with
- *    the status it stands for, because a burst of them is the shape of
- *    somebody probing the door.
+ *  - **A refusal** (`SignInRefusal`, or a WorkOS step this sign-in does not
+ *    take): the system working. Logged at `warn` with the status it stands
+ *    for, because a burst of them is the shape of somebody probing the door.
  *  - **The provider unreachable or misconfigured**, or a binding missing: an
  *    operator's problem. `error`, and the person is told sign-in is
- *    unavailable rather than that they did something wrong.
+ *    unavailable rather than that they did something wrong. WorkOS
+ *    rate-limiting us is `warn`: it can be provoked per address on demand.
  *  - **Anything else** — a programming error, the database — `error`, with the
  *    stack, and the person is told only that it failed.
  *
  * A code the provider refused (expired, replayed, a PKCE mismatch) is a
  * refusal, reported as an expired attempt: naming which part was wrong tells an
- * attacker which part of a forged request to fix next.
+ * attacker which part of a forged request to fix next. (The in-app routes
+ * answer a refused password or emailed code before this, beside the field.)
+ */
+export function classifySignInFailure(
+  services: ServiceContext,
+  cause: unknown,
+): ClassifiedSignInFailure {
+  const log = services.log.at('signIn');
+  let code: SignInErrorCode;
+  let status: number;
+
+  const refusal = cause instanceof AuthenticationStepRequired ? stepRefusal(cause) : cause;
+
+  if (refusal instanceof SignInRefusal) {
+    code = refusal.code;
+    status = refusal.status;
+    log.warn(`Refused a sign-in: ${refusal.logDetail}`, { code, status });
+  } else if (refusal instanceof IdentityVerificationError) {
+    code = 'expired';
+    status = 400;
+    log.warn(
+      `${verificationFailure(refusal.reason)} The person was told only that the attempt expired.`,
+      { code, status, reason: refusal.reason },
+    );
+  } else if (refusal instanceof IdentityProviderUnavailableError) {
+    if (refusal.reason === 'rate-limited') {
+      // `warn`, not `error`: WorkOS limits attempts per address, so anybody can
+      // provoke this for an address of their choosing, and an alert that
+      // fires on demand pages nobody usefully. A wave of them is still visible.
+      code = 'rate-limited';
+      status = 429;
+      log.warn('WorkOS rate-limited a sign-in; the person was told to wait and try again', {
+        code,
+        status,
+        reason: refusal.reason,
+      });
+    } else {
+      code = 'unavailable';
+      status = 503;
+      log.error(
+        `Could not complete a sign-in because WorkOS was ${refusal.reason} — every sign-in fails ` +
+          'the same way until this is resolved',
+        { code, status, reason: refusal.reason },
+      );
+    }
+  } else if (refusal instanceof MissingBindingError) {
+    code = 'unavailable';
+    status = 503;
+    log.error(
+      `This deployment is missing ${refusal.binding}, so nobody can sign in until it is configured`,
+      { code, status, binding: refusal.binding },
+    );
+  } else {
+    code = 'failed';
+    status = 500;
+    log.error('An unexpected error ended a sign-in — the person was told only that it failed', {
+      code,
+      status,
+      error: describeError(refusal),
+    });
+  }
+
+  // The completion line for this request reads as a neutral "completed a
+  // sign-in" whatever happened; these fields are what say it was refused, and
+  // why, so that a refused sign-in is never counted as a success.
+  services.bindLog({ signInOutcome: 'refused', signInRefusal: code });
+  return { code, status };
+}
+
+/**
+ * Turns any failure into a redirect to the sign-in page's error surface.
  *
  * `clear` is the cookies the route always clears on its way out — the state
  * cookie for the callback, the confirmation cookie for the confirmation — so a
@@ -74,46 +209,13 @@ export function refusedSignIn(
   next: string | null,
   clear: readonly string[],
 ): Response {
-  const log = services.log.at('callback');
-  let code: SignInErrorCode;
+  const { code } = classifySignInFailure(services, cause);
+  return seeOther(signInErrorPath(code, next), clear);
+}
 
-  if (cause instanceof SignInRefusal) {
-    code = cause.code;
-    log.warn(`Refused a sign-in: ${cause.logDetail}`, { code, status: cause.status });
-  } else if (cause instanceof IdentityVerificationError) {
-    code = 'expired';
-    log.warn(
-      `${verificationFailure(cause.reason)} The person was told only that the attempt expired.`,
-      { code, status: 400, reason: cause.reason },
-    );
-  } else if (cause instanceof IdentityProviderUnavailableError) {
-    code = cause.reason === 'rate-limited' ? 'rate-limited' : 'unavailable';
-    log.error(
-      `Could not complete a sign-in because WorkOS was ${cause.reason} — every sign-in fails ` +
-        'the same way until this is resolved',
-      { code, status: cause.reason === 'rate-limited' ? 429 : 503, reason: cause.reason },
-    );
-  } else if (cause instanceof MissingBindingError) {
-    code = 'unavailable';
-    log.error(
-      `This deployment is missing ${cause.binding}, so nobody can sign in until it is configured`,
-      { code, status: 503, binding: cause.binding },
-    );
-  } else {
-    code = 'failed';
-    log.error('An unexpected error ended a sign-in — the person was told only that it failed', {
-      code,
-      status: 500,
-      error: describeError(cause),
-    });
-  }
-
-  // The completion line for this request reads as a neutral "completed a
-  // sign-in callback" whatever happened; these fields are what say it was
-  // refused, and why, so that a refused sign-in is never counted as a success.
-  services.bindLog({ signInOutcome: 'refused', signInRefusal: code });
-
+/** `/sign-in?error=<code>`, keeping `next` unless it is the default. */
+export function signInErrorPath(code: SignInErrorCode, next: string | null): string {
   const target = new URLSearchParams({ error: code });
   if (next !== null && next !== POST_SIGN_IN_PATH) target.set('next', next);
-  return seeOther(`${SIGN_IN_PATH}?${target.toString()}`, clear);
+  return `${SIGN_IN_PATH}?${target.toString()}`;
 }
