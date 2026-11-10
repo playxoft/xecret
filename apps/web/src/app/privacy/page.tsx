@@ -2,11 +2,9 @@ import type { Metadata } from 'next';
 
 import { graph, LegalPage } from '@/components/marketing';
 import type { LegalSection } from '@/components/marketing';
-// Not from the barrel: these two are authoring tools for the documents' data,
-// not pieces of the public-site kit. `Placeholder` in particular should stop
-// existing the day the company details are filled in, and an export nobody can
-// see the end of is an export that outlives its reason.
-import { LegalLink, Placeholder } from '@/components/marketing/legal-page';
+// Not from the barrel: an authoring tool for the documents' data, not a piece
+// of the public-site kit.
+import { LegalLink } from '@/components/marketing/legal-page';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 
 /**
@@ -14,9 +12,10 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  *
  * ── The rule this page is written under ──
  * Every claim here is checkable against the code or against
- * `public/docs/security/trust-model.md`, and where a fact does not exist yet —
- * the registered address, the supervisory authority, a support mailbox — the
- * page says so in the rendered text rather than inventing something plausible.
+ * `public/docs/security/trust-model.md`, and the company details are the ones
+ * on the public register (Ministry of Corporate Affairs, by the CIN below).
+ * Where a fact does not exist — no data protection officer has been appointed
+ * — the page says so plainly rather than inventing something plausible.
  * A privacy policy on a secrets product is read by exactly the sort of person
  * who checks, and the first invented sentence costs more than the whole
  * document earns.
@@ -36,8 +35,8 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-11-07';
-const EFFECTIVE = '2026-11-07';
+const UPDATED = '2026-11-11';
+const EFFECTIVE = '2026-11-11';
 
 const CANONICAL = absoluteUrl('/privacy');
 
@@ -70,7 +69,8 @@ const SUMMARY = [
   'xecret can technically decrypt your secret values. Envelope encryption, decryption inside one request handler, and every decryption written to an append-only audit log. This is not a zero-knowledge product and we will not describe it as one.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
   'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
-  'You can export everything with the CLI and delete your own account. If you self-host, none of this is us: the operator of that deployment writes their own policy.',
+  'What you delete is kept for 30 days, so that a mistake can be undone, and then erased for good — a deleted secret longer only where your plan’s restore window needs it. You can export everything with the CLI and delete your own account.',
+  'If you self-host, none of this is us: the operator of that deployment writes their own policy.',
 ] as const;
 
 const SECTIONS: readonly LegalSection[] = [
@@ -79,10 +79,11 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'Who we are, and what this covers',
     paragraphs: [
       <>
-        xecret is a secret-management service operated by Playxoft (
-        <Placeholder>Playxoft legal entity name and company registration number</Placeholder>, of{' '}
-        <Placeholder>Playxoft registered address</Placeholder>). Playxoft is the controller for the
-        personal data described below, and &ldquo;we&rdquo; means Playxoft throughout.
+        xecret is a secret-management service operated by Playxoft Studios Private Limited
+        (&ldquo;Playxoft&rdquo;), a company incorporated in India with corporate identity number
+        U58203TN2025PTC178070, whose registered office is at 19B/1, Ananthapettai Street,
+        Kanchipuram, Tamil Nadu 631501, India. Playxoft is the controller for the personal data
+        described below, and &ldquo;we&rdquo; means Playxoft throughout.
       </>,
       'This policy covers the hosted service we run, this website, the documentation, and the CLI when it talks to our servers. It does not cover a xecret server that somebody else runs — see section 13.',
       <>
@@ -249,7 +250,7 @@ const SECTIONS: readonly LegalSection[] = [
           analytics cookie to consent to.
         </>,
       ],
-      'Two roles, and the distinction matters. For your account data we are the controller. For what you put into xecret — secrets, names, structure, and the audit records about them — we act as a processor on the instructions of the organisation that owns it, and that organisation is the controller. A standard data processing agreement will be published before general availability; until then, ask for one through the repository.',
+      'Two roles, and the distinction matters. For your account data we are the controller. For what you put into xecret — secrets, names, structure, and the audit records about them — we act as a processor on the instructions of the organisation that owns it, and that organisation is the controller. If your organisation needs a data processing agreement with us, ask at support@playxoft.com.',
       'We do not use your data to train models. We do not profile you, we do not enrich your account from third-party data sources, and we make no automated decision that produces a legal effect for you.',
     ],
   },
@@ -319,17 +320,33 @@ const SECTIONS: readonly LegalSection[] = [
           on the query and not on the retention.
         </>,
         <>
-          <strong className="text-fg font-medium">Secrets</strong> — for as long as the environment
-          exists. Deleting a secret soft-deletes it: the ciphertext and its earlier versions stay,
-          so that the audit record still refers to something real and so a rollback remains
-          possible. They go when the environment, project or organisation is purged.
+          <strong className="text-fg font-medium">Secrets</strong> — for as long as you keep them.
+          Every earlier version of a value is kept with it, which is what lets you roll one back.
         </>,
         <>
-          <strong className="text-fg font-medium">Soft-deleted records</strong> — purged{' '}
-          <Placeholder>
-            Playxoft purge window for soft-deleted organisations, projects and secrets
-          </Placeholder>{' '}
-          after deletion.
+          <strong className="text-fg font-medium">
+            Deleted organisations, projects, environments and secrets
+          </strong>{' '}
+          — kept for 30 days after deletion, out of everybody&rsquo;s reach, and then erased for
+          good: the values, every earlier version of them, and the keys they were encrypted under. A
+          job runs every night to do it, and it records each erasure in the audit log.
+        </>,
+        <>
+          <strong className="text-fg font-medium">Why 30 days.</strong> What xecret holds is
+          credentials, and a credential is deleted by mistake far more often than on purpose: the
+          wrong environment, a script that cleaned up too much, a value somebody did not know was
+          still in use &mdash; or an account that had been taken over. The first sign is usually an
+          outage days later, when an application restarts and cannot fetch what it needs. Thirty
+          days gives you time to notice and ask us to put it back, and gives an investigation the
+          record of what existed. After that, keeping a credential nobody can use would only add
+          risk, so we erase it.
+        </>,
+        <>
+          <strong className="text-fg font-medium">One exception.</strong> A secret deleted from an
+          environment that still exists is kept for your plan&rsquo;s point-in-time restore window
+          when that is longer than 30 days &mdash; 180 days on Team, a year on Enterprise &mdash;
+          because restoring the environment to an earlier moment brings such secrets back, and it
+          can only do that while they are still here.
         </>,
         <>
           <strong className="text-fg font-medium">Reset vaults</strong> — when you reset your vault,
@@ -342,12 +359,13 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Closed accounts</strong> — deleting your account
           revokes every session and CLI token, deletes your PIN, removes you from the organisations
-          you are not the last owner of, and soft-deletes the organisations that were only yours.
-          The user record itself is soft-deleted rather than erased, because the audit records you
-          made have to keep meaning something; the actor&rsquo;s label was written into each record
-          at the time, so the log still reads correctly with the account gone. A vault you reset in
-          the last seven days is kept until its window ends, then purged as above. Ask us if you
-          need the identity record erased outright.
+          you are not the last owner of, and deletes the organisations that were only yours, which
+          are then erased 30 days later as described above. The user record itself is soft-deleted
+          rather than erased, because the audit records you made have to keep meaning something; the
+          actor&rsquo;s label was written into each record at the time, so the log still reads
+          correctly with the account gone. A vault you reset in the last seven days is kept until
+          its window ends, then purged as above. Ask us if you need the identity record erased
+          outright.
         </>,
         <>
           <strong className="text-fg font-medium">Sessions</strong> — 30 days from creation, and
@@ -377,24 +395,17 @@ const SECTIONS: readonly LegalSection[] = [
         delete account, which does everything described in section 6.
       </>,
       <>
-        For anything else, ask through the repository —{' '}
-        <LegalLink href={`${REPO_URL}/issues`}>open an issue on GitHub</LegalLink> — or at{' '}
-        <Placeholder>Playxoft contact email address</Placeholder> once that address exists. We
-        answer within one month, which is the period the GDPR allows, and sooner where we can. We
-        may have to verify that you are who you say you are before acting on a request about an
-        account.
-      </>,
-      <>
-        If a request would mean writing personal information into a public issue, say so in the
-        issue <em>without</em> including it, and we will give you a private channel.
+        For anything else, email{' '}
+        <LegalLink href="mailto:support@playxoft.com">support@playxoft.com</LegalLink>. We answer
+        within one month, which is the period the GDPR allows, and sooner where we can. We may have
+        to verify that you are who you say you are before acting on a request about an account.
       </>,
       <>
         If you think we have got this wrong, you can complain to the data protection authority where
-        you live, or to{' '}
-        <Placeholder>
-          lead supervisory authority for Playxoft&rsquo;s place of establishment
-        </Placeholder>
-        . We would rather you told us first.
+        you live &mdash; in the United Kingdom the Information Commissioner&rsquo;s Office, in the
+        EEA the authority of your own country. Playxoft is established in India, where the authority
+        under the Digital Personal Data Protection Act, 2023 is the Data Protection Board of India.
+        We would rather you told us first.
       </>,
     ],
   },
@@ -412,10 +423,8 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'International transfers',
     paragraphs: [
       <>
-        Playxoft is established in{' '}
-        <Placeholder>Playxoft&rsquo;s place of establishment</Placeholder>. The sub-processors in
-        section 5 are global companies, so your data will be processed outside the country you are
-        in.
+        Playxoft is established in India. The sub-processors in section 5 are global companies, so
+        your data will be processed outside the country you are in.
       </>,
       'Where a transfer leaves the United Kingdom or the EEA, it relies on the European Commission’s standard contractual clauses and the UK international data transfer addendum, together with each provider’s own transfer arrangements. The Workers runtime serves each request from whichever data centre is nearest to the caller and stores nothing; the database that holds your data lives in one region, fixed when the deployment was created.',
     ],
@@ -596,11 +605,11 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       'When this policy changes, the date at the top of the page changes with it. For a change that materially affects your rights, we will email the owners of every organisation and announce it in the repository before it takes effect.',
       <>
-        The version of 7 November 2026 is not a material change. It describes more completely what
-        this site keeps in your browser, under{' '}
-        <LegalLink href="#cookies">Cookies and browser storage</LegalLink>, including one new
-        display preference. What we collect, why we process it, who processes it for us, and your
-        rights are unchanged.
+        The version of 11 November 2026 is not a material change. It names the company that operates
+        xecret and how to reach it, and it sets how long deleted data is kept &mdash; 30 days, then
+        erased, under <LegalLink href="#retention">How long we keep it</LegalLink> &mdash; where the
+        version before it left that period to be decided. That shortens how long we hold data; what
+        we collect, why we process it, who processes it for us, and your rights are unchanged.
       </>,
       <>
         This page lives in the same repository as the product, so its history is the git history:
@@ -615,15 +624,19 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'How to contact us',
     paragraphs: [
       <>
-        There is no support email address published yet, and we would rather say that than invent
-        one. Until <Placeholder>Playxoft contact email address</Placeholder> is live, the way to
-        reach us about anything on this page is{' '}
-        <LegalLink href={`${REPO_URL}/issues`}>an issue in the repository</LegalLink>.
+        Email <LegalLink href="mailto:support@playxoft.com">support@playxoft.com</LegalLink> about
+        anything on this page. For a question that is not about you personally, you are welcome to{' '}
+        <LegalLink href={`${REPO_URL}/issues`}>open an issue in the repository</LegalLink> instead
+        &mdash; but please keep personal information out of it, since issues are public.
       </>,
       <>
-        Postal address: <Placeholder>Playxoft registered address</Placeholder>. Data protection
-        officer or Article 27 representative:{' '}
-        <Placeholder>none appointed — to be confirmed before general availability</Placeholder>.
+        By post: Playxoft Studios Private Limited, 19B/1, Ananthapettai Street, Kanchipuram, Tamil
+        Nadu 631501, India.
+      </>,
+      <>
+        We have not appointed a data protection officer, or a representative in the EU or the United
+        Kingdom. While xecret is at this early stage, privacy requests go straight to the people who
+        build it, at the address above. If we appoint either, this section will name them.
       </>,
       <>
         The two documents that answer most follow-up questions before you have to ask them are{' '}
