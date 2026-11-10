@@ -225,6 +225,8 @@ Configuration). "Forgot password?" asks WorkOS to send the reset email, and
 WorkOS builds its link from this setting with `?token=…` appended; left at its
 default — AuthKit's own reset page — every reset email leads away from xecret.
 Not `/reset-password`, which is a permanent redirect for Firebase-era links.
+A finished reset ends every session of the account — one already linked to
+WorkOS, or a Firebase-era one found by the address the reset proved.
 [WorkOS environments](operations/workos-environments.md), §5, has what the reset
 does and does not do.
 
@@ -277,8 +279,9 @@ To undo a link written from the wrong environment, see
 
 **Magic Auth.** Enable it, and leave WorkOS's default Magic Auth email on. The
 sign-up page's emailed code is a one-time code that WorkOS creates and emails —
-the account's password is set only once that code has proven the inbox — and so
-is the vault reset's second check; WorkOS refuses to create one at all while
+the account's password is set only once that code has proven the inbox, and
+only on an account the sign-up created (an existing account is signed in to,
+its password untouched) — and so is the vault reset's second check; WorkOS refuses to create one at all while
 Magic Auth is disabled — so with it off, nobody can sign up or reset a vault,
 and the pages say sign-in is unavailable. (The sign-in page offers no
 "email me a code": "Forgot password?" covers a forgotten password.) A code

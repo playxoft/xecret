@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { WorkOS } from '@workos-inc/node';
 import {
   deriveEmailVerificationKey,
@@ -1411,7 +1411,7 @@ describe('creating an account: the emailed code, then the chosen password', () =
     return post('/api/auth/sign-up', { password: PASSWORD, ...body }, options);
   }
 
-  it('creates the account a new address signs up for: the code checked first, then the password set, auth.signup', async () => {
+  it('creates the account a new address signs up for: the code checked, the account made, then the password set', async () => {
     const who = workosUser();
     workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
 
@@ -1437,7 +1437,7 @@ describe('creating an account: the emailed code, then the chosen password', () =
     expect(audit.find((e) => e.action === 'auth.signup')).toBeDefined();
   });
 
-  it('signs an address that already has an account in to it, its password becoming the one chosen', async () => {
+  it('never changes the password of an account that already existed: signs in to it and says so', async () => {
     const who = workosUser();
     const existing = await seedUser({
       workosUserId: who.id as string,
@@ -1448,12 +1448,60 @@ describe('creating an account: the emailed code, then the chosen password', () =
     const answer = await signUp({ email: who.email, code: '246810' });
 
     expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ notice: 'existing-account', redirect: '/app' });
     expect(sessionCookieIssued(answer)).toBe(true);
-    expect(workos.updateUser).toHaveBeenCalledWith({ userId: who.id, password: PASSWORD });
+    expect(workos.updateUser).not.toHaveBeenCalled();
     expect(await userRows('workos_user_id', who.id as string)).toEqual([
       expect.objectContaining({ id: existing.id }),
     ]);
     expect(audit.map((e) => e.action)).toContain('auth.login');
+    expect(audit.map((e) => e.action)).not.toContain('auth.signup');
+  });
+
+  it('never changes the password of a Firebase-era account it adopts by address, either', async () => {
+    const existing = await seedUser();
+    const who = workosUser({ email: existing.email });
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+
+    const answer = await signUp({ email: existing.email, code: '246810' });
+
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ notice: 'existing-account', redirect: '/app' });
+    expect(sessionCookieIssued(answer)).toBe(true);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+    expect((await userRows('id', existing.id))[0]?.workos_user_id).toBe(who.id);
+  });
+
+  it('sets nothing on an existing account whose sign-in is held back for confirmation', async () => {
+    const who = workosUser();
+    await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(
+      step('organization_selection_required', {
+        pending_authentication_token: 'pending_org',
+        organizations: [{ id: 'org_01ONE', name: 'One' }],
+      }),
+    );
+    workos.authenticateWithOrganizationSelection.mockResolvedValueOnce(
+      authenticated(who, 'MagicAuth', { organizationId: 'org_01ONE' }),
+    );
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.body).toEqual({ notice: 'existing-account', redirect: '/sign-in/confirm' });
+    expect(sessionCookieIssued(answer)).toBe(false);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+  });
+
+  it('sets nothing when the sign-in is refused after the code: an address bound to another account', async () => {
+    const holder = await seedUser({ workosUserId: unique('user_01HOLDER') });
+    const intruder = workosUser({ email: holder.email });
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(intruder, 'MagicAuth'));
+
+    const answer = await signUp({ email: holder.email, code: '246810' });
+
+    expect(answer.status).toBe(409);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+    expect(sessionCookieIssued(answer)).toBe(false);
   });
 
   it('answers an address with an account exactly as one without, at both steps — no oracle', async () => {
@@ -1510,7 +1558,7 @@ describe('creating an account: the emailed code, then the chosen password', () =
     expect(workos.updateUser).not.toHaveBeenCalled();
   });
 
-  it('answers a password WorkOS’s policy refuses beside the password field — only after the code — and signs nothing in', async () => {
+  it('says so, signed in, when WorkOS’s policy refuses a new account’s password — the account is theirs alone', async () => {
     const who = workosUser();
     workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
     workos.updateUser.mockRejectedValueOnce(
@@ -1523,14 +1571,48 @@ describe('creating an account: the emailed code, then the chosen password', () =
 
     const answer = await signUp({ email: who.email, code: '246810' });
 
-    expect(answer.status).toBe(400);
-    expect(errorOf(answer)).toMatchObject({
-      message: SIGN_IN_FORM_MESSAGES['weak-password'],
-      fields: [{ field: 'password', message: SIGN_IN_FORM_MESSAGES['weak-password'] }],
-    });
-    expect(sessionCookieIssued(answer)).toBe(false);
-    expect(answer.cookies.some((c) => c.startsWith('__Host-xecret_known_device='))).toBe(false);
-    expect(await userRows('workos_user_id', who.id as string)).toHaveLength(0);
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ notice: 'password-too-weak', redirect: '/app' });
+    expect(sessionCookieIssued(answer)).toBe(true);
+    expect(answer.cookies.some((c) => c.startsWith('__Host-xecret_known_device='))).toBe(true);
+    expect(await userRows('workos_user_id', who.id as string)).toHaveLength(1);
+    expect(everythingSaid(answer)).not.toContain(PASSWORD);
+  });
+
+  it('says so, signed in, when WorkOS cannot be reached to set a new account’s password', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
+    workos.updateUser.mockRejectedValueOnce(await realSdkTimeout());
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ notice: 'password-not-set', redirect: '/app' });
+    expect(sessionCookieIssued(answer)).toBe(true);
+    expect(
+      lines.some(
+        (line) => line.level === 'error' && String(line.message).includes('could not be set'),
+      ),
+    ).toBe(true);
+  });
+
+  it('sets the password on a new account even when its sign-in is held back for confirmation', async () => {
+    const who = workosUser();
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(
+      step('organization_selection_required', {
+        pending_authentication_token: 'pending_org',
+        organizations: [{ id: 'org_01ONE', name: 'One' }],
+      }),
+    );
+    workos.authenticateWithOrganizationSelection.mockResolvedValueOnce(
+      authenticated(who, 'MagicAuth', { organizationId: 'org_01ONE' }),
+    );
+
+    const answer = await signUp({ email: who.email, code: '246810' });
+
+    // The linker made the account in this request; it is nobody else's.
+    expect(answer.body).toEqual({ redirect: '/sign-in/confirm' });
+    expect(workos.updateUser).toHaveBeenCalledWith({ userId: who.id, password: PASSWORD });
   });
 
   it('sets no password on an authentication the sign-in then refuses: impersonated, or unverified', async () => {
@@ -1577,10 +1659,9 @@ describe('creating an account: the emailed code, then the chosen password', () =
     expect(workos.authenticateWithMagicAuth).not.toHaveBeenCalled();
   });
 
-  it('answers WorkOS timing out on the password as unavailable, signing nothing in', async () => {
+  it('answers WorkOS timing out on the code as unavailable — never a wrong code — and counts nothing', async () => {
     const who = workosUser();
-    workos.authenticateWithMagicAuth.mockResolvedValueOnce(authenticated(who, 'MagicAuth'));
-    workos.updateUser.mockRejectedValueOnce(await realSdkTimeout());
+    workos.authenticateWithMagicAuth.mockRejectedValueOnce(await realSdkTimeout());
 
     const answer = await signUp({ email: who.email, code: '246810' });
 
@@ -1588,6 +1669,8 @@ describe('creating an account: the emailed code, then the chosen password', () =
     expect(errorOf(answer).message).toBe(SIGN_IN_ERROR_MESSAGES.unavailable);
     expect(errorOf(answer).fields).toBeUndefined();
     expect(sessionCookieIssued(answer)).toBe(false);
+    expect(workos.updateUser).not.toHaveBeenCalled();
+    expect(await failuresFor(who.email as string)).toBe(0);
   });
 
   it('hands the known-device cookie out with the session, and never logs, echoes or stores the password', async () => {
@@ -1759,6 +1842,53 @@ describe('choosing a new password from the reset link', () => {
     );
     // No session, and so no known-device cookie: the person signs in next.
     expect(answer.cookies).toEqual([]);
+  });
+
+  /** A live session for `userId`, as a sign-in long before this one would have left. */
+  async function seedSession(userId: string): Promise<void> {
+    await t.pg.query(
+      `insert into sessions (id, user_id, token_hash, expires_at)
+       values ($1, $2, $3, now() + interval '30 days')`,
+      [randomUUID(), userId, randomBytes(32)],
+    );
+  }
+
+  it('ends the sessions of a Firebase-era account not yet linked to WorkOS, found by the address the reset proved', async () => {
+    const existing = await seedUser();
+    const org = await seedOrg();
+    await addMember(org, existing.id);
+    await seedSession(existing.id);
+    await seedSession(existing.id);
+    // WorkOS's user is new to xecret, and its address differs only in ASCII case.
+    workos.resetPassword.mockResolvedValueOnce({
+      user: workosUser({ email: existing.email.toUpperCase() }),
+    });
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(204);
+    expect(await activeSessions(existing.id)).toBe(0);
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        action: 'auth.session_revoked',
+        actorId: existing.id,
+        metadata: expect.objectContaining({ reason: 'password-reset' }),
+      }),
+    );
+    // Found, not adopted: linking is the sign-in's business.
+    expect((await userRows('id', existing.id))[0]?.workos_user_id).toBeNull();
+  });
+
+  it('leaves alone an account at that address bound to a different WorkOS user', async () => {
+    const holder = await seedUser({ workosUserId: unique('user_01HOLDER') });
+    await seedSession(holder.id);
+    workos.resetPassword.mockResolvedValueOnce({ user: workosUser({ email: holder.email }) });
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(204);
+    expect(await activeSessions(holder.id)).toBe(1);
+    expect(audit.some((e) => e.action === 'auth.session_revoked')).toBe(false);
   });
 
   it('still tells the truth — the password was changed — when the cleanup after it fails', async () => {

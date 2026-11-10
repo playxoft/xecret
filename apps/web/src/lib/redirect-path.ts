@@ -89,10 +89,11 @@ export function safeRedirectPath(value: string | null | undefined, fallback = '/
  * the one screen that asks for a click is the SSO warning page:
  * `next=/sign-in?org=attacker-co` would chain a person's real, successful
  * sign-in straight onto the attacker's organisation's "Continue", looking like
- * the second half of what they had just done. `/forgot-password?org=…` is the
- * same request one hop later — Next's permanent redirect to `/sign-in` carries
- * the query across. Nobody who has just signed in wants any of these screens,
- * so each falls back to `fallback`.
+ * the second half of what they had just done. `/forgot-password?org=…` and
+ * `/reset-password?org=…` are sign-in screens one hop later — Next's permanent
+ * redirects carry the query across (and a browser may have cached the older
+ * one, straight to `/sign-in`). Nobody who has just signed in wants any of
+ * these screens, so each falls back to `fallback`.
  *
  * {@link safeRedirectPath} itself still lets `/sign-in?org=` through: the
  * warning page is a real page that people reach directly — the login route

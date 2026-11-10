@@ -15,12 +15,14 @@ export const metadata: Metadata = {
  * "Forgot password?" — asking for a reset link (`ForgotPasswordPanel`,
  * `server/password-reset.ts`).
  *
- * Under `/sign-in/` rather than at `/forgot-password`: that path is a
+ * Under `/sign-in/` rather than at `/forgot-password`: that path has been a
  * permanent redirect to `/sign-in` for the Firebase-era emails still in
- * inboxes (`next.config.ts`), and a browser that has followed one remembers a
- * 308 for good — a page there would be unreachable for exactly the people who
- * once reset a password. Being under `/sign-in/` also makes it a sign-in
- * screen for `safePostSignInPath` and for the API client's 401 bounce.
+ * inboxes, and a browser that has followed one remembers a 308 for good — a
+ * page there would be unreachable for exactly the people who once reset a
+ * password. (`/forgot-password` now redirects here; a browser holding the old
+ * answer lands on `/sign-in`, one click away — `next.config.ts`.) Being under
+ * `/sign-in/` also makes it a sign-in screen for `safePostSignInPath` and for
+ * the API client's 401 bounce.
  *
  * `next` is only carried back to the sign-in link: the reset itself goes
  * through an email, and the link WorkOS sends cannot carry it.

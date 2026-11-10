@@ -25,6 +25,7 @@ import { isSameOriginPost, json, parseCookies } from './http';
 import { attemptKey, consume, rateLimitKey } from './rate-limit';
 import { SignInRefusal } from './sign-in';
 import { completeSignIn } from './sign-in-completion';
+import type { CompletedSignIn } from './sign-in-completion';
 import { SIGN_IN_CONFIRM_PATH } from './sign-in-confirmation';
 import { classifySignInFailure, UNUSABLE_ANSWERS } from './sign-in-responses';
 import { clearSignInPool, refundSignInAttemptFor, spendSignInAttemptFor } from './sign-in-throttle';
@@ -51,8 +52,9 @@ import type { AuthenticationStepCode, WorkosIdentityProvider } from './workos';
  *    one without: WorkOS creates the WorkOS user when the address has none, and
  *    the answer never says which it was.
  *  - `POST /api/auth/sign-up` — that code, and the password chosen beside it:
- *    the code proves the inbox, and only then is the password set
- *    (`app/api/auth/sign-up/route.ts` has why that order).
+ *    the code proves the inbox and signs in, and the password is set only on
+ *    an account this sign-up created — never on one that already existed
+ *    (`app/api/auth/sign-up/route.ts` has why).
  *  - `POST /api/auth/sign-in/code/verify` — an emailed code alone. **No page
  *    links here any more**: the sign-in page's "email me a code" was removed
  *    in favour of "Forgot password?". Kept, hardened and tested, as support's
@@ -282,10 +284,11 @@ export async function holdMailAnswer(services: ServiceContext): Promise<void> {
 }
 
 /**
- * A password WorkOS's policy refused, as the 400 beside the password field.
- * Only ever given once the inbox is proven — the sign-up's code was accepted,
- * or the reset's link was — so it says nothing about the address to anybody
- * who does not already hold it.
+ * A password WorkOS's policy refused, as the 400 beside the password field —
+ * the reset's, with a link WorkOS accepted. (The sign-up never answers this: it
+ * sets a password only after the account exists and is signed in, and says so
+ * in a notice instead.) Only ever given once the inbox is proven, so it says
+ * nothing about the address to anybody who does not already hold it.
  */
 export function weakPasswordAnswer(services: ServiceContext): Response {
   const message = SIGN_IN_FORM_MESSAGES['weak-password'];
@@ -445,6 +448,15 @@ export async function finishInAppSignIn(
     next: string | undefined;
     issuedAt?: number;
     extraCookies?: readonly string[];
+    /**
+     * Runs once the sign-in is complete — issued, or held back for
+     * confirmation — with the linker's outcome, and adds fields to the answer.
+     * The sign-up's: it sets the chosen password only on an account this
+     * sign-in created. It must not throw: by the time it runs, the session (or
+     * the held-back sign-in) exists, and a throw would answer the page with an
+     * error and no cookie for it.
+     */
+    after?: (done: CompletedSignIn) => Promise<Record<string, unknown>>;
   },
 ): Promise<Response> {
   const next = safePostSignInPath(params.next ?? null, POST_SIGN_IN_PATH);
@@ -460,9 +472,10 @@ export async function finishInAppSignIn(
     cookies: parseCookies(request.headers.get('cookie')),
   });
   const extra = params.extraCookies ?? [];
+  const fields = params.after === undefined ? {} : await params.after(done);
   return done.kind === 'parked'
-    ? json({ redirect: SIGN_IN_CONFIRM_PATH }, { cookies: [done.cookie, ...extra] })
-    : json({ redirect: next }, { cookies: [...done.cookies, ...extra] });
+    ? json({ ...fields, redirect: SIGN_IN_CONFIRM_PATH }, { cookies: [done.cookie, ...extra] })
+    : json({ ...fields, redirect: next }, { cookies: [...done.cookies, ...extra] });
 }
 
 /** Which field a refused credential belongs to, for the sentence beside it. */

@@ -318,11 +318,13 @@ redirects to `/sign-in?error=unavailable` rather than answering a JSON 503 on a 
 
 People no longer see AuthKit's hosted page to sign in, sign up or reset a password. `/sign-in`
 takes an email and password, with "Forgot password?" beside it; `/sign-up` takes an email and a
-password, then the six-digit code WorkOS emails (Magic Auth) — the code proves the inbox, and
-only then is the password set (`updateUser`), so no password ever sits on an address nobody has
-proven (the pre-account takeover PR #100's note 12 rules out), and an address that already has an
-account is answered exactly like one that does not at every step (it is signed in to, with the
-new password). `createUser` is never called: it would set the password first, and its
+password, then the six-digit code WorkOS emails (Magic Auth) — the code proves the inbox and signs
+in, and only then, and only on an account the linker says this sign-up `created`, is the password
+set (`updateUser`). So no password ever sits on an address nobody has proven (the pre-account
+takeover PR #100's note 12 rules out), an existing account's credentials are never changed by a
+sign-up (it is signed in to and told so; "Forgot password?" changes a password, with a reset's
+consequences), and an address that already has an account is answered exactly like one that does
+not until the code is accepted. `createUser` is never called: it would set the password first, and its
 `email_not_available` would split the answer. A forgotten password is reset in-app
 (`createPasswordReset`, which emails a link built from the environment's password reset URL, and
 `resetPassword`), after which the person signs in — the reset never signs them in itself, which

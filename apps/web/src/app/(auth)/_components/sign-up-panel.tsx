@@ -6,6 +6,7 @@ import type { FormEvent } from 'react';
 import { api, isApiError } from '@/lib/api';
 // From their own modules rather than the `components/ui` barrel, as the pages
 // do: these forms are all the client code the sign-in screens ship.
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { GoogleIcon } from '@/components/ui/icons';
 import {
@@ -32,14 +33,18 @@ import { estimateNewPassword, NewPasswordFields, newPasswordProblem } from './ne
  *     `POST /api/auth/sign-in/code`, which has WorkOS email it a code.
  *  2. The code. Posted with the address and the password to
  *     `POST /api/auth/sign-up`, which checks the code — the proof that the
- *     inbox is the person's — and only then sets the password and signs them
- *     in (`app/api/auth/sign-up/route.ts` has why in that order: a password
- *     set before the inbox is proven is a pre-account takeover).
+ *     inbox is the person's — signs them in, and sets the password only on an
+ *     account this sign-up created (`app/api/auth/sign-up/route.ts` has why:
+ *     a password set before the inbox is proven is a pre-account takeover, and
+ *     one set on an existing account would be a reset with none of a reset's
+ *     consequences).
  *
  * The answer is the same for an address that has an account and one that does
- * not, at every step: a code is emailed, a code is checked. An address that
- * already has an account is signed in to it with the password chosen here —
- * which the code step says, for every address, so nobody is surprised by it.
+ * not, until the code is accepted: a code is emailed, a code is checked. After
+ * it, the answer may carry a `notice` — the address already had an account
+ * (signed in to it, its password unchanged), or the new account's password
+ * could not be set — which the page shows before going on. The inbox has been
+ * proven by then, so it tells nobody anything the inbox did not.
  *
  * ── Never kept ──
  * The password lives in this component's state until the request that sets
@@ -56,7 +61,32 @@ export const SIGN_UP_ROUTES = {
   signUp: '/api/auth/sign-up',
 } as const;
 
-type Step = { kind: 'details' } | { kind: 'code'; email: string };
+type Step =
+  | { kind: 'details' }
+  | { kind: 'code'; email: string }
+  | { kind: 'notice'; notice: SignUpNotice; redirect: unknown };
+
+/** What the sign-up can say once the code is accepted, beside where to go next. */
+export type SignUpNotice = 'existing-account' | 'password-too-weak' | 'password-not-set';
+
+const NOTICES: Record<SignUpNotice, { title: string; body: string }> = {
+  'existing-account': {
+    title: 'You already had an account',
+    body: 'We’ve signed you in to it. Its password hasn’t changed — to change it, use “Forgot password?” on the sign-in page.',
+  },
+  'password-too-weak': {
+    title: 'Your account is ready',
+    body: 'You’re signed in, but that password was too easy to guess, so it wasn’t set. Choose one any time with “Forgot password?” on the sign-in page.',
+  },
+  'password-not-set': {
+    title: 'Your account is ready',
+    body: 'You’re signed in, but your password couldn’t be saved just now. Set one any time with “Forgot password?” on the sign-in page.',
+  },
+};
+
+function isNotice(value: unknown): value is SignUpNotice {
+  return typeof value === 'string' && Object.hasOwn(NOTICES, value);
+}
 
 export function SignUpPanel({ next }: SignUpPanelProps) {
   const [step, setStep] = useState<Step>({ kind: 'details' });
@@ -119,15 +149,25 @@ export function SignUpPanel({ next }: SignUpPanelProps) {
     if (!form.begin(local)) return;
 
     try {
-      const answer = await api.post<{ redirect?: unknown }>(
+      const answer = await api.post<{ redirect?: unknown; notice?: unknown }>(
         SIGN_UP_ROUTES.signUp,
         { email: step.email, code: typed, password, next },
         { redirectOnUnauthenticated: false },
       );
+      // Signed in either way; the password is no longer needed here.
+      setPassword('');
+      setConfirm('');
+      if (isNotice(answer.notice)) {
+        form.setBusy(false);
+        form.clear();
+        setStep({ kind: 'notice', notice: answer.notice, redirect: answer.redirect });
+        return;
+      }
       leaveFor(answer.redirect);
     } catch (cause) {
-      // A password WorkOS refused belongs to the first step: back to it, the
-      // sentence beside the field. The code it was posted with is spent.
+      // A password the server refused on shape belongs to the first step:
+      // back to it, the sentence beside the field. (Refused before WorkOS was
+      // asked anything, so the code is still good.)
       if (isApiError(cause) && 'password' in cause.fieldErrors()) {
         form.fail(cause, ['password']);
         setCode('');
@@ -136,6 +176,26 @@ export function SignUpPanel({ next }: SignUpPanelProps) {
       }
       form.fail(cause, ['code']);
     }
+  }
+
+  if (step.kind === 'notice') {
+    const { title, body } = NOTICES[step.notice];
+    return (
+      <div className="flex flex-col gap-5">
+        <Alert tone={step.notice === 'existing-account' ? 'info' : 'warning'} title={title}>
+          {body}
+        </Alert>
+        <Button
+          type="button"
+          variant="primary"
+          size="lg"
+          className="w-full"
+          onClick={() => leaveFor(step.redirect)}
+        >
+          Continue
+        </Button>
+      </div>
+    );
   }
 
   if (step.kind === 'code') {
@@ -180,8 +240,8 @@ export function SignUpPanel({ next }: SignUpPanelProps) {
           </TextButton>
         </div>
         <p className="text-fg-subtle text-sm leading-6">
-          Already have an account at this address? The code signs you in to it, and the password you
-          just chose becomes its password.
+          Already have an account at this address? The code signs you in to it, and its password
+          stays as it is.
         </p>
       </div>
     );

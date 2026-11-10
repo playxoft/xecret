@@ -1,5 +1,6 @@
 import { LAST_ACCOUNT_COOKIE_NAME, openLastAccount, SESSION_COOKIE_NAME } from '@xecret/core/auth';
 import type { AuthorizationCodeExchange, OAuthPurpose, WorkosIdentity } from '@xecret/core/auth';
+import type { IdentityLinkOutcome } from '@xecret/db/repositories';
 import type { ServiceContext } from './context';
 import { confirmationReason, issueSignIn, lastAccountKey, prepareSignIn } from './sign-in';
 import { parkSignIn } from './sign-in-confirmation';
@@ -57,11 +58,23 @@ export interface CompleteSignInParams {
   cookies: ReadonlyMap<string, string>;
 }
 
-export type CompletedSignIn =
-  /** A session was issued. `cookies` are its `Set-Cookie` values. */
-  | { kind: 'issued'; cookies: string[] }
-  /** Held back for the person to confirm. `cookie` is the sealed confirmation. */
-  | { kind: 'parked'; cookie: string };
+/**
+ * `issued`: a session was issued, and `cookies` are its `Set-Cookie` values.
+ * `parked`: held back for the person to confirm, and `cookie` is the sealed
+ * confirmation.
+ */
+export type CompletedSignIn = (
+  { kind: 'issued'; cookies: string[] } | { kind: 'parked'; cookie: string }
+) & {
+  /**
+   * What the linker did: `created` when this sign-in made the xecret account,
+   * `matched` or `linked` when the account was already there. The in-app
+   * sign-up reads it — the linker's own answer, decided in the same write that
+   * made or found the row — to set a chosen password only on an account this
+   * sign-up created, never on one that already existed.
+   */
+  outcome: IdentityLinkOutcome;
+};
 
 export async function completeSignIn(
   services: ServiceContext,
@@ -110,7 +123,7 @@ export async function completeSignIn(
       reason,
     });
     services.bindLog({ signInOutcome: 'confirmation-required', signInPurpose: purpose });
-    return { kind: 'parked', cookie: parked };
+    return { kind: 'parked', cookie: parked, outcome: prepared.outcome };
   }
 
   const result = await issueSignIn(services, {
@@ -135,5 +148,6 @@ export async function completeSignIn(
   return {
     kind: 'issued',
     cookies: [...result.cookies, ...(await knownDeviceCookies(services, prepared.user.email))],
+    outcome: prepared.outcome,
   };
 }

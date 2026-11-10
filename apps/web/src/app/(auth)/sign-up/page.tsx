@@ -23,12 +23,13 @@ export const metadata: Metadata = {
  *
  * ── The code before the password ──
  * The person types both at once; the page holds the password while the code
- * is emailed, and the server sets it only beside a right code
- * (`SignUpPanel`, `POST /api/auth/sign-up`). So the code proves the address in
- * the same request that sets the password — the verified-address gate in
- * `prepareSignIn` is met, no password ever sits on an address nobody has
- * proven, and an address that already has an account is answered exactly as
- * one that does not, at every step (it is signed in to, with the new password).
+ * is emailed, and the server sets it only beside a right code, and only on an
+ * account that sign-up created (`SignUpPanel`, `POST /api/auth/sign-up`). So
+ * the code proves the address in the same request that sets the password — the
+ * verified-address gate in `prepareSignIn` is met, no password ever sits on an
+ * address nobody has proven — and an address that already has an account is
+ * answered exactly as one that does not until the code is accepted; then it is
+ * signed in to, its password untouched, and told so.
  *
  * `next` is accepted because the sign-in screen's "Create an account" link
  * passes it on: somebody bounced from the CLI's consent screen, or following an

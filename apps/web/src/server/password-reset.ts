@@ -1,9 +1,11 @@
 import { IdentityVerificationError } from '@xecret/core/auth';
 import {
+  findUserByEmail,
   findUserByWorkosId,
   listOrganizationsForUser,
   revokeAllUserSessions,
 } from '@xecret/db/repositories';
+import type { User } from '@xecret/db/repositories';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
 import { auditFor, writeEvents } from './sign-in';
@@ -44,7 +46,13 @@ import { IdentityProviderUnavailableError } from './workos';
  * ── What a reset ends, and clears ──
  *  - Every xecret session of the account that WorkOS user is (the WorkOS
  *    ones WorkOS ends itself): a reset is how an account is taken back from
- *    whoever else is signed in to it. Audited as `auth.session_revoked`.
+ *    whoever else is signed in to it. Audited as `auth.session_revoked`. The
+ *    account is found by its WorkOS user — or, for one not yet linked to
+ *    WorkOS (a Firebase-era account whose sessions predate the move, and last
+ *    thirty days), by the address WorkOS reset, on the linker's own terms: an
+ *    unlinked row holding exactly that address (`accountForReset`). The reset
+ *    has just proven the inbox, which is the proof the linker adopts such an
+ *    account on.
  *  - The address's shared throttle pool: the person has just proven the inbox
  *    and chosen a password, and the sign-in that follows must not wait out a
  *    lockout somebody else ran up. (Clearing it gives an attacker nothing:
@@ -101,6 +109,42 @@ export function foldedResetReason(cause: unknown): string {
 }
 
 /**
+ * The xecret account a finished reset belongs to, or `null`.
+ *
+ *  1. The account linked to the WorkOS user WorkOS reset — the ordinary case.
+ *  2. Otherwise, an account **not yet linked to WorkOS** that holds exactly the
+ *     address WorkOS reset: a Firebase-era account whose owner has not signed
+ *     in since the move. Its sessions are as live as anybody's (thirty days),
+ *     and the reset has just proven the inbox — the proof the linker adopts
+ *     such an account on (`upsertUserFromWorkosIdentity`, step 2). Held to the
+ *     linker's terms exactly: the row must be unlinked, and its address the
+ *     same mailbox under ASCII-only folding ({@link isSameMailbox}) — never a
+ *     row bound to another WorkOS user, which is somebody else's account.
+ */
+export async function accountForReset(
+  services: ServiceContext,
+  reset: { workosUserId: string; email: string },
+): Promise<User | null> {
+  const linked = await findUserByWorkosId(services.db, reset.workosUserId);
+  if (linked !== null) return linked;
+  const holder = await findUserByEmail(services.db, reset.email);
+  if (holder === null || holder.workosUserId !== null) return null;
+  return isSameMailbox(holder.email, reset.email) ? holder : null;
+}
+
+/**
+ * The linker's adoption rule for two addresses (`isSameAddress` in
+ * `@xecret/db`'s users repository), restated: the presented address is
+ * printable ASCII and the two agree under ASCII-only case folding. `email` is
+ * citext, whose Unicode folding would call a Kelvin sign an ASCII `k`; an
+ * address that only citext calls equal is not the mailbox the reset proved.
+ */
+export function isSameMailbox(stored: string, presented: string): boolean {
+  const fold = (value: string) => value.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return /^[\x21-\x7e]+$/.test(presented) && fold(stored) === fold(presented);
+}
+
+/**
  * After WorkOS accepted a reset: the account's sessions ended, and the
  * address's shared pool cleared. Best effort; see the header.
  */
@@ -110,7 +154,7 @@ export async function afterPasswordReset(
 ): Promise<void> {
   // The sessions first: they are the part that takes an account back.
   try {
-    const user = await findUserByWorkosId(services.db, reset.workosUserId);
+    const user = await accountForReset(services, reset);
     // A WorkOS user with no xecret account yet — one made by a code that was
     // never entered — has no sessions to end.
     if (user !== null) {

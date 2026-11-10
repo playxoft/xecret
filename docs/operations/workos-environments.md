@@ -175,9 +175,10 @@ WorkOS returns the browser only to a logout redirect configured for that environ
 > password?" asks WorkOS to send it (`createPasswordReset`, which the API marks "sends email") and
 > never sends one itself.
 
-Not `/reset-password`: that path, and `/forgot-password`, are permanent (308) redirects to
-`/sign-in` for the Firebase-era emails still in inboxes (`next.config.ts`), and a browser that has
-followed one remembers it for good.
+Not `/reset-password`: that path, and `/forgot-password`, have been permanent (308) redirects to
+`/sign-in` for the Firebase-era emails still in inboxes, and a browser that has followed one
+remembers it for good. (`/forgot-password` now redirects to `/sign-in/forgot-password`; a browser
+holding the old answer still lands on `/sign-in`, one click from it — `next.config.ts`.)
 
 **What the reset does.** `/sign-in/forgot-password` posts an address to
 `POST /api/auth/password-reset`, which answers the same 204 for every address — WorkOS's 404 for an
@@ -186,7 +187,9 @@ address with no user, its refusals and its per-address rate limit included — a
 `/sign-in/reset-password`, which drops the token from the address bar, sends no referrer, and posts
 it with the new password to `POST /api/auth/password-reset/confirm`. WorkOS sets the password,
 **verifies the address** (it documents both) and ends its own sessions; xecret ends every session
-of the account and clears the address's shared throttle pool, and sends the person to sign in with
+of the account — found by its WorkOS user or, for a Firebase-era account not yet linked to WorkOS,
+by the address the reset proved, on the linker's own terms — and clears the address's shared
+throttle pool, and sends the person to sign in with
 the new password — it never signs them in itself, because a reset link that signed its user in
 would let somebody send a victim the link to their own account (login CSRF). Reset tokens last 15
 minutes and are single use. A reset works for an account that has never had a password (made by an
@@ -220,7 +223,11 @@ proves WorkOS checks the password before asking for verification, turning the st
 **Signing in by an emailed code** (`POST /api/auth/sign-in/code/verify`) is still served, hardened
 and tested, but no page links to it any more — the sign-in page's "email me a code" became
 "Forgot password?". The sign-up page uses the code request (`POST /api/auth/sign-in/code`) for its
-own emailed code, which `POST /api/auth/sign-up` checks before it sets the chosen password.
+own emailed code, which `POST /api/auth/sign-up` checks and signs in with; it sets the chosen
+password **only on an account that sign-up created** (the linker's `created` outcome). An address
+that already had an account is signed in to it with its credentials untouched, and told so —
+changing them there would be a password reset without a reset's consequences (no sessions ended,
+nothing audited). "Forgot password?" is how an existing account's password changes.
 
 **The escape hatch.** AuthKit's hosted page is still reachable, and it can complete every one of
 those challenges: send the person — and only that person, from support — to

@@ -1205,8 +1205,8 @@ describe('a next that names the SSO deep link', () => {
 describe('a next that names a sign-in screen', () => {
   // A finished sign-in that lands on the SSO warning page reads as the second
   // step of what the person just did, and that page's one button is the
-  // attacker's organisation's single sign-on. `/forgot-password` is the same
-  // page one hop later: Next's redirect to /sign-in keeps the query.
+  // attacker's organisation's single sign-on. `/forgot-password` is a sign-in
+  // screen one hop later (Next's redirect keeps the query), refused the same.
   const SCREENS = [
     ['the SSO warning page', '/sign-in?org=attacker-co'],
     ['the old password-reset page', '/forgot-password?org=attacker-co'],
