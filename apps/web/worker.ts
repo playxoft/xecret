@@ -17,7 +17,9 @@
  *    billing job (P12);
  *  - every five minutes — webhook retries that are due, then the read-alert
  *    digests whose hour is up (P19 §5, §7);
- *  - nightly — the billing reconciler (P12).
+ *  - nightly — the deleted-data purge (organisations, projects, environments
+ *    and secrets deleted thirty or more days ago are erased), then the billing
+ *    reconciler (P12).
  *
  * Each job runs in isolation: one that fails is reported, and the rest still
  * run (`runScheduledJobs`) — a Dodo outage must never stop the seven-day purge

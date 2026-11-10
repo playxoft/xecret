@@ -364,6 +364,9 @@ Soft-deletes a secret. Without `--yes` you are asked to type the secret's name
 to confirm — a `y/n` prompt is too easy to answer by reflex for something that
 takes a value out of a running system.
 
+The secret and its history are kept for 30 days — or for your plan's
+point-in-time restore window, if that is longer — and then erased for good.
+
 Always refused for service tokens: CI rotates a value by writing a new one, and
 destroying history is a human's decision.
 

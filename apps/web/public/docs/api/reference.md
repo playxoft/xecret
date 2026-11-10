@@ -123,7 +123,7 @@ rather than leaving it guessable.
 | `POST` | `/orgs` | Body `{ name, slug? }`. Name is 25 characters at most. Session + CSRF only. Creates the organisation, your owner membership and the organisation's key in one transaction. No project is seeded — create the first one from the dashboard, which generates its environment keys in your browser. |
 | `GET` | `/orgs/{orgSlug}` | Any active member. |
 | `PATCH` | `/orgs/{orgSlug}` | The name only. A slug change is refused with an explanation rather than ignored. |
-| `DELETE` | `/orgs/{orgSlug}` | Soft delete. Owners only, browser session only, body `{ confirm: "<orgSlug>" }`. |
+| `DELETE` | `/orgs/{orgSlug}` | Soft delete, erased for good after 30 days. Owners only, browser session only, body `{ confirm: "<orgSlug>" }`. |
 
 ## Projects and environments
 
@@ -155,7 +155,7 @@ environment without a key cannot hold a secret and cannot be repaired.
 | `GET` | `…/secrets/{name}` | **Reveal.** Decrypts one value. Audited as `secret.revealed` every time. |
 | `PATCH` | `…/secrets/{name}` | Appends a new version. Body `{ value, valueType? }`. A value identical to the current one is a no-op, detected without decrypting. |
 | `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, valueType? }`. Appends no version: declaring a type is not a rotation, and neither is a rename. |
-| `DELETE` | `…/secrets/{name}` | Soft delete. |
+| `DELETE` | `…/secrets/{name}` | Soft delete, erased for good after 30 days — or after your plan's point-in-time restore window, if that is longer. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only. |
 | `GET` | `…/secrets/{name}/versions/{version}` | Reveal one historical version. Audited, with the version recorded. |
 | `POST` | `…/secrets/{name}/restore` | Body `{ version }`. Re-appends an earlier value as a new version; never rewrites history. |

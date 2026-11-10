@@ -107,7 +107,7 @@ Production's.
      go out.
    - The internal routes must **not** answer the internet:
      ```sh
-     for job in vault-purge prune billing-hourly notifications billing-daily; do
+     for job in vault-purge prune billing-hourly notifications deleted-data-purge billing-daily; do
        curl -s -o /dev/null -w "$job %{http_code}\n" -X POST "https://xecret.playxoft.com/api/internal/scheduled/$job"
      done
      ```

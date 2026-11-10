@@ -121,11 +121,15 @@ export const PATCH = authenticatedRoute<Params>(
  *    The owner entitled to do this is exactly the person clicking through a
  *    settings page at speed.
  *
- * Never a hard delete. The audit records that say this organisation existed —
- * including the one written below — are filed against `org_id`, and a row that
- * vanished would take the history of everything that ever happened inside it out
- * of an operator's reach. The wrapped keys stay wrapped; nothing here touches key
- * material, so this is not cryptographic erasure and does not pretend to be.
+ * Not a hard delete, here. The organisation is kept, unreachable, for thirty
+ * days — long enough for a deletion made by mistake, or by somebody who should
+ * not have made it, to be noticed and undone by an operator — and then the
+ * nightly deleted-data purge erases it, keys and all
+ * (`server/deleted-data-purge.ts`). The wrapped keys stay wrapped until then;
+ * nothing here touches key material, so this request is not cryptographic
+ * erasure and does not pretend to be. The audit records filed against `org_id`
+ * — including the one written below — outlive both: the log has no foreign
+ * keys.
  */
 export const DELETE = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {

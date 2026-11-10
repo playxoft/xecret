@@ -85,6 +85,7 @@ not which of many OAuth providers.
 | `secret.created` | A new name appeared |
 | `secret.updated` | A new version was appended |
 | `secret.deleted` | A secret was soft-deleted |
+| `secret.purged` | A deleted secret was erased for good, with every version of its value: 30 days after it was deleted, or at the end of your plan's point-in-time restore window if that is longer. Recorded by the system, not a person |
 | `secret.rotated` | A value was rotated |
 | `secret.imported` | A bulk import ran |
 | `secret.read` | A **bulk** read — one row per `xecret run` or `pull`, with a count |
@@ -109,6 +110,14 @@ therefore shows a read of production that a template in staging caused.
 `org.created` · `org.updated` · `org.deleted` · `project.created` ·
 `project.updated` · `project.deleted` · `environment.created` ·
 `environment.updated` · `environment.deleted`
+
+What is deleted is kept for 30 days, so that a deletion made by mistake can
+still be reversed by whoever runs the server, and is then erased for good —
+values, versions and the keys they were encrypted under — by a job that runs
+every night. Each erasure is recorded by the system as `org.purged`,
+`project.purged` or `environment.purged`, with how many environments and
+secrets went. The records already in the log are never touched: an erased
+organisation's history stays exactly as it was.
 
 | Action | Recorded when |
 |---|---|
