@@ -71,6 +71,7 @@ describe('createCheckoutSession', () => {
       orgId: 'org-uuid',
       nonce: 'nonce-0123456789abcdef',
       regionLock: null,
+      discountCode: null,
     });
 
     expect(session).toEqual({ sessionId: 'cks_1', url: 'https://checkout.dodo/cks_1' });
@@ -89,7 +90,27 @@ describe('createCheckoutSession', () => {
         [ORG_METADATA_KEY]: 'org-uuid',
         [CHECKOUT_NONCE_METADATA_KEY]: 'nonce-0123456789abcdef',
       },
-      feature_flags: { allow_currency_selection: false },
+      // Dodo's own code box is hidden whether or not a code was sent: a code
+      // typed there would skip every check this server makes.
+      feature_flags: { allow_currency_selection: false, allow_discount_code: false },
+    });
+  });
+
+  it('pre-applies a discount code the server checked, with the code box still hidden', async () => {
+    const fetcher = stub(ok({ session_id: 'cks_1', checkout_url: 'https://checkout.dodo/cks_1' }));
+    await new DodoClient(BASE, KEY, fetcher).createCheckoutSession({
+      productId: 'pdt_pro_m',
+      quantity: 1,
+      customer: { email: 'owner@example.com', name: null },
+      returnUrl: 'https://x/r',
+      orgId: 'org-uuid',
+      nonce: 'nonce-0123456789abcdef',
+      regionLock: null,
+      discountCode: 'HALFOFF',
+    });
+    expect(sentBody(fetcher)).toMatchObject({
+      discount_codes: ['HALFOFF'],
+      feature_flags: { allow_discount_code: false },
     });
   });
 
@@ -103,6 +124,7 @@ describe('createCheckoutSession', () => {
       orgId: 'org-uuid',
       nonce: 'nonce-0123456789abcdef',
       regionLock: { country: 'IN', currency: 'INR' },
+      discountCode: null,
     });
     expect(sentBody(fetcher)).toMatchObject({
       customer: { customer_id: 'cus_existing0001' },
@@ -112,6 +134,85 @@ describe('createCheckoutSession', () => {
     });
     // The organisation's own customer is attached; no new one is asked for.
     expect(sentBody(fetcher)).not.toHaveProperty('always_create_new_customer');
+  });
+});
+
+describe('createDiscount and deleteDiscount', () => {
+  const REQUEST = {
+    code: 'FRIENDS50',
+    name: 'xecret: friends',
+    type: 'percentage' as const,
+    amount: 5000,
+    currency: null,
+    cycles: 3,
+    productIds: ['pdt_pro_m', 'pdt_pro_y'],
+    usageLimit: 10,
+    expiresAt: new Date('2027-01-01T00:00:00Z'),
+  };
+
+  it('restricts the code to our products, and leaves who may use it to this server', async () => {
+    const fetcher = stub(ok({ discount_id: 'dsc_1', code: 'FRIENDS50', amount: 5000 }));
+    const created = await new DodoClient(BASE, KEY, fetcher).createDiscount(REQUEST);
+
+    expect(created).toEqual({ discountId: 'dsc_1' });
+    expect(sentInit(fetcher).url).toBe(`${BASE}/discounts`);
+    expect(sentBody(fetcher)).toEqual({
+      code: 'FRIENDS50',
+      name: 'xecret: friends',
+      type: 'percentage',
+      amount: 5000,
+      restricted_to: ['pdt_pro_m', 'pdt_pro_y'],
+      subscription_cycles: 3,
+      usage_limit: 10,
+      expires_at: '2027-01-01T00:00:00.000Z',
+      customer_eligibility: 'any',
+      metadata: { xecret_promo_code: 'FRIENDS50' },
+    });
+  });
+
+  it('states a flat code in its currency', async () => {
+    const fetcher = stub(ok({ discount_id: 'dsc_2', code: 'FIVEOFF' }));
+    await new DodoClient(BASE, KEY, fetcher).createDiscount({
+      ...REQUEST,
+      code: 'FIVEOFF',
+      type: 'flat',
+      amount: 500,
+      currency: 'USD',
+      cycles: null,
+      usageLimit: null,
+      expiresAt: null,
+    });
+    expect(sentBody(fetcher)).toMatchObject({
+      type: 'flat',
+      amount: 500,
+      currency_options: [
+        { currency: 'USD', is_default: true, max_amount_possible: 500, minimum_subtotal: 0 },
+      ],
+    });
+    expect(sentBody(fetcher)).not.toHaveProperty('subscription_cycles');
+    expect(sentBody(fetcher)).not.toHaveProperty('usage_limit');
+  });
+
+  it('never sends a code restricted to nothing, which Dodo would read as every product', async () => {
+    const fetcher = stub(ok({ discount_id: 'dsc_1', code: 'FRIENDS50' }));
+    await expect(
+      new DodoClient(BASE, KEY, fetcher).createDiscount({ ...REQUEST, productIds: [] }),
+    ).rejects.toThrow(/at least one product/);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('refuses an answer naming another code than the one asked for', async () => {
+    const fetcher = stub(ok({ discount_id: 'dsc_1', code: 'SOMETHINGELSE' }));
+    await expect(new DodoClient(BASE, KEY, fetcher).createDiscount(REQUEST)).rejects.toMatchObject({
+      category: 'malformed',
+    });
+  });
+
+  it('deletes by id, encoded', async () => {
+    const fetcher = stub(new Response(null, { status: 204 }));
+    await new DodoClient(BASE, KEY, fetcher).deleteDiscount('dsc/1');
+    expect(sentInit(fetcher).url).toBe(`${BASE}/discounts/dsc%2F1`);
+    expect(sentInit(fetcher).init.method).toBe('DELETE');
   });
 });
 

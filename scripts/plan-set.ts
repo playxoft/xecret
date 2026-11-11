@@ -8,7 +8,14 @@
  *   phase run -- npm run plan:set  -- --org acme --status past_due
  *   phase run -- npm run plan:set  -- --org acme --addon saml --on
  *   phase run -- npm run plan:set  -- --org acme --limit-override projects=2000
+ *   phase run -- npm run plan:set  -- --org acme --plan team --until 2027-03-01
+ *   phase run -- npm run plan:set  -- --org acme --until never
  *   phase run -- npm run plan:set  -- --org acme --plan free
+ *
+ * `--until` ends a grant (migration 0035): the hourly job returns the
+ * organisation to Free at that moment, and its owners are emailed a week and a
+ * day before. `never` takes an end away. Only a grant can have one — a paid
+ * plan with no Dodo subscription behind it — and `--plan free` clears it.
  *
  * On an organisation billed through Dodo (P12) — a paid plan that follows a
  * subscription, or a Free row waiting for the subscription a paid checkout
@@ -47,14 +54,21 @@
  * an Enterprise agreement that was invoiced by hand and never passed through a
  * checkout page. None of those have a customer-facing flow and none should.
  *
- * ## Why it is a script and never an HTTP endpoint
+ * ## Why it is a script, and what the admin page changed
  *
  * A route that grants paid plans is a route that will eventually be reachable
  * by someone who should not reach it — through a misconfigured wrapper, a
  * forgotten capability check, or a future refactor that moves it. A script run
- * by a person holding database credentials cannot be called by a browser. That
- * is the whole of the security argument, and it is why no amount of "but we
- * could put it behind an admin role" should turn this into a route.
+ * by a person holding database credentials cannot be called by a browser.
+ *
+ * That argument still stands, and the owner weighed it and chose to have an
+ * admin page as well (2026-11-11): `/app/admin`, behind `server/admin.ts` —
+ * an allow-list read from `XECRET_ADMIN_EMAILS` on every request, a browser
+ * session only, a verified address, an unlocked vault, and a 404 to everybody
+ * else. It writes grants through the same rules this script does
+ * (`applyPlanGrant` → `operatorBillingEdit`), so the two cannot disagree. This
+ * script stays for everything the page does not do — add-ons, limit overrides,
+ * statuses, grandfathering — and for when the page is the thing that is broken.
  *
  * ## What it records
  *
@@ -293,6 +307,12 @@ function describe(
   );
   if (row.cancelAtPeriodEnd) console.log('  cancels         at the end of the current period');
   console.log(`  grandfathered   ${row.grandfatheredUntil?.toISOString() ?? '—'}`);
+  if (awaitingActivation(row) || billedByDodo(row) || row.plan === 'free') {
+    // Nothing to say: only a grant has an end.
+  } else {
+    console.log(`  grant ends      ${row.grantEndsAt?.toISOString() ?? 'never'}`);
+    console.log(`  grant note      ${row.grantNote ?? '—'}`);
+  }
   console.log(`  overrides       ${row.limitOverrides ? JSON.stringify(row.limitOverrides) : '—'}`);
   console.log(`  features        ${enabled.length ? enabled.join(', ') : 'none'}`);
   console.log(
@@ -393,7 +413,7 @@ async function main(): Promise<void> {
     // row keeps the id of the subscription it ended on — is taken off them
     // before a billing field is written: a grant over a kept id would follow a
     // subscription Dodo can still send events for (`operatorBillingEdit`).
-    const touchesBilling = ['plan', 'interval', 'seats', 'status'].some(
+    const touchesBilling = ['plan', 'interval', 'seats', 'status', 'until'].some(
       (flag) => typeof args[flag] === 'string',
     );
     const edit =
@@ -594,8 +614,37 @@ async function main(): Promise<void> {
       changes.push(`grandfatheredUntil=${when.toISOString()}`);
     }
 
+    // A grant's end (migration 0035). Only a grant can carry one — the
+    // schema's CHECK refuses an end on Free or on a row Dodo bills — so it is
+    // judged against the plan this run leaves the row on.
+    const planAfter = patch.plan ?? existing?.plan ?? 'free';
+    if (typeof args['until'] === 'string') {
+      if (planAfter === 'free') {
+        fail('--until ends a complimentary plan; Free has nothing to end. Pass --plan as well.');
+      }
+      if (args['until'] === 'never') {
+        patch.grantEndsAt = null;
+        changes.push('grantEndsAt=never');
+      } else {
+        const when = new Date(args['until']);
+        if (Number.isNaN(when.getTime())) fail('--until must be an ISO date, or "never".');
+        if (when.getTime() <= Date.now()) fail('--until must be in the future.');
+        patch.grantEndsAt = when;
+        changes.push(`grantEndsAt=${when.toISOString()}`);
+      }
+      patch.grantNote ??= existing?.grantNote ?? 'Granted by xecret support';
+    } else if (planAfter === 'free' && (existing?.grantEndsAt ?? null) !== null) {
+      // Back to Free ends the grant, and its end date with it — the CHECK
+      // would refuse the row otherwise.
+      patch.grantEndsAt = null;
+      patch.grantNote = null;
+    }
+    if (planAfter === 'free') patch.grantNote = null;
+
     if (changes.length === 0) {
-      fail('Nothing to do. Pass --plan, --seats, --status, --addon, --limit-override, or --show.');
+      fail(
+        'Nothing to do. Pass --plan, --seats, --status, --addon, --limit-override, --until, or --show.',
+      );
     }
     if (detach) changes.push('detached-from-dodo');
 

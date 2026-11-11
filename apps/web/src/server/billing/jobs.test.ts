@@ -199,7 +199,14 @@ describe('the schedule', () => {
 describe('runHourlyBillingJob', () => {
   it('does nothing on a deployment without payments', async () => {
     const report = await runHourlyBillingJob(services({ XECRET_ENV: 'production' }), NOW);
-    expect(report).toEqual({ ended: 0, seatSyncs: 0, usage: null, reminders: 0, failures: [] });
+    expect(report).toEqual({
+      ended: 0,
+      grantsEnded: 0,
+      seatSyncs: 0,
+      usage: null,
+      reminders: 0,
+      failures: [],
+    });
   });
 
   it('returns a cancellation to Free once its paid period is over — after Dodo has had its chance', async () => {

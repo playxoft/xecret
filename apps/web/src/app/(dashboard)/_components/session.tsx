@@ -133,6 +133,13 @@ export interface SessionValue {
    * once, where the session it has to refresh actually lives.
    */
   createOrganization: () => void;
+  /**
+   * Whether this person is one of xecret's own staff, on the server's
+   * allow-list (`server/admin.ts`). It draws the account menu's "Admin" item
+   * and the admin page — and, like `authority`, it decides nothing: every
+   * admin route asks the allow-list again, and answers anybody else 404.
+   */
+  admin: boolean;
 }
 
 /** The body of `GET /api/auth/me`. `credential` is for the CLI and unused here. */
@@ -140,6 +147,11 @@ export interface MeResponse {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
   vault: VaultStatus;
+  /**
+   * See `SessionValue.admin`. Optional only for the fixtures that predate it;
+   * absent is read as `false`.
+   */
+  admin?: boolean;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);

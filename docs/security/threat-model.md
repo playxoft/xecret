@@ -757,6 +757,21 @@ secret reaching a log or an audit row.
   and keeps its idempotency key claimed, so a retry cannot reach Dodo a second time.
 - **Owners only** (`billing.manage`), browser sessions only; the portal link is audited and
   never stored or logged. Checkout, plan change and the change preview are rate limited.
+- **The admin page and promo codes** (migration 0035). A route that grants paid plans now
+  exists (`/api/admin/*`), against `plan:set`'s own warning, by the owner's decision; what fences
+  it is `server/admin.ts`: an allow-list read from `XECRET_ADMIN_EMAILS` (a Worker secret) on
+  every request — no admin flag stored anywhere a bug or an injection could set — a browser
+  session only, never a token; a verified address; the vault unlocked; and a 404 to everybody
+  else, so the API is not confirmed to exist. Every grant lands in the customer's own audit log
+  as "xecret support" with the admin's reason; which admin it was is on the server's log line.
+  The residual risk is plain: an admin's account (their sign-in **and** their vault passphrase)
+  is now worth free paid plans for anybody, and a wrong address in the secret is an admin. Promo codes: a free-plan code is spent in one transaction with the grant it
+  gives, once per organisation and once per person, never past its limit; a discount code is
+  created at Dodo restricted to this deployment's own products (the account is shared), and
+  Dodo's own code box is hidden on every checkout, so a code reaches one only after this server
+  checked it is ours, live, for that plan and that person. Codes are guessable only as fast as
+  the rate limiter allows, and one answer covers "no such code", "revoked" and "not for you";
+  the admin page makes random ten-character codes by default.
 - **Seats** follow the membership: the seat-sync debt is written **inside the membership
   change's own transaction**, so it exists even if the push after the commit never runs. One
   push at a time per organisation (a lease), counted under the debt's generation and cleared

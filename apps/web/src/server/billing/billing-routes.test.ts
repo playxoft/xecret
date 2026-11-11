@@ -343,6 +343,7 @@ describe('checkout', () => {
       // 128 random bits, base64url: what binds the subscription to this checkout.
       nonce: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
       regionLock: null,
+      discountCode: null,
     });
     const sentNonce = (dodo.createCheckoutSession.mock.calls[0]![0] as { nonce: string }).nonce;
     expect(await findCheckout(t.db, 'cks_example0001')).toMatchObject({

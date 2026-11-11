@@ -141,6 +141,19 @@ declare global {
      */
     XECRET_LOG_LEVEL?: string | undefined;
 
+    /**
+     * Who may open the admin page (`/app/admin`) — xecret's own staff, by the
+     * address they sign in with. A JSON array (`["a@x.com","b@x.com"]`) or a
+     * list separated by commas, semicolons or whitespace; read by
+     * `server/admin.ts`, which also requires the address to be verified.
+     *
+     * Not a credential, but the whole of the gate in front of a page that
+     * hands out paid plans, so it lives with the secrets: Phase.dev → Worker
+     * secret, never `wrangler.toml` (which is public). Absent or empty means
+     * nobody is an admin, and every admin route answers 404.
+     */
+    XECRET_ADMIN_EMAILS?: string | undefined;
+
     /*
      * ── Payments: Dodo (P12, `server/billing/config.ts`) ──
      *
@@ -276,6 +289,7 @@ const PROCESS_SUPPLIED = [
   'BETTERSTACK_SOURCE_TOKEN',
   'BETTERSTACK_INGEST_URL',
   'XECRET_LOG_LEVEL',
+  'XECRET_ADMIN_EMAILS',
   'DODO_API_KEY',
   'DODO_WEBHOOK_SECRET',
   'DODO_ENVIRONMENT',

@@ -188,6 +188,16 @@ const CONTRACT: Contract[] = [
     required: false,
     matters: 'raises log verbosity during an incident without a deploy',
   },
+  {
+    // A secret rather than a var: not a credential, but the whole of the gate
+    // in front of the admin page, and wrangler.toml is public.
+    name: 'XECRET_ADMIN_EMAILS',
+    home: 'secret',
+    required: false,
+    matters:
+      'who may open the admin page (/app/admin) and grant plans and promo codes; absent means ' +
+      'nobody, and every admin route answers 404',
+  },
   // ── Payments: Dodo (P12, apps/web/src/server/billing/config.ts) ──
   // Optional — a deployment without them has payments switched off — and all
   // or nothing: see `group`. Test mode first; live values replace them only

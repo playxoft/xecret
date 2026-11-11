@@ -536,6 +536,33 @@ export type {
 } from './billing';
 
 export {
+  applyPlanGrant,
+  createPromoCode,
+  endPlanGrant,
+  findOrganizationsForAdmin,
+  findPromoCode,
+  findPromoCodeById,
+  listGrantsEndingBy,
+  listPlanGrants,
+  listPromoCodes,
+  promoCodeExists,
+  revokePromoCode,
+  spendGrantRedemption,
+} from './plan-grants';
+export type {
+  AdminOrganization,
+  GrantablePlan,
+  GrantListing,
+  GrantRefusal,
+  NewPromoCode,
+  PlanGrantOutcome,
+  PlanGrantRequest,
+  PromoCodeListing,
+  PromoCodeRecord,
+  RedemptionRefusal,
+} from './plan-grants';
+
+export {
   countUsableServiceTokens,
   findEnvironmentsBySlugs,
   findProjectsReferencingEnvironments,

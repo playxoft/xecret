@@ -27,6 +27,30 @@ export const billingSelectionSchema = z.strictObject(
 );
 export type BillingSelection = z.infer<typeof billingSelectionSchema>;
 
+/**
+ * `POST …/billing/checkout` — the selection, and optionally a discount code
+ * xecret issued (migration 0035). The code is a name, never an amount: what it
+ * takes off is the Dodo discount it names, and the server checks it is one of
+ * ours, for this plan, for this person, before Dodo sees it.
+ */
+export const billingCheckoutSchema = z.strictObject(
+  {
+    plan: billingPlanSchema,
+    interval: billingIntervalSchema,
+    promoCode: z.optional(
+      z
+        .string()
+        .check(
+          z.trim(),
+          z.toUpperCase(),
+          z.regex(/^[A-Z0-9]{3,16}$/, 'That is not a code we issued. Check it and try again.'),
+        ),
+    ),
+  },
+  UNEXPECTED_FIELD,
+);
+export type BillingCheckout = z.infer<typeof billingCheckoutSchema>;
+
 /** `GET …/billing/change?plan=&interval=` — the same selection, from the query. */
 export const billingPreviewQuerySchema = z.object({
   plan: billingPlanSchema,
@@ -57,6 +81,11 @@ export interface BillingStatusPayload {
    * support (`support` — an Enterprise contract, a grant), or never bought.
    */
   managedBy: 'checkout' | 'support' | 'none';
+  /**
+   * A complimentary plan's end and where it came from, when `managedBy` is
+   * `support` (migration 0035). `endsAt: null` is a grant with no end.
+   */
+  grant: { endsAt: string | null; note: string | null } | null;
   seats: {
     /** What the subscription bills for. */
     billed: number;
@@ -86,6 +115,11 @@ export interface BillingStatusPayload {
   };
   warnings: BillingWarning[];
   addons: { saml: boolean };
-  /** What the owner can do from here, so the screen draws only what will work. */
-  actions: { checkout: boolean; changePlan: boolean; portal: boolean };
+  /**
+   * What the owner can do from here, so the screen draws only what will work.
+   * `promoCode`: a code xecret issued can be entered — on Free, with nothing
+   * waiting to activate. A free-plan code applies at once; a discount code is
+   * carried into the checkout, so it also needs `checkout`.
+   */
+  actions: { checkout: boolean; changePlan: boolean; portal: boolean; promoCode: boolean };
 }

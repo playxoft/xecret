@@ -43,6 +43,8 @@ function row(over: Partial<SubscriptionRecord> = {}): SubscriptionRecord {
     addonSaml: false,
     addonDirectorySync: false,
     limitOverrides: null,
+    grantEndsAt: null,
+    grantNote: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...over,

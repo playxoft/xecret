@@ -4,10 +4,12 @@ import {
   awaitingActivation,
   claimBillingAlert,
   currentUsage,
+  endPlanGrant,
   entitlementsFromRow,
   listAwaitingActivation,
   listDueSeatSyncs,
   listEndedCancellations,
+  listGrantsEndingBy,
   listLapsedTrials,
   listLongHolds,
   listProviderSubscriptions,
@@ -69,6 +71,11 @@ import type { UsageReport } from './usage';
  *     trials ending, yearly renewals, usage at 80% and 100% of the allowance,
  *     and — once a day — cards about to expire.
  *
+ * And before all of them, **complimentary plans** (migration 0035): a grant
+ * whose end date has passed returns to Free, and its owners are told a week
+ * and a day before. Grants are ours, not Dodo's — so this step runs whether
+ * or not the deployment takes payments, and never calls Dodo.
+ *
  * Nothing here ever touches the data path. Only steps 1–3 change a row, and
  * each only what its own date already decided; every other difference between
  * our rows and Dodo's is the nightly reconciler's to *report* (`reconcile.ts`),
@@ -110,6 +117,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface HourlyReport {
   ended: number;
+  /** Complimentary plans that reached their end date and returned to Free. */
+  grantsEnded: number;
   seatSyncs: number;
   usage: UsageReport | null;
   reminders: number;
@@ -120,9 +129,14 @@ export async function runHourlyBillingJob(
   services: ServiceContext,
   now: Date = new Date(),
 ): Promise<HourlyReport> {
-  const report: HourlyReport = { ended: 0, seatSyncs: 0, usage: null, reminders: 0, failures: [] };
-  const setup = billingSetup(services.env);
-  if (setup.state === 'disabled') return report;
+  const report: HourlyReport = {
+    ended: 0,
+    grantsEnded: 0,
+    seatSyncs: 0,
+    usage: null,
+    reminders: 0,
+    failures: [],
+  };
   const log = services.log.at('runHourlyBillingJob');
 
   const step = async (name: string, run: () => Promise<void>) => {
@@ -135,6 +149,16 @@ export async function runHourlyBillingJob(
       });
     }
   };
+
+  // Before the payments check: a grant ends on its date whether or not this
+  // deployment takes payments — it is the one billing state that needs none.
+  await step('grants', async () => {
+    report.grantsEnded += await endDueGrants(services, now);
+    report.reminders += await remindGrantsEnding(services, now);
+  });
+
+  const setup = billingSetup(services.env);
+  if (setup.state === 'disabled') return report;
 
   await step('ended-cancellations', async () => {
     report.ended += await endLapsedCancellations(services, now);
@@ -155,7 +179,8 @@ export async function runHourlyBillingJob(
     report.usage = await flushUsageToDodo(services);
   });
   await step('reminders', async () => {
-    report.reminders = await sendDueReminders(services, setup.config, now);
+    // Added, not assigned: the grants step has counted its own reminders.
+    report.reminders += await sendDueReminders(services, setup.config, now);
   });
   await step('prune', async () => {
     // A reminder's occasion is long past after a year; the row only stops a repeat.
@@ -166,6 +191,7 @@ export async function runHourlyBillingJob(
 
   log.info('Ran the hourly billing job', {
     ended: report.ended,
+    grantsEnded: report.grantsEnded,
     seatSyncs: report.seatSyncs,
     unitsReported: report.usage?.units ?? 0,
     reminders: report.reminders,
@@ -195,6 +221,87 @@ const ENDED_HERE: ProviderSubscriptionPatch = {
   dodoScheduledChangeAt: null,
   limitOverrides: null,
 };
+
+/**
+ * Step 0. Complimentary plans whose end date has passed, back to Free — by
+ * `endPlanGrant`, under the row's lock, re-checking the date there: an admin
+ * may have extended the grant since it was listed. Audited as the billing
+ * job, and the owners are told.
+ */
+async function endDueGrants(services: ServiceContext, now: Date): Promise<number> {
+  let ended = 0;
+  for (const candidate of await listGrantsEndingBy(services.db, { before: now, limit: 100 })) {
+    const done = await services.db.transaction(async (tx) => {
+      const result = await endPlanGrant(tx, candidate.orgId, { dueBy: now });
+      if (result === null) return null;
+      await appendAuditEvents(tx, [
+        systemAudit(services, candidate.orgId, 'billing job').success(
+          'plan.changed',
+          subscriptionResource(candidate.orgId),
+          {
+            plan: 'free',
+            previousPlan: result.previous.plan,
+            subscriptionStatus: 'active',
+            previousSubscriptionStatus: result.previous.status,
+            seatCount: 1,
+            previousSeatCount: result.previous.seats,
+            reason: 'complimentary plan reached its end date',
+          },
+        ),
+      ]);
+      return result;
+    });
+    if (done === null) continue;
+    ended += 1;
+    await runBillingEffects(services, [
+      {
+        kind: 'mail',
+        orgId: candidate.orgId,
+        occasion: done.previous.grantEndsAt?.toISOString() ?? now.toISOString(),
+        reminder: { kind: 'grant_ended', plan: done.previous.plan },
+      },
+    ]);
+  }
+  return ended;
+}
+
+/**
+ * Step 0b. A week, then a day, before a complimentary plan ends. The occasion
+ * is the end date, so a grant an admin extends is reminded about again, for
+ * its new date — and one reminded about already is not, however many runs see
+ * it.
+ */
+async function remindGrantsEnding(services: ServiceContext, now: Date): Promise<number> {
+  let sent = 0;
+  const soon = await listGrantsEndingBy(services.db, {
+    before: new Date(now.getTime() + 7 * DAY_MS),
+    limit: 500,
+  });
+  for (const row of soon) {
+    const endsAt = row.grantEndsAt;
+    if (endsAt === null) continue;
+    const left = endsAt.getTime() - now.getTime();
+    if (left <= 0) continue;
+    try {
+      const outcome = await sendBillingReminder(services, {
+        orgId: row.orgId,
+        occasion: endsAt.toISOString(),
+        reminder: {
+          kind: left <= DAY_MS ? 'grant_ending_1d' : 'grant_ending_7d',
+          plan: row.plan,
+          endsAt,
+        },
+      });
+      if (outcome === 'sent') sent += 1;
+    } catch (cause) {
+      services.log.at('remindGrantsEnding').warn('Could not send a complimentary plan reminder', {
+        orgId: row.orgId,
+        error: describeError(cause),
+      });
+    }
+  }
+  return sent;
+}
 
 /** Step 1. */
 async function endLapsedCancellations(services: ServiceContext, now: Date): Promise<number> {

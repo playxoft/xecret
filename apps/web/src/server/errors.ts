@@ -642,6 +642,99 @@ export const errors = {
       { logDetail },
     ),
 
+  /*
+   * ── Promo codes and complimentary plans (migration 0035) ──
+   * A code that does not exist, was revoked, or is for somebody else gets one
+   * answer, so a guesser cannot tell a real code from a wrong one by asking.
+   */
+
+  /** Unknown, revoked, or not for this account. */
+  promoCodeInvalid: (logDetail: string): ApiError =>
+    new ApiError(
+      'bad_request',
+      'That is not a code we issued, or it is not for this account. Check it and try again.',
+      { fields: [{ field: 'code', message: 'Check the code and try again.' }], logDetail },
+    ),
+
+  promoCodeExpired: (): ApiError =>
+    new ApiError('conflict', 'That code has expired.', {
+      fields: [{ field: 'code', message: 'That code has expired.' }],
+    }),
+
+  promoCodeUsedUp: (): ApiError =>
+    new ApiError('conflict', 'That code has been used as many times as it allows.', {
+      fields: [{ field: 'code', message: 'That code has been used up.' }],
+    }),
+
+  /** A grant code already spent by this organisation, or by this person for another one. */
+  promoCodeAlreadyRedeemed: (by: 'organisation' | 'person'): ApiError =>
+    new ApiError(
+      'conflict',
+      by === 'organisation'
+        ? 'This organisation has already used that code.'
+        : 'You have already used that code for another organisation. Each person can use it once.',
+      { fields: [{ field: 'code', message: 'Already used.' }] },
+    ),
+
+  /** A discount code for a plan it does not cover. */
+  promoCodeWrongPlan: (plans: readonly string[]): ApiError =>
+    new ApiError(
+      'bad_request',
+      `That code applies to ${plans.map((plan) => plan.charAt(0).toUpperCase() + plan.slice(1)).join(' and ')} only. Nothing was charged.`,
+      { fields: [{ field: 'code', message: 'Not for this plan.' }] },
+    ),
+
+  /** A discount code redeemed as if it gave a free plan. */
+  promoCodeNeedsCheckout: (): ApiError =>
+    new ApiError(
+      'bad_request',
+      'That code takes money off a plan at checkout. Choose the plan, and the code is applied ' +
+        'there.',
+      { fields: [{ field: 'code', message: 'Applied at checkout.' }] },
+    ),
+
+  /** A free-plan code sent to checkout. */
+  promoCodeIsFreePlan: (): ApiError =>
+    new ApiError(
+      'bad_request',
+      'That code gives a free plan, with no checkout. Apply it from “Have a code?” instead. ' +
+        'Nothing was charged.',
+      { fields: [{ field: 'code', message: 'Apply it without checkout.' }] },
+    ),
+
+  /** A code for an organisation that is not on Free: it has a plan already. */
+  promoCodeHasPlan: (how: 'grant' | 'subscription'): ApiError =>
+    new ApiError(
+      'conflict',
+      how === 'grant'
+        ? 'This organisation’s plan is already managed by xecret support, so a code cannot ' +
+            'change it. Contact us and we will.'
+        : 'This organisation already pays for a plan, so a code cannot be applied to it. Codes ' +
+            'are for organisations on the Free plan.',
+    ),
+
+  /** An admin's grant over an organisation Dodo bills, without saying to take it off Dodo. */
+  grantBilledByDodo: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation pays through Dodo. To give it a free plan anyway, choose to take it off ' +
+        'its Dodo subscription — which keeps billing at Dodo until you cancel it there.',
+    ),
+
+  /** A promo code that is already taken — revoked ones included, for ever. */
+  promoCodeTaken: (): ApiError =>
+    new ApiError('conflict', 'That code already exists. Choose another, or leave it blank.', {
+      fields: [{ field: 'code', message: 'Already exists.' }],
+    }),
+
+  /** A discount code asked of a deployment that takes no payments. */
+  promoDiscountNeedsBilling: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Discount codes are applied at checkout, and this deployment does not take payments. Make ' +
+        'a free-plan code instead.',
+    ),
+
   /** See the `sso_required` code above. */
   ssoRequired: (logDetail?: string): ApiError =>
     new ApiError(

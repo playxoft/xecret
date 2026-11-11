@@ -1,4 +1,5 @@
 import { findUserById, listOrganizationsForUser } from '@xecret/db/repositories';
+import { isAdmin } from '@/server/admin';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
 import { vaultStatus } from '@/server/vault-service';
@@ -75,6 +76,13 @@ export const GET = authenticatedRoute(
         principal.kind === 'user'
           ? { kind: 'session' as const, name: null }
           : { kind: 'cliToken' as const, name: principal.tokenName },
+      /**
+       * Whether this session may open the admin page — so the account menu
+       * can offer it. A courtesy like the rest: every admin route asks
+       * `requireAdmin` itself and answers 404 to anybody else. Always `false`
+       * for a CLI token, which can never reach those routes.
+       */
+      admin: isAdmin(services.env, principal),
       organizations: memberships.map((membership) => ({
         id: membership.organization.id,
         name: membership.organization.name,

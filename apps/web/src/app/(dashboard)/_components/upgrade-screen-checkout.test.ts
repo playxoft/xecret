@@ -3,7 +3,9 @@ import { createElement, isValidElement } from 'react';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { authoritySummary } from '@xecret/core/authz';
+import type { PromoCodeFieldProps } from '@/components/plans/promo-code-field';
 import type { ButtonProps } from '@/components/ui';
+import type { PromoCodePreviewPayload } from '@/server/schemas/admin';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import type { SessionOrganization } from './session';
 
@@ -105,6 +107,7 @@ const FREE: BillingStatusPayload = {
   status: 'active',
   interval: null,
   managedBy: 'none',
+  grant: null,
   seats: { billed: 1, seated: 2, pendingInvitations: 0, minimum: 1 },
   currency: null,
   renewsAt: null,
@@ -121,15 +124,42 @@ const FREE: BillingStatusPayload = {
   },
   warnings: [],
   addons: { saml: false },
-  actions: { checkout: true, changePlan: false, portal: false },
+  actions: { checkout: true, changePlan: false, portal: false, promoCode: false },
 };
+
+/** What the billing read answers: `FREE`, unless a case says otherwise. */
+const served = vi.hoisted(() => ({ billing: null as BillingStatusPayload | null }));
 
 vi.mock('../_lib/use-api-resource', () => ({
   useApiResource: (path: string | null) =>
     path === null
       ? { data: null, error: null, loading: false, reload: async () => {} }
-      : { data: { billing: FREE }, error: null, loading: false, reload: async () => {} },
+      : {
+          data: { billing: served.billing ?? FREE },
+          error: null,
+          loading: false,
+          reload: async () => {},
+        },
 }));
+
+/**
+ * "Have a code?", replaced by a recorder of what the screen handed it. The
+ * field's own checking is its own test's; what is pinned here is what the
+ * screen does with a discount once the field hands one up — so the case calls
+ * `onApplied` exactly as the field would after the server's answer.
+ */
+const field = vi.hoisted(() => ({ props: null as PromoCodeFieldProps | null }));
+
+vi.mock('@/components/plans/promo-code-field', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/components/plans/promo-code-field')>();
+  return {
+    ...real,
+    PromoCodeField: (props: PromoCodeFieldProps) => {
+      field.props = props;
+      return null;
+    },
+  };
+});
 
 const { UpgradeScreen } = await import('./upgrade-screen');
 
@@ -182,6 +212,8 @@ beforeEach(() => {
   hooks.slots = [];
   server.posts = [];
   server.answer = 'fail';
+  served.billing = null;
+  field.props = null;
   viewer.organization = {
     id: 'org-1',
     name: 'Acme',
@@ -244,5 +276,76 @@ describe('the plans page’s two checkout buttons for one plan', () => {
     expect(team.map((b) => b.loading)).toEqual([true, true]);
     expect(pro.map((b) => b.disabled)).toEqual([true, true]);
     expect(server.posts).toHaveLength(1);
+  });
+});
+
+/** 50% off Team, as the server answers a checked discount code. */
+const TEAM_HALF_OFF: PromoCodePreviewPayload = {
+  code: 'TEAMHALF',
+  kind: 'discount',
+  summary: '50% off Team for 3 months',
+  plan: null,
+  plans: ['team'],
+};
+
+describe('a discount code on the plans page', () => {
+  beforeEach(() => {
+    served.billing = { ...FREE, actions: { ...FREE.actions, promoCode: true } };
+  });
+
+  it('is offered only where the billing read allows a code', () => {
+    served.billing = FREE;
+    render();
+    expect(field.props).toBeNull();
+
+    served.billing = { ...FREE, actions: { ...FREE.actions, promoCode: true } };
+    render();
+    expect(field.props?.orgSlug).toBe('acme');
+  });
+
+  it('goes with a checkout for a plan it covers, and not with one for another', async () => {
+    render();
+    field.props?.onApplied(TEAM_HALF_OFF);
+    const html = render();
+
+    expect(cards(html)).toContain('TEAMHALF comes off at checkout.');
+    expect(cards(html)).toContain('TEAMHALF does not apply to Pro.');
+
+    await press('Upgrade to Team', 'card');
+    render();
+    await press('Upgrade to Pro', 'card');
+
+    expect(server.posts.map((post) => post.body)).toEqual([
+      { plan: 'team', interval: 'yearly', promoCode: 'TEAMHALF' },
+      { plan: 'pro', interval: 'yearly' },
+    ]);
+  });
+
+  it('is part of the decision: with and without it are two keys', async () => {
+    render();
+    await press('Upgrade to Team', 'card');
+
+    render();
+    field.props?.onApplied(TEAM_HALF_OFF);
+    render();
+    await press('Upgrade to Team', 'card');
+
+    // And the same choice with the same code again is a retry, under its key.
+    render();
+    await press('Upgrade to Team', 'table');
+
+    const [plain, withCode, retry] = server.posts;
+    expect(plain?.body).toEqual({ plan: 'team', interval: 'yearly' });
+    expect(withCode?.body).toEqual({ plan: 'team', interval: 'yearly', promoCode: 'TEAMHALF' });
+    expect(withCode?.key).not.toBe(plain?.key);
+    expect(retry?.key).toBe(withCode?.key);
+
+    // Removed, it is a third decision rather than the first one again.
+    render();
+    field.props?.onApplied(null);
+    render();
+    await press('Upgrade to Team', 'card');
+    expect(server.posts[3]?.body).toEqual({ plan: 'team', interval: 'yearly' });
+    expect(server.posts[3]?.key).not.toBe(withCode?.key);
   });
 });

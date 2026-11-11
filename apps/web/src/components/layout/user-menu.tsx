@@ -25,6 +25,7 @@ import {
   MonitorIcon,
   MoonIcon,
   SettingsIcon,
+  ShieldIcon,
   Shortcut,
   SunIcon,
   UpgradeIcon,
@@ -46,6 +47,13 @@ export interface UserMenuProps {
    */
   upgradeHref?: string;
   /**
+   * Adds "Admin" when provided: the page where xecret's own staff give an
+   * organisation a free plan and issue promo codes. The shell hands it over
+   * only for somebody on the server's allow-list; for anybody else the page is
+   * a 404, so an item drawn by mistake would lead nowhere rather than in.
+   */
+  adminHref?: string;
+  /**
    * Locks the session without ending it. Adds the "Lock now" item when given.
    *
    * A prop rather than a call into the session context, so this component stays
@@ -64,7 +72,14 @@ const THEME_ICONS: Record<ThemePreference, typeof SunIcon> = {
 
 const THEME_ORDER: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
-export function UserMenu({ user, accountHref, upgradeHref, onLock, className }: UserMenuProps) {
+export function UserMenu({
+  user,
+  accountHref,
+  upgradeHref,
+  adminHref,
+  onLock,
+  className,
+}: UserMenuProps) {
   const { preference, setPreference } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
   const [locking, setLocking] = useState(false);
@@ -183,6 +198,21 @@ export function UserMenu({ user, accountHref, upgradeHref, onLock, className }: 
         ) : null}
 
         {accountHref || upgradeHref ? <DropdownMenuSeparator /> : null}
+
+        {/* Its own group, below the account's and the organisation's items:
+            it is about neither, and somebody who has it uses it rarely enough
+            that it should not sit where "Account settings" is reached for. */}
+        {adminHref ? (
+          <>
+            <DropdownMenuItem asChild>
+              <Link href={adminHref}>
+                <ShieldIcon className="size-4" />
+                Admin
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
 
         <DropdownMenuLabel>Theme</DropdownMenuLabel>
         {/* A radio group rather than a cycle button: three states cannot be

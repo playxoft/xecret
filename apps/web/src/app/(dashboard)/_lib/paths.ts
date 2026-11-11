@@ -86,6 +86,16 @@ export const appPath = {
   account: (): string => '/app/settings/account',
   settingsSecurity: (): string => '/app/settings/security',
   settingsDanger: (): string => '/app/settings/danger',
+  /**
+   * The admin page: xecret's own staff giving organisations a free plan and
+   * issuing promo codes. Linked from the account menu only for an admin; for
+   * everybody else it is a 404, as its API is (`server/admin.ts`).
+   *
+   * At the first position, where an organisation slug would go, which is safe
+   * only because `admin` is in the reserved slug list — no organisation can be
+   * called `admin` and be shadowed by this, as none can be called `settings`.
+   */
+  admin: (): string => '/app/admin',
 } as const;
 
 /** API routes, as documented in `docs/architecture/api.md` §4. */
@@ -166,6 +176,10 @@ export const apiPath = {
   billingChange: (org: string): string => `${apiPath.billing(org)}/change`,
   /** `POST` mints a link into Dodo's customer portal. */
   billingPortal: (org: string): string => `${apiPath.billing(org)}/portal`,
+  /** `POST {code}`: what a promo code would do here. Changes nothing. */
+  billingPromoCode: (org: string): string => `${apiPath.billing(org)}/promo-code`,
+  /** `POST {code}`: applies a free-plan code now. A discount code goes to checkout instead. */
+  billingPromoCodeRedeem: (org: string): string => `${apiPath.billingPromoCode(org)}/redeem`,
   serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
   cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
   token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
@@ -233,6 +247,24 @@ export const apiPath = {
     `${apiPath.webhook(org, webhookId)}/test`,
   webhookDeliveries: (org: string, webhookId: string): string =>
     `${apiPath.webhook(org, webhookId)}/deliveries`,
+
+  // ── The admin page (`server/admin.ts`): 404 to everybody but xecret's staff ──
+  /** `GET ?q=` — organisations by a member's email address or by slug. */
+  adminOrganizations: (): string => '/api/admin/organizations',
+  /**
+   * `POST` gives the organisation a free plan, or replaces the one it has.
+   * Keyed by id, not slug: the admin is not a member, and a slug is the
+   * organisation's to rename.
+   */
+  adminGrant: (orgId: string): string => `/api/admin/organizations/${segment(orgId)}/grant`,
+  /** `POST {reason}` ends a free plan now; the organisation returns to Free. */
+  adminGrantEnd: (orgId: string): string => `${apiPath.adminGrant(orgId)}/end`,
+  /** Every free plan in force, soonest to end first. */
+  adminGrants: (): string => '/api/admin/grants',
+  /** `GET` lists the codes, `POST` creates one. */
+  adminPromoCodes: (): string => '/api/admin/promo-codes',
+  adminPromoCodeRevoke: (codeId: string): string =>
+    `${apiPath.adminPromoCodes()}/${segment(codeId)}/revoke`,
 } as const;
 
 /**
@@ -279,6 +311,11 @@ export function withQuery(
  * is `/app/settings/account`, and no organisation can shadow it because
  * `settings` is in the reserved slug list; at the second it is the organisation
  * settings page, and no project can shadow it for the same reason.
+ *
+ * `admin` at the first position is the admin page, by the same reasoning. Read
+ * as a slug it would point the whole shell at an organisation called "admin" —
+ * every sidebar link to `/app/admin/members` and the like, and the tab's
+ * remembered organisation overwritten with one the viewer is not a member of.
  */
 export interface DashboardLocation {
   orgSlug: string | null;
@@ -286,6 +323,8 @@ export interface DashboardLocation {
   envSlug: string | null;
   /** `/app/settings/**` — scoped to the person, not to an organisation. */
   isAccountArea: boolean;
+  /** `/app/admin` — xecret's staff page, scoped to no organisation either. */
+  isAdminArea: boolean;
 }
 
 export function parseDashboardPath(pathname: string): DashboardLocation {
@@ -295,10 +334,12 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
     projectSlug: null,
     envSlug: null,
     isAccountArea: false,
+    isAdminArea: false,
   };
 
   if (root !== 'app' || first === undefined) return empty;
   if (first === 'settings') return { ...empty, isAccountArea: true };
+  if (first === 'admin') return { ...empty, isAdminArea: true };
 
   // Org-level pages that occupy the slot a project slug would. All four names
   // are in the reserved slug list, so no project can ever shadow one — which is
@@ -311,5 +352,6 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
     projectSlug: second === undefined || orgPage ? null : decodeURIComponent(second),
     envSlug: third === undefined || orgPage ? null : decodeURIComponent(third),
     isAccountArea: false,
+    isAdminArea: false,
   };
 }
