@@ -111,6 +111,44 @@ export function describeRequest(method: string, path: string): RequestAction {
       return rest[0] === 'webhook'
         ? action('billing.webhook', 'Received', 'receive', 'a payment webhook from Dodo')
         : unknown(verb, path);
+    case 'admin':
+      return describeAdmin(verb, rest, path);
+    default:
+      return unknown(verb, path);
+  }
+}
+
+/**
+ * `/api/admin/…` — xecret's own admin page (migration 0035). Named by what it
+ * did, never by whom it was done to: an organisation id is in the path, and
+ * stays out of the sentence like every other identifier.
+ */
+function describeAdmin(verb: string, rest: readonly string[], path: string): RequestAction {
+  const [section, , sub, subsub] = rest;
+  switch (section) {
+    case 'organizations':
+      if (sub === undefined) {
+        return action('admin.org_search', 'Searched', 'search', 'organisations, as an admin');
+      }
+      return subsub === 'end'
+        ? action('admin.grant_end', 'Ended', 'end', 'a complimentary plan, as an admin')
+        : action('admin.grant', 'Granted', 'grant', 'a complimentary plan, as an admin');
+    case 'grants':
+      return action('admin.grants_list', 'Listed', 'list', 'complimentary plans, as an admin');
+    case 'admins':
+      if (rest[2] === 'remove') {
+        return action('admin.admin_remove', 'Removed', 'remove', 'an admin, as an admin');
+      }
+      return verb === 'POST'
+        ? action('admin.admin_add', 'Added', 'add', 'an admin, as an admin')
+        : action('admin.admins_list', 'Listed', 'list', 'the admins, as an admin');
+    case 'promo-codes':
+      if (rest[2] === 'revoke') {
+        return action('admin.promo_revoke', 'Revoked', 'revoke', 'a promo code, as an admin');
+      }
+      return verb === 'POST'
+        ? action('admin.promo_create', 'Created', 'create', 'a promo code, as an admin')
+        : action('admin.promo_list', 'Listed', 'list', 'promo codes, as an admin');
     default:
       return unknown(verb, path);
   }
@@ -129,6 +167,10 @@ function describeBilling(verb: string, org: string, rest: readonly string[]): Re
         : action('billing.change', 'Changed', 'change', `the plan of ${org}`);
     case 'portal':
       return action('billing.portal', 'Opened', 'open', `the billing portal for ${org}`);
+    case 'promo-code':
+      return rest[1] === 'redeem'
+        ? action('billing.promo_redeem', 'Redeemed', 'redeem', `a promo code for ${org}`)
+        : action('billing.promo_check', 'Checked', 'check', `a promo code for ${org}`);
     default:
       return unknown(verb, `/api/orgs/${org}/billing/${rest.join('/')}`);
   }

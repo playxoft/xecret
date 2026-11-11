@@ -34,6 +34,8 @@ export interface AppShellProps {
   onCreateOrganization?: () => void;
   user: ShellUser;
   accountHref?: string;
+  /** The admin page, for xecret's own staff only. Adds "Admin" to the account menu. */
+  adminHref?: string;
   /** Locks the session without ending it. Adds "Lock now" to the account menu. */
   onLock?: () => Promise<void>;
   breadcrumbs?: readonly BreadcrumbItem[];
@@ -56,6 +58,7 @@ export function AppShell({
   onCreateOrganization,
   user,
   accountHref,
+  adminHref,
   onLock,
   breadcrumbs,
   topBarActions,
@@ -218,6 +221,7 @@ export function AppShell({
               user={user}
               {...(accountHref === undefined ? {} : { accountHref })}
               {...(upgradeHref === undefined ? {} : { upgradeHref })}
+              {...(adminHref === undefined ? {} : { adminHref })}
               {...(onLock === undefined ? {} : { onLock })}
             />
           </div>

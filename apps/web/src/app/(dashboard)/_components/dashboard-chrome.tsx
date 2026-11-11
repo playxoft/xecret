@@ -177,6 +177,8 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }
 
   const { user, organizations, vault } = session.data;
+  // Absent from an answer that predates the field, and absent means no.
+  const admin = session.data.admin === true;
 
   // ── The lock, before anything else the shell would render ──
   //
@@ -272,6 +274,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         refresh: reloadSession,
         refreshTrail,
         createOrganization: openCreateOrganization,
+        admin,
       }}
     >
       {/* `key`, so that signing in as somebody else in the same tab remounts
@@ -287,6 +290,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           onCreateOrganization={openCreateOrganization}
           user={{ name: user.displayName ?? user.email, email: user.email }}
           accountHref={appPath.account()}
+          // Only for xecret's own staff. Drawn from the session's answer, which
+          // is a courtesy: the page and its API answer everybody else 404.
+          {...(admin ? { adminHref: appPath.admin() } : {})}
           onLock={lock}
           breadcrumbs={buildBreadcrumbs(location, {
             org: currentOrg?.name ?? null,
@@ -359,9 +365,10 @@ export function buildBreadcrumbs(
   location: DashboardLocation,
   names: TrailNames,
 ): readonly BreadcrumbItem[] {
-  const { orgSlug, projectSlug, envSlug, isAccountArea } = location;
+  const { orgSlug, projectSlug, envSlug, isAccountArea, isAdminArea } = location;
 
   if (isAccountArea) return [{ label: 'Account' }];
+  if (isAdminArea) return [{ label: 'Admin' }];
   if (orgSlug === null) return [{ label: 'Organisations' }];
 
   const crumbs: BreadcrumbItem[] = [{ label: names.org ?? orgSlug, href: appPath.org(orgSlug) }];

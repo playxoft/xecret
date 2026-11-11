@@ -10,8 +10,9 @@ import { isScheduledRequest } from '@/server/scheduled';
  * internet gets a bare 404 decided before anything is built, exactly as the
  * retained-vault purge beside it does.
  *
- * The job itself is in `server/billing/jobs.ts`: ended cancellations, seat-sync
- * retries, the overage report, the dated reminders. Each step runs whether or
+ * The job itself is in `server/billing/jobs.ts`: complimentary plans that
+ * reached their end date, ended cancellations, seat-sync retries, the overage
+ * report, the dated reminders. Each step runs whether or
  * not the others failed; if any did, this answers 500 so the scheduled run is
  * marked failed in Cloudflare's own record too.
  */
@@ -23,6 +24,7 @@ const run = publicRoute(async ({ services }) => {
   }
   return json({
     ended: report.ended,
+    grantsEnded: report.grantsEnded,
     seatSyncs: report.seatSyncs,
     unitsReported: report.usage?.units ?? 0,
     reminders: report.reminders,

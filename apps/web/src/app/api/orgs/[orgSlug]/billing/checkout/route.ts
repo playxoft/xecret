@@ -9,17 +9,19 @@ import {
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
-import { billingSelectionSchema } from '@/server/schemas/billing';
+import { billingCheckoutSchema } from '@/server/schemas/billing';
 import { resolveOrg } from '@/server/tenancy';
 
 /**
  * `POST /api/orgs/{orgSlug}/billing/checkout` — send an owner to Dodo's hosted
  * checkout for a plan (P12).
  *
- * The body names a plan and a billing period and nothing else. The seats are
- * counted from the membership, the currency follows the billing country Dodo
- * records (pinned while the region lock holds), and the price is the Dodo
- * product's. We never see the card.
+ * The body names a plan, a billing period and — optionally — a discount code
+ * xecret issued (`promoCode`, checked by `discountForCheckout` before Dodo is
+ * asked for anything, then pre-applied with Dodo's own code box hidden). The
+ * seats are counted from the membership, the currency follows the billing
+ * country Dodo records (pinned while the region lock holds), and the price is
+ * the Dodo product's. We never see the card.
  *
  * **The return from checkout grants nothing.** Dodo sends the browser back to
  * the billing screen with `?checkout=returned`, and the screen waits for the
@@ -48,8 +50,8 @@ export const POST = authenticatedRoute<Params>(
     const orgAudit = audit(scope.organization.id);
     authorizeBilling(scope, { audit: orgAudit, record }, ['billing.checkout_started']);
 
-    const selection = await parseJsonBody(request, billingSelectionSchema);
-    const { url, seats, replayed } = await startCheckout(
+    const selection = await parseJsonBody(request, billingCheckoutSchema);
+    const { url, seats, replayed, promoCodeId } = await startCheckout(
       services,
       scope,
       user,
@@ -63,6 +65,10 @@ export const POST = authenticatedRoute<Params>(
         plan: selection.plan,
         billingInterval: selection.interval,
         seatCount: seats,
+        // The code, never what it takes off: the amount is Dodo's to state.
+        ...(promoCodeId !== null && selection.promoCode !== undefined
+          ? { reason: `with promo code ${selection.promoCode}` }
+          : {}),
       }),
     );
     return json({ url });

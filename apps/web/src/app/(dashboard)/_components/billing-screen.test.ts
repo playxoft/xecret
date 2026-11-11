@@ -55,6 +55,7 @@ function subscribed(interval: 'monthly' | 'yearly' = 'yearly'): BillingStatusPay
     status: 'active',
     interval,
     managedBy: 'checkout',
+    grant: null,
     seats: { billed: 4, seated: 4, pendingInvitations: 0, minimum: 1 },
     currency: 'USD',
     renewsAt: '2027-11-01T00:00:00.000Z',
@@ -71,7 +72,7 @@ function subscribed(interval: 'monthly' | 'yearly' = 'yearly'): BillingStatusPay
     },
     warnings: [],
     addons: { saml: false },
-    actions: { checkout: false, changePlan: true, portal: true },
+    actions: { checkout: false, changePlan: true, portal: true, promoCode: false },
   };
 }
 
@@ -142,5 +143,109 @@ describe('BillingScreen’s change form', () => {
 
     expect(html).toContain('Service tokens and CI never take a seat.');
     expect(html).not.toContain('never cost anything');
+  });
+});
+
+/** A Team plan an admin gave, or a free-plan code redeemed: nothing at Dodo behind it. */
+function complimentary(endsAt: string | null): BillingStatusPayload {
+  return {
+    ...subscribed(),
+    plan: 'team',
+    // The schema keeps an interval on every paid plan, a grant's included.
+    interval: 'yearly',
+    managedBy: 'support',
+    grant: { endsAt, note: 'Launch partner' },
+    currency: null,
+    renewsAt: null,
+    renewalAmount: null,
+    actions: { checkout: false, changePlan: false, portal: false, promoCode: false },
+  };
+}
+
+describe('BillingScreen, on a complimentary plan', () => {
+  it('says it is complimentary, until when, and where it came from', () => {
+    resource.billing = complimentary('2027-03-01T00:00:00.000Z');
+    const html = render();
+
+    expect(html).toContain('Complimentary Team plan');
+    expect(html).toContain('until ');
+    expect(html).toContain('Launch partner');
+    expect(html).toContain('When it ends the organisation moves to Free, and nothing is deleted.');
+    // It replaces the support notice, rather than sitting under it.
+    expect(html).not.toContain('Managed by xecret support');
+  });
+
+  it('says so when it has no end', () => {
+    resource.billing = complimentary(null);
+    const html = render();
+
+    expect(html).toContain('with no end date');
+    expect(html).toContain('No end date');
+    expect(html).not.toContain('When it ends');
+  });
+
+  it('invents no invoice: no billing period, no billed seats, no overage charge', () => {
+    resource.billing = complimentary(null);
+    const html = render();
+
+    expect(html).toContain('· complimentary');
+    expect(html).not.toContain('billed yearly');
+    expect(html).not.toMatch(/\d+ billed/);
+    expect(html).not.toContain('on the next invoice');
+  });
+
+  it('keeps the support notice for a plan arranged without a grant', () => {
+    resource.billing = { ...complimentary(null), plan: 'enterprise', grant: null };
+    const html = render();
+
+    expect(html).toContain('Managed by xecret support');
+    expect(html).not.toContain('Complimentary');
+  });
+});
+
+/** An owner's Free organisation, which may check out — and, where the server says so, use a code. */
+function free(promoCode: boolean): BillingStatusPayload {
+  return {
+    ...subscribed(),
+    plan: 'free',
+    interval: null,
+    managedBy: 'none',
+    seats: { billed: 1, seated: 2, pendingInvitations: 0, minimum: 1 },
+    currency: null,
+    renewsAt: null,
+    renewalAmount: null,
+    actions: { checkout: true, changePlan: false, portal: false, promoCode },
+  };
+}
+
+describe('BillingScreen’s "Have a code?"', () => {
+  it('is offered beside the checkout when the server allows a code', () => {
+    resource.billing = free(true);
+    const html = render();
+
+    expect(html).toContain('Have a code?');
+    // In the plan card, above the button it feeds.
+    expect(html.indexOf('Have a code?')).toBeLessThan(html.indexOf('Continue to checkout'));
+  });
+
+  it('is not offered when it does not', () => {
+    resource.billing = free(false);
+    expect(render()).not.toContain('Have a code?');
+
+    resource.billing = subscribed();
+    expect(render()).not.toContain('Have a code?');
+  });
+
+  it('is offered on its own where nothing is sold, for a free-plan code', () => {
+    resource.billing = {
+      ...free(true),
+      enabled: false,
+      mode: null,
+      actions: { checkout: false, changePlan: false, portal: false, promoCode: true },
+    };
+    const html = render();
+
+    expect(html).toContain('Have a code?');
+    expect(html).not.toContain('Continue to checkout');
   });
 });

@@ -15,3 +15,4 @@ export * from './billing';
 export * from './reauth';
 export * from './retained-vaults';
 export * from './paid-features';
+export * from './platform';
