@@ -256,6 +256,46 @@ describe('applyPlanGrant', () => {
 
       expect(outcome).toEqual({ ok: false, refusal: 'already-subscribed' });
     });
+
+    it('never takes a Free row off the subscription it ended on — a late payment must find it', async () => {
+      const { orgId } = await seedOrg({ dodoSubscription: 'sub_on_hold', eventAt: new Date() });
+
+      const outcome = await t.db.transaction((tx) =>
+        applyPlanGrant(tx, grant(orgId, { onlyFromFree: true })),
+      );
+
+      expect(outcome).toEqual({ ok: false, refusal: 'previously-subscribed' });
+      expect((await findSubscription(t.db, orgId))?.dodoSubscriptionId).toBe('sub_on_hold');
+    });
+
+    it('waits for a checkout started since the given moment, and not for an older one', async () => {
+      const { orgId, ownerId } = await seedOrg();
+      await recordCheckout(t.db, {
+        sessionId: `cks_${randomUUID()}`,
+        orgId,
+        plan: 'pro',
+        billingInterval: 'monthly',
+        quantity: 1,
+        createdBy: ownerId,
+        nonce: randomUUID().replaceAll('-', ''),
+      });
+
+      const open = await t.db.transaction((tx) =>
+        applyPlanGrant(
+          tx,
+          grant(orgId, { onlyFromFree: true, checkoutsOpenSince: new Date(Date.now() - DAY) }),
+        ),
+      );
+      expect(open).toEqual({ ok: false, refusal: 'checkout-open' });
+
+      const expired = await t.db.transaction((tx) =>
+        applyPlanGrant(
+          tx,
+          grant(orgId, { onlyFromFree: true, checkoutsOpenSince: new Date(Date.now() + 60_000) }),
+        ),
+      );
+      expect(expired.ok).toBe(true);
+    });
   });
 });
 

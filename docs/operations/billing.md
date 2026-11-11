@@ -526,7 +526,7 @@ Since migration 0035, xecret's own staff can do the commonest of the above from 
 `XECRET_ADMIN_EMAILS` — a Worker secret, from Phase.dev, holding a JSON array
 (`["a@example.com"]`) or a comma-separated list of sign-in addresses. The address must be the
 one the admin signs in with, and verified; the session must be a browser session with its vault
-unlocked; everybody else gets the 404 an unknown path gets. Changing the list takes effect on the
+unlocked; any other signed-in caller gets a 404. Changing the list takes effect on the
 next request — `wrangler secret put XECRET_ADMIN_EMAILS --env production` from a Phase shell, as
 for every other secret (see `apps/web/wrangler.toml`).
 
@@ -559,7 +559,9 @@ So "free, no card" is a free-plan code; "free, card on file" is a 100% discount 
 (the card is charged when the discount runs out); anything else is a discount. Every code can be
 limited to a list of addresses, a number of uses and an expiry date. A free-plan code is spent
 once per organisation and once per person; a discount's uses are counted by Dodo against the
-limit it was created with.
+limit it was created with. A free-plan code is refused on an organisation that was subscribed
+before (it still carries the Dodo subscription it ended on, which a late payment must still find)
+and while a checkout started in the last day is open — grant those from the Organisations tab.
 
 A discount code is created at Dodo by the page — **restricted to this deployment's own Pro/Team
 products**, because the Dodo account is shared with other products — and **Dodo's own code box

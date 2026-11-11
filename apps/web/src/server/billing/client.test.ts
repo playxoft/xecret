@@ -201,11 +201,34 @@ describe('createDiscount and deleteDiscount', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('refuses an answer naming another code than the one asked for', async () => {
-    const fetcher = stub(ok({ discount_id: 'dsc_1', code: 'SOMETHINGELSE' }));
+  it('refuses an answer naming another code than the one asked for, and deletes what it made', async () => {
+    const fetcher = vi.fn<Fetcher>(async (url: string) =>
+      url.endsWith('/discounts')
+        ? ok({ discount_id: 'dsc_1', code: 'SOMETHINGELSE' })
+        : new Response(null, { status: 204 }),
+    );
     await expect(new DodoClient(BASE, KEY, fetcher).createDiscount(REQUEST)).rejects.toMatchObject({
       category: 'malformed',
     });
+    // Nothing is left at Dodo that this server has no row for.
+    const deleted = fetcher.mock.calls[1] as unknown as [string, RequestInit];
+    expect(deleted[0]).toBe(`${BASE}/discounts/dsc_1`);
+    expect(deleted[1].method).toBe('DELETE');
+  });
+
+  it('finds a discount by its code only when it carries our own metadata', async () => {
+    const ours = stub(
+      ok({ discount_id: 'dsc_9', code: 'FRIENDS50', metadata: { xecret_promo_code: 'FRIENDS50' } }),
+    );
+    expect(await new DodoClient(BASE, KEY, ours).findOwnDiscount('FRIENDS50')).toBe('dsc_9');
+    expect(sentInit(ours).url).toBe(`${BASE}/discounts/code/FRIENDS50`);
+
+    // The account is shared: another product's code of the same name is never ours to delete.
+    const theirs = stub(ok({ discount_id: 'dsc_x', code: 'FRIENDS50', metadata: {} }));
+    expect(await new DodoClient(BASE, KEY, theirs).findOwnDiscount('FRIENDS50')).toBeNull();
+
+    const none = stub(new Response(JSON.stringify({ code: 'NOT_FOUND' }), { status: 404 }));
+    expect(await new DodoClient(BASE, KEY, none).findOwnDiscount('FRIENDS50')).toBeNull();
   });
 
   it('deletes by id, encoded', async () => {

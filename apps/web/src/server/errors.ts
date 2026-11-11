@@ -713,6 +713,27 @@ export const errors = {
             'are for organisations on the Free plan.',
     ),
 
+  /**
+   * A free-plan code for an organisation that was subscribed through Dodo
+   * before: taking it off that subscription is a decision for support, who
+   * can see whether Dodo might still collect on it.
+   */
+  promoCodePreviouslySubscribed: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation had a paid subscription before, so a code cannot be applied to it here. ' +
+        'Contact us and we will set the free plan up for you.',
+    ),
+
+  /** A free-plan code while a checkout started in the last day is still open. */
+  promoCodeCheckoutOpen: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'A checkout for this organisation was started in the last day. If you paid, the plan is on ' +
+        'its way; if you did not, the code can be used once that checkout expires, a day after it ' +
+        'was started.',
+    ),
+
   /** An admin's grant over an organisation Dodo bills, without saying to take it off Dodo. */
   grantBilledByDodo: (): ApiError =>
     new ApiError(

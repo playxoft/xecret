@@ -761,12 +761,15 @@ secret reaching a log or an audit row.
   exists (`/api/admin/*`), against `plan:set`'s own warning, by the owner's decision; what fences
   it is `server/admin.ts`: an allow-list read from `XECRET_ADMIN_EMAILS` (a Worker secret) on
   every request — no admin flag stored anywhere a bug or an injection could set — a browser
-  session only, never a token; a verified address; the vault unlocked; and a 404 to everybody
-  else, so the API is not confirmed to exist. Every grant lands in the customer's own audit log
-  as "xecret support" with the admin's reason; which admin it was is on the server's log line.
+  session only, never a token; a verified address (printable ASCII, folded in ASCII only); the
+  vault unlocked; and a 404 to any signed-in caller who is not an admin (the routes are no secret
+  — the repository is public — so nothing rests on hiding them). Every grant lands in the customer's own audit log
+  as "xecret support" with the admin's reason — never the admin's address, IP or browser; which
+  admin it was is on the server's log line.
   The residual risk is plain: an admin's account (their sign-in **and** their vault passphrase)
   is now worth free paid plans for anybody, and a wrong address in the secret is an admin. Promo codes: a free-plan code is spent in one transaction with the grant it
-  gives, once per organisation and once per person, never past its limit; a discount code is
+  gives, once per organisation and once per person, never past its limit, and never on an
+  organisation that still carries a Dodo subscription or has a checkout from the last day open; a discount code is
   created at Dodo restricted to this deployment's own products (the account is shared), and
   Dodo's own code box is hidden on every checkout, so a code reaches one only after this server
   checked it is ours, live, for that plan and that person. Codes are guessable only as fast as

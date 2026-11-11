@@ -948,7 +948,8 @@ describe('creating promo codes', () => {
     expect(dodo.createDiscount).toHaveBeenCalledTimes(1);
     expect(dodo.createDiscount).toHaveBeenCalledWith({
       code,
-      name: 'xecret: Launch week',
+      // The code, never the admin's description: Dodo may show a discount's name.
+      name: `xecret ${code}`,
       type: 'percentage',
       amount: 5_000,
       currency: null,

@@ -214,6 +214,12 @@ export interface BillingProvider {
   createDiscount(request: DiscountRequest): Promise<{ discountId: string }>;
   /** Deletes a discount code, so nothing can redeem it any more. */
   deleteDiscount(discountId: string): Promise<void>;
+  /**
+   * The id of the discount this server created under `code` — only when its
+   * metadata says it is ours: the account is shared, and another product's
+   * code of the same name must never be touched. `null` when there is none.
+   */
+  findOwnDiscount(code: string): Promise<string | null>;
 }
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
@@ -225,6 +231,8 @@ type Fetch = (input: string, init: RequestInit) => Promise<Response>;
  */
 export const ORG_METADATA_KEY = 'xecret_org_id';
 export const CHECKOUT_NONCE_METADATA_KEY = 'xecret_checkout';
+/** On a discount this server created: its code, so `findOwnDiscount` can tell it from another product's. */
+export const DISCOUNT_METADATA_KEY = 'xecret_promo_code';
 
 /**
  * `POST /checkouts`, as far as this server sends it.
@@ -444,16 +452,33 @@ export class DodoClient implements BillingProvider {
       // the code is ever sent: a checkout creates a new Dodo customer per
       // organisation, so Dodo's own per-customer list could not name them.
       customer_eligibility: 'any',
-      metadata: { xecret_promo_code: request.code },
+      metadata: { [DISCOUNT_METADATA_KEY]: request.code },
     };
     const parsed = await this.call('POST', '/discounts', dodoDiscountSchema, body);
     if (parsed.code.toUpperCase() !== request.code) {
       // Dodo stored a different code from the one asked for. The code on our
       // row is what owners type and what checkout sends, so a mismatch would
-      // make it apply nothing — refused here, and the caller deletes it again.
+      // make it apply nothing — deleted again here, where its id is known, so
+      // nothing is left at Dodo that this server has no row for, and refused.
+      await this.deleteDiscount(parsed.discount_id).catch(() => undefined);
       throw new DodoApiError('malformed', null, 'code_mismatch');
     }
     return { discountId: parsed.discount_id };
+  }
+
+  async findOwnDiscount(code: string): Promise<string | null> {
+    let parsed: z.infer<typeof dodoDiscountSchema>;
+    try {
+      parsed = await this.call(
+        'GET',
+        `/discounts/code/${encodeURIComponent(code)}`,
+        dodoDiscountSchema,
+      );
+    } catch (cause) {
+      if (cause instanceof DodoApiError && cause.category === 'not_found') return null;
+      throw cause;
+    }
+    return parsed.metadata?.[DISCOUNT_METADATA_KEY] === code ? parsed.discount_id : null;
   }
 
   async deleteDiscount(discountId: string): Promise<void> {

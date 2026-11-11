@@ -12,6 +12,7 @@ import { users } from '../schema/identity';
 import { orgMembers, organizations } from '../schema/tenancy';
 import {
   awaitingActivation,
+  carriesProviderIds,
   detachFromProvider,
   lockSubscription,
   operatorBillingEdit,
@@ -19,6 +20,7 @@ import {
   raiseCurrentUsageAllowance,
 } from './billing';
 import type { Executor, Transaction } from './shared';
+import { isUniqueViolation } from './users';
 import type { SubscriptionRecord } from './subscriptions';
 
 /**
@@ -54,7 +56,19 @@ export type GrantRefusal =
   /** A redemption only: the organisation already has a grant or a contract. */
   | 'already-granted'
   /** A redemption only: the organisation already pays for a plan. */
-  | 'already-subscribed';
+  | 'already-subscribed'
+  /**
+   * A redemption only: the organisation still carries a Dodo subscription it
+   * was on — one that ended, or one ended here after a long hold that Dodo may
+   * still collect on. A code is not the place to take it off that
+   * subscription silently; an admin grant is, and shows which one it was.
+   */
+  | 'previously-subscribed'
+  /**
+   * A redemption only: a checkout was started recently and not yet paid or
+   * expired — its payment could land on the grant and be filed nowhere.
+   */
+  | 'checkout-open';
 
 export interface PlanGrantRequest {
   orgId: string;
@@ -79,6 +93,12 @@ export interface PlanGrantRequest {
    * one. An admin may also replace a grant (extend it, change its plan).
    */
   onlyFromFree: boolean;
+  /**
+   * A redemption: checkouts started since this moment that no subscription
+   * has consumed refuse it (`checkout-open`). A hosted checkout lives a day,
+   * so the caller passes a day ago.
+   */
+  checkoutsOpenSince?: Date;
 }
 
 export type PlanGrantOutcome =
@@ -124,6 +144,23 @@ export async function applyPlanGrant(
     if (awaitingActivation(row)) return { ok: false, refusal: 'awaiting-activation' };
     if (operatorManaged(row)) return { ok: false, refusal: 'already-granted' };
     if (row.plan !== 'free') return { ok: false, refusal: 'already-subscribed' };
+    // Never detached by a redemption: the ids are what lets a late payment
+    // of that subscription find this organisation again.
+    if (carriesProviderIds(row)) return { ok: false, refusal: 'previously-subscribed' };
+    if (request.checkoutsOpenSince !== undefined) {
+      const [open] = await tx
+        .select({ sessionId: billingCheckouts.sessionId })
+        .from(billingCheckouts)
+        .where(
+          and(
+            eq(billingCheckouts.orgId, request.orgId),
+            isNull(billingCheckouts.subscriptionId),
+            gt(billingCheckouts.createdAt, request.checkoutsOpenSince),
+          ),
+        )
+        .limit(1);
+      if (open !== undefined) return { ok: false, refusal: 'checkout-open' };
+    }
   }
 
   const edit = operatorBillingEdit(row, { touchesBilling: true, overDodo: request.overDodo });
@@ -572,11 +609,22 @@ export async function spendGrantRedemption(
 
   // The keys are the guarantee; the read above only names the refusal. A
   // concurrent redemption that slipped between the two fails here, and its
-  // transaction — the count included — rolls back with it.
-  await tx.insert(promoCodeRedemptions).values({
-    codeId: params.codeId,
-    orgId: params.orgId,
-    userId: params.userId,
-  });
+  // transaction — the count included — rolls back with it: the caller throws
+  // on any refusal, so the failed statement is never followed by another.
+  try {
+    await tx.insert(promoCodeRedemptions).values({
+      codeId: params.codeId,
+      orgId: params.orgId,
+      userId: params.userId,
+    });
+  } catch (cause) {
+    if (isUniqueViolation(cause, 'promo_code_redemptions_pkey')) {
+      return { ok: false, refusal: 'org-redeemed' };
+    }
+    if (isUniqueViolation(cause, 'promo_code_redemptions_user_unique')) {
+      return { ok: false, refusal: 'user-redeemed' };
+    }
+    throw cause;
+  }
   return { ok: true };
 }

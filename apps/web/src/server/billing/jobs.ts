@@ -231,38 +231,61 @@ const ENDED_HERE: ProviderSubscriptionPatch = {
 async function endDueGrants(services: ServiceContext, now: Date): Promise<number> {
   let ended = 0;
   for (const candidate of await listGrantsEndingBy(services.db, { before: now, limit: 100 })) {
-    const done = await services.db.transaction(async (tx) => {
-      const result = await endPlanGrant(tx, candidate.orgId, { dueBy: now });
-      if (result === null) return null;
-      await appendAuditEvents(tx, [
-        systemAudit(services, candidate.orgId, 'billing job').success(
-          'plan.changed',
-          subscriptionResource(candidate.orgId),
+    // Each grant on its own: one that cannot be ended must not hold up the
+    // rest, nor the reminders after them, every hour until somebody looks.
+    try {
+      ended += await endDueGrant(services, candidate, now);
+    } catch (cause) {
+      services.log
+        .at('endDueGrants')
+        .error(
+          'A complimentary plan past its end date could not be ended; the next run tries again',
           {
-            plan: 'free',
-            previousPlan: result.previous.plan,
-            subscriptionStatus: 'active',
-            previousSubscriptionStatus: result.previous.status,
-            seatCount: 1,
-            previousSeatCount: result.previous.seats,
-            reason: 'complimentary plan reached its end date',
+            orgId: candidate.orgId,
+            error: describeError(cause),
           },
-        ),
-      ]);
-      return result;
-    });
-    if (done === null) continue;
-    ended += 1;
-    await runBillingEffects(services, [
-      {
-        kind: 'mail',
-        orgId: candidate.orgId,
-        occasion: done.previous.grantEndsAt?.toISOString() ?? now.toISOString(),
-        reminder: { kind: 'grant_ended', plan: done.previous.plan },
-      },
-    ]);
+        );
+    }
   }
   return ended;
+}
+
+/** One due grant, ended and told about. `1` when it ended, `0` when it had moved on. */
+async function endDueGrant(
+  services: ServiceContext,
+  candidate: SubscriptionRecord,
+  now: Date,
+): Promise<number> {
+  const done = await services.db.transaction(async (tx) => {
+    const result = await endPlanGrant(tx, candidate.orgId, { dueBy: now });
+    if (result === null) return null;
+    await appendAuditEvents(tx, [
+      systemAudit(services, candidate.orgId, 'billing job').success(
+        'plan.changed',
+        subscriptionResource(candidate.orgId),
+        {
+          plan: 'free',
+          previousPlan: result.previous.plan,
+          subscriptionStatus: 'active',
+          previousSubscriptionStatus: result.previous.status,
+          seatCount: 1,
+          previousSeatCount: result.previous.seats,
+          reason: 'complimentary plan reached its end date',
+        },
+      ),
+    ]);
+    return result;
+  });
+  if (done === null) return 0;
+  await runBillingEffects(services, [
+    {
+      kind: 'mail',
+      orgId: candidate.orgId,
+      occasion: done.previous.grantEndsAt?.toISOString() ?? now.toISOString(),
+      reminder: { kind: 'grant_ended', plan: done.previous.plan },
+    },
+  ]);
+  return 1;
 }
 
 /**

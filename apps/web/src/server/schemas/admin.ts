@@ -80,7 +80,12 @@ export const adminSearchQuerySchema = z.object({
     ),
 });
 
-/** Lower-cased, de-duplicated, every one shaped like an address. */
+/**
+ * Lower-cased, every one shaped like an address — and printable ASCII, checked
+ * before the fold: a Unicode lower-casing would turn `Kelly@` (a Kelvin sign)
+ * into `kelly@`, and the check that reads this list folds in ASCII only
+ * (`asciiAddress`, `server/admin.ts`).
+ */
 const allowedEmailsSchema = z.nullable(
   z
     .array(
@@ -88,6 +93,7 @@ const allowedEmailsSchema = z.nullable(
         .string()
         .check(
           z.trim(),
+          z.regex(/^[\x21-\x7e]+$/, 'Addresses here are plain ASCII, without spaces.'),
           z.toLowerCase(),
           z.maxLength(320, 'An address is at most 320 characters.'),
           z.regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'One of the addresses is not an email address.'),

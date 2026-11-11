@@ -8,6 +8,7 @@ import {
 } from '@xecret/db/repositories';
 import type { PromoCodeRecord } from '@xecret/db/repositories';
 import type { Principal } from '../actor';
+import { asciiAddress } from '../admin';
 import type { ServiceContext } from '../context';
 import { errors } from '../errors';
 import type { PromoCodePreviewPayload, PromoCodeState } from '../schemas/admin';
@@ -115,10 +116,17 @@ async function usableCode(
   const code = await findPromoCode(services.db, raw);
   if (code === null) throw errors.promoCodeInvalid('no such code');
   if (code.allowedEmails !== null) {
-    // Only a verified address is somebody's own. The list was lower-cased
-    // when it was written; the address is `citext` and compared the same way.
-    const address = principal.user.email.toLowerCase();
-    if (!principal.user.emailVerified || !code.allowedEmails.includes(address)) {
+    // Only a verified address is somebody's own, and only an exact one: the
+    // list holds printable ASCII folded to lower case (`schemas/admin.ts`),
+    // and the address is folded the same way and no further — a Unicode fold
+    // would let `Kelly@` (a Kelvin sign) stand in for `kelly@`, as
+    // `isSameAddress` refuses for accounts.
+    const address = asciiAddress(principal.user.email);
+    if (
+      !principal.user.emailVerified ||
+      address === null ||
+      !code.allowedEmails.includes(address)
+    ) {
       throw errors.promoCodeInvalid('code is for other addresses');
     }
   }
@@ -216,6 +224,9 @@ export async function redeemGrantCode(
       note: `Promo code ${code.code}`,
       overDodo: false,
       onlyFromFree: true,
+      // A hosted checkout lives a day: one started since then could still be
+      // paid, and its payment would land on the grant and be filed nowhere.
+      checkoutsOpenSince: new Date(Date.now() - DAY_MS),
     });
     // Thrown, so the transaction — the redemption counted above included —
     // rolls back with it.
@@ -228,6 +239,10 @@ export async function redeemGrantCode(
         case 'already-subscribed':
         case 'billed-by-dodo':
           throw errors.promoCodeHasPlan('subscription');
+        case 'previously-subscribed':
+          throw errors.promoCodePreviouslySubscribed();
+        case 'checkout-open':
+          throw errors.promoCodeCheckoutOpen();
         case 'not-found':
           throw errors.notFound('organisation vanished during a redemption');
       }

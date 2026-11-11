@@ -23,14 +23,19 @@ import { errors } from './errors';
  *  2. **A browser session only** — never a CLI or service token. A token is a
  *     long-lived credential on a disk somewhere; the admin page is not
  *     something a script should ever be able to drive.
- *  3. **A verified address**, matched exactly (case-insensitively, as the
- *     column is `citext`). An address nobody proved they own is not an
- *     identity anything here should trust.
+ *  3. **A verified address**, matched exactly: printable ASCII, folded to
+ *     lower case in ASCII only (`asciiAddress`) — a Unicode fold would let
+ *     `Kelly@` (a Kelvin sign) stand in for `kelly@`, the trap
+ *     `isSameAddress` in `users.ts` already refuses. An address nobody proved
+ *     they own is not an identity anything here should trust.
  *  4. **The vault unlocked** — `authenticatedRoute` asks it of every route that
  *     does not opt out, and none of these does. So a stolen session cookie is
  *     not enough on its own: the admin's passphrase is too.
- *  5. **404, not 403**, to everybody else — the same answer an unknown path
- *     gets, so the admin API's existence is not confirmed to anyone probing it.
+ *  5. **404, not 403**, to a signed-in caller who is not an admin — the answer
+ *     for anything they cannot see, which says nothing about who the admins
+ *     are. The routes themselves are no secret (the repository is public), and
+ *     a caller who is not signed in gets the 401 every route gives; what
+ *     matters is that nobody but an admin gets anything from them.
  *
  * And every change an admin makes lands in the affected organisation's own
  * audit log, attributed to "xecret support" — so the customer can see that it
@@ -38,6 +43,17 @@ import { errors } from './errors';
  * line (their user id), not into a log every member of that organisation can
  * read: an admin's personal address is not the customer's to see.
  */
+
+/**
+ * An address folded to lower case in ASCII only — or `null` for one that is
+ * not printable ASCII, which no allow-list here can name. The admin allow-list
+ * and a promo code's allowed addresses are both compared through it.
+ */
+export function asciiAddress(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^[!-~]+$/.test(trimmed)) return null;
+  return trimmed.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
 
 /** What `XECRET_ADMIN_EMAILS` says, as lower-cased addresses. Empty when unset or unreadable. */
 export function adminEmails(raw: string | undefined): ReadonlySet<string> {
@@ -66,10 +82,11 @@ export function adminEmails(raw: string | undefined): ReadonlySet<string> {
   const addresses = new Set<string>();
   for (const entry of entries) {
     if (typeof entry !== 'string') continue;
-    const address = entry.trim().toLowerCase();
-    // Shaped like an address, or ignored: a stray "*" or "@" must never match,
-    // and nor may a fragment of mis-pasted JSON.
-    if (/^[^\s@"{}[\],;:]+@[^\s@"{}[\],;:]+\.[^\s@"{}[\],;:]+$/.test(address)) {
+    // Printable ASCII, folded in ASCII only (`asciiAddress`) — and shaped like
+    // an address, or ignored: a stray "*" or "@" must never match, and nor may
+    // a fragment of mis-pasted JSON.
+    const address = asciiAddress(entry);
+    if (address !== null && /^[^@"{}[\],;:]+@[^@"{}[\],;:]+\.[^@"{}[\],;:]+$/.test(address)) {
       addresses.add(address);
     }
   }
@@ -82,12 +99,13 @@ type UserPrincipal = Extract<Principal, { kind: 'user' }>;
 export function isAdmin(env: Bindings, principal: Principal): principal is UserPrincipal {
   if (principal.kind !== 'user') return false;
   if (!principal.user.emailVerified) return false;
-  return adminEmails(env.XECRET_ADMIN_EMAILS).has(principal.user.email.toLowerCase());
+  const address = asciiAddress(principal.user.email);
+  return address !== null && adminEmails(env.XECRET_ADMIN_EMAILS).has(address);
 }
 
 /**
- * The gate every admin route opens with. Anybody else gets the 404 an unknown
- * path gets, and a warning line — a refused admin request from a signed-in
+ * The gate every admin route opens with. Anybody else gets a 404, and a
+ * warning line — a refused admin request from a signed-in
  * user is worth seeing, because the only people who make one are a
  * mis-configured admin or somebody looking for the door.
  */
@@ -107,9 +125,15 @@ export const ADMIN_ACTOR_LABEL = 'xecret support';
 /**
  * The audit builder for an admin's change to one organisation: `system`, as
  * `plan:set`'s are — the admin is not a member and acts as xecret, not as a
- * user of that organisation — with the request's own address, agent and id.
- * The caller sets `operator` to {@link ADMIN_ACTOR_LABEL}, which is what marks
- * the change as made by hand rather than by a webhook.
+ * user of that organisation. The caller sets `operator` to
+ * {@link ADMIN_ACTOR_LABEL}, which is what marks the change as made by hand
+ * rather than by a webhook.
+ *
+ * **No IP address and no user agent.** Every owner and admin of the
+ * organisation reads this row, and the request's address is the staff
+ * member's home or office — as much theirs to keep as their email. Both stay
+ * on the server's own request log line, beside the admin's user id. The
+ * request id stays here: it is what connects the two.
  */
 export function adminAudit(services: ServiceContext, orgId: string): AuditBuilder {
   return createAuditBuilder({
@@ -117,8 +141,8 @@ export function adminAudit(services: ServiceContext, orgId: string): AuditBuilde
     actorType: 'system',
     actorId: null,
     actorLabel: ADMIN_ACTOR_LABEL,
-    ipAddress: services.meta.ipAddress,
-    userAgent: services.meta.userAgent,
+    ipAddress: null,
+    userAgent: null,
     requestId: services.meta.requestId,
   });
 }

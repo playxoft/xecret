@@ -126,6 +126,15 @@ describe('isAdmin', () => {
     expect(isAdmin(env, session('OPS@Example.com'))).toBe(true);
   });
 
+  it('folds case in ASCII only, so a look-alike letter never stands in for an admin', () => {
+    // U+212A KELVIN SIGN lower-cases to "k" in Unicode; an address carrying
+    // it is somebody else's mailbox, and is not on any list.
+    const kelly = envWith('kelly@example.com');
+    expect(isAdmin(kelly, session('Kelly@example.com'))).toBe(false);
+    expect(adminEmails('Kelly@example.com').size).toBe(0);
+    expect(isAdmin(kelly, session('KELLY@example.com'))).toBe(true);
+  });
+
   it('refuses an address on the list that was never verified', () => {
     expect(isAdmin(env, session('ops@example.com', false))).toBe(false);
   });
@@ -185,7 +194,7 @@ describe('requireAdmin', () => {
 });
 
 describe('adminAudit', () => {
-  it('attributes the change to xecret support, as the system, with the request’s own trail', () => {
+  it('attributes the change to xecret support, as the system — never the admin’s IP or browser', () => {
     const orgId = randomUUID();
     const meta = { ipAddress: '203.0.113.9', userAgent: 'vitest', requestId: 'req_admin_1' };
     const record = adminAudit({ meta } as unknown as ServiceContext, orgId).success(
@@ -198,7 +207,10 @@ describe('adminAudit', () => {
       actorType: 'system',
       actorId: null,
       actorLabel: ADMIN_ACTOR_LABEL,
-      ipAddress: '203.0.113.9',
+      // Every owner of the organisation reads this row; the request's address
+      // and agent are the staff member's, and stay on the server's log line.
+      ipAddress: null,
+      userAgent: null,
       requestId: 'req_admin_1',
       outcome: 'success',
       metadata: { operator: ADMIN_ACTOR_LABEL, plan: 'team' },

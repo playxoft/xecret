@@ -166,9 +166,14 @@ export async function grantPlan(
         // organisation off that subscription too (its id is answered).
         case 'awaiting-activation':
         case 'billed-by-dodo':
+          throw errors.grantBilledByDodo();
+        // A redemption's refusals; an admin's grant (`onlyFromFree: false`)
+        // never meets them.
         case 'already-granted':
         case 'already-subscribed':
-          throw errors.grantBilledByDodo();
+        case 'previously-subscribed':
+        case 'checkout-open':
+          throw errors.internal(`an admin grant was refused as ${outcome.refusal}`);
       }
     }
 
@@ -421,7 +426,9 @@ export async function createCode(
     try {
       ({ discountId } = await provider.createDiscount({
         code,
-        name: `xecret: ${common.description ?? code}`.slice(0, 100),
+        // The code and nothing else: the description is the admin's own note,
+        // and Dodo may show a discount's name on a checkout or an invoice.
+        name: `xecret ${code}`,
         type: discount.type,
         amount,
         currency,
@@ -431,6 +438,28 @@ export async function createCode(
         expiresAt,
       }));
     } catch (cause) {
+      // No answer in time, or an outage in front of Dodo: it may have created
+      // the discount anyway. Looked up by its code — only one carrying our own
+      // metadata, never another product's — and deleted, so a retry with the
+      // same code is not refused as taken by a discount nothing here records.
+      if (cause instanceof DodoApiError && outcomeUnknown(cause)) {
+        await provider
+          .findOwnDiscount(code)
+          .then((stray) => (stray === null ? undefined : provider.deleteDiscount(stray)))
+          .catch((cleanupFailure: unknown) => {
+            services.log
+              .at('createCode')
+              .warn(
+                'Creating a discount at Dodo got no clear answer, and checking for a stray ' +
+                  'one failed too — look for it in the Dodo dashboard before retrying',
+                {
+                  ...(cleanupFailure instanceof DodoApiError
+                    ? { category: cleanupFailure.category }
+                    : { error: describeError(cleanupFailure) }),
+                },
+              );
+          });
+      }
       throw dodoFailure(services, cause, 'creating a discount code');
     }
 
@@ -485,6 +514,15 @@ async function recordCode(insert: () => Promise<PromoCodeRecord>): Promise<Promo
     if (isUniqueViolation(cause, 'promo_codes_code_unique')) throw errors.promoCodeTaken();
     throw cause;
   }
+}
+
+/** A failure that may still have been carried out by Dodo, as `service.ts` reads one. */
+function outcomeUnknown(cause: DodoApiError): boolean {
+  return (
+    cause.category === 'timeout' ||
+    cause.category === 'network' ||
+    cause.category === 'upstream_5xx'
+  );
 }
 
 function dodoFailure(services: ServiceContext, cause: unknown, doing: string): ApiError {
