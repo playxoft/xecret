@@ -216,7 +216,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What happens if xecret is down when I need to deploy?',
     answer:
-      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working. For a deploy, the honest answer for a pre-alpha product is to hold a break-glass copy of your production credentials somewhere you control, and to treat any single provider — us included — as something that can fail.',
+      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working. For a deploy, the honest answer for any hosted service is to hold a break-glass copy of your production credentials somewhere you control, and to treat any single provider — us included — as something that can fail.',
   },
   {
     question: 'Is it really open source, or is the useful half proprietary?',
@@ -226,8 +226,8 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What does it cost?',
     answer:
-      'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. While xecret is in pre-alpha no card is collected, and each plan’s limits apply now.',
-    // Pre-alpha copy until this deployment takes real payments (P12).
+      'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. No card is collected today, and each plan’s limits apply now.',
+    // The copy for a deployment that does not take payments (P12).
     whenPaymentsLive: {
       question: 'What does it cost?',
       answer:
@@ -237,7 +237,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret ready for production?',
     answer:
-      'It is pre-alpha. The encryption, the audit log, the CLI and self-hosting all work today, but the API surface can still change and there is no SLA. Use it for a side project or a new service; do not migrate a payments system to it this week.',
+      'Yes — xecret is generally available. The encryption, the audit log, the CLI and self-hosting are all in use today. Two things to know before you move production credentials: there is no SLA below an Enterprise agreement, and there has been no external security audit yet, so the source and the threat model are public for you to judge instead. Keep a break-glass copy of anything you cannot afford to lose, as you would with any provider.',
   },
 ];
 

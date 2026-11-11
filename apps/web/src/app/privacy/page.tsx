@@ -570,10 +570,9 @@ const SECTIONS: readonly LegalSection[] = [
         'Reveals and destructive actions sit behind a PIN lock with an idle auto-lock, so an unattended session cannot read a value.',
       ],
       <>
-        No system is perfect, and this one is pre-alpha. If we discover a breach affecting your
-        personal data, we will notify the affected organisation&rsquo;s owners without undue delay,
-        and the relevant supervisory authority within 72 hours where the law requires it. To report
-        a vulnerability, follow{' '}
+        No system is perfect. If we discover a breach affecting your personal data, we will notify
+        the affected organisation&rsquo;s owners without undue delay, and the relevant supervisory
+        authority within 72 hours where the law requires it. To report a vulnerability, follow{' '}
         <LegalLink href={`${REPO_URL}/blob/main/SECURITY.md`}>SECURITY.md</LegalLink> in the
         repository rather than opening a public issue.
       </>,

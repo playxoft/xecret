@@ -162,9 +162,11 @@ unencumbered so it can ship inside your Docker images without licence friction.
 
 ### Is it production-ready?
 
-Not yet. xecret is **pre-alpha**: feature-complete for its first version, but
-it has not run against production infrastructure and has not had its security
-pass. Do not store credentials you cannot afford to rotate.
+Yes — xecret is **generally available**. It has not had an external security
+review and holds no certification, so judge it by what is public: the source,
+the threat model and [the trust model](security/trust-model.md). As with any
+provider, keep a break-glass copy of credentials you cannot afford to lose
+access to.
 
 ## Comparisons
 

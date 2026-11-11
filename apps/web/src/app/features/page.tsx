@@ -361,8 +361,8 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What does xecret cost?',
     answer:
-      'While xecret is pre-alpha no card is collected, and each plan’s limits apply now. The free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
-    // Pre-alpha copy until this deployment takes real payments (P12).
+      'No card is collected today, and each plan’s limits apply now. The free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
+    // The copy for a deployment that does not take payments (P12).
     whenPaymentsLive: {
       question: 'What does xecret cost?',
       answer:

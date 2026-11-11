@@ -87,7 +87,7 @@ import { appPath, withQuery } from '../_lib/paths';
  *  - `app/pricing/page.tsx` — the Team card's "Roles and per-environment
  *    access" bullet; the Pro card's "Unlimited members — everyone can read
  *    every environment" and both audience lines.
- *  - `app/page.tsx` — the "What does it cost?" FAQ answer, both the pre-alpha
+ *  - `app/page.tsx` — the "What does it cost?" FAQ answer, both the no-payments
  *    and the payments-live versions ("Team … adds … roles and per-environment
  *    access").
  *  - `app/features/page.tsx` — "What does xecret cost?", both versions.

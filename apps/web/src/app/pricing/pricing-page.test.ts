@@ -239,7 +239,7 @@ describe('the honesty rules this page is built on', () => {
     // is what lets the page publish real prices before it can charge them.
     const code = withoutComments(SOURCE);
     expect(code).toContain('nothing is billed');
-    expect(code).toContain('no card is taken in pre-alpha');
+    expect(code).toContain('no card is taken today');
   });
 
   it('asks the deployment whether it takes payments, and the page and its metadata both ask', () => {
@@ -274,7 +274,7 @@ describe('the honesty rules this page is built on', () => {
     expect(code).not.toContain('faqSchema(FAQ)');
   });
 
-  it('gives every answer that mentions pre-alpha billing a live counterpart that does not', () => {
+  it('gives every answer that says nothing is billed a live counterpart that does not', () => {
     const entries = SOURCE.slice(locate('export const PRICING_FAQ: readonly PricingFaqItem[] = ['));
     const list = entries.slice(0, entries.indexOf('\n];\n'));
     const blocks = list.split(/\n {2}\{\n/).slice(1);
@@ -282,18 +282,20 @@ describe('the honesty rules this page is built on', () => {
     for (const block of blocks) {
       const [before, live] = block.split('whenPaymentsLive:');
       if (
-        /pre-alpha|no plan is billed|neither is billed|no card|billing system connected/.test(
+        /(billed|taken|collected) today|no plan is billed|neither is billed|no card|billing system connected/.test(
           before ?? '',
         )
       ) {
         expect(
           live,
-          `an answer about pre-alpha billing has no live counterpart:\n${block}`,
+          `an answer that says nothing is billed has no live counterpart:\n${block}`,
         ).toBeDefined();
       }
       if (live !== undefined) {
         conditional += 1;
-        expect(live).not.toMatch(/pre-alpha|not billed|no plan is billed|nothing is billed/);
+        expect(live).not.toMatch(
+          /(billed|taken|collected) today|not billed|no plan is billed|nothing is billed/,
+        );
       }
     }
     expect(conditional).toBe(4);

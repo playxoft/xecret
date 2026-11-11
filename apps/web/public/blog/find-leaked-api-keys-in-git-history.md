@@ -237,6 +237,6 @@ is no file to commit and every read is audited — see
 server-side envelope encryption, so the service can technically decrypt your
 values, and we would rather you read the
 [trust model](/docs/security/trust-model) now than discover the model later.
-It is pre-alpha, [the pricing page](/pricing) says what each plan includes and
+It is generally available; [the pricing page](/pricing) says what each plan includes and
 what, if anything, it costs on the day you read this, and
 [the feature set](/features) is public before you decide.

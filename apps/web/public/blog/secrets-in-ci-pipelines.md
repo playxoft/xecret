@@ -252,7 +252,7 @@ management built around one command: store your environment variables once, per
 environment, and `xecret run` injects them into whatever your pipeline was going
 to run anyway. In CI that means a service token in your provider's secret store,
 no login step, no config file, no plaintext on the runner's disk, and one audit
-row per read. It is pre-alpha and we say so; the server is AGPL-3.0 if you would
+row per read. It is generally available, and the server is AGPL-3.0 if you would
 rather run it yourself. If you take nothing else from this article, take the
 SHA pins and the second token — both are free, and both are worth having before
 you need them.
