@@ -14,7 +14,10 @@ document is wrong and must be updated.
   without the enumerable sequence of an integer ID.
 - **Timestamps:** `timestamptz`, always UTC. `created_at`/`updated_at` on every table.
 - **Soft delete:** `deleted_at timestamptz`. Present on tenant-visible resources only.
-  Uniqueness constraints are partial: `WHERE deleted_at IS NULL`.
+  Uniqueness constraints are partial: `WHERE deleted_at IS NULL`. Organisations, projects,
+  environments and secrets are erased 30 days after `deleted_at` by the nightly deleted-data
+  purge (`repositories/deleted-data.ts`) — a secret in a live environment at the end of the
+  organisation's point-in-time restore window instead, if that is longer. Users are not purged.
 - **Ciphertext:** always `bytea`. Never `text`, never base64 in the database.
 - **Token storage:** always `bytea` holding SHA-256 of the token. **Never the token itself.**
 - **Case-insensitive text:** `citext` for emails and slugs. Requires

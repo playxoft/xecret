@@ -239,5 +239,5 @@ patterns, [the quickstart](/docs/quickstart) is five minutes, and the
 [trust model](/docs/security/trust-model) states plainly what we can and cannot
 see — server-side envelope encryption, so we can technically decrypt, which is
 the trade that makes team sharing and CI tokens work without a key exchange.
-It is pre-alpha; [the pricing page](/pricing) says what each plan includes and
+It is generally available; [the pricing page](/pricing) says what each plan includes and
 what, if anything, it costs on the day you read this.

@@ -86,10 +86,10 @@ need a zero-knowledge product, and you should know that before you migrate
 rather than after. The full reasoning is in
 [what xecret can and cannot see](security/trust-model.md).
 
-> **Important** — xecret is currently pre-alpha. The features described in this
-> documentation are built, but the service has not yet run against production
-> infrastructure. Do not put credentials you cannot afford to rotate into it
-> yet.
+> **Note** — xecret is generally available. There is no SLA below an
+> Enterprise agreement and there has been no external security audit yet;
+> [the trust model](security/trust-model.md) says exactly what the service can
+> and cannot see.
 
 ## What to read next
 

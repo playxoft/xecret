@@ -44,7 +44,7 @@ import { takesPayments } from '@/server/billing/payments-live';
 /**
  * /about — the position, not the company.
  *
- * A pre-alpha product from a small company has nothing to put in the slots an
+ * A young product from a small company has nothing to put in the slots an
  * about page usually reserves: no logo wall, no funding round, no team
  * photographs, no headcount worth quoting. So this page does not try to fill
  * them. It argues a position, states six commitments alongside what each one
@@ -184,7 +184,7 @@ const PRINCIPLES = [
 ] as const;
 
 /* ── Where the product is ───────────────────────────────────────────────────
-   Three states, no dates. A dated roadmap from a pre-alpha team is a list of
+   Three states, no dates. A dated roadmap from a small team is a list of
    apologies scheduled in advance; "shipped / in progress / next" is a claim we
    can keep, and every shipped row below is something a reader can go and use
    within a minute of signing up. */
@@ -268,8 +268,8 @@ const MILESTONES = [
   },
   {
     state: 'progress',
-    title: 'Hardening before the label changes',
-    body: 'Key rotation and the recovery ceremony rehearsed rather than merely documented, and the threat model kept level with the code instead of a release behind it. This work is what decides when pre-alpha ends.',
+    title: 'Hardening, continuously',
+    body: 'Key rotation and the recovery ceremony rehearsed rather than merely documented, and the threat model kept level with the code instead of a release behind it. Being generally available does not end this work; it is what keeps the label honest.',
   },
   {
     state: 'next',
@@ -352,7 +352,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'How do you make money?',
     answer:
-      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. While xecret is in pre-alpha no card is collected, and each plan’s limits apply now.',
+      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. No card is collected today, and each plan’s limits apply now.',
     whenPaymentsLive: {
       question: 'How do you make money?',
       answer:
@@ -362,7 +362,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret production-ready?',
     answer:
-      'No. It is pre-alpha. The API can still change under you, a migration can still be disruptive, and there is no uptime commitment to point at. Use it on side projects and internal tools, tell us what breaks, and wait for the label to change before you put your production database credentials behind it.',
+      'Yes — xecret is generally available. Be clear about what that means: there is no uptime commitment below an Enterprise agreement, there has been no external security audit yet, and breaking changes are announced in advance wherever we reasonably can rather than never made. The source and the threat model are public so you can judge the rest yourself, and a break-glass copy of your most important credentials is good practice with any provider.',
   },
 ];
 
@@ -410,7 +410,7 @@ export default async function AboutPage() {
         height="screen"
         eyebrow="About xecret"
         title="We built the secret manager we wanted to be able to audit."
-        description="xecret is open-source secret management from Playxoft, and it is pre-alpha. The server is AGPL-3.0, the CLI is MIT, and the trust model is a document you can read before you trust a line of it."
+        description="xecret is open-source secret management from Playxoft, generally available today. The server is AGPL-3.0, the CLI is MIT, and the trust model is a document you can read before you trust a line of it."
       >
         {/* Two secondary actions and no primary, deliberately. This page's job
             is to be believed rather than to convert; the ask is at the foot,
@@ -622,9 +622,7 @@ export default async function AboutPage() {
             <ArrowRightIcon className="size-3.5" />
           </Link>
           <Link href="/pricing" className={QUIET_LINK}>
-            {paymentsLive
-              ? 'Prices, and how paying works'
-              : 'Prices, and what pre-alpha means for them'}
+            {paymentsLive ? 'Prices, and how paying works' : 'Prices, and what is charged today'}
             <ArrowRightIcon className="size-3.5" />
           </Link>
         </div>
@@ -640,7 +638,7 @@ export default async function AboutPage() {
           align="center"
           headingId="status-heading"
           eyebrow="Where we are"
-          title="Pre-alpha, and here is exactly what that covers."
+          title="Generally available, and here is exactly what that covers."
           description="Shipped, in progress, next. Nothing on this board is dated, because a date we cannot support is worse than no date at all."
         />
 
@@ -687,8 +685,8 @@ export default async function AboutPage() {
 
         <Reveal className="mx-auto mt-12 max-w-2xl">
           <p className="text-fg-muted text-center text-sm leading-7">
-            Pre-alpha means the API can still move underneath you and a migration can still be
-            disruptive. What changed and why goes up on{' '}
+            Generally available means a breaking change is announced before it ships wherever we
+            reasonably can, rather than sprung on you. What changed and why goes up on{' '}
             <Link href="/blog" className={QUIET_LINK}>
               the xecret blog
             </Link>{' '}

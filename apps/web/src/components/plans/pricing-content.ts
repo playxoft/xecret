@@ -1059,7 +1059,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     id: 'annual-price',
     question: 'Is there an annual price?',
     answer:
-      'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
+      'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed today.',
     whenPaymentsLive: {
       question: 'Is there an annual price?',
       answer:
@@ -1083,9 +1083,9 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
   },
   {
     id: 'paying',
-    question: 'Do you take a card during pre-alpha?',
+    question: 'Do you take a card yet?',
     answer:
-      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every organisation starts on Free, and each plan’s limits and features apply as this page shows them; the ones marked "Coming soon" are not built for anybody. Nothing will start charging without notice, and nobody is converted to a paid plan silently.',
+      'No. There is no billing system connected today, so there is nothing to enter a card into. Every organisation starts on Free, and each plan’s limits and features apply as this page shows them; the ones marked "Coming soon" are not built for anybody. Nothing will start charging without notice, and nobody is converted to a paid plan silently.',
     whenPaymentsLive: {
       question: 'How do I pay?',
       answer:

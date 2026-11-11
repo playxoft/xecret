@@ -103,6 +103,20 @@ describe('describeEvent', () => {
     ).toBe('hooks.example.com · secret.updated, environment.promoted');
   });
 
+  it('says what the nightly purge erased, and after how long', () => {
+    expect(
+      describeEvent(
+        event('secret.purged', {
+          secretName: 'STRIPE_KEY',
+          projectSlug: 'api',
+          environmentSlug: 'production',
+          reason: '30 days since deletion',
+        }),
+      ),
+    ).toBe('STRIPE_KEY · api/production · 30 days since deletion');
+    expect(AUDIT_FILTER_ACTIONS).toContain('secret.purged');
+  });
+
   it('says how an owner got past their organisation’s single sign-on (review C3)', () => {
     expect(describeEvent(event('auth.sso_exemption_used', { signInMethod: 'password' }))).toBe(
       'signed in by password',

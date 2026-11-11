@@ -19,13 +19,14 @@ xecret run -- npm run dev
 Your app starts with every secret already in `process.env`. No `.env` file on
 disk, no secrets in Slack, no "works on my machine".
 
-> **Status: pre-alpha, feature-complete for v1, not yet deployed.** Phases 0–9
-> of 11 are built: crypto core, auth, the secrets API, the dashboard, the Go
-> CLI, teams and granular access, CI service tokens, the audit log, and the
-> docs you are reading. What remains before real credentials belong here:
-> integration against a live database (nothing has run against production
-> infrastructure yet) and the Phase 10 security pass. See
-> [the roadmap](docs/ROADMAP.md) and [the docs](docs/README.md).
+> **Status: generally available.** The hosted service runs at
+> [xecret.playxoft.com](https://xecret.playxoft.com): the crypto core, auth, the
+> secrets API, the dashboard, the Go CLI, teams and granular access, CI service
+> tokens, the audit log, and the docs you are reading. There has been no
+> external security audit yet; the source and
+> [the trust model](https://xecret.playxoft.com/docs/security/trust-model) are
+> public so you can judge it yourself. See [the roadmap](docs/ROADMAP.md) and
+> [the docs](docs/README.md).
 
 ## Why
 

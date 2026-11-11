@@ -4,6 +4,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+import { DELETED_DATA_RETENTION_DAYS } from '@xecret/db/repositories';
 import { PROJECT_VIEW_STORAGE_KEY } from '@/components/projects/project-listing';
 import { DEVICE_PIN_WRAP_KEY } from '@/components/vault/device-pin';
 import { VAULT_SESSION_MIRROR_KEY } from '@/components/vault/session-mirror';
@@ -394,6 +395,31 @@ describe('audit retention agrees with the engine everywhere it is stated', () =>
     expect(ALL).not.toMatch(/twelve months on Team/i);
     expect(ALL).not.toMatch(/(3|three) years of (audit )?history/i);
   });
+});
+
+describe('the legal pages state what the code does, about whom', () => {
+  // The nightly purge erases deleted data after `DELETED_DATA_RETENTION_DAYS`,
+  // and `/privacy` publishes the number. A purge shortened in code and not on
+  // the page — or the other way round — is a privacy policy that is wrong
+  // about the one thing a deletion request turns on.
+  it('privacy states the period the deleted-data purge keeps deleted data for', () => {
+    const privacy = (SOURCES.get('privacy') ?? '').replace(/\s+/g, ' ');
+    expect(privacy).toContain(`kept for ${DELETED_DATA_RETENTION_DAYS} days after deletion`);
+  });
+
+  // Both documents name the contracting company; one with a mistyped CIN or
+  // an old address beside one without is two companies as far as a reader can
+  // tell. The register is the source; these strings are copied from it.
+  it.each(['privacy', 'terms'] as const)(
+    '%s names the company by its registered details',
+    (page) => {
+      const text = (SOURCES.get(page) ?? '').replace(/\s+/g, ' ');
+      expect(text).toContain('Playxoft Studios Private Limited');
+      expect(text).toContain('U58203TN2025PTC178070');
+      expect(text).toContain('19B/1, Ananthapettai Street, Kanchipuram, Tamil Nadu 631501, India');
+      expect(text).toContain('support@playxoft.com');
+    },
+  );
 });
 
 describe('the seat minimum is disclosed where it is charged', () => {

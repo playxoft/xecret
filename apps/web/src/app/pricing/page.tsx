@@ -204,7 +204,7 @@ function pricingDescription(currency: CurrencyId, paymentsLive: boolean): string
     `(${team.monthly.price} monthly), Enterprise by contract, and self-hosted free forever. ` +
     (paymentsLive
       ? 'Service tokens and CI never cost anything, and a declined card never stops a build.'
-      : 'Service tokens and CI never cost anything, and no card is taken in pre-alpha.')
+      : 'Service tokens and CI never cost anything, and no card is taken today.')
   );
 }
 
@@ -1991,7 +1991,7 @@ export default async function PricingPage() {
                     which is the same pair the plan cards use.{' '}
                     {paymentsLive
                       ? 'Paid plans are bought from an organisation’s billing page.'
-                      : 'During pre-alpha nothing is billed, and each plan’s limits and features apply as the table shows them.'}
+                      : 'Today nothing is billed, and each plan’s limits and features apply as the table shows them.'}
                   </caption>
                   <thead className="bg-canvas-inset">
                     <tr className="border-line border-b">

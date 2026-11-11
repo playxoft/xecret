@@ -223,7 +223,7 @@ Its own section, so you can skip it. xecret is open-source secret management
 that replaces the `.env` file: values stored once per environment, injected by
 `xecret run`, with an append-only audit log of every read. It is model (a) —
 envelope encryption, provider-held root key, and we can technically decrypt —
-which we would rather put in our own explainer than bury in an FAQ. Pre-alpha,
-AGPL-3.0 server, MIT CLI, threat model in the repository. If the questions above
+which we would rather put in our own explainer than bury in an FAQ. Generally
+available, AGPL-3.0 server, MIT CLI, threat model in the repository. If the questions above
 lead you elsewhere, that is a good outcome; the
 [quickstart](/docs/quickstart) is here if they do not.

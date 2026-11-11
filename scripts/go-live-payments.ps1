@@ -164,7 +164,7 @@ try {
   if ($code -eq 401) { Write-Host "  webhook: refuses unsigned posts (401) - ok" }
   else { Fail "webhook answered $code to an unsigned post -- expected 401 (503 means billing is off or half-configured)" }
 }
-foreach ($job in 'vault-purge', 'prune', 'billing-hourly', 'notifications', 'billing-daily') {
+foreach ($job in 'vault-purge', 'prune', 'billing-hourly', 'notifications', 'deleted-data-purge', 'billing-daily') {
   try {
     Invoke-WebRequest -UseBasicParsing -Method Post -Uri "https://xecret.playxoft.com/api/internal/scheduled/$job" | Out-Null
     Fail "internal route $job answered the internet -- roll back"

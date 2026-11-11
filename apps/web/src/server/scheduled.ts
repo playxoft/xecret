@@ -5,7 +5,8 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * itself: hourly, the retained-vault purge (P23), the pruning of old webhook
  * deliveries and read sightings (P19 §5, §7) and the billing job (P12); every
  * five minutes, webhook retries and read-alert digests (P19 §5, §7); nightly,
- * the billing reconciler (P12). `jobsForCron` is which runs when.
+ * the deleted-data purge and then the billing reconciler (P12). `jobsForCron`
+ * is which runs when.
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -25,7 +26,8 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  *
  * And even a caller who got through would achieve nothing it should not: every
  * job does only what is due anyway — deletes retained vaults whose seven days
- * are over (migration 0020's triggers refuse anything earlier), prunes rows
+ * are over (migration 0020's triggers refuse anything earlier), erases data
+ * deleted thirty or more days ago (by the database's clock), prunes rows
  * past their age, sends deliveries and digests that are owed; the billing jobs
  * report units with deterministic ids Dodo deduplicates, send reminders
  * deduplicated by their own table, and compare rows without correcting them.
@@ -39,6 +41,8 @@ export const PRUNE_PATH = '/api/internal/scheduled/prune';
 export const BILLING_HOURLY_PATH = '/api/internal/scheduled/billing-hourly';
 /** Every five minutes: webhook retries, then read-alert digests. */
 export const NOTIFICATIONS_PATH = '/api/internal/scheduled/notifications';
+/** Nightly: erases what was deleted thirty or more days ago (`server/deleted-data-purge.ts`). */
+export const DELETED_DATA_PURGE_PATH = '/api/internal/scheduled/deleted-data-purge';
 /** P12, nightly: the comparison with Dodo, alert-only. */
 export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';
 
@@ -68,7 +72,7 @@ export const DAILY_CRON = '41 3 * * *';
  */
 export function jobsForCron(cron: string): readonly string[] {
   if (cron === FIVE_MINUTE_CRON) return [NOTIFICATIONS_PATH];
-  if (cron === DAILY_CRON) return [BILLING_DAILY_PATH];
+  if (cron === DAILY_CRON) return [DELETED_DATA_PURGE_PATH, BILLING_DAILY_PATH];
   return [VAULT_PURGE_PATH, PRUNE_PATH, BILLING_HOURLY_PATH];
 }
 

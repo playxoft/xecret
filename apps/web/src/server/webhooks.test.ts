@@ -1451,7 +1451,10 @@ describe('the scheduled routes', () => {
       scheduled.PRUNE_PATH,
       scheduled.BILLING_HOURLY_PATH,
     ]);
-    expect(scheduled.jobsForCron(scheduled.DAILY_CRON)).toEqual([scheduled.BILLING_DAILY_PATH]);
+    expect(scheduled.jobsForCron(scheduled.DAILY_CRON)).toEqual([
+      scheduled.DELETED_DATA_PURGE_PATH,
+      scheduled.BILLING_DAILY_PATH,
+    ]);
   });
 
   it('run every job even when one fails, and then report the failure', async () => {

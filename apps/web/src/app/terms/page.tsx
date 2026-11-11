@@ -2,10 +2,10 @@ import type { Metadata } from 'next';
 
 import { graph, LegalPage } from '@/components/marketing';
 import type { LegalSection } from '@/components/marketing';
-// See the note on the same import in `app/privacy/page.tsx`: these two are
-// authoring tools for the documents' data rather than parts of the public-site
-// kit, so they stay off the barrel.
-import { LegalLink, Placeholder } from '@/components/marketing/legal-page';
+// See the note on the same import in `app/privacy/page.tsx`: an authoring
+// tool for the documents' data rather than part of the public-site kit, so it
+// stays off the barrel.
+import { LegalLink } from '@/components/marketing/legal-page';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 import { takesPayments } from '@/server/billing/payments-live';
 
@@ -14,12 +14,13 @@ import { takesPayments } from '@/server/billing/payments-live';
  *
  * ── Two things this document refuses to do ──
  * It does not pretend the product is further along than it is: the availability
- * clause says there is no SLA, the liability cap states the actual number, and
- * the pre-alpha section is where a template would have put a maturity claim.
- * And it does not invent the company details these clauses depend on — the
- * jurisdiction, the registration number, the registered address are marked in
- * the rendered page, because a governing-law clause naming the wrong court is
- * worse than one that visibly has not been completed.
+ * clause says there is no SLA below an Enterprise agreement, the liability cap
+ * states the actual number, and the availability section says what general
+ * availability does and does not promise instead of making a maturity claim.
+ * And it does not invent the company details these clauses depend on: the
+ * entity, its CIN and its registered office are the ones on the public
+ * register (Ministry of Corporate Affairs), and the governing law and courts
+ * follow from where that office is.
  *
  * The plan table restates the pricing page rather than linking to it, because a
  * price a customer agreed to has to be in the agreement. That is a real
@@ -29,17 +30,16 @@ import { takesPayments } from '@/server/billing/payments-live';
 const TITLE = 'Terms of service';
 
 const DESCRIPTION =
-  'The terms for the hosted xecret service: pre-alpha status, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
+  'The terms for the hosted xecret service: availability and change, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-11-03';
+const UPDATED = '2026-11-11';
 /**
- * `null`: this version takes effect on publication — the deploy that ships it —
- * rather than on a date written beforehand. Its limits apply from the moment it
- * is live (see §Changes, which says so), and a fixed date the deploy then
- * passed would have the page claim it bound people before anyone could read it.
- * A later version with advance notice sets a date again, at or after UPDATED.
+ * The day it was written: this version only names the company and how to
+ * reach it, which §Changes says is not a material change. The version before
+ * it — 3 November 2026, the plan limits — took effect on its publication, and
+ * §Changes still says so.
  */
-const EFFECTIVE: string | null = null;
+const EFFECTIVE: string | null = '2026-11-11';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -50,7 +50,7 @@ export const metadata: Metadata = {
     'xecret terms of service',
     'secret manager terms',
     'agpl hosted service',
-    'pre-alpha software terms',
+    'hosted secret manager terms',
     ...SITE_KEYWORDS,
   ],
   alternates: { canonical: CANONICAL },
@@ -69,7 +69,7 @@ export const metadata: Metadata = {
  * Whether a card is collected depends on the deployment, and this page asks
  * rather than assumes (`takesPayments`, `server/billing/payments-live.ts`): a
  * self-hoster, this deployment before Dodo is live, and a staging rehearsal in
- * Dodo's test mode all keep the pre-alpha wording — nothing is charged. A
+ * Dodo's test mode all keep the no-charge wording — nothing is charged. A
  * deployment taking real payments (P12) says how paying works instead, and
  * states the proration and credit behaviour as Dodo actually applies it
  * (`server/billing/client.ts`, `PlanChange.proration`). The live wording is
@@ -77,10 +77,10 @@ export const metadata: Metadata = {
  */
 function summaryFor(paymentsLive: boolean): readonly string[] {
   return [
-    'xecret is pre-alpha. No SLA, no warranty, breaking changes, and you should keep your own copy of anything you cannot rebuild.',
+    'No SLA below an Enterprise agreement, no warranty, and APIs that change as the product does — keep your own copy of anything you cannot rebuild.',
     paymentsLive
       ? 'Paid plans are bought by an organisation’s owner, at the checkout of Dodo Payments, our merchant of record. A declined card never stops a build.'
-      : 'No card is collected and nothing is charged. Each plan’s limits apply from the publication of this version; nothing starts charging without telling you first.',
+      : 'No card is collected and nothing is charged. Each plan’s limits have applied since the version of 3 November 2026 was published; nothing starts charging without telling you first.',
     'You are responsible for your account, your PIN and your tokens — including revoking one when a laptop or a CI system goes away.',
     'The server is AGPL-3.0 and the CLI is MIT. Running it yourself is governed by those licences, not by these terms, and we receive nothing from your deployment.',
     paymentsLive
@@ -94,16 +94,16 @@ function billingClauses(paymentsLive: boolean) {
   return {
     opening: paymentsLive
       ? 'Paid plans are bought from an organisation’s billing page, by one of its owners, at the checkout of Dodo Payments. Dodo is the merchant of record: it takes the payment, charges the tax your country requires and issues the invoice, and its own terms apply to the purchase. The prices below are the published ones; the checkout shows the price in your currency before you pay.'
-      : 'While xecret is in pre-alpha no card is collected and nothing is charged. The limits of each plan below apply from the publication of this version, and the prices are what they will be at 1.0.',
+      : 'No card is collected and nothing is charged on this service today. The limits of each plan below have applied since the version of 3 November 2026 was published, and the prices below are the ones a paid plan is billed at once billing starts.',
     billing: paymentsLive
       ? 'Paid plans are billed in advance, per member, for the term the owner chooses — monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges — it is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
       : 'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
     refunds: paymentsLive
       ? 'Refunds: your statutory rights apply in full. Beyond those, we do not refund part-months, and credit left by a member who leaves or a plan change is applied to the organisation’s next charges rather than paid back. A refund we agree to is made by Dodo Payments, to the card that paid.'
-      : 'Refunds: nothing has been charged during pre-alpha, so there is nothing to refund. Once billing is live, your statutory rights apply in full; beyond those, we do not refund part-months.',
+      : 'Refunds: nothing has been charged, so there is nothing to refund. Once billing starts, your statutory rights apply in full; beyond those, we do not refund part-months.',
     liability: paymentsLive
       ? 'Our total liability for all claims relating to the service in any twelve-month period is capped at the greater of the fees you paid us for the service in that period and US$100.'
-      : 'Our total liability for all claims relating to the service in any twelve-month period is capped at the greater of the fees you paid us for the service in that period and US$100. During pre-alpha you pay us nothing, so that cap is US$100.',
+      : 'Our total liability for all claims relating to the service in any twelve-month period is capped at the greater of the fees you paid us for the service in that period and US$100. While you pay us nothing, that cap is US$100.',
   };
 }
 
@@ -115,11 +115,12 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       heading: 'The agreement',
       paragraphs: [
         <>
-          These terms are between Playxoft (
-          <Placeholder>Playxoft legal entity name and company registration number</Placeholder>, of{' '}
-          <Placeholder>Playxoft registered address</Placeholder>) and you. By creating an account,
-          signing in, or using the CLI, the API or this website against our hosted service, you
-          accept them. If you do not accept them, do not use the service.
+          These terms are between Playxoft Studios Private Limited (&ldquo;Playxoft&rdquo;), a
+          company incorporated in India with corporate identity number U58203TN2025PTC178070, whose
+          registered office is at 19B/1, Ananthapettai Street, Kanchipuram, Tamil Nadu 631501,
+          India, and you. By creating an account, signing in, or using the CLI, the API or this
+          website against our hosted service, you accept them. If you do not accept them, do not use
+          the service.
         </>,
         'If you accept them on behalf of a company, you are telling us you have the authority to bind it, and “you” means that company from then on.',
         <>
@@ -214,28 +215,28 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       ],
     },
     {
-      id: 'pre-alpha',
-      heading: 'Pre-alpha: availability and change',
+      id: 'availability',
+      heading: 'Availability and change',
       paragraphs: [
-        'xecret is pre-alpha software. That is not a disclaimer bolted onto a finished product; it is the current state of it.',
+        'xecret is generally available. This section is what that does, and does not, promise.',
         [
           <>
-            <strong className="text-fg font-medium">No SLA.</strong> There is no uptime commitment
-            on any plan today, and there will never be one on the free tier. An Enterprise agreement
-            may add one in writing.
+            <strong className="text-fg font-medium">No SLA</strong> unless an Enterprise agreement
+            adds one in writing. There is no uptime commitment on Free, Pro or Team, and there will
+            never be one on the free tier.
           </>,
           <>
-            <strong className="text-fg font-medium">Breaking changes.</strong> APIs, CLI flags, data
-            shapes and the dashboard will change, sometimes without a deprecation period. We
-            announce what we can in the repository.
+            <strong className="text-fg font-medium">Change.</strong> APIs, CLI flags, data shapes
+            and the dashboard change as the product develops. We announce a breaking change in the
+            repository before it ships wherever we reasonably can.
           </>,
           <>
             <strong className="text-fg font-medium">Maintenance and migration.</strong> We may
             migrate data between regions or schema versions, and take the service down to do it.
           </>,
           <>
-            <strong className="text-fg font-medium">Features may be removed</strong>, including ones
-            you have come to rely on.
+            <strong className="text-fg font-medium">Features may be changed or removed</strong>,
+            including ones you rely on. Where we reasonably can, we say so before we do.
           </>,
           <>
             <strong className="text-fg font-medium">Keep your own copy</strong> of anything you
@@ -243,7 +244,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
             exists; use it before a change you could not undo.
           </>,
         ],
-        'Design for this service being unavailable. The CLI’s offline cache exists for exactly that reason, and a deploy pipeline whose only path to a credential is a live API call to a pre-alpha service is a pipeline with a single point of failure you chose.',
+        'Design for this service being unavailable. The CLI’s offline cache exists for exactly that reason, and a deploy pipeline whose only path to a credential is a live API call to one hosted service is a pipeline with a single point of failure you chose.',
       ],
     },
     {
@@ -301,9 +302,9 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           {paymentsLive
             ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way.'
             : ''}{' '}
-          The limits above apply from the publication of this version. Once an organisation is at
-          one, the next project, environment, secret, service token, CLI device, webhook or member
-          past it is refused, and the refusal names the plan that would allow it
+          The limits above have applied since the version of 3 November 2026 was published. Once an
+          organisation is at one, the next project, environment, secret, service token, CLI device,
+          webhook or member past it is refused, and the refusal names the plan that would allow it
           {paymentsLive ? ' — which an owner can move to from the billing page' : ''}. Reaching a
           limit, or a plan lapsing, deletes none of the organisation&rsquo;s projects, environments,
           secrets or tokens: they stay readable and editable, and only adding more is refused. A
@@ -412,13 +413,24 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
         <>
-          This version is a change made without that notice, and it takes effect on publication. The
-          version before it said, of an organisation whose plan lapsed: &ldquo;we will tell you what
-          exceeds the Free limits and give you a reasonable window to bring the organisation under
-          them or export it&rdquo;. This version provides neither of those for the limits under{' '}
+          The version of 11 November 2026 is not a material change. It names the company you are
+          agreeing with and how to reach it, and it names the law and the courts the version before
+          it already pointed to without naming them: the law of India, where that company is
+          established, and the courts at Kanchipuram, where its registered office is. It describes
+          xecret as the generally available service it now is, and adds two things we owe you: we
+          announce a breaking change, and the removal of a feature, before it happens wherever we
+          reasonably can. Nothing you owe us has changed, and neither has your right to the
+          protection of the law where you live, or to bring proceedings there.
+        </>,
+        <>
+          The version of 3 November 2026 was a change made without that notice, and took effect on
+          its publication. The version before it said, of an organisation whose plan lapsed:
+          &ldquo;we will tell you what exceeds the Free limits and give you a reasonable window to
+          bring the organisation under them or export it&rdquo;. Since then, neither of those is
+          provided for the limits under{' '}
           <LegalLink href="#plans">Plans, prices and billing</LegalLink>: we do not tell you in
           advance what exceeds a limit, and there is no window before a limit applies &mdash; each
-          applies from the publication of this version. What a limit does, and does not do, to what
+          has applied since that version was published. What a limit does, and does not do, to what
           an organisation already holds is set out in that section.
         </>,
       ],
@@ -427,22 +439,9 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       id: 'law',
       heading: 'Governing law and disputes',
       paragraphs: [
-        <>
-          These terms are governed by the law of the jurisdiction in which Playxoft is established,
-          without regard to its conflict-of-laws rules:{' '}
-          <Placeholder>
-            governing law jurisdiction — Playxoft&rsquo;s place of establishment
-          </Placeholder>
-          .
-        </>,
-        <>
-          Disputes go to the courts of that jurisdiction:{' '}
-          <Placeholder>courts of the governing law jurisdiction</Placeholder>. If you are a
-          consumer, nothing here deprives you of the protection of the mandatory law of the country
-          you live in, or of your right to bring proceedings there.
-        </>,
-        'Before filing anything, tell us what the problem is. Most disputes about a pre-alpha developer tool are a misunderstanding that one honest message resolves faster than either of us could file a claim.',
-        'The company details these clauses depend on are marked above because they are not settled yet. A governing-law clause naming the wrong court is worse than one that visibly has not been completed, so we left the gaps visible.',
+        'These terms are governed by the laws of India, where Playxoft is established, without regard to their conflict-of-laws rules.',
+        'Disputes go to the competent courts at Kanchipuram, Tamil Nadu, India. If you are a consumer, nothing here deprives you of the protection of the mandatory law of the country you live in, or of your right to bring proceedings there.',
+        'Before filing anything, tell us what the problem is. Most disputes about a developer tool are a misunderstanding that one honest message resolves faster than either of us could file a claim.',
       ],
     },
     {
@@ -450,9 +449,10 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       heading: 'Contact, and the small print',
       paragraphs: [
         <>
-          Reach us through the repository —{' '}
-          <LegalLink href={`${REPO_URL}/issues`}>open an issue on GitHub</LegalLink> — until{' '}
-          <Placeholder>Playxoft contact email address</Placeholder> is published. To report a
+          Email <LegalLink href="mailto:support@playxoft.com">support@playxoft.com</LegalLink>, or
+          write to Playxoft Studios Private Limited, 19B/1, Ananthapettai Street, Kanchipuram, Tamil
+          Nadu 631501, India. For a question that is not about your own account, you are welcome to{' '}
+          <LegalLink href={`${REPO_URL}/issues`}>open an issue on GitHub</LegalLink>. To report a
           vulnerability, follow{' '}
           <LegalLink href={`${REPO_URL}/blob/main/SECURITY.md`}>SECURITY.md</LegalLink> rather than
           opening a public issue.
@@ -485,7 +485,6 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
             for a failure caused by something genuinely outside its control.
           </>,
         ],
-        'These are pre-alpha terms, written by the people building the product and reviewed by a lawyer before general availability rather than before you read them. They are not legal advice, to you or to anybody else.',
       ],
     },
   ];
@@ -514,7 +513,7 @@ export default async function TermsPage() {
     <LegalPage
       eyebrow="Legal"
       title="Terms of service"
-      description="The agreement for the hosted xecret service — what we owe you while the product is pre-alpha, what you owe us, and which parts are governed by the AGPL instead."
+      description="The agreement for the hosted xecret service — what we owe you, what you owe us, and which parts are governed by the AGPL instead."
       updated={UPDATED}
       effective={EFFECTIVE}
       summary={summaryFor(paymentsLive)}

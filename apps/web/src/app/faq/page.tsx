@@ -205,12 +205,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do you have SOC 2 or ISO 27001?',
         answer:
-          'No. xecret is pre-alpha and holds no compliance certification of any kind, and inventing one on a secrets product would be the worst thing we could ship. What exists instead is public: the source, the threat model, the licence and the self-hosting instructions.',
+          'No. xecret holds no compliance certification of any kind, and inventing one on a secrets product would be the worst thing we could ship. What exists instead is public: the source, the threat model, the licence and the self-hosting instructions.',
       },
       {
         question: 'Is xecret production-ready?',
         answer:
-          'Not yet. It is feature-complete for its first version, but it has not run against production infrastructure and has not had an external security review. Do not put credentials you cannot afford to rotate into it today.',
+          'Yes — xecret is generally available. It has not had an external security review and holds no certification, so judge it by what is public instead: the source, the threat model and the trust model. As with any provider, keep a break-glass copy of credentials you cannot afford to lose access to.',
       },
       {
         question: 'How do I report a vulnerability?',
@@ -230,8 +230,7 @@ const CATEGORIES: readonly FaqCategory[] = [
         <Link href="/pricing" className={INLINE_LINK}>
           the pricing page
         </Link>
-        , and they are what the plans will cost at 1.0. Nothing is charged while xecret is in
-        pre-alpha.
+        , and they are what the plans cost. No card is collected today.
       </>
     ),
     ledeWhenPaymentsLive: (
@@ -252,8 +251,8 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do I need a card to try it?',
         answer:
-          'No. While xecret is in pre-alpha no card is collected at all. Every organisation starts on Free, and each plan’s limits — Free’s included — apply now, as the pricing page states them. The prices are published now too, so that nobody is surprised at 1.0.',
-        // Pre-alpha copy until this deployment takes real payments (P12).
+          'No. No card is collected today. Every organisation starts on Free, and each plan’s limits — Free’s included — apply now, as the pricing page states them.',
+        // The copy for a deployment that does not take payments (P12).
         whenPaymentsLive: {
           question: 'Do I need a card to try it?',
           answer:

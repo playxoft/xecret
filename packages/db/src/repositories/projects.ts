@@ -227,10 +227,10 @@ export async function updateProject(
 /**
  * Marks a project deleted.
  *
- * Never a hard `DELETE`: the audit records referencing this project must keep
- * pointing at a row that still exists, and cryptographic erasure of the contained
- * secrets is a separate, explicit operation on `env_keys` — not a side effect of
- * clicking delete in a dashboard.
+ * Never a hard `DELETE` here: cryptographic erasure of the contained secrets is a
+ * separate, explicit operation on the key tables — not a side effect of clicking
+ * delete in a dashboard. That operation is the deleted-data purge
+ * (`deleted-data.ts`), thirty days after this.
  */
 export async function softDeleteProject(
   exec: Executor,

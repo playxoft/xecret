@@ -845,7 +845,10 @@ export async function getSecretVersion(
 
 /**
  * Marks a secret deleted. Its versions are left untouched — they are the record
- * of what the value used to be, and `restoreSecret` depends on them surviving.
+ * of what the value used to be, and `restoreSecret` and point-in-time restore
+ * depend on them surviving. The deleted-data purge erases them once the
+ * retention is over (`deleted-data.ts`: thirty days, or the plan's restore
+ * window if that is longer).
  */
 export async function softDeleteSecret(
   exec: Executor,

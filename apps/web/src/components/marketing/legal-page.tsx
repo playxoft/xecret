@@ -79,18 +79,6 @@ export interface LegalPageProps {
 }
 
 /**
- * The caveat both documents carry, written once.
- *
- * It is the sentence most likely to be edited under pressure — the day the
- * product stops being pre-alpha, somebody rewrites it — and two copies is how a
- * site ends up telling one visitor it is pre-alpha and the next that it is not.
- */
-const NOTICE =
-  'xecret is in pre-alpha. This document was written for that stage and will be reviewed by a ' +
-  'lawyer before general availability, so expect it to change and expect to be told when it ' +
-  'does. It is written to be understood rather than to be exhaustive, and it is not legal advice.';
-
-/**
  * `16 August 2026`, formatted in UTC.
  *
  * The timezone is the whole point of the option: an ISO date parses as UTC
@@ -114,24 +102,6 @@ function isList(block: LegalBlock): block is readonly ReactNode[] {
 }
 
 /**
- * A fact we cannot state truthfully yet, marked in the rendered page.
- *
- * Not a `TODO` in a comment, and not an invented address: a company number
- * nobody has checked reads exactly like a real one, and on the two pages that
- * exist to be believed, an invention is worse than a gap. So the gap is visible
- * to the reader, it carries the warning colour, and it is impossible to ship
- * without noticing. The brackets are added here so a call site cannot forget
- * them.
- */
-export function Placeholder({ children }: { children: string }) {
-  return (
-    <mark className="border-warning-line bg-warning-tint text-warning-text rounded-sm border px-1 py-px text-[0.9em] font-medium">
-      [{children}]
-    </mark>
-  );
-}
-
-/**
  * A cross-reference inside a clause, wearing the site's inline link treatment.
  *
  * `link-styles.ts` argues for a class string over a component, and it is right
@@ -146,6 +116,15 @@ export function LegalLink({ href, children }: { href: string; children: ReactNod
   if (href.startsWith('http')) {
     return (
       <a href={href} target="_blank" rel="noreferrer noopener" className={INLINE_LINK}>
+        {children}
+      </a>
+    );
+  }
+
+  // An email address opens the reader's mail client; it is not a route.
+  if (href.startsWith('mailto:')) {
+    return (
+      <a href={href} className={INLINE_LINK}>
         {children}
       </a>
     );
@@ -228,13 +207,6 @@ export function LegalPage({
               </time>
             )}
           </p>
-
-          <div className="border-warning-line bg-warning-tint mt-6 rounded-xl border p-5">
-            <p className="text-warning-text text-xs font-semibold tracking-[0.14em] uppercase">
-              Pre-alpha · not legal advice
-            </p>
-            <p className="text-fg-muted mt-2 text-[0.9375rem] leading-7">{NOTICE}</p>
-          </div>
 
           <section
             id="short-version"

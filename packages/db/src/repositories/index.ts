@@ -96,6 +96,27 @@ export type {
 } from './retained-vaults';
 
 export {
+  DELETED_DATA_RETENTION_DAYS,
+  deletedSecretRetentionDays,
+  listEnvironmentsDueForPurge,
+  listOrganizationsDueForPurge,
+  listOrganizationsWithDeletedSecrets,
+  listProjectsDueForPurge,
+  purgeDeletedSecrets,
+  purgeEnvironment,
+  purgeOrganization,
+  purgeProject,
+} from './deleted-data';
+export type {
+  OrganizationDueForPurge,
+  OrganizationWithDeletedSecrets,
+  PurgedEnvironment,
+  PurgedOrganization,
+  PurgedProject,
+  PurgedSecret,
+} from './deleted-data';
+
+export {
   listArchiveGrants,
   listArchiveSecrets,
   loadArchiveVault,
