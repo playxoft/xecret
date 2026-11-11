@@ -82,7 +82,7 @@ export const GET = authenticatedRoute(
        * `requireAdmin` itself and answers 404 to anybody else. Always `false`
        * for a CLI token, which can never reach those routes.
        */
-      admin: isAdmin(services.env, principal),
+      admin: await isAdmin(services, principal),
       organizations: memberships.map((membership) => ({
         id: membership.organization.id,
         name: membership.organization.name,

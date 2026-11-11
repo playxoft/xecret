@@ -135,6 +135,13 @@ function describeAdmin(verb: string, rest: readonly string[], path: string): Req
         : action('admin.grant', 'Granted', 'grant', 'a complimentary plan, as an admin');
     case 'grants':
       return action('admin.grants_list', 'Listed', 'list', 'complimentary plans, as an admin');
+    case 'admins':
+      if (rest[2] === 'remove') {
+        return action('admin.admin_remove', 'Removed', 'remove', 'an admin, as an admin');
+      }
+      return verb === 'POST'
+        ? action('admin.admin_add', 'Added', 'add', 'an admin, as an admin')
+        : action('admin.admins_list', 'Listed', 'list', 'the admins, as an admin');
     case 'promo-codes':
       if (rest[2] === 'revoke') {
         return action('admin.promo_revoke', 'Revoked', 'revoke', 'a promo code, as an admin');

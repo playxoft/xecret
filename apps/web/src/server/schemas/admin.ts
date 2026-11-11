@@ -200,6 +200,24 @@ export const adminPromoCodeCreateSchema = z
   );
 export type AdminPromoCodeCreateBody = z.infer<typeof adminPromoCodeCreateSchema>;
 
+/**
+ * `POST /api/admin/admins` — the address of the account to make an admin. It
+ * must already exist and be verified: the person signs in to xecret once, and
+ * then they can be added.
+ */
+export const adminAddSchema = z.strictObject(
+  {
+    email: z
+      .string()
+      .check(
+        z.trim(),
+        z.maxLength(320, 'An address is at most 320 characters.'),
+        z.regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Enter the address they sign in to xecret with.'),
+      ),
+  },
+  UNEXPECTED_FIELD,
+);
+
 /** `POST /api/orgs/{orgSlug}/billing/promo-code` and `…/promo-code/redeem`. */
 export const promoCodeBodySchema = z.strictObject(
   {
@@ -235,6 +253,18 @@ export interface AdminOrganizationPayload {
   /** Whether a grant here needs `overDodo` — Dodo bills it, or a paid checkout is waiting. */
   billedByDodo: boolean;
   awaitingActivation: boolean;
+}
+
+/** One of xecret's admins, as the Admins tab lists them. */
+export interface AdminUserPayload {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  addedAt: string;
+  /** The admin who added this one; `null` for an operator at a shell, or one since deleted. */
+  addedByEmail: string | null;
+  /** Whether this is the admin looking at the list. */
+  you: boolean;
 }
 
 /** One grant, as the admin page lists them. */

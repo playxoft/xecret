@@ -12,7 +12,7 @@ import { adminSearchQuerySchema } from '@/server/schemas/admin';
  * xecret's admins only (`server/admin.ts`); 404 to everybody else.
  */
 export const GET = authenticatedRoute(async ({ request, principal, services }) => {
-  requireAdmin(services, principal);
+  await requireAdmin(services, principal);
   const { q } = parseQuery(request, adminSearchQuerySchema);
   return json({ organizations: await searchOrganizations(services, q) });
 });

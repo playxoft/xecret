@@ -71,6 +71,9 @@ const repositories = vi.hoisted(() => ({
   findVaultKeys: vi.fn(),
   updateMemberRole: vi.fn(),
   listGrantsForMember: vi.fn(),
+  // `/api/auth/me` asks whether the caller is one of xecret's admins (migration
+  // 0035); the stub database here cannot answer, and nobody here is one.
+  isPlatformAdmin: vi.fn(async () => false),
 }));
 
 vi.mock('./context', () => context);

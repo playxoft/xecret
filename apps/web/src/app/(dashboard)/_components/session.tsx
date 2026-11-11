@@ -134,10 +134,10 @@ export interface SessionValue {
    */
   createOrganization: () => void;
   /**
-   * Whether this person is one of xecret's own staff, on the server's
-   * allow-list (`server/admin.ts`). It draws the account menu's "Admin" item
-   * and the admin page — and, like `authority`, it decides nothing: every
-   * admin route asks the allow-list again, and answers anybody else 404.
+   * Whether this person is one of xecret's own staff — an account listed in
+   * `platform_admins` (`server/admin.ts`). It draws the account menu's "Admin"
+   * item and the admin page — and, like `authority`, it decides nothing: every
+   * admin route reads the list again, and answers anybody else 404.
    */
   admin: boolean;
 }

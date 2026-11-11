@@ -522,13 +522,22 @@ it. See the next section.
 ### Complimentary plans and promo codes (the admin page)
 
 Since migration 0035, xecret's own staff can do the commonest of the above from a page:
-**`/app/admin`**, reached from the account menu's **Admin** item. Who may open it is
-`XECRET_ADMIN_EMAILS` — a Worker secret, from Phase.dev, holding a JSON array
-(`["a@example.com"]`) or a comma-separated list of sign-in addresses. The address must be the
-one the admin signs in with, and verified; the session must be a browser session with its vault
-unlocked; any other signed-in caller gets a 404. Changing the list takes effect on the
-next request — `wrangler secret put XECRET_ADMIN_EMAILS --env production` from a Phase shell, as
-for every other secret (see `apps/web/wrangler.toml`).
+**`/app/admin`**, reached from the account menu's **Admin** item. Who may open it is the
+accounts in `platform_admins`: admins add and remove each other on its **Admins** tab, by the
+address the person signs in with (they sign in to xecret once first, and the address must be
+verified), and every admin is emailed about each change. The last admin can never be removed.
+The session must be a browser session with its vault unlocked; any other signed-in caller gets
+a 404. A change takes effect on the admin's next request.
+
+**The first admin** — and the way back in if every admin account is lost — comes from a shell
+with database credentials:
+
+```sh
+phase run --env Production -- npm run admin -- --add someone@example.com   # also --list, --remove
+```
+
+Every change, from the page or the script, is recorded in `platform_admin_changes` (who, by
+whom, when).
 
 **A complimentary plan** (Organisations tab) is the operator's grant `plan:set` has always
 written — a paid plan with no Dodo subscription behind it — with an optional end date and an

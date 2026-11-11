@@ -19,7 +19,7 @@ import { isUuid } from '@/server/schemas/ids';
 type Params = { codeId: string };
 
 export const POST = authenticatedRoute<Params>(async ({ params, principal, services }) => {
-  const admin = requireAdmin(services, principal);
+  const admin = await requireAdmin(services, principal);
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
   if (!isUuid(params.codeId)) throw errors.notFound('malformed promo code id');
   return json({ code: await revokeCode(services, admin, params.codeId) });

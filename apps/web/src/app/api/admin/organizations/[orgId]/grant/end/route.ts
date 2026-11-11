@@ -19,7 +19,7 @@ import { isUuid } from '@/server/schemas/ids';
 type Params = { orgId: string };
 
 export const POST = authenticatedRoute<Params>(async ({ request, params, principal, services }) => {
-  const admin = requireAdmin(services, principal);
+  const admin = await requireAdmin(services, principal);
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
   if (!isUuid(params.orgId)) throw errors.notFound('malformed organisation id');
 

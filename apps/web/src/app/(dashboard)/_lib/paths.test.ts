@@ -105,6 +105,8 @@ describe('the admin page', () => {
     expect(apiPath.adminGrant('org 1')).toBe('/api/admin/organizations/org%201/grant');
     expect(apiPath.adminGrantEnd('org-1')).toBe('/api/admin/organizations/org-1/grant/end');
     expect(apiPath.adminPromoCodeRevoke('code-1')).toBe('/api/admin/promo-codes/code-1/revoke');
+    expect(apiPath.adminAdmins()).toBe('/api/admin/admins');
+    expect(apiPath.adminRemoveAdmin('user 1')).toBe('/api/admin/admins/user%201/remove');
   });
 
   it('leaves an owner’s promo code beside the rest of billing', () => {

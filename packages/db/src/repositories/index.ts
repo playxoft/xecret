@@ -536,6 +536,14 @@ export type {
 } from './billing';
 
 export {
+  addPlatformAdmin,
+  isPlatformAdmin,
+  listPlatformAdmins,
+  removePlatformAdmin,
+} from './platform-admins';
+export type { AdminChangeActor, PlatformAdminListing } from './platform-admins';
+
+export {
   applyPlanGrant,
   createPromoCode,
   endPlanGrant,

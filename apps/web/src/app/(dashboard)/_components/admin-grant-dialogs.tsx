@@ -44,8 +44,8 @@ import { Segmented } from './segmented';
  * A paid plan with nothing behind it at the payment provider, which can end
  * (`packages/db/src/repositories/plan-grants.ts`). The organisation's owners
  * see it on their billing screen as a complimentary plan, with its end, and
- * the change lands in their audit log as "xecret support" with the admin's
- * address — so the reason asked for here is one the customer can read.
+ * the change lands in their audit log as "xecret support", with the reason
+ * asked for here — written for the customer to read.
  *
  * ── An organisation Dodo bills ──
  * Granting over a live subscription takes the organisation off it, and

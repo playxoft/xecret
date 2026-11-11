@@ -330,10 +330,6 @@ secret_name = "XECRET_ROOT_KEYS"
 #   BETTERSTACK_SOURCE_TOKEN  authorises writing into your log stream
 #   BETTERSTACK_INGEST_URL    the source's own https://<id>.betterstackdata.com
 #   XECRET_LOG_LEVEL          debug | info | warn | error, for an incident
-#   XECRET_ADMIN_EMAILS       who may open the admin page and grant plans and
-#                             promo codes — a JSON array or a comma-separated
-#                             list of verified sign-in addresses; absent means
-#                             nobody (every admin route answers 404)
 #   DODO_API_KEY              authenticates every call to Dodo; can change
 #                             what a customer is charged (P12, optional)
 #   DODO_WEBHOOK_SECRET       verifies every payment webhook (`whsec_…`);

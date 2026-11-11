@@ -42,6 +42,8 @@ const APPEND_ONLY = new Set([
   // never rewritten or deleted.
   'promo_code_redemptions',
   'promo_codes',
+  // Migration 0035: who added or removed an admin, and when — only ever added to.
+  'platform_admin_changes',
 ]);
 
 /**
@@ -57,6 +59,8 @@ const NO_TABLE_UPDATE = new Set([
   // Migration 0024: a sent reminder is inserted, and pruned once its occasion
   // is long past; rewriting one would re-arm a reminder already sent.
   'billing_reminders',
+  // Migration 0035: an admin is added and removed, never edited into somebody else.
+  'platform_admins',
 ]);
 
 /**

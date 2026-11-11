@@ -17,10 +17,12 @@ import type { LogEntry, RequestLog } from './logging';
  * — **no request here reaches Dodo**.
  *
  * What is asserted first, for every admin route: that it does not exist for
- * anybody who is not on the allow-list — a signed-in stranger, the admin's own
- * CLI token, everybody when the variable is unset — and that such a request
- * writes nothing. Then what an admin's change leaves in the customer's audit
- * log, and that a code is only ever spent by the checks that guard it.
+ * anybody without a live `platform_admins` row and a verified session — a
+ * signed-in stranger, the admin's own CLI token, an admin just removed,
+ * everybody when the table is empty — and that such a request writes nothing.
+ * Then who the admins are and how they change, what an admin's change leaves
+ * in the customer's audit log, and that a code is only ever spent by the
+ * checks that guard it.
  */
 
 const ORIGIN = 'https://xecret.playxoft.com';
@@ -34,6 +36,11 @@ const actor = vi.hoisted(() => ({
 }));
 const auditSink = vi.hoisted(() => ({ write: vi.fn() }));
 const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
+const mail = vi.hoisted(() => ({
+  sent: [] as { to: string; subject: string; text: string }[],
+  /** Addresses whose delivery fails, as a provider's refusal would. */
+  failFor: [] as string[],
+}));
 const dodo = vi.hoisted(() => ({
   createCheckoutSession: vi.fn(),
   changePlan: vi.fn(),
@@ -64,6 +71,19 @@ vi.mock('./billing/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./billing/client')>()),
   billingProvider: (): BillingProvider => dodo as unknown as BillingProvider,
 }));
+// A mailer only where the deployment would have one — ZeptoMail configured.
+vi.mock('./mail', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./mail')>()),
+  mailerFrom: (bindings: { ZEPTOMAIL_TOKEN?: string }) =>
+    bindings.ZEPTOMAIL_TOKEN
+      ? {
+          send: async (message: { to: string; subject: string; text: string }) => {
+            if (mail.failFor.includes(message.to)) throw new Error('mailbox unavailable');
+            mail.sent.push(message);
+          },
+        }
+      : null,
+}));
 
 const searchRoute = await import('@/app/api/admin/organizations/route');
 const grantRoute = await import('@/app/api/admin/organizations/[orgId]/grant/route');
@@ -76,6 +96,8 @@ const redeemRoute = await import('@/app/api/orgs/[orgSlug]/billing/promo-code/re
 const checkoutRoute = await import('@/app/api/orgs/[orgSlug]/billing/checkout/route');
 const statusRoute = await import('@/app/api/orgs/[orgSlug]/billing/route');
 const meRoute = await import('@/app/api/auth/me/route');
+const adminsRoute = await import('@/app/api/admin/admins/route');
+const removeAdminRoute = await import('@/app/api/admin/admins/[userId]/remove/route');
 const { DodoApiError } = await import('./billing/client');
 
 let t: TestDatabase;
@@ -84,7 +106,7 @@ let audit: AuditRecord[] = [];
 let deferred: Promise<unknown>[] = [];
 let env: Record<string, unknown> = {};
 let caller: Principal;
-/** xecret's own admin: a user row, on the allow-list, in no organisation. */
+/** xecret's own admin: a user with a `platform_admins` row, in no organisation. */
 let adminUser: { id: string; email: string };
 
 const BILLING_ENV = {
@@ -98,6 +120,10 @@ const BILLING_ENV = {
   DODO_METER_SECRET_FETCH: 'secret_fetch_kilo',
 };
 const BASE_ENV = { XECRET_PUBLIC_URL: ORIGIN, XECRET_ENV: 'production' };
+const MAIL_ENV = {
+  ZEPTOMAIL_TOKEN: 'zepto-test-token',
+  ZEPTOMAIL_FROM_ADDRESS: 'no-reply@example.com',
+};
 
 const DAY = 86_400_000;
 
@@ -110,14 +136,17 @@ afterAll(async () => {
   await t.close();
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   for (const fn of Object.values(dodo)) fn.mockReset();
   lines = [];
   audit = [];
   deferred = [];
-  // Mixed case on purpose: the list is matched case-insensitively.
-  env = { ...BASE_ENV, ...BILLING_ENV, XECRET_ADMIN_EMAILS: 'OPS@Support.example.com' };
+  mail.sent = [];
+  mail.failFor = [];
+  env = { ...BASE_ENV, ...BILLING_ENV };
+  // Whatever a test before did to the list, the main admin is one again.
+  await makeAdmin(adminUser.id);
 
   logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
     createLogger({
@@ -168,14 +197,22 @@ beforeEach(() => {
 
 /* ── fixtures ─────────────────────────────────────────────────────────────── */
 
-async function seedUser(email?: string): Promise<{ id: string; email: string }> {
+async function seedUser(email?: string, verified = true): Promise<{ id: string; email: string }> {
   const id = randomUUID();
   const address = email ?? `person-${id.slice(0, 8)}@example.com`;
   await t.pg.query(
-    `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, true)`,
-    [id, `user_01${id.replaceAll('-', '').slice(0, 20)}`, address],
+    `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, $4)`,
+    [id, `user_01${id.replaceAll('-', '').slice(0, 20)}`, address, verified],
   );
   return { id, email: address };
+}
+
+/** A `platform_admins` row, as `npm run admin` writes the first one. */
+async function makeAdmin(userId: string, addedBy: string | null = null): Promise<void> {
+  await t.pg.query(
+    `insert into platform_admins (user_id, added_by) values ($1, $2) on conflict do nothing`,
+    [userId, addedBy],
+  );
 }
 
 function sessionOf(user: { id: string; email: string }, emailVerified = true): Principal {
@@ -376,6 +413,11 @@ const checkout = (slug: string, body: unknown, key?: string) =>
 const billing = (slug: string) =>
   send(statusRoute.GET, 'GET', `/api/orgs/${slug}/billing`, { orgSlug: slug });
 const me = () => send(meRoute.GET, 'GET', '/api/auth/me', {});
+const listAdmins = () => send(adminsRoute.GET, 'GET', '/api/admin/admins', {});
+const addAdmin = (email: string) =>
+  send(adminsRoute.POST, 'POST', '/api/admin/admins', {}, { email });
+const removeAdmin = (userId: string) =>
+  send(removeAdminRoute.POST, 'POST', `/api/admin/admins/${userId}/remove`, { userId });
 
 /** A grant body the schema accepts; the test overrides what it is about. */
 const grantBody = (overrides: Record<string, unknown> = {}) => ({
@@ -449,9 +491,17 @@ const errorOf = (answer: Answer) => answer.body['error'] as { code: string; mess
 
 /* ── who may ──────────────────────────────────────────────────────────────── */
 
+/** A verified account nobody has made an admin — its address has no "s" (see the schema bug). */
+const candidate = () => seedUser(`cand-${randomUUID().slice(0, 8)}@example.com`);
+
 describe('who may reach the admin API', () => {
   /** Every admin route, with a body it would accept from an admin. */
-  async function everyAdminRoute(orgId: string, codeId: string): Promise<Answer[]> {
+  async function everyAdminRoute(
+    orgId: string,
+    codeId: string,
+    otherAdminId: string,
+  ): Promise<Answer[]> {
+    const newcomer = await candidate();
     return [
       await search('acme'),
       await grant(orgId, grantBody()),
@@ -461,34 +511,44 @@ describe('who may reach the admin API', () => {
       await createCode(grantCodeBody({ code: freshCode('X') })),
       await createCode(discountCodeBody({}, { code: freshCode('X') })),
       await revoke(codeId),
+      await listAdmins(),
+      await addAdmin(newcomer.email),
+      await removeAdmin(otherAdminId),
     ];
   }
 
-  const callers: [string, () => Principal, () => void][] = [
+  const callers: [string, () => Promise<Principal>][] = [
+    ['a signed-in person who is not an admin', async () => sessionOf(await seedUser())],
+    ['the admin’s own session, its address not verified', async () => sessionOf(adminUser, false)],
+    ['the admin’s own CLI token', async () => cliTokenOf(adminUser)],
     [
-      'a signed-in person who is not on the list',
-      () => sessionOf({ id: randomUUID(), email: 'someone@example.com' }),
-      () => {},
-    ],
-    ['the admin’s own address, never verified', () => sessionOf(adminUser, false), () => {}],
-    ['the admin’s own CLI token', () => cliTokenOf(adminUser), () => {}],
-    [
-      'the admin, when XECRET_ADMIN_EMAILS is unset',
-      () => sessionOf(adminUser),
-      () => {
-        delete env['XECRET_ADMIN_EMAILS'];
+      'an admin just removed, while another remains',
+      async () => {
+        const remaining = await seedUser();
+        await makeAdmin(remaining.id);
+        await t.pg.query(`delete from platform_admins where user_id = $1`, [adminUser.id]);
+        return sessionOf(adminUser);
       },
     ],
     [
-      'the admin, when XECRET_ADMIN_EMAILS is unreadable',
-      () => sessionOf(adminUser),
-      () => {
-        env['XECRET_ADMIN_EMAILS'] = '["ops@support.example.com"';
+      'an admin whose account was deleted',
+      async () => {
+        const gone = await seedUser();
+        await makeAdmin(gone.id);
+        await t.pg.query(`update users set deleted_at = now() where id = $1`, [gone.id]);
+        return sessionOf(gone);
+      },
+    ],
+    [
+      'anybody, when there are no admins at all',
+      async () => {
+        await t.pg.query(`delete from platform_admins`);
+        return sessionOf(adminUser);
       },
     ],
   ];
 
-  for (const [who, principal, arrange] of callers) {
+  for (const [who, arrange] of callers) {
     it(`answers ${who} 404 on every route, and writes nothing`, async () => {
       const { orgId } = await seedOrg();
       // A grant to end and a code to revoke, so a write would have something to do.
@@ -501,11 +561,15 @@ describe('who may reach the admin API', () => {
       });
       const code = await grantCode();
       const codesBefore = await count('promo_codes');
+      // An admin to remove, so a removal would have somebody to act on.
+      const other = await seedUser();
+      await makeAdmin(other.id, adminUser.id);
 
-      arrange();
-      caller = principal();
+      caller = await arrange();
+      const adminsBefore = await count('platform_admins');
+      const changesBefore = await count('platform_admin_changes');
       const answers = [
-        ...(await everyAdminRoute(orgId, code.id)),
+        ...(await everyAdminRoute(orgId, code.id, other.id)),
         await endGrant(granted.orgId, { reason: 'Partnership ended' }),
       ];
 
@@ -522,23 +586,25 @@ describe('who may reach the admin API', () => {
       expect((await findPromoCodeById(t.db, code.id))?.revokedAt).toBeNull();
       expect(await planChangesOf(orgId)).toEqual([]);
       expect(await planChangesOf(granted.orgId)).toEqual([]);
+      expect(await count('platform_admins')).toBe(adminsBefore);
+      expect(await count('platform_admin_changes')).toBe(changesBefore);
       expect(dodo.createDiscount).not.toHaveBeenCalled();
       expect(dodo.deleteDiscount).not.toHaveBeenCalled();
+      expect(mail.sent).toEqual([]);
       // Each refusal is a line somebody can see.
       expect(
-        lines.filter((line) => line.level === 'warn' && /admin allow-list/.test(line.message)),
+        lines.filter((line) => line.level === 'warn' && /not an admin/.test(line.message)),
       ).toHaveLength(answers.length);
     });
   }
 
-  it('answers an admin on the list, whatever the case of the address', async () => {
-    caller = sessionOf({ id: adminUser.id, email: 'Ops@SUPPORT.example.com' });
+  it('answers an admin, from its very first request', async () => {
     expect((await listGrants()).status).toBe(200);
   });
 });
 
 describe('/api/auth/me', () => {
-  it('says admin only to a listed, verified session', async () => {
+  it('says admin only to a verified session whose account has a row', async () => {
     caller = sessionOf(adminUser);
     expect((await me()).body['admin']).toBe(true);
 
@@ -554,9 +620,336 @@ describe('/api/auth/me', () => {
     expect(asToken.status).toBe(200);
     expect(asToken.body['admin']).toBe(false);
 
-    delete env['XECRET_ADMIN_EMAILS'];
+    // Removed: the menu stops offering the page on the next load.
+    const remaining = await seedUser();
+    await makeAdmin(remaining.id);
+    await t.pg.query(`delete from platform_admins where user_id = $1`, [adminUser.id]);
     caller = sessionOf(adminUser);
     expect((await me()).body['admin']).toBe(false);
+  });
+});
+
+/* ── the admins ───────────────────────────────────────────────────────────── */
+
+describe('the admins', () => {
+  /** The list as `npm run admin` leaves it: the main admin alone. */
+  async function onlyTheMainAdmin(): Promise<void> {
+    await t.pg.query(`delete from platform_admins where user_id <> $1`, [adminUser.id]);
+  }
+
+  async function changesFor(userId: string) {
+    const rows = await t.pg.query<{
+      action: string;
+      email: string;
+      by_user_id: string | null;
+      by_label: string | null;
+    }>(
+      `select action, email, by_user_id, by_label from platform_admin_changes
+       where user_id = $1 order by at`,
+      [userId],
+    );
+    return rows.rows;
+  }
+
+  const isAdminRow = async (userId: string) =>
+    (await count('platform_admins where user_id = $1', [userId])) === 1;
+
+  const recipients = () => mail.sent.map((message) => message.to).sort();
+
+  it('lists every admin, longest-serving first, with who added each and which is you', async () => {
+    await onlyTheMainAdmin();
+    const second = await seedUser();
+    await makeAdmin(second.id, adminUser.id);
+
+    const answer = await listAdmins();
+
+    expect(answer.status).toBe(200);
+    expect(answer.body['admins']).toEqual([
+      {
+        userId: adminUser.id,
+        email: ADMIN_EMAIL,
+        displayName: null,
+        addedAt: expect.any(String),
+        // The first admin was made at a shell: nobody added them.
+        addedByEmail: null,
+        you: true,
+      },
+      {
+        userId: second.id,
+        email: second.email,
+        displayName: null,
+        addedAt: expect.any(String),
+        addedByEmail: ADMIN_EMAIL,
+        you: false,
+      },
+    ]);
+
+    caller = sessionOf(second);
+    const theirs = (await listAdmins()).body['admins'] as { userId: string; you: boolean }[];
+    expect(theirs.map((row) => [row.userId, row.you])).toEqual([
+      [adminUser.id, false],
+      [second.id, true],
+    ]);
+  });
+
+  it('never lists an admin whose account was deleted', async () => {
+    const gone = await seedUser();
+    await makeAdmin(gone.id);
+    await t.pg.query(`update users set deleted_at = now() where id = $1`, [gone.id]);
+    const listed = (await listAdmins()).body['admins'] as { userId: string }[];
+    expect(listed.some((row) => row.userId === gone.id)).toBe(false);
+  });
+
+  describe('adding one', () => {
+    it('makes a verified account an admin by its address, in any case, and records who did', async () => {
+      const newcomer = await candidate();
+
+      const answer = await addAdmin(`  ${newcomer.email.toUpperCase()} `);
+
+      expect(answer.status).toBe(201);
+      expect(answer.body['admin']).toEqual({
+        userId: newcomer.id,
+        email: newcomer.email,
+        displayName: null,
+        addedAt: expect.any(String),
+        addedByEmail: ADMIN_EMAIL,
+        you: false,
+      });
+      const row = await t.pg.query<{ added_by: string }>(
+        `select added_by from platform_admins where user_id = $1`,
+        [newcomer.id],
+      );
+      expect(row.rows).toEqual([{ added_by: adminUser.id }]);
+      expect(await changesFor(newcomer.id)).toEqual([
+        { action: 'added', email: newcomer.email, by_user_id: adminUser.id, by_label: null },
+      ]);
+      expect(lines.find((line) => /added another admin/.test(line.message))).toMatchObject({
+        adminUserId: adminUser.id,
+        addedUserId: newcomer.id,
+      });
+    });
+
+    it('lets the new admin in on their very next request', async () => {
+      const newcomer = await candidate();
+      expect((await addAdmin(newcomer.email)).status).toBe(201);
+
+      caller = sessionOf(newcomer);
+      expect((await listGrants()).status).toBe(200);
+      expect((await me()).body['admin']).toBe(true);
+    });
+
+    it('refuses a look-alike address rather than folding it into somebody else’s account', async () => {
+      const hex = randomUUID().slice(0, 8);
+      const kelly = await seedUser(`kelly-${hex}@example.com`);
+      // U+212A KELVIN SIGN lower-cases to "k" in Unicode, and `users.email` is citext.
+      const answer = await addAdmin(`Kelly-${hex}@example.com`);
+      expect(answer.status).toBe(409);
+      expect(answer.body['error']).toMatchObject({ fields: [{ field: 'email' }] });
+      expect(await isAdminRow(kelly.id)).toBe(false);
+
+      // And the reverse: an account whose own address carries the look-alike
+      // is not named by the plain one.
+      const lookAlike = await seedUser(`Kate-${hex}@example.com`);
+      expect((await addAdmin(`kate-${hex}@example.com`)).status).toBe(409);
+      expect(await isAdminRow(lookAlike.id)).toBe(false);
+    });
+
+    it('refuses an address no live account uses, on the email field', async () => {
+      const unknown = await addAdmin(`nobody-${randomUUID().slice(0, 8)}@example.com`);
+      expect(unknown.status).toBe(409);
+      expect(unknown.body['error']).toMatchObject({
+        code: 'conflict',
+        fields: [{ field: 'email' }],
+      });
+      expect(errorOf(unknown).message).toContain('No xecret account uses that address');
+
+      const deleted = await candidate();
+      await t.pg.query(`update users set deleted_at = now() where id = $1`, [deleted.id]);
+      expect((await addAdmin(deleted.email)).status).toBe(409);
+      expect(await isAdminRow(deleted.id)).toBe(false);
+    });
+
+    it('refuses an account whose address is not verified yet', async () => {
+      const unverified = await seedUser(
+        `unverified-${randomUUID().slice(0, 8)}@example.com`,
+        false,
+      );
+      const answer = await addAdmin(unverified.email);
+      expect(answer.status).toBe(409);
+      expect(answer.body['error']).toMatchObject({ fields: [{ field: 'email' }] });
+      expect(errorOf(answer).message).toContain('not verified');
+      expect(await isAdminRow(unverified.id)).toBe(false);
+      expect(await changesFor(unverified.id)).toEqual([]);
+    });
+
+    it('refuses one who is an admin already, and records nothing', async () => {
+      const newcomer = await candidate();
+      await addAdmin(newcomer.email);
+      const again = await addAdmin(newcomer.email);
+      expect(again.status).toBe(409);
+      expect(again.body['error']).toMatchObject({ fields: [{ field: 'email' }] });
+      expect(errorOf(again).message).toContain('admin already');
+      expect(await changesFor(newcomer.id)).toHaveLength(1);
+    });
+
+    it('takes an address and nothing else', async () => {
+      expect((await addAdmin('not an address')).status).toBe(422);
+      const extra = await send(
+        adminsRoute.POST,
+        'POST',
+        '/api/admin/admins',
+        {},
+        { email: (await candidate()).email, role: 'owner' },
+      );
+      expect(extra.status).toBe(422);
+    });
+
+    // The address pattern once lost its backslashes, and refused every address
+    // with a lower-case "s" in it before the lookup.
+    it('accepts an ordinary address with an "s" in it', async () => {
+      const sam = await seedUser(`sam-${randomUUID().slice(0, 8)}@example.com`);
+      expect((await addAdmin(sam.email)).status).toBe(201);
+    });
+  });
+
+  describe('removing one', () => {
+    it('removes an admin: their next request is a 404, and the change is recorded', async () => {
+      const second = await seedUser();
+      await makeAdmin(second.id, adminUser.id);
+
+      const answer = await removeAdmin(second.id);
+
+      expect(answer).toEqual({ status: 204, body: {} });
+      expect(await isAdminRow(second.id)).toBe(false);
+      expect(await changesFor(second.id)).toEqual([
+        { action: 'removed', email: second.email, by_user_id: adminUser.id, by_label: null },
+      ]);
+      caller = sessionOf(second);
+      expect((await listGrants()).status).toBe(404);
+      expect((await me()).body['admin']).toBe(false);
+    });
+
+    it('never removes the last admin — a deleted account’s row does not count', async () => {
+      await onlyTheMainAdmin();
+      // A row whose account cannot sign in any more is nobody to fall back on.
+      const ghost = await seedUser();
+      await makeAdmin(ghost.id);
+      await t.pg.query(`update users set deleted_at = now() where id = $1`, [ghost.id]);
+
+      const answer = await removeAdmin(adminUser.id);
+
+      expect(answer.status).toBe(409);
+      expect(errorOf(answer).message).toContain('at least one admin');
+      expect(await isAdminRow(adminUser.id)).toBe(true);
+      expect((await changesFor(adminUser.id)).some((row) => row.action === 'removed')).toBe(false);
+      expect((await listGrants()).status).toBe(200);
+    });
+
+    it('lets an admin step down while another remains', async () => {
+      await onlyTheMainAdmin();
+      const second = await seedUser();
+      await makeAdmin(second.id);
+
+      expect((await removeAdmin(adminUser.id)).status).toBe(204);
+
+      expect(await isAdminRow(adminUser.id)).toBe(false);
+      expect((await changesFor(adminUser.id)).at(-1)).toEqual({
+        action: 'removed',
+        email: ADMIN_EMAIL,
+        by_user_id: adminUser.id,
+        by_label: null,
+      });
+      expect((await listGrants()).status).toBe(404);
+      caller = sessionOf(second);
+      expect((await listGrants()).status).toBe(200);
+    });
+
+    it('answers 404 for an account that is not an admin, an unknown id, or a malformed one', async () => {
+      const notAdmin = await seedUser();
+      const changesBefore = await count('platform_admin_changes');
+      for (const id of [notAdmin.id, randomUUID(), 'not-a-uuid']) {
+        const answer = await removeAdmin(id);
+        expect(answer.status, id).toBe(404);
+        expect(errorOf(answer).code).toBe('not_found');
+      }
+      expect(await count('platform_admin_changes')).toBe(changesBefore);
+    });
+  });
+
+  describe('telling the admins', () => {
+    it('emails every admin, the new one included, when one is added', async () => {
+      env = { ...env, ...MAIL_ENV };
+      await onlyTheMainAdmin();
+      const second = await seedUser();
+      await makeAdmin(second.id);
+      const newcomer = await candidate();
+
+      expect((await addAdmin(newcomer.email)).status).toBe(201);
+
+      expect(recipients()).toEqual([ADMIN_EMAIL, second.email, newcomer.email].sort());
+      for (const message of mail.sent) {
+        expect(message.subject).toBe('A new xecret admin was added');
+        expect(message.text).toContain(
+          `${newcomer.email} was made a xecret admin by ${ADMIN_EMAIL}.`,
+        );
+        expect(message.text).toContain(`${ORIGIN}/app/admin`);
+      }
+    });
+
+    it('emails every remaining admin and the one removed', async () => {
+      env = { ...env, ...MAIL_ENV };
+      await onlyTheMainAdmin();
+      const second = await seedUser();
+      const third = await seedUser();
+      await makeAdmin(second.id);
+      await makeAdmin(third.id);
+
+      expect((await removeAdmin(third.id)).status).toBe(204);
+
+      expect(recipients()).toEqual([ADMIN_EMAIL, second.email, third.email].sort());
+      for (const message of mail.sent) {
+        expect(message.subject).toBe('A xecret admin was removed');
+        expect(message.text).toContain(
+          `${third.email} is no longer a xecret admin; ${ADMIN_EMAIL} removed them.`,
+        );
+      }
+    });
+
+    it('says an admin stepped down when they removed themselves', async () => {
+      env = { ...env, ...MAIL_ENV };
+      await onlyTheMainAdmin();
+      const second = await seedUser();
+      await makeAdmin(second.id);
+
+      expect((await removeAdmin(adminUser.id)).status).toBe(204);
+
+      expect(recipients()).toEqual([ADMIN_EMAIL, second.email].sort());
+      expect(mail.sent[0]!.text).toContain(`${ADMIN_EMAIL} stepped down as a xecret admin.`);
+    });
+
+    it('keeps the change when a mail is not delivered, and logs it without the address', async () => {
+      env = { ...env, ...MAIL_ENV };
+      await onlyTheMainAdmin();
+      const second = await seedUser();
+      await makeAdmin(second.id);
+      mail.failFor = [second.email];
+      const newcomer = await candidate();
+
+      expect((await addAdmin(newcomer.email)).status).toBe(201);
+
+      expect(await isAdminRow(newcomer.id)).toBe(true);
+      expect(recipients()).toEqual([ADMIN_EMAIL, newcomer.email].sort());
+      const warning = lines.find((line) => /was not delivered/.test(line.message));
+      expect(warning?.level).toBe('warn');
+      expect(JSON.stringify(warning)).not.toContain(second.email);
+    });
+
+    it('changes the list all the same on a deployment with no mail', async () => {
+      const newcomer = await candidate();
+      expect((await addAdmin(newcomer.email)).status).toBe(201);
+      expect(mail.sent).toEqual([]);
+      expect(await isAdminRow(newcomer.id)).toBe(true);
+    });
   });
 });
 
@@ -1027,7 +1420,7 @@ describe('creating promo codes', () => {
   });
 
   it('refuses a discount code on a deployment that takes no payments — nothing at Dodo, nothing here', async () => {
-    env = { ...BASE_ENV, XECRET_ADMIN_EMAILS: ADMIN_EMAIL };
+    env = { ...BASE_ENV };
     const code = freshCode('N');
     const answer = await createCode(discountCodeBody({}, { code }));
     expect(answer.status).toBe(409);
@@ -1137,7 +1530,7 @@ describe('revoking and listing promo codes', () => {
     expect(ids).toContain(newer.id);
     expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
 
-    env = { ...BASE_ENV, XECRET_ADMIN_EMAILS: ADMIN_EMAIL };
+    env = { ...BASE_ENV };
     expect((await listCodes()).body['billing']).toEqual({ enabled: false, mode: null });
   });
 });

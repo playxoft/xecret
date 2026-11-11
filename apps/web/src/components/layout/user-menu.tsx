@@ -49,8 +49,8 @@ export interface UserMenuProps {
   /**
    * Adds "Admin" when provided: the page where xecret's own staff give an
    * organisation a free plan and issue promo codes. The shell hands it over
-   * only for somebody on the server's allow-list; for anybody else the page is
-   * a 404, so an item drawn by mistake would lead nowhere rather than in.
+   * only for one of xecret's admins, as the session reports them; for anybody
+   * else the page is a 404, so an item drawn by mistake leads nowhere.
    */
   adminHref?: string;
   /**

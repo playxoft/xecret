@@ -20,12 +20,12 @@ import { adminPromoCodeCreateSchema } from '@/server/schemas/admin';
  */
 
 export const GET = authenticatedRoute(async ({ principal, services }) => {
-  requireAdmin(services, principal);
+  await requireAdmin(services, principal);
   return json(await listCodes(services));
 });
 
 export const POST = authenticatedRoute(async ({ request, principal, services }) => {
-  const admin = requireAdmin(services, principal);
+  const admin = await requireAdmin(services, principal);
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
   const body = await parseJsonBody(request, adminPromoCodeCreateSchema);
   return json({ code: await createCode(services, admin, body) }, { status: 201 });

@@ -102,6 +102,21 @@ describe('the account menu offers the admin page to xecret’s staff only', () =
   });
 });
 
+describe('removing an admin from the Admins tab', () => {
+  // `removeAdmin` has tests of its own for the order — the session re-read,
+  // then `/app`. What they cannot see is the tab handing it the real router
+  // and the session's own refresh: unwired, an admin who removed themselves
+  // would stay on a page that now 404s, with "Admin" still in the menu.
+  it('goes through `removeAdmin`, with the session’s refresh and the router', () => {
+    const tab = source('./admin-admins.tsx');
+    const confirm = attribute(tab.slice(tab.indexOf('<ConfirmDialog')), 'onConfirm') ?? '';
+    expect(confirm).toContain('await removeAdmin(target, {');
+    expect(confirm).toContain('refresh,');
+    expect(confirm).toContain('navigate: (href) => router.replace(href),');
+    expect(tab).toMatch(/const \{ refresh \} = useSession\(\);/);
+  });
+});
+
 describe('the shell catches up with a lock through its coordinator', () => {
   // `lock-catch-up.ts` decides when the shell re-reads the session, and its own
   // tests pin how. What they cannot see is the shell actually using it — armed

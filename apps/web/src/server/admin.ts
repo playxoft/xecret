@@ -1,33 +1,34 @@
 import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditBuilder } from '@xecret/core/audit';
+import { isPlatformAdmin } from '@xecret/db/repositories';
 import type { Principal } from './actor';
-import type { Bindings } from './bindings';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
 
 /**
  * Who may use the admin page (`/app/admin`, `/api/admin/*`): xecret's own
- * staff, by the address they sign in with.
+ * staff — the accounts listed in `platform_admins` (migration 0035).
  *
  * ── Why this is a route at all ──
  * `plan:set` was, on purpose, a script and never an endpoint: "a route that
  * grants paid plans is a route that will eventually be reachable by someone
  * who should not reach it". The owner chose to have one anyway (2026-11-11),
  * so the argument becomes the design brief instead of the reason not to — the
- * route must be unreachable by construction for everybody else:
+ * route must be unreachable for everybody else:
  *
- *  1. **One allow-list, read on every request**, from `XECRET_ADMIN_EMAILS`
- *     (Phase.dev → Worker secret). Nothing is stored: removing an address
- *     revokes on the next request, and there is no admin flag on a user row
- *     that a bug, a migration or an SQL injection could set.
+ *  1. **An admin is an account in `platform_admins`**, read on every request.
+ *     Admins add and remove each other from the page (never the last one), and
+ *     an operator makes the first with `npm run admin`. Removing one revokes on
+ *     their next request, and every change is recorded in
+ *     `platform_admin_changes` and emailed to every admin, so an admin added
+ *     behind the others' backs does not go unnoticed. The cost of keeping the
+ *     list in the database, stated plainly: whoever can write that table can
+ *     make an admin — which is also whoever can already write any plan.
  *  2. **A browser session only** — never a CLI or service token. A token is a
  *     long-lived credential on a disk somewhere; the admin page is not
  *     something a script should ever be able to drive.
- *  3. **A verified address**, matched exactly: printable ASCII, folded to
- *     lower case in ASCII only (`asciiAddress`) — a Unicode fold would let
- *     `Kelly@` (a Kelvin sign) stand in for `kelly@`, the trap
- *     `isSameAddress` in `users.ts` already refuses. An address nobody proved
- *     they own is not an identity anything here should trust.
+ *  3. **A verified address** on that account. One nobody proved they own is
+ *     not an identity anything here should trust.
  *  4. **The vault unlocked** — `authenticatedRoute` asks it of every route that
  *     does not opt out, and none of these does. So a stolen session cookie is
  *     not enough on its own: the admin's passphrase is too.
@@ -46,8 +47,9 @@ import { errors } from './errors';
 
 /**
  * An address folded to lower case in ASCII only — or `null` for one that is
- * not printable ASCII, which no allow-list here can name. The admin allow-list
- * and a promo code's allowed addresses are both compared through it.
+ * not printable ASCII. A promo code's allowed addresses are compared through
+ * it: a Unicode fold would let `Kelly@` (a Kelvin sign) stand in for `kelly@`,
+ * the trap `isSameAddress` in `users.ts` already refuses for accounts.
  */
 export function asciiAddress(value: string): string | null {
   const trimmed = value.trim();
@@ -55,65 +57,32 @@ export function asciiAddress(value: string): string | null {
   return trimmed.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 }
 
-/** What `XECRET_ADMIN_EMAILS` says, as lower-cased addresses. Empty when unset or unreadable. */
-export function adminEmails(raw: string | undefined): ReadonlySet<string> {
-  if (raw === undefined) return new Set();
-  const text = raw.trim();
-  if (text === '') return new Set();
-
-  let entries: unknown[];
-  // Anything that opens like JSON is read as JSON — an object or a quoted
-  // string included, which then fails closed below rather than being split
-  // into fragments that might happen to look like an address.
-  if (/^[[{"]/.test(text)) {
-    try {
-      const parsed: unknown = JSON.parse(text);
-      // A JSON value that is not an array of strings is a mistake, and a
-      // mistake in an allow-list fails closed: nobody, rather than a guess.
-      if (!Array.isArray(parsed)) return new Set();
-      entries = parsed;
-    } catch {
-      return new Set();
-    }
-  } else {
-    entries = text.split(/[\s,;]+/);
-  }
-
-  const addresses = new Set<string>();
-  for (const entry of entries) {
-    if (typeof entry !== 'string') continue;
-    // Printable ASCII, folded in ASCII only (`asciiAddress`) — and shaped like
-    // an address, or ignored: a stray "*" or "@" must never match, and nor may
-    // a fragment of mis-pasted JSON.
-    const address = asciiAddress(entry);
-    if (address !== null && /^[^@"{}[\],;:]+@[^@"{}[\],;:]+\.[^@"{}[\],;:]+$/.test(address)) {
-      addresses.add(address);
-    }
-  }
-  return addresses;
-}
-
 type UserPrincipal = Extract<Principal, { kind: 'user' }>;
 
 /** Whether this caller is one of xecret's admins. A convenience for `/api/auth/me` too. */
-export function isAdmin(env: Bindings, principal: Principal): principal is UserPrincipal {
+export async function isAdmin(
+  services: Pick<ServiceContext, 'db'>,
+  principal: Principal,
+): Promise<boolean> {
   if (principal.kind !== 'user') return false;
   if (!principal.user.emailVerified) return false;
-  const address = asciiAddress(principal.user.email);
-  return address !== null && adminEmails(env.XECRET_ADMIN_EMAILS).has(address);
+  return isPlatformAdmin(services.db, principal.user.id);
 }
 
 /**
  * The gate every admin route opens with. Anybody else gets a 404, and a
- * warning line — a refused admin request from a signed-in
- * user is worth seeing, because the only people who make one are a
- * mis-configured admin or somebody looking for the door.
+ * warning line — a refused admin request from a signed-in user is worth
+ * seeing, because the only people who make one are an admin who was just
+ * removed, or somebody looking for the door.
  */
-export function requireAdmin(services: ServiceContext, principal: Principal): UserPrincipal {
-  if (isAdmin(services.env, principal)) return principal;
+export async function requireAdmin(
+  services: ServiceContext,
+  principal: Principal,
+): Promise<UserPrincipal> {
+  if (principal.kind === 'user' && (await isAdmin(services, principal))) return principal;
   services.log
     .at('requireAdmin')
-    .warn('Refused an admin request from a caller who is not on the admin allow-list', {
+    .warn('Refused an admin request from a caller who is not an admin', {
       credentialKind: principal.kind,
     });
   throw errors.notFound('not an admin');

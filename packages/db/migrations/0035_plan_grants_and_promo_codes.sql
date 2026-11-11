@@ -1,10 +1,12 @@
 -- Complimentary plans and promo codes: what xecret's own admins hand out, from
--- the admin page (`/app/admin`) or `npm run plan:set`.
+-- the admin page (`/app/admin`) or `npm run plan:set` — and who those admins
+-- are.
 --
 -- ── Read this before running it ──
 -- Additive only: two columns on `org_subscriptions`, one on
--- `billing_checkouts`, two new tables, and `billing_reminders` accepting three
--- more kinds. The build that ships with it reads the new columns on every
+-- `billing_checkouts`, four new tables, and `billing_reminders` accepting three
+-- more kinds. Nobody is an admin afterwards: the first one is added by an
+-- operator, `phase run --env Production -- npm run admin -- --add <address>`. The build that ships with it reads the new columns on every
 -- billing screen and admin page, so apply this BEFORE that build is deployed.
 -- The previous build never reads or writes any of it, so applying it first is
 -- harmless.
@@ -167,16 +169,61 @@ ALTER TABLE "billing_reminders"
 		'alert_unknown_product', 'alert_activation_waiting', 'alert_operator_managed'
 	));--> statement-breakpoint
 
+-- ── platform_admins ──
+-- xecret's own staff: who may open the admin page. One row per admin, keyed by
+-- the account rather than an address, so it means exactly the person who
+-- signed in — an account deleted takes its row with it. Added and removed from
+-- the admin page by another admin (never the last one), or by an operator with
+-- `npm run admin` — which is how the first one is made.
+CREATE TABLE "platform_admins" (
+	"user_id" uuid PRIMARY KEY NOT NULL,
+	"added_by" uuid,
+	"added_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+ALTER TABLE "platform_admins" ADD CONSTRAINT "platform_admins_user_id_users_id_fk"
+	FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "platform_admins" ADD CONSTRAINT "platform_admins_added_by_users_id_fk"
+	FOREIGN KEY ("added_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+
+-- ── platform_admin_changes ──
+-- Every admin added or removed, by whom, and when — the record a removed row
+-- cannot keep. The address is a copy taken at the time, so the history still
+-- reads after the account itself is gone. Never shown to a customer.
+-- Append-only.
+CREATE TABLE "platform_admin_changes" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"action" text NOT NULL,
+	"user_id" uuid,
+	"email" text NOT NULL,
+	"by_user_id" uuid,
+	"by_label" text,
+	"at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "platform_admin_changes_action_check" CHECK ("action" IN ('added', 'removed')),
+	CONSTRAINT "platform_admin_changes_email_check" CHECK (length("email") BETWEEN 3 AND 320),
+	CONSTRAINT "platform_admin_changes_by_label_check"
+		CHECK ("by_label" IS NULL OR length("by_label") BETWEEN 1 AND 128),
+	CONSTRAINT "platform_admin_changes_by_check"
+		CHECK ("by_user_id" IS NOT NULL OR "by_label" IS NOT NULL)
+);--> statement-breakpoint
+ALTER TABLE "platform_admin_changes" ADD CONSTRAINT "platform_admin_changes_user_id_users_id_fk"
+	FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "platform_admin_changes" ADD CONSTRAINT "platform_admin_changes_by_user_id_users_id_fk"
+	FOREIGN KEY ("by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "platform_admin_changes_at_idx" ON "platform_admin_changes" USING btree ("at");--> statement-breakpoint
+
 -- ── grants ──────────────────────────────────────────────────────────────────
 -- A code is inserted, and afterwards only counted and revoked: three columns,
 -- never the code, its kind or what it gives. No DELETE — a code handed out
--- stays on record. A redemption is a record and is only ever inserted.
+-- stays on record. A redemption is a record and is only ever inserted. An
+-- admin is added and removed, never edited; the history of both only grows.
 DO $$
 BEGIN
 	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'xecret_app_permissions') THEN
 		GRANT SELECT, INSERT ON promo_codes TO xecret_app_permissions;
 		GRANT UPDATE ("redemptions", "revoked_at", "revoked_by") ON promo_codes TO xecret_app_permissions;
 		GRANT SELECT, INSERT ON promo_code_redemptions TO xecret_app_permissions;
+		GRANT SELECT, INSERT, DELETE ON platform_admins TO xecret_app_permissions;
+		GRANT SELECT, INSERT ON platform_admin_changes TO xecret_app_permissions;
 	END IF;
 END
 $$;

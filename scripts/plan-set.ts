@@ -63,9 +63,9 @@
  *
  * That argument still stands, and the owner weighed it and chose to have an
  * admin page as well (2026-11-11): `/app/admin`, behind `server/admin.ts` —
- * an allow-list read from `XECRET_ADMIN_EMAILS` on every request, a browser
- * session only, a verified address, an unlocked vault, and a 404 to everybody
- * else. It writes grants through the same rules this script does
+ * the accounts listed in `platform_admins` (made by `npm run admin`, then by
+ * each other), a browser session only, a verified address, an unlocked vault,
+ * and a 404 to everybody else. It writes grants through the same rules this script does
  * (`applyPlanGrant` → `operatorBillingEdit`), so the two cannot disagree. This
  * script stays for everything the page does not do — add-ons, limit overrides,
  * statuses, grandfathering — and for when the page is the thing that is broken.

@@ -759,15 +759,19 @@ secret reaching a log or an audit row.
   never stored or logged. Checkout, plan change and the change preview are rate limited.
 - **The admin page and promo codes** (migration 0035). A route that grants paid plans now
   exists (`/api/admin/*`), against `plan:set`'s own warning, by the owner's decision; what fences
-  it is `server/admin.ts`: an allow-list read from `XECRET_ADMIN_EMAILS` (a Worker secret) on
-  every request — no admin flag stored anywhere a bug or an injection could set — a browser
-  session only, never a token; a verified address (printable ASCII, folded in ASCII only); the
+  it is `server/admin.ts`: an account listed in `platform_admins`, read on every request —
+  admins add and remove each other (never the last one; the first comes from `npm run admin` at
+  a shell), every change is recorded and emailed to every admin, so an admin added behind the
+  others' backs is noticed — a browser session only, never a token; a verified address; the
   vault unlocked; and a 404 to any signed-in caller who is not an admin (the routes are no secret
   — the repository is public — so nothing rests on hiding them). Every grant lands in the customer's own audit log
   as "xecret support" with the admin's reason — never the admin's address, IP or browser; which
   admin it was is on the server's log line.
   The residual risk is plain: an admin's account (their sign-in **and** their vault passphrase)
-  is now worth free paid plans for anybody, and a wrong address in the secret is an admin. Promo codes: a free-plan code is spent in one transaction with the grant it
+  is now worth free paid plans for anybody — and, since admins make admins, worth a lasting way
+  back in; the email to every admin on each change is the control against that. And whoever can
+  write the `platform_admins` table can make an admin, which is whoever can already write any
+  plan. Promo codes: a free-plan code is spent in one transaction with the grant it
   gives, once per organisation and once per person, never past its limit, and never on an
   organisation that still carries a Dodo subscription or has a checkout from the last day open; a discount code is
   created at Dodo restricted to this deployment's own products (the account is shared), and

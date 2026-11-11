@@ -6,6 +6,7 @@ import type {
   AdminGrantPayload,
   AdminOrganizationPayload,
   AdminPromoCodePayload,
+  AdminUserPayload,
 } from '@/server/schemas/admin';
 import type { GrantTarget } from './admin-grant-dialogs';
 
@@ -25,8 +26,34 @@ const viewer = vi.hoisted(() => ({ admin: false }));
 
 vi.mock('./session', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./session')>()),
-  useSession: () => ({ admin: viewer.admin }),
+  useSession: () => ({ admin: viewer.admin, refresh: async () => {} }),
 }));
+
+/** The tab asks for the router; nothing here navigates through it. `notFound` stays real. */
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
+  useRouter: () => ({ replace: () => {}, push: () => {} }),
+}));
+
+/** What the API was sent, and how it answers — a success unless a case says otherwise. */
+const api = vi.hoisted(() => ({
+  posts: [] as { path: string; body: unknown }[],
+  answer: (() => Promise.resolve(undefined)) as () => Promise<unknown>,
+}));
+
+vi.mock('@/lib/api', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/lib/api')>();
+  return {
+    ...real,
+    api: {
+      ...real.api,
+      post: (path: string, body?: unknown) => {
+        api.posts.push({ path, body });
+        return api.answer();
+      },
+    },
+  };
+});
 
 const served = vi.hoisted(() => ({
   paths: [] as (string | null)[],
@@ -65,6 +92,10 @@ const { OrganizationsTab } = await import('./admin-organizations');
 const { GrantsTab } = await import('./admin-grants');
 const { PromoCodesTab, CreatePromoCodeDialog } = await import('./admin-promo-codes');
 const { GrantDialog } = await import('./admin-grant-dialogs');
+const { AddAdminForm, AdminsTab, addAdmin, removalCopy, removeAdmin } =
+  await import('./admin-admins');
+const { adminPageState } = await import('./admin-screen');
+const { ApiError } = await import('@/lib/api');
 
 function render(element: ReactNode): string {
   return renderToStaticMarkup(createElement(Toaster, null, element));
@@ -74,6 +105,8 @@ beforeEach(() => {
   viewer.admin = false;
   served.paths = [];
   served.answers = new Map();
+  api.posts = [];
+  api.answer = () => Promise.resolve(undefined);
 });
 
 describe('the admin page, for somebody who is not an admin', () => {
@@ -99,6 +132,7 @@ describe('the admin page, for an admin', () => {
     expect(html).toContain('>Organisations<');
     expect(html).toContain('>Grants<');
     expect(html).toContain('>Promo codes<');
+    expect(html).toContain('>Admins<');
     expect(html).toContain('Find an organisation');
     // Said up front: the customer can read what is done here.
     expect(html).toContain('audit log as xecret support, with the reason you give');
@@ -403,5 +437,206 @@ describe('a new promo code', () => {
 
     expect(html).toContain('Free-plan codes only');
     expect(html).not.toContain('Checkout discount');
+  });
+});
+
+/* ── The Admins tab ────────────────────────────────────────────────────────── */
+
+function adminUser(over: Partial<AdminUserPayload> = {}): AdminUserPayload {
+  return {
+    userId: 'user-1',
+    email: 'ada@example.com',
+    displayName: 'Ada Lovelace',
+    addedAt: '2026-11-01T00:00:00.000Z',
+    addedByEmail: null,
+    you: true,
+    ...over,
+  };
+}
+
+const BOB = adminUser({
+  userId: 'user-2',
+  email: 'bob@example.com',
+  displayName: null,
+  addedAt: '2026-11-05T00:00:00.000Z',
+  addedByEmail: 'ada@example.com',
+  you: false,
+});
+
+const NO_ACCOUNT =
+  'No xecret account uses that address. Ask them to sign in to xecret once, then add them.';
+const LAST_ADMIN = 'There must always be at least one admin. Add another before removing this one.';
+
+/** The server's 409 for an address it will not make an admin, with the problem on `email`. */
+function refusedOn(message: string) {
+  return new ApiError({
+    code: 'conflict',
+    message,
+    status: 409,
+    requestId: 'req-add-1',
+    fields: [{ field: 'email', message }],
+  });
+}
+
+describe('the Admins tab', () => {
+  function tab(admins: AdminUserPayload[]): string {
+    served.answers.set('/api/admin/admins', { admins });
+    return render(createElement(AdminsTab));
+  }
+
+  it('lists every admin: who, which one is you, and who added them, when', () => {
+    const html = tab([adminUser(), BOB]);
+
+    expect(served.paths).toContain('/api/admin/admins');
+    // Longest-serving first, as the server answers.
+    expect(html.indexOf('Ada Lovelace')).toBeLessThan(html.indexOf('bob@example.com'));
+    expect(html).toContain('ada@example.com');
+    expect(html.match(/>You</g)).toHaveLength(1);
+    // An operator at a shell, or an admin whose account is gone, has no address to name.
+    expect(html).toContain('by an operator');
+    expect(html).toContain('by ada@example.com');
+    expect(html).toContain('aria-label="Remove yourself as an admin"');
+    expect(html).toContain('aria-label="Remove bob@example.com"');
+    // Said before anybody adds or removes anyone.
+    expect(html).toContain('Every admin is emailed when this list');
+    expect(html).toContain('Add an admin');
+  });
+
+  it('does not offer to remove the only admin, and says why', () => {
+    const html = tab([adminUser()]);
+
+    expect(html).not.toContain('>Remove<');
+    expect(html).toContain('The only admin cannot be removed');
+  });
+});
+
+describe('adding an admin', () => {
+  function form(problem: string | null, error: unknown): string {
+    return render(
+      createElement(AddAdminForm, {
+        email: 'someone@example.com',
+        onEmailChange: () => {},
+        problem,
+        error,
+        busy: false,
+        onCancel: () => {},
+        onSubmit: () => {},
+      }),
+    );
+  }
+
+  it('sends the address and answers with the new admin', async () => {
+    api.answer = () => Promise.resolve({ admin: BOB });
+    const outcome = await addAdmin('  bob@example.com ');
+
+    expect(api.posts).toEqual([{ path: '/api/admin/admins', body: { email: 'bob@example.com' } }]);
+    expect(outcome).toEqual({ ok: true, admin: BOB });
+  });
+
+  it('says the server’s refusal of the address beside the field', async () => {
+    api.answer = () => Promise.reject(refusedOn(NO_ACCOUNT));
+    const outcome = await addAdmin('nobody@example.com');
+    expect(outcome).toEqual({ ok: false, problem: NO_ACCOUNT, error: null });
+
+    const html = form(NO_ACCOUNT, null);
+    // In the field's own error, which the input is described by and marked with.
+    const said = /<p id="([^"]+-error)" class="text-danger-text[^"]*">([^<]+)<\/p>/.exec(html);
+    expect(said?.[2]).toBe(NO_ACCOUNT);
+    expect(html).toContain(`aria-describedby="${said?.[1]}`);
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).not.toContain('Nobody was added');
+    expect(html).toContain('Every admin is emailed when this list changes.');
+  });
+
+  it('keeps any other failure for the form, with its request id', async () => {
+    const outage = new ApiError({
+      code: 'internal_error',
+      message: 'Something went wrong. Please try again.',
+      status: 500,
+      requestId: 'req-add-2',
+    });
+    api.answer = () => Promise.reject(outage);
+    expect(await addAdmin('bob@example.com')).toEqual({ ok: false, problem: null, error: outage });
+
+    const html = form(null, outage);
+    expect(html).toContain('Nobody was added');
+    expect(html).toContain('req-add-2');
+  });
+
+  it('asks nothing of the server for something that is not an address', async () => {
+    expect(await addAdmin('bob')).toEqual({
+      ok: false,
+      problem: 'Enter the address they sign in to xecret with.',
+      error: null,
+    });
+    // Including one with an "s" in it, which is an address like any other.
+    api.answer = () => Promise.resolve({ admin: BOB });
+    expect((await addAdmin('sam@example.com')).ok).toBe(true);
+    expect(api.posts.map((post) => post.body)).toEqual([{ email: 'sam@example.com' }]);
+  });
+});
+
+describe('removing an admin', () => {
+  function effects() {
+    const calls: string[] = [];
+    return {
+      calls,
+      refresh: async () => {
+        calls.push('refresh');
+      },
+      navigate: (href: string) => calls.push(`navigate ${href}`),
+      reload: () => calls.push('reload'),
+      notify: (title: string) => calls.push(`notify ${title}`),
+    };
+  }
+
+  it('removes somebody else, and re-reads the list', async () => {
+    const after = effects();
+    await removeAdmin(BOB, after);
+
+    expect(api.posts).toEqual([{ path: '/api/admin/admins/user-2/remove', body: undefined }]);
+    expect(after.calls).toEqual(['notify bob@example.com is no longer an admin', 'reload']);
+  });
+
+  it('throws the server’s refusal of the last admin, for the dialog to say, and does nothing else', async () => {
+    api.answer = () =>
+      Promise.reject(
+        new ApiError({ code: 'conflict', message: LAST_ADMIN, status: 409, requestId: 'req-rm-1' }),
+      );
+    const after = effects();
+
+    await expect(removeAdmin(BOB, after)).rejects.toThrow(LAST_ADMIN);
+    expect(after.calls).toEqual([]);
+  });
+
+  it('removing yourself re-reads the session, then leaves for /app', async () => {
+    const after = effects();
+    await removeAdmin(adminUser(), after);
+
+    expect(api.posts).toEqual([{ path: '/api/admin/admins/user-1/remove', body: undefined }]);
+    // The session first — it draws the account menu's "Admin" — then away.
+    expect(after.calls).toEqual(['notify You are no longer an admin', 'refresh', 'navigate /app']);
+  });
+
+  it('warns, before you remove yourself, that the page goes with it', () => {
+    const self = removalCopy(adminUser());
+    expect(self.title).toBe('Remove yourself as an admin?');
+    expect(self.description).toContain('You lose this page the moment it is done');
+    expect(self.description).toContain('Every admin is emailed about it.');
+    expect(self.confirmLabel).toBe('Remove myself');
+
+    const other = removalCopy(BOB);
+    expect(other.title).toBe('Remove bob@example.com as an admin?');
+    expect(other.description).toContain('Every admin, them included, is emailed about it.');
+    expect(other.confirmLabel).toBe('Remove');
+  });
+});
+
+describe('the page, for somebody who stops being an admin while it is open', () => {
+  it('says so, rather than turning into the 404 a stranger gets', () => {
+    expect(adminPageState(true, false)).toBe('admin');
+    expect(adminPageState(true, true)).toBe('admin');
+    expect(adminPageState(false, true)).toBe('left');
+    expect(adminPageState(false, false)).toBe('not-found');
   });
 });

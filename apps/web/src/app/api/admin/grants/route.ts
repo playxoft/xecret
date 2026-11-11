@@ -10,6 +10,6 @@ import { authenticatedRoute } from '@/server/route';
  * xecret's admins only (`server/admin.ts`); 404 to everybody else.
  */
 export const GET = authenticatedRoute(async ({ principal, services }) => {
-  requireAdmin(services, principal);
+  await requireAdmin(services, principal);
   return json({ grants: await listGrants(services) });
 });

@@ -265,6 +265,11 @@ export const apiPath = {
   adminPromoCodes: (): string => '/api/admin/promo-codes',
   adminPromoCodeRevoke: (codeId: string): string =>
     `${apiPath.adminPromoCodes()}/${segment(codeId)}/revoke`,
+  /** `GET` lists xecret's admins, longest-serving first; `POST {email}` adds one. */
+  adminAdmins: (): string => '/api/admin/admins',
+  /** `POST` — that account is no longer an admin. Never the last one. */
+  adminRemoveAdmin: (userId: string): string =>
+    `${apiPath.adminAdmins()}/${segment(userId)}/remove`,
 } as const;
 
 /**
