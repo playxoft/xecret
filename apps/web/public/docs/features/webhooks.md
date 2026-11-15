@@ -114,8 +114,10 @@ libraries do all of this for you.
 A 2xx response is a success; anything else — including a redirect, which is
 never followed — is a failure. Each attempt waits up to ten seconds. A failed
 delivery is retried with backoff — 1 minute, 5 minutes, 30 minutes, 2 hours, 6
-hours, 12 hours and 24 hours after each failure, give or take the five minutes
-between delivery sweeps — then abandoned. A retry sends the same body,
+hours, 12 hours and 24 hours after each failure — then abandoned. Retries are
+sent by delivery sweeps, which currently run twice a day (10:17 and 22:17 UTC),
+so a retry goes out on the first sweep after its delay has passed: the early
+ones can arrive hours later than these figures. A retry sends the same body,
 re-signed with a fresh timestamp, under the same `webhook-id`, so use it to
 discard duplicates.
 

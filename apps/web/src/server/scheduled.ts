@@ -20,9 +20,17 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * It is a dial, not a design: "hourly" in the billing job's name, and "the
  * next run" throughout, mean whatever the two expressions below say. With real
  * traffic keeping the compute awake anyway, every three hours or every hour
- * costs little more: widen {@link PERIODIC_CRON} (`17 1-22/3 * * *` or
- * `17 0-9,11-23 * * *`, never naming {@link DAILY_CRON}'s hour twice) here
- * and in `wrangler.toml`.
+ * costs little more: widen {@link PERIODIC_CRON} — `17 1,4,7,13,16,19,22 * * *`
+ * or `17 0-9,11-23 * * *`, never naming {@link DAILY_CRON}'s hour, or the
+ * billing job runs twice side by side — here and in `wrangler.toml`.
+ *
+ * Turn it up before volume arrives, not after: the per-run limits were sized
+ * for frequent runs and are now also the day's ceiling — twenty seconds of
+ * webhook sends (`WEBHOOK_SWEEP_BUDGET_MS`), fifty organisations' digests
+ * (`READ_ALERT_SWEEP_ORGS`), fifty seat-sync debts, 5,000 metered units per
+ * organisation. Nothing is lost past them, only later; a backlog that
+ * survives a run in the logs is the signal. Every job also shares the one
+ * invocation's CPU and subrequest budget, the reconciler last of all.
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -50,11 +58,11 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
 
 export const SCHEDULED_HEADER = 'x-xecret-scheduled';
 export const VAULT_PURGE_PATH = '/api/internal/scheduled/vault-purge';
-/** Periodic: old webhook deliveries and old read sightings. */
+/** Every run: old webhook deliveries and old read sightings. */
 export const PRUNE_PATH = '/api/internal/scheduled/prune';
-/** P12, periodic: ended cancellations, seat-sync retries, the overage report, the dated reminders. */
+/** P12, every run: ended cancellations, seat-sync retries, the overage report, the dated reminders. */
 export const BILLING_HOURLY_PATH = '/api/internal/scheduled/billing-hourly';
-/** Periodic: webhook retries, then read-alert digests. */
+/** Every run: webhook retries, then read-alert digests. */
 export const NOTIFICATIONS_PATH = '/api/internal/scheduled/notifications';
 /** P12, daily: the comparison with Dodo, alert-only. */
 export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';

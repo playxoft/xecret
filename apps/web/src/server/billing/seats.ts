@@ -93,7 +93,7 @@ import { sendBillingReminder } from './reminders';
  *
  * ── How it cannot drift silently ──
  * Debts are retried with backoff and given up on — raised once, for a human —
- * after {@link SEAT_SYNC_MAX_ATTEMPTS} failures; and the nightly reconciler
+ * after {@link SEAT_SYNC_MAX_ATTEMPTS} failures; and the daily reconciler
  * compares Dodo's quantity with the membership itself (`reconcile.ts`).
  */
 

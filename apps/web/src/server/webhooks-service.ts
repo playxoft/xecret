@@ -72,7 +72,7 @@ import { endpointHostOf } from './schemas/webhooks';
  * statement for the whole batch, and its id is the `webhook-id` header on every
  * attempt. The first attempts are made inline, up to
  * {@link WEBHOOK_INLINE_ATTEMPTS} per call; the rest wait, due now, for the
- * five-minute sweep (`sweepWebhookDeliveries`), which is also what retries a
+ * scheduled sweep (`sweepWebhookDeliveries`), which is also what retries a
  * failure at `nextAttemptAt` and takes back a claim whose sender died. A
  * receiver can therefore see a delivery twice, and the documentation says to do
  * the work once per `webhook-id`.

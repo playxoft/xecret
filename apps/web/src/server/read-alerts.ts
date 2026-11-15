@@ -48,7 +48,7 @@ import type { EnvironmentScope } from './tenancy';
  * A new sighting mails immediately only if the organisation has not been
  * mailed in the last hour (`claimReadAlertDigest`, one statement, so two reads
  * arriving together send one mail). Otherwise it waits, owed, for the
- * five-minute sweep, which sends one digest per organisation once its hour is
+ * scheduled sweep, which sends one digest per organisation once its hour is
  * up. A CI fleet on rotating addresses therefore produces one email an hour
  * listing them, never one per runner.
  *

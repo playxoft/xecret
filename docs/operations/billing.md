@@ -52,9 +52,10 @@ they disagree.
 quiet minutes: the old five-minute run kept it awake around the clock and spent 89% of the
 month's compute allowance in two weeks. So "retried hourly", "within the hour" and "the next
 run" in this document mean up to twelve hours while the schedule stays there; once real traffic
-justifies it, dial it back to every three hours or hourly (`PERIODIC_CRON` in
-`src/server/scheduled.ts` and `wrangler.toml`; the 10:17 run, which also checks cards and
-reconciles, stays as it is).
+justifies it, dial it back to every three hours (`17 1,4,7,13,16,19,22 * * *`) or hourly
+(`17 0-9,11-23 * * *`) — `PERIODIC_CRON` in `src/server/scheduled.ts` and `wrangler.toml`. The
+10:17 run, which also checks cards and reconciles, stays as it is, and the periodic expression
+never names hour 10, or the billing job runs twice side by side.
 
 ### How a subscription is placed
 

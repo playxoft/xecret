@@ -5,7 +5,7 @@ import { publicRoute } from '@/server/route';
 import { isScheduledRequest } from '@/server/scheduled';
 
 /**
- * The hourly billing job (P12), reachable only from the Worker's own Cron
+ * The scheduled billing job (P12), reachable only from the Worker's own Cron
  * Trigger (`worker.ts`, `server/scheduled.ts`) — every request from the
  * internet gets a bare 404 decided before anything is built, exactly as the
  * retained-vault purge beside it does.
