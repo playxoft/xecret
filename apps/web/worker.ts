@@ -4,20 +4,20 @@
  * `fetch` is the generated handler unchanged — every request the application
  * serves goes through it exactly as it did when `.open-next/worker.js` was the
  * entry itself. What this file adds is `scheduled`, which wrangler.toml's
- * `[env.production.triggers]` runs on three schedules, and which calls the
+ * `[env.production.triggers]` runs on two schedules, and which calls the
  * application's own `fetch` in-process for the internal job routes
  * (`src/server/scheduled.ts` explains why, and why no request from the internet
  * can reach them).
  *
  * Which jobs run is decided by the expression that fired (`jobsForCron`):
  *
- *  - hourly — the retained-vault purge (P23: a vault reset is kept for seven
+ *  - every run, 10:17 and 22:17 UTC (`server/scheduled.ts` says why not more
+ *    often) — the retained-vault purge (P23: a vault reset is kept for seven
  *    days and then deleted, and this is what deletes it), then the pruning of
- *    finished webhook deliveries and stale read sightings (P19), then the
- *    billing job (P12);
- *  - every five minutes — webhook retries that are due, then the read-alert
- *    digests whose hour is up (P19 §5, §7);
- *  - nightly — the billing reconciler (P12).
+ *    finished webhook deliveries and stale read sightings (P19), then webhook
+ *    retries that are due and the read-alert digests whose hour is up (P19 §5,
+ *    §7), then the billing job (P12);
+ *  - the 10:17 run only, after those — the billing reconciler (P12).
  *
  * Each job runs in isolation: one that fails is reported, and the rest still
  * run (`runScheduledJobs`) — a Dodo outage must never stop the seven-day purge

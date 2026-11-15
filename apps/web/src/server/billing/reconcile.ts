@@ -19,7 +19,7 @@ import type { DodoSubscription } from './payloads';
 import { readTrial } from './snapshot';
 
 /**
- * The nightly reconciler (P12): every subscription Dodo bills, compared with
+ * The daily reconciler (P12): every subscription Dodo bills, compared with
  * our row — plan, interval, product, status, seats, period end, trial end,
  * cancellation, add-on.
  *

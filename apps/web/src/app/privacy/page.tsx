@@ -335,8 +335,8 @@ const SECTIONS: readonly LegalSection[] = [
           <strong className="text-fg font-medium">Reset vaults</strong> — when you reset your vault,
           the old one is kept for seven days so that you can recover it, and nothing in xecret can
           delete it in that window — not you, and not us through the product. It is purged
-          automatically within about an hour after the seven days end. The archive emailed at the
-          reset is a copy in your mailbox, and stays there for as long as you keep it: we cannot
+          automatically within about twelve hours after the seven days end. The archive emailed at
+          the reset is a copy in your mailbox, and stays there for as long as you keep it: we cannot
           delete mail we have sent.
         </>,
         <>

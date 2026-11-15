@@ -182,8 +182,10 @@ export function buildWebhookPayload(
  * hours, six, twelve, a day. Eight attempts across roughly two days, after
  * which the delivery is abandoned and the log says so.
  *
- * Granular to the scheduler: retries are picked up by a Cron Trigger that runs
- * every five minutes, so "a minute" means "on the next run".
+ * Granular to the scheduler: retries are picked up by the periodic Cron
+ * Trigger (`PERIODIC_CRON` in the web app's `server/scheduled.ts`, twice a day
+ * while traffic is light), so every delay shorter than the gap between runs
+ * means "on the next run".
  */
 export const WEBHOOK_RETRY_DELAYS_SECONDS: readonly number[] = Object.freeze([
   60, 300, 1800, 7200, 21_600, 43_200, 86_400,
