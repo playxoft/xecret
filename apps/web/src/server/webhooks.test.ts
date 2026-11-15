@@ -1439,13 +1439,17 @@ describe('the scheduled routes', () => {
   });
 
   it('are dispatched by the expression that fired', () => {
-    expect(scheduled.jobsForCron(scheduled.PERIODIC_CRON)).toEqual([
+    const periodic = [
       scheduled.VAULT_PURGE_PATH,
       scheduled.PRUNE_PATH,
       scheduled.NOTIFICATIONS_PATH,
       scheduled.BILLING_HOURLY_PATH,
+    ];
+    expect(scheduled.jobsForCron(scheduled.PERIODIC_CRON)).toEqual(periodic);
+    expect(scheduled.jobsForCron(scheduled.DAILY_CRON)).toEqual([
+      ...periodic,
+      scheduled.BILLING_DAILY_PATH,
     ]);
-    expect(scheduled.jobsForCron(scheduled.DAILY_CRON)).toEqual([scheduled.BILLING_DAILY_PATH]);
   });
 
   it('run every job even when one fails, and then report the failure', async () => {

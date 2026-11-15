@@ -2,10 +2,10 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
 
 /**
  * Scheduled work, run by the Worker's Cron Triggers through the application
- * itself: on every periodic run, the retained-vault purge (P23), the pruning of
- * old webhook deliveries and read sightings (P19 §5, §7), webhook retries and
- * read-alert digests (P19 §5, §7) and the billing job (P12); nightly, the
- * billing reconciler (P12). `jobsForCron` is which runs when.
+ * itself: on every run, the retained-vault purge (P23), the pruning of old
+ * webhook deliveries and read sightings (P19 §5, §7), webhook retries and
+ * read-alert digests (P19 §5, §7) and the billing job (P12); once a day, after
+ * those, the billing reconciler (P12). `jobsForCron` is which runs when.
  *
  * ── Why twice a day ──
  * Every run queries the database, and the database is Neon on its free plan:
@@ -13,14 +13,16 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * plan allows 100 compute-hours a month. The five-minute run this replaced
  * fired just as each five quiet minutes ran out, so the compute never slept —
  * 347 of the first 348 hours of November 2026, 89% of the month's allowance in
- * two weeks. Now each run — twice a day, and the nightly reconciler — costs
- * one wake of about five minutes.
+ * two weeks. Now there are two runs a day, 10:17 and 22:17 UTC, each one wake
+ * of about five minutes — the once-a-day work rides on the morning run rather
+ * than waking the database a third time.
  *
  * It is a dial, not a design: "hourly" in the billing job's name, and "the
- * next run" throughout, mean whatever {@link PERIODIC_CRON} says. With real
+ * next run" throughout, mean whatever the two expressions below say. With real
  * traffic keeping the compute awake anyway, every three hours or every hour
- * costs little more — change the expression here and in `wrangler.toml`, and
- * keep the hour of `CARD_CHECK_HOUR_UTC` (`billing/jobs.ts`) in it.
+ * costs little more: widen {@link PERIODIC_CRON} (`17 1-22/3 * * *` or
+ * `17 0-9,11-23 * * *`, never naming {@link DAILY_CRON}'s hour twice) here
+ * and in `wrangler.toml`.
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -54,7 +56,7 @@ export const PRUNE_PATH = '/api/internal/scheduled/prune';
 export const BILLING_HOURLY_PATH = '/api/internal/scheduled/billing-hourly';
 /** Periodic: webhook retries, then read-alert digests. */
 export const NOTIFICATIONS_PATH = '/api/internal/scheduled/notifications';
-/** P12, nightly: the comparison with Dodo, alert-only. */
+/** P12, daily: the comparison with Dodo, alert-only. */
 export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';
 
 /**
@@ -63,22 +65,33 @@ export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';
  * one place; `worker.ts` dispatches on `controller.cron`, which is exactly one
  * of these strings.
  *
- * The periodic run's hours include 09 because the billing job checks cards
- * only on the run in `CARD_CHECK_HOUR_UTC`: a schedule that skipped it
- * would stop every card-expiry reminder without an error anywhere.
+ * {@link DAILY_CRON} runs everything {@link PERIODIC_CRON} does and then the
+ * once-a-day work, in one invocation, so the reconciler never compares rows
+ * the billing job is still changing. Its hour is the billing job's
+ * `CARD_CHECK_HOUR_UTC` (`billing/jobs.ts`), the one run that checks cards: a
+ * schedule without that hour would stop every card-expiry reminder without an
+ * error anywhere.
  */
-export const PERIODIC_CRON = '17 9,21 * * *';
-export const DAILY_CRON = '41 3 * * *';
+export const PERIODIC_CRON = '17 22 * * *';
+export const DAILY_CRON = '17 10 * * *';
+
+/**
+ * Every run's jobs, in order: the ones that touch only the database first, then
+ * the deliveries and digests, then the one that calls Dodo, so a slow or
+ * failing billing provider never delays the seven-day purge or the pruning
+ * (each job runs in isolation regardless — `runScheduledJobs`).
+ */
+const PERIODIC_JOBS: readonly string[] = [
+  VAULT_PURGE_PATH,
+  PRUNE_PATH,
+  NOTIFICATIONS_PATH,
+  BILLING_HOURLY_PATH,
+];
 
 /**
  * Which jobs a Cron Trigger runs, in order, by the expression that fired it.
  *
- * On the periodic run, the jobs that touch only the database run first, then
- * the deliveries and digests, then the one that calls Dodo, so a slow or
- * failing billing provider never delays the seven-day purge or the pruning
- * (each job runs in isolation regardless — `runScheduledJobs`).
- *
- * Anything that is not the nightly expression runs the periodic jobs. That is
+ * Anything that is not the daily expression runs the periodic jobs. That is
  * the safe default in the direction that matters: the periodic jobs are
  * idempotent — they do only what is already due — so an expression edited in
  * `wrangler.toml` and not here runs them more often than it needs to, which
@@ -86,8 +99,8 @@ export const DAILY_CRON = '41 3 * * *';
  * vaults past their window undeleted.
  */
 export function jobsForCron(cron: string): readonly string[] {
-  if (cron === DAILY_CRON) return [BILLING_DAILY_PATH];
-  return [VAULT_PURGE_PATH, PRUNE_PATH, NOTIFICATIONS_PATH, BILLING_HOURLY_PATH];
+  if (cron === DAILY_CRON) return [...PERIODIC_JOBS, BILLING_DAILY_PATH];
+  return PERIODIC_JOBS;
 }
 
 /**

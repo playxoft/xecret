@@ -173,17 +173,13 @@ async function seedOrg(subscription: Record<string, unknown>, members = 3): Prom
 const subjects = () => mail.sent.map((message) => message.subject);
 
 describe('the schedule', () => {
-  it('runs the reconciler nightly, and the purge, the pruning, the notifications, then billing periodically', () => {
-    expect(jobsForCron(DAILY_CRON)).toEqual([BILLING_DAILY_PATH]);
-    expect(jobsForCron(PERIODIC_CRON)).toEqual([
-      VAULT_PURGE_PATH,
-      PRUNE_PATH,
-      NOTIFICATIONS_PATH,
-      BILLING_HOURLY_PATH,
-    ]);
+  it('runs the purge, the pruning, the notifications, then billing every run, and the reconciler after them once a day', () => {
+    const periodic = [VAULT_PURGE_PATH, PRUNE_PATH, NOTIFICATIONS_PATH, BILLING_HOURLY_PATH];
+    expect(jobsForCron(PERIODIC_CRON)).toEqual(periodic);
+    expect(jobsForCron(DAILY_CRON)).toEqual([...periodic, BILLING_DAILY_PATH]);
   });
 
-  it('runs the periodic job in the card-check hour, or no card-expiry reminder is ever sent', () => {
+  it('runs the daily job in the card-check hour, and the periodic one never in the same hour', () => {
     // The hours a five-field expression names: `*`, `*/n`, `a`, `a-b`, `a-b/n`,
     // and lists of them — the forms the schedule would be dialled to.
     const hours = (expression: string): number[] =>
@@ -197,7 +193,11 @@ describe('the schedule', () => {
             (hour) => (hour - from) % Number(step) === 0,
           );
         });
-    expect(hours(PERIODIC_CRON)).toContain(CARD_CHECK_HOUR_UTC);
+    // Without a run in that hour no card-expiry reminder is ever sent, and
+    // nothing errors to say so.
+    expect(hours(DAILY_CRON)).toEqual([CARD_CHECK_HOUR_UTC]);
+    // Both firing in one hour would run the billing job twice, side by side.
+    expect(hours(PERIODIC_CRON)).not.toContain(CARD_CHECK_HOUR_UTC);
   });
 
   it('answers the internet 404 on both billing job routes, before building anything', async () => {
