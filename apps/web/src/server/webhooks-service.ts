@@ -111,8 +111,8 @@ export const WEBHOOK_INLINE_ATTEMPTS = 10;
 /**
  * No new inline attempt is started after this long. `waitUntil` work is cut off
  * about thirty seconds after the response, and a delivery claimed but never
- * finished waits five minutes for the sweep to take it back; one never claimed
- * is sent by the very next run.
+ * finished waits for the stale-claim rule and a sweep to take it back; one never
+ * claimed is sent by the very next run.
  */
 export const WEBHOOK_INLINE_BUDGET_MS = 20_000;
 

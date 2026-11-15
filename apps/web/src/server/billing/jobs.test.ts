@@ -47,10 +47,11 @@ const {
   jobsForCron,
   BILLING_DAILY_PATH,
   BILLING_HOURLY_PATH,
+  NOTIFICATIONS_PATH,
   PRUNE_PATH,
   VAULT_PURGE_PATH,
   DAILY_CRON,
-  HOURLY_CRON,
+  PERIODIC_CRON,
 } = await import('../scheduled');
 
 let t: TestDatabase;
@@ -172,9 +173,31 @@ async function seedOrg(subscription: Record<string, unknown>, members = 3): Prom
 const subjects = () => mail.sent.map((message) => message.subject);
 
 describe('the schedule', () => {
-  it('runs the reconciler nightly, and the purge, the pruning, then billing hourly', () => {
+  it('runs the reconciler nightly, and the purge, the pruning, the notifications, then billing periodically', () => {
     expect(jobsForCron(DAILY_CRON)).toEqual([BILLING_DAILY_PATH]);
-    expect(jobsForCron(HOURLY_CRON)).toEqual([VAULT_PURGE_PATH, PRUNE_PATH, BILLING_HOURLY_PATH]);
+    expect(jobsForCron(PERIODIC_CRON)).toEqual([
+      VAULT_PURGE_PATH,
+      PRUNE_PATH,
+      NOTIFICATIONS_PATH,
+      BILLING_HOURLY_PATH,
+    ]);
+  });
+
+  it('runs the periodic job in the card-check hour, or no card-expiry reminder is ever sent', () => {
+    // The hours a five-field expression names: `*`, `*/n`, `a`, `a-b`, `a-b/n`,
+    // and lists of them — the forms the schedule would be dialled to.
+    const hours = (expression: string): number[] =>
+      expression
+        .split(' ')[1]!
+        .split(',')
+        .flatMap((part) => {
+          const [range = '', step = '1'] = part.split('/');
+          const [from = 0, to = from] = range === '*' ? [0, 23] : range.split('-').map(Number);
+          return Array.from({ length: to - from + 1 }, (_, i) => from + i).filter(
+            (hour) => (hour - from) % Number(step) === 0,
+          );
+        });
+    expect(hours(PERIODIC_CRON)).toContain(CARD_CHECK_HOUR_UTC);
   });
 
   it('answers the internet 404 on both billing job routes, before building anything', async () => {

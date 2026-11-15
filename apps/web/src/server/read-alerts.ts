@@ -65,7 +65,7 @@ export const READ_ALERT_DIGEST_INTERVAL_MS = 60 * 60_000;
 /** Sightings one digest lists. More wait for the next one, an hour later. */
 export const READ_ALERT_DIGEST_SIZE = 50;
 
-/** Organisations one sweep serves. The rest are served five minutes later. */
+/** Organisations one sweep serves. The rest are served by the next scheduled run. */
 export const READ_ALERT_SWEEP_ORGS = 50;
 
 /**
@@ -299,15 +299,14 @@ const FALLBACK_LABEL: Readonly<Record<SightingPrincipalKind, string>> = {
 };
 
 /**
- * The five-minute sweep: every organisation owed a digest whose hour is up, up
+ * The scheduled sweep: every organisation owed a digest whose hour is up, up
  * to {@link READ_ALERT_SWEEP_ORGS}, gets one. Answers how many were sent.
  *
  * ── An organisation that lost the feature ──
  * Its owed sightings are cleared, not mailed and not left owed. Not mailed,
  * because the plan no longer includes the alert. Not left owed, because the
  * sweep's work list is bounded and unordered, so organisations that would never
- * be served could crowd out the ones that should — every five minutes, for
- * ever. The sightings themselves stay, and the environment's settings still
+ * be served could crowd out the ones that should — every run, for ever. The sightings themselves stay, and the environment's settings still
  * list them: the data is the customer's, and the route that reads it is not
  * gated on the plan. Nothing new is recorded for such an organisation, so what
  * is cleared is only what was owed at the downgrade.
