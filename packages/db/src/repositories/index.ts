@@ -536,6 +536,41 @@ export type {
 } from './billing';
 
 export {
+  addPlatformAdmin,
+  isPlatformAdmin,
+  listPlatformAdmins,
+  removePlatformAdmin,
+} from './platform-admins';
+export type { AdminChangeActor, PlatformAdminListing } from './platform-admins';
+
+export {
+  applyPlanGrant,
+  createPromoCode,
+  endPlanGrant,
+  findOrganizationsForAdmin,
+  findPromoCode,
+  findPromoCodeById,
+  listGrantsEndingBy,
+  listPlanGrants,
+  listPromoCodes,
+  promoCodeExists,
+  revokePromoCode,
+  spendGrantRedemption,
+} from './plan-grants';
+export type {
+  AdminOrganization,
+  GrantablePlan,
+  GrantListing,
+  GrantRefusal,
+  NewPromoCode,
+  PlanGrantOutcome,
+  PlanGrantRequest,
+  PromoCodeListing,
+  PromoCodeRecord,
+  RedemptionRefusal,
+} from './plan-grants';
+
+export {
   countUsableServiceTokens,
   findEnvironmentsBySlugs,
   findProjectsReferencingEnvironments,

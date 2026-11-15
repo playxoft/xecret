@@ -61,6 +61,7 @@ function billing(over: Partial<BillingStatusPayload> = {}): BillingStatusPayload
     status: 'active',
     interval: null,
     managedBy: 'none',
+    grant: null,
     seats: { billed: 1, seated: 2, pendingInvitations: 0, minimum: 1 },
     currency: null,
     renewsAt: null,
@@ -77,7 +78,7 @@ function billing(over: Partial<BillingStatusPayload> = {}): BillingStatusPayload
     },
     warnings: [],
     addons: { saml: false },
-    actions: { checkout: true, changePlan: false, portal: false },
+    actions: { checkout: true, changePlan: false, portal: false, promoCode: false },
     ...over,
   };
 }
@@ -156,7 +157,7 @@ describe('UpgradeScreen, for an owner', () => {
         plan: 'pro',
         interval: 'yearly',
         managedBy: 'checkout',
-        actions: { checkout: false, changePlan: true, portal: true },
+        actions: { checkout: false, changePlan: true, portal: true, promoCode: false },
       }),
     );
     const html = render('owner');
@@ -194,7 +195,7 @@ describe('UpgradeScreen, for an owner', () => {
       billing({
         plan: 'enterprise',
         managedBy: 'support',
-        actions: { checkout: false, changePlan: false, portal: false },
+        actions: { checkout: false, changePlan: false, portal: false, promoCode: false },
       }),
     );
     const html = render('owner');
@@ -204,12 +205,44 @@ describe('UpgradeScreen, for an owner', () => {
     expect(html).not.toContain('Switch to');
   });
 
+  it('says a complimentary plan is one, and until when, instead of "managed by support"', () => {
+    answers(
+      billing({
+        plan: 'team',
+        interval: 'yearly',
+        managedBy: 'support',
+        grant: { endsAt: null, note: null },
+        actions: { checkout: false, changePlan: false, portal: false, promoCode: false },
+      }),
+    );
+    const html = render('owner');
+
+    expect(html).toContain('Complimentary Team plan');
+    expect(html).toContain('with no end date');
+    expect(html).not.toContain('Managed by xecret support');
+    expect(html).not.toContain('Upgrade to');
+  });
+
+  it('offers "Have a code?" under the cards only where the billing read allows a code', () => {
+    answers(
+      billing({ actions: { checkout: true, changePlan: false, portal: false, promoCode: true } }),
+    );
+    const html = render('owner');
+    expect(html).toContain('Have a code?');
+    expect(html.indexOf('Have a code?')).toBeLessThan(html.indexOf('aria-label="Plan comparison"'));
+
+    answers(billing());
+    expect(render('owner')).not.toContain('Have a code?');
+    // Nobody but an owner is asked, so nobody else is offered one.
+    expect(render('developer')).not.toContain('Have a code?');
+  });
+
   it('offers nothing to buy where the installation takes no payments', () => {
     answers(
       billing({
         enabled: false,
         mode: null,
-        actions: { checkout: false, changePlan: false, portal: false },
+        actions: { checkout: false, changePlan: false, portal: false, promoCode: false },
       }),
     );
     const html = render('owner');
@@ -352,7 +385,7 @@ describe('UpgradeScreen, the comparison table', () => {
         plan: 'pro',
         interval: 'yearly',
         managedBy: 'checkout',
-        actions: { checkout: false, changePlan: true, portal: true },
+        actions: { checkout: false, changePlan: true, portal: true, promoCode: false },
       }),
     );
     const header = head(render('owner'));

@@ -40,6 +40,7 @@ import { billingSetup, productFor } from './config';
 import type { BillingConfig, PurchasablePlan } from './config';
 import { subscriptionResource } from './audit';
 import { formatMinor, OVERAGE_RATE_TEXT } from './money';
+import { discountForCheckout } from './promo-codes';
 
 /**
  * The billing screen's server side (P12): the routes under
@@ -311,6 +312,9 @@ export async function billingStatus(
     status: row.status,
     interval: row.billingInterval,
     managedBy: live ? 'checkout' : managedBySupport(row) ? 'support' : 'none',
+    grant: managedBySupport(row)
+      ? { endsAt: row.grantEndsAt?.toISOString() ?? null, note: row.grantNote }
+      : null,
     seats: {
       billed: row.seats,
       seated: counts.seatedMembers,
@@ -348,6 +352,11 @@ export async function billingStatus(
       // Offered only where `openPortal` would open it: a customer this
       // organisation alone holds.
       portal: enabled && ours && row.dodoCustomerId !== null && customerHolders === 1,
+      // A code is for an organisation on Free with nothing on its way: a
+      // free-plan code is granted from there, and a discount code goes into
+      // the checkout that is offered from there. Not gated on payments — a
+      // free-plan code needs nothing from Dodo.
+      promoCode: row.plan === 'free' && !awaitingActivation(row),
     },
   };
 }
@@ -375,9 +384,9 @@ export async function startCheckout(
   services: ServiceContext,
   scope: OrgScope,
   principal: Extract<Principal, { kind: 'user' }>,
-  selection: { plan: PurchasablePlan; interval: BillingInterval },
+  selection: { plan: PurchasablePlan; interval: BillingInterval; promoCode?: string | undefined },
   idempotencyKey: string | null = null,
-): Promise<{ url: string; seats: number; replayed: boolean }> {
+): Promise<{ url: string; seats: number; replayed: boolean; promoCodeId: string | null }> {
   const config = requireBillingConfig(services);
   const orgId = scope.organization.id;
 
@@ -387,7 +396,9 @@ export async function startCheckout(
       orgId,
       kind: 'checkout',
       key: idempotencyKey,
-      fingerprint: `${selection.plan}:${selection.interval}`,
+      // The code is part of the decision: the same key with another code is
+      // another request, and is refused as one (`billingIdempotencyMismatch`).
+      fingerprint: `${selection.plan}:${selection.interval}:${selection.promoCode ?? ''}`,
     },
     async () => {
       const row = await subscriptionOf(services, orgId);
@@ -398,6 +409,19 @@ export async function startCheckout(
       // be taken here and then refused by the webhook (`other-mode`), so the
       // owner would be charged for nothing. Refused before Dodo is asked.
       if (!sameMode(row, config)) throw errors.billingOtherMode();
+
+      // Checked before Dodo is asked for anything: a code that is not ours,
+      // not for this plan or not for this person never reaches a checkout.
+      const discount =
+        selection.promoCode === undefined
+          ? null
+          : await discountForCheckout(
+              services,
+              config,
+              principal,
+              selection.promoCode,
+              selection.plan,
+            );
 
       const seats = providerSeats(
         selection.plan,
@@ -428,6 +452,7 @@ export async function startCheckout(
           orgId,
           nonce,
           regionLock: lockHolds ? { country: row.billingCountry!, currency: row.currency! } : null,
+          discountCode: discount?.code ?? null,
         });
       } catch (cause) {
         throw providerFailure(services, cause, 'creating a checkout', 'checkout');
@@ -446,11 +471,12 @@ export async function startCheckout(
         quantity: seats,
         createdBy: principal.user.id,
         nonce,
+        promoCodeId: discount?.id ?? null,
       });
-      return { url: session.url, seats };
+      return { url: session.url, seats, promoCodeId: discount?.id ?? null };
     },
   );
-  return { url: result.url, seats: result.seats, replayed };
+  return { url: result.url, seats: result.seats, replayed, promoCodeId: result.promoCodeId };
 }
 
 /* ── plan change ───────────────────────────────────────────────────────────── */

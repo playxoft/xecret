@@ -516,6 +516,79 @@ reports it once instead of comparing it.
 for the organisation's **current usage month** at once, so a raise counts for the month it is
 granted in; a month keeps its raise after the override is cleared (see "Usage").
 
+`--until <ISO date>` gives a grant an end (`--until never` takes it away); `--plan free` clears
+it. See the next section.
+
+### Complimentary plans and promo codes (the admin page)
+
+Since migration 0035, xecret's own staff can do the commonest of the above from a page:
+**`/app/admin`**, reached from the account menu's **Admin** item. Who may open it is the
+accounts in `platform_admins`: admins add and remove each other on its **Admins** tab, by the
+address the person signs in with (they sign in to xecret once first, and the address must be
+verified), and every admin is emailed about each change. The last admin can never be removed.
+The session must be a browser session with its vault unlocked; any other signed-in caller gets
+a 404. A change takes effect on the admin's next request.
+
+**The first admin** — and the way back in if every admin account is lost — comes from a shell
+with database credentials:
+
+```sh
+phase run --env Production -- npm run admin -- --add someone@example.com   # also --list, --remove
+```
+
+Every change, from the page or the script, is recorded in `platform_admin_changes` (who, by
+whom, when).
+
+**A complimentary plan** (Organisations tab) is the operator's grant `plan:set` has always
+written — a paid plan with no Dodo subscription behind it — with an optional end date and an
+optional seat ceiling, through the same rules (`applyPlanGrant` → `operatorBillingEdit`): an
+organisation Dodo bills is refused unless the admin ticks "take it off its Dodo subscription",
+and then the subscription it was taken off is shown — **cancel it in Dodo**, or it keeps
+billing. The admin's reason goes into the organisation's own audit log as `plan.changed`, by
+"xecret support" (which admin it was is on the server's log line, by user id — an admin's
+address is not shown to customers). The customer's billing screen says
+"Complimentary Team plan until …".
+
+**When a grant ends** the hourly job (`runHourlyBillingJob`, first step — it runs even on a
+deployment that takes no payments) returns the organisation to Free: one billed seat, Free's seat
+ceiling, nobody already seated removed, nothing deleted; add-ons and limit overrides kept. Owners
+are emailed a week and a day before (`grant_ending_7d`, `grant_ending_1d`) and when it ends
+(`grant_ended`). **While a grant lasts, checkout is refused** (the plan is support-managed): an
+owner who wants to keep the plan subscribes once it has ended, or asks for an extension — which
+is the same form again, with a later date.
+
+**Promo codes** (Promo codes tab) are of two kinds:
+
+| Kind | What the owner does | What happens | Card |
+| --- | --- | --- | --- |
+| Free plan (`grant`) | Enters it under "Have a code?" on the billing or plans page | The organisation gets the code's plan for its days (or for good), as a grant — nothing at Dodo | None, ever |
+| Discount (`discount`) | Enters it, then checks out | Checkout pre-applies a Dodo discount code — a percentage (up to 100%) or a fixed amount off Pro and/or Team, for N billing periods or every one | Collected by Dodo |
+
+So "free, no card" is a free-plan code; "free, card on file" is a 100% discount for N periods
+(the card is charged when the discount runs out); anything else is a discount. Every code can be
+limited to a list of addresses, a number of uses and an expiry date. A free-plan code is spent
+once per organisation and once per person; a discount's uses are counted by Dodo against the
+limit it was created with. A free-plan code is refused on an organisation that was subscribed
+before (it still carries the Dodo subscription it ended on, which a late payment must still find)
+and while a checkout started in the last day is open — grant those from the Organisations tab.
+
+A discount code is created at Dodo by the page — **restricted to this deployment's own Pro/Team
+products**, because the Dodo account is shared with other products — and **Dodo's own code box
+is hidden on every checkout** (`allow_discount_code: false`): a code reaches a checkout only by
+the server sending it, after checking it is ours, live, for that plan and for that person.
+A code made in test mode means nothing to live mode, and the page says which mode each was made
+in. Revoking a code stops it at once here and deletes it at Dodo; a subscription that already
+has the discount keeps it for the periods it was given, and grants already made keep their dates.
+
+**Do not create discount codes in the Dodo dashboard** for xecret: with the code box hidden,
+nothing can apply them, and a code Dodo has but this server does not is a code nobody can audit.
+
+**Before relying on these in live mode, check on staging (test mode)**: a percentage code, a flat
+code in USD, and a 100% code — each through a real test checkout — to confirm Dodo charges what
+the code says, that the 100% code still asks for a card, and that the subscription activates the
+plan through the webhook as any other checkout does. Flat codes in particular: Dodo states the
+amount through `currency_options`, which has not been exercised against Dodo yet.
+
 ### Usage
 
 Fetches are counted in each Worker isolate, per second, and written within fifteen seconds of
@@ -644,6 +717,14 @@ subscription ends lands on a row carrying Dodo ids, which the backfill leaves al
 `lock_timeout` to five seconds for itself: the `ALTER` needs `organizations` exclusively, and
 queued behind a long transaction it would hold every request that reads the table behind it.
 Past five seconds it fails and rolls back whole; run it again.
+
+Migration **0035** (`0035_plan_grants_and_promo_codes.sql`): complimentary plans and promo
+codes. `org_subscriptions.grant_ends_at` and `grant_note` (a CHECK keeps an end date off Free and
+off any row Dodo bills), `billing_checkouts.promo_code_id`, the tables `promo_codes` (the
+application may insert, and update only `redemptions`, `revoked_at` and `revoked_by`; never
+delete) and `promo_code_redemptions` (insert-only), and three reminder kinds (`grant_ending_7d`,
+`grant_ending_1d`, `grant_ended`). Additive; apply it **before** the build that reads it — every
+whole-row read of `org_subscriptions` from that build names the new columns.
 
 ---
 

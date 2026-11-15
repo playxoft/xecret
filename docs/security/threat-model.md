@@ -757,6 +757,28 @@ secret reaching a log or an audit row.
   and keeps its idempotency key claimed, so a retry cannot reach Dodo a second time.
 - **Owners only** (`billing.manage`), browser sessions only; the portal link is audited and
   never stored or logged. Checkout, plan change and the change preview are rate limited.
+- **The admin page and promo codes** (migration 0035). A route that grants paid plans now
+  exists (`/api/admin/*`), against `plan:set`'s own warning, by the owner's decision; what fences
+  it is `server/admin.ts`: an account listed in `platform_admins`, read on every request —
+  admins add and remove each other (never the last one; the first comes from `npm run admin` at
+  a shell), every change is recorded and emailed to every admin, so an admin added behind the
+  others' backs is noticed — a browser session only, never a token; a verified address; the
+  vault unlocked; and a 404 to any signed-in caller who is not an admin (the routes are no secret
+  — the repository is public — so nothing rests on hiding them). Every grant lands in the customer's own audit log
+  as "xecret support" with the admin's reason — never the admin's address, IP or browser; which
+  admin it was is on the server's log line.
+  The residual risk is plain: an admin's account (their sign-in **and** their vault passphrase)
+  is now worth free paid plans for anybody — and, since admins make admins, worth a lasting way
+  back in; the email to every admin on each change is the control against that. And whoever can
+  write the `platform_admins` table can make an admin, which is whoever can already write any
+  plan. Promo codes: a free-plan code is spent in one transaction with the grant it
+  gives, once per organisation and once per person, never past its limit, and never on an
+  organisation that still carries a Dodo subscription or has a checkout from the last day open; a discount code is
+  created at Dodo restricted to this deployment's own products (the account is shared), and
+  Dodo's own code box is hidden on every checkout, so a code reaches one only after this server
+  checked it is ours, live, for that plan and that person. Codes are guessable only as fast as
+  the rate limiter allows, and one answer covers "no such code", "revoked" and "not for you";
+  the admin page makes random ten-character codes by default.
 - **Seats** follow the membership: the seat-sync debt is written **inside the membership
   change's own transaction**, so it exists even if the push after the commit never runs. One
   push at a time per organisation (a lease), counted under the debt's generation and cleared
