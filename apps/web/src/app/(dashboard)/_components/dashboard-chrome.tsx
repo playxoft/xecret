@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 
 import { isApiError, SIGN_IN_PATH } from '@/lib/api';
 import { lockVault, VaultProvider } from '@/components/vault';
-import { AppShell, Wordmark } from '@/components/layout';
+import { AppShell, SignOutButton, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
 import { CreateOrganizationDialog } from '@/components/organizations';
 import type { ProjectResponse } from '@/components/projects/types';
@@ -170,7 +170,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     }
 
     return (
-      <ChromeFrame>
+      <ChromeFrame signOut>
         <ErrorState subject="your account" error={session.error} onRetry={reloadSession} />
       </ChromeFrame>
     );
@@ -220,7 +220,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     // would be left on a page whose only way forward is to be invited by
     // somebody else.
     return (
-      <ChromeFrame>
+      <ChromeFrame signOut>
         <EmptyState
           icon={<UsersIcon />}
           title="You are not a member of any organisation"
@@ -411,12 +411,21 @@ function ChromeSkeleton() {
   );
 }
 
-/** A bare frame for the two states where there is no session to build a shell from. */
-function ChromeFrame({ children }: { children: ReactNode }) {
+/**
+ * A bare frame for the states where there is no shell to build: the account
+ * could not be loaded, it has no organisation left, or its session has ended.
+ *
+ * `signOut` puts a Sign out button in its top bar — for the first two, which
+ * would otherwise be pages with no way out: the account menu that holds the
+ * real one needs the session they could not load, or an organisation to sit
+ * beside. Not for the third, which is already on its way to the sign-in page.
+ */
+function ChromeFrame({ children, signOut = false }: { children: ReactNode; signOut?: boolean }) {
   return (
     <div className="bg-canvas flex min-h-dvh flex-col">
-      <header className="border-line flex h-[var(--topbar-height)] shrink-0 items-center border-b px-4 sm:px-6">
+      <header className="border-line flex h-[var(--topbar-height)] shrink-0 items-center justify-between gap-4 border-b px-4 sm:px-6">
         <Wordmark />
+        {signOut ? <SignOutButton /> : null}
       </header>
       <main className="mx-auto w-full max-w-xl px-4 py-12 sm:px-6">{children}</main>
     </div>

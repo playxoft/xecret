@@ -1,5 +1,8 @@
 import { findUserById, listOrganizationsForUser } from '@xecret/db/repositories';
+import type { Principal } from '@/server/actor';
 import { isAdmin } from '@/server/admin';
+import type { ServiceContext } from '@/server/context';
+import { describeError } from '@/server/logging';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
 import { vaultStatus } from '@/server/vault-service';
@@ -82,7 +85,7 @@ export const GET = authenticatedRoute(
        * `requireAdmin` itself and answers 404 to anybody else. Always `false`
        * for a CLI token, which can never reach those routes.
        */
-      admin: await isAdmin(services, principal),
+      admin: await adminFlag(services, principal),
       organizations: memberships.map((membership) => ({
         id: membership.organization.id,
         name: membership.organization.name,
@@ -127,3 +130,25 @@ export const GET = authenticatedRoute(
     allowLocked: true,
   },
 );
+
+/**
+ * The admin flag, never the reason this response fails. Every page of the
+ * dashboard waits on `/api/auth/me`, and the flag only decides whether the
+ * account menu offers a link — so a lookup that fails (a database the
+ * admin tables have not reached yet, a blip) answers "not an admin" and is
+ * logged, rather than turning into "Could not load your account" for
+ * everybody. The admin routes themselves fail closed: `requireAdmin` lets
+ * the same failure through as a 500.
+ */
+async function adminFlag(services: ServiceContext, principal: Principal): Promise<boolean> {
+  try {
+    return await isAdmin(services, principal);
+  } catch (cause) {
+    services.log
+      .at('adminFlag')
+      .error('Could not check whether the caller is an admin; answered "not an admin"', {
+        error: describeError(cause),
+      });
+    return false;
+  }
+}

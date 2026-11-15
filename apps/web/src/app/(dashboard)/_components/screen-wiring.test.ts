@@ -186,7 +186,7 @@ describe('every sign-out leaves in the same order', () => {
   // left whatever the revoke did. A failed revoke may leave the session live,
   // and the browser must still be allowed to ask.
   it.each([
-    ['the account menu', '../../../components/layout/user-menu.tsx'],
+    ['the account menu and the bare frame', '../../../components/layout/sign-out.tsx'],
     ['the lock screen', './lock-screen.tsx'],
     ['the invitation screen', '../../(auth)/invite/[token]/invite-screen.tsx'],
   ])('%s', (_where, path) => {
@@ -194,5 +194,24 @@ describe('every sign-out leaves in the same order', () => {
     expect(text).toMatch(
       /beginSignInRedirect\(\);[\s\S]*?try \{\s*destination = await endSession\(\);\s*beginLeavingPage\(\);\s*\} finally \{[\s\S]*?releaseVaultKeys\(\);/,
     );
+  });
+});
+
+describe('a page with no account to show still has a way out', () => {
+  // "Could not load your account" and "You are not a member of any
+  // organisation" are drawn without the shell, so without the account menu
+  // either — the frame carries its own Sign out, the same one the menu uses.
+  it('the account menu signs out through the shared function', () => {
+    expect(source('../../../components/layout/user-menu.tsx')).toMatch(
+      /await signOutAndLeave\(\);/,
+    );
+  });
+
+  it('the bare frame offers it on both pages, and not while already leaving', () => {
+    const chrome = source('./dashboard-chrome.tsx');
+    expect(chrome).toMatch(/<ChromeFrame signOut>\s*<ErrorState subject="your account"/);
+    expect(chrome).toMatch(/<ChromeFrame signOut>\s*<EmptyState/);
+    expect(chrome).toMatch(/\{signOut \? <SignOutButton \/> : null\}/);
+    expect(chrome).toMatch(/function ChromeNotice[\s\S]*?<ChromeFrame>/);
   });
 });
