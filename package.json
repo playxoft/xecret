@@ -56,6 +56,8 @@
     "check:chunks": "node scripts/check-duplicate-chunks.mjs",
     "// check:unkeyed": "Reports environments marked e2ee that hold no key hierarchy — a state nothing errors on and nobody notices until a user opens the project. Needs a database: phase run -- npm run check:unkeyed",
     "check:unkeyed": "tsx scripts/check-unkeyed-environments.ts",
+    "// check:server-encrypted": "Reports environments still on server-side encryption and the secrets they hold. The site says xecret cannot read your secrets; that is true of a deployment exactly when this finds nothing. Read-only, counts only: phase run --env Production -- npm run check:server-encrypted",
+    "check:server-encrypted": "tsx scripts/check-server-encrypted-environments.ts",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test",
     "keygen": "tsx scripts/keygen.ts",
     "// icons": "Regenerates app/icon.svg, favicon.ico and apple-icon.png from the single mark in scripts/generate-icons.ts",
