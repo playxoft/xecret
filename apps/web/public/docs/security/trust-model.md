@@ -1,9 +1,9 @@
 ---
 title: What xecret can and cannot see
 navTitle: Trust model
-description: The encryption model stated plainly — envelope encryption, the key hierarchy, what a database breach yields, and when you should choose a zero-knowledge product instead.
-keywords: [envelope encryption, zero knowledge alternative, secret manager security, aes-256-gcm, key hierarchy, threat model]
-updated: 2026-10-21
+description: Secret values are end-to-end encrypted, so xecret cannot read them. The key hierarchy, what each kind of breach yields, what we can see, and where the guarantee stops.
+keywords: [end-to-end encrypted secret manager, zero knowledge secrets, secret manager security, aes-256-gcm, x25519, key hierarchy, threat model]
+updated: 2026-11-22
 ---
 
 A security product that overstates its guarantees has broken the only thing it
@@ -12,63 +12,137 @@ before you put a real credential in it.
 
 ## The short version
 
-**xecret uses server-side envelope encryption. The service can technically
-decrypt your secrets.**
+**We cannot read your secrets.**
 
-This is the same model Doppler uses. It is what makes team sharing, CI tokens
-and browser-side import work without every user performing a key exchange.
+Every secret value and every note is encrypted on your device — in the
+dashboard, or in the CLI — before it is sent. Our servers store ciphertext and
+hold no key that opens it. That is true of Playxoft, of anyone with production
+access, of anyone who steals our database, and of anyone who compels us to hand
+it over.
 
-If you need a provider that *cannot* read your secrets even in principle, you
-need a zero-knowledge product, and you should know that now rather than after
-migrating.
+The people you share an environment with can read it. That is what sharing
+means. What we *can* see — secret names, who read what, when — is listed below,
+and so are the limits of the guarantee.
 
 ## The key hierarchy
 
+Two halves: the keys that belong to you, and the keys that belong to an
+environment.
+
 ```text
-Root key  ──wraps──▶  Organisation key  ──wraps──▶  Environment key  ──encrypts──▶  Secret version
+YOUR KEYS (made on your device)
+
+  Master passphrase ──Argon2id──┐
+  Passkey (WebAuthn PRF) ───────┼──opens──▶  User Key  ──encrypts──▶  your private keys
+  Recovery code (one of five) ──┘                                     (X25519 and Ed25519)
+
+AN ENVIRONMENT'S KEYS (made by the client that creates it)
+
+  Environment data key ──sealed to──▶  each member's public key
+                       ──sealed to──▶  each service token's public key
+                       ──encrypts───▶  every value and note (AES-256-GCM)
 ```
 
-Four layers, each versioned so any one can be rotated independently.
+| Key | Where it lives | What opens it |
+|---|---|---|
+| Master passphrase | In your head. **Never sent anywhere.** | — |
+| User Key | On our servers, only as wraps: one under your passphrase, one under each recovery code, one under each passkey | You, on your device |
+| Your private keys | On our servers, encrypted under your User Key. The public halves are stored in the clear. | Your User Key |
+| Environment data key | On our servers, once per member and per service token allowed to read the environment, each copy sealed to that principal's public key | Each recipient's private key |
+| Secret values and notes | On our servers, encrypted under the environment's data key | The environment's data key |
 
-| Layer | Where it lives |
-|---|---|
-| Root key | Cloudflare Secrets Store, bound to the Worker. **Never in the database.** |
-| Organisation key | In the database, encrypted under the root key |
-| Environment key | In the database, encrypted under its organisation's key |
-| Secret version | In the database, encrypted under its environment's key |
+The passphrase is stretched with **Argon2id** (64 MiB of memory, three passes)
+in your browser or in the CLI, so each guess at it is deliberately expensive.
+The server receives a verifier derived from your keys, which lets it tell a
+locked session from an unlocked one; the verifier opens nothing.
 
-Values are encrypted with **AES-256-GCM**, and each ciphertext is bound to its
-exact position in the hierarchy. A secret row moved from `staging` to
-`production` does not decrypt: the authentication tag covers the identity of
-the environment it belongs to. The same technique protects the CLI's [offline
-cache](../cli/offline-cache.md).
+Values are encrypted with **AES-256-GCM**, and each ciphertext is bound to the
+row that holds it: its organisation, environment, secret and version. A value
+moved from `staging` to `production`, or from one secret to another, fails to
+decrypt instead of quietly succeeding. Sealing a key to somebody uses X25519;
+every blob carries a version prefix, and a client refuses a version it does not
+know rather than guessing.
+
+### Where the work happens
+
+- **Import.** The dashboard parses a `.env` file and encrypts every value in
+  your browser. Only the encrypted values are sent.
+- **Reading.** `xecret run`, `xecret pull`, exports and the dashboard all fetch
+  ciphertext and decrypt it on your machine.
+- **CI.** A service token carries its own private key inside the token string.
+  We keep only the public half and a hash of the part that authenticates, so a
+  `xecret run` with `XECRET_TOKEN` decrypts on the runner, never on our servers.
+- **The offline cache** stores ciphertext and the sealed keys that open it, not
+  plaintext. See [the offline cache](../cli/offline-cache.md).
+
+### Sharing and removing people
+
+Giving somebody an environment means sealing its data key to their public key.
+Only a client that already holds the key can do that, so it is done by a
+teammate's browser, not by us.
+
+Removing somebody deletes their copies of the key, and the dashboard asks you to
+**rotate** it: a new data key, sealed to everyone still entitled. Rotation stops
+the removed person opening anything written afterwards. It cannot make them
+forget values they already read — rotate those secrets at their source.
+
+### Forgetting your passphrase
+
+A recovery code or a passkey still opens your vault. Lose the passphrase, every
+recovery code **and** every passkey, and nobody can open it — including us.
+There is no escrow and no support reset; a way round it would be a way for us to
+read your secrets.
+
+Your teammates' data is unaffected, and they can share their environments with
+your new vault. A reset keeps the old vault recoverable for seven days and
+emails you an encrypted archive of it first — see
+[resetting your vault](vault-archive.md).
 
 ## What each kind of compromise yields
 
 | An attacker who gets… | Gets |
 |---|---|
-| A database backup | **Ciphertext only.** No key material at any layer is stored in the database. |
-| The database *and* the root key | Everything. This is the scenario the model does not defend against. |
-| Your CLI token | What you can reach, until it is revoked — and every use is audited. |
-| A CI service token | One environment of one project, read-only unless you made it otherwise. |
-| Your session cookie | Your account, subject to the PIN lock on anything sensitive. |
+| A database backup | **Ciphertext.** Plus the metadata listed below, and the wrapped keys — which let them try guesses at each person's passphrase offline, at Argon2id's cost per guess. A strong passphrase holds; a weak one may not. |
+| The database *and* our root key | The same. The root key protects the server's own operational secrets, such as webhook signing secrets, and opens no end-to-end encrypted value. |
+| Somebody inside xecret, or a court order | The same again. We hold no key to hand over. |
+| Your CLI token | On its own: the ciphertext you can reach, and your passphrase wrap to guess against offline. With the key the CLI keeps in your OS keychain as well: everything you can read. Revoke it; every use is audited. |
+| A CI service token | One environment of one project, because the token carries that environment's key. Read-only unless you made it otherwise. |
+| Your session cookie | Your account's authority on the server while the session is unlocked — but no value: your keys are held by your browser, not carried in the cookie. A locked vault refuses nearly everything until it is unlocked again. |
 
-The design goal is that the database and the key never sit in the same place:
-the database is a managed PostgreSQL instance, and the root key is in a
-Cloudflare Secrets Store binding that the database has no access to.
+## What xecret can see
+
+Saying this plainly is part of the guarantee being worth anything.
+
+- **Secret names** — `STRIPE_LIVE_KEY` existing in `production` is real
+  information about your stack. Names are left unencrypted deliberately, so that
+  listing, search and sorting stay ordinary server-side queries. Value types,
+  version numbers, timestamps and who changed what are visible too.
+- **Roughly how long each value is.** Ciphertext is about the size of what it
+  encrypts.
+- **Organisation, project and environment names**, and members' names, email
+  addresses, roles and access levels.
+- **The audit log** — who fetched which environment or secret, when, and from
+  which IP address.
+- **Public keys**, and so which members and tokens hold which environments.
+- **Billing details** for paid plans.
+
+What we never receive: values, notes, your personal overrides, the text of a
+template, your passphrase, your recovery codes, or any private key.
 
 ## The rules the implementation follows
 
 These are enforced structurally, not by convention:
 
-- **Decryption happens in one place.** The masked listing and the reveal
-  endpoint are separate routes, so "where can a plaintext be produced?" has an
-  answer a reviewer can verify by searching the code.
-- **Nothing is decrypted in bulk for a page render.** A dashboard listing shows
-  names, versions and timestamps; values are fetched one at a time, on demand,
-  and each fetch is audited.
-- **Every decryption produces an audit event.** An audit row therefore always
-  means a plaintext actually left the server.
+- **Clients encrypt; the server stores.** Write handlers check shapes, names
+  and permissions and store ciphertext. No server code path holds a key for an
+  end-to-end encrypted environment.
+- **No secret material is ever sent to the server.** Not the passphrase, not
+  the User Key, not a private key, not the half of a service token that holds
+  its key — including in diagnostics and error reports.
+- **Every read is audited.** Each fetch of an environment's values, or of a
+  single value, writes a record. The server cannot see you decrypt, so it
+  records the moment it handed ciphertext to somebody holding the key — which
+  is the moment that matters.
 - **Every denial is audited too.** A system that records only what succeeded
   cannot detect an attack in progress.
 - **Audit metadata cannot contain a value.** The type describing it is a fixed
@@ -81,13 +155,54 @@ These are enforced structurally, not by convention:
   cannot alter the audit table, which is append-only by grant rather than by
   discipline.
 
+## The limits of the guarantee
+
+End-to-end encryption moves trust; it does not remove it. These are the places
+it still rests on us, listed so you can weigh them:
+
+- **The dashboard is JavaScript we serve.** A server willing to send one
+  poisoned page to one targeted person could capture what that person decrypts
+  in it. A strict Content Security Policy narrows this; nothing in a browser
+  closes it. The CLI is the client you can verify — see below.
+- **Public keys are trusted on first use.** A server that swapped a member's
+  public key could receive keys sealed to them afterwards. Clients remember the
+  keys they have seen, every key change is audited, and the members screen
+  shows each key's fingerprint so you can compare it with your colleague
+  directly.
+- **Grants are signed, but the signatures are not checked yet.** Until they
+  are, a server willing to forge a grant could read values written after the
+  forgery. The signatures exist now so that checking them later is a client
+  update.
+- **Stale data is not detected.** A server could serve an older version of a
+  value, or an older set of keys, and a client could not tell. Nothing is
+  decrypted that should not be, but you might act on an out-of-date value.
+- **The encryption mode is pinned, not proved.** Once a client has seen an
+  environment as end-to-end encrypted it refuses any later answer saying
+  otherwise. A client meeting an environment for the first time — a new browser,
+  cleared site data — has nothing to compare against.
+- **A device PIN leans on the server.** The convenience PIN on one browser is
+  opened by six digits plus a value our server holds; five wrong guesses destroy
+  it, but a server colluding with whoever holds that device could try every
+  PIN. Your passphrase and passkeys do not depend on us in this way.
+- **Names and metadata are in the clear**, as listed above.
+
+### Environments created before end-to-end encryption
+
+Environments created before end-to-end encryption shipped used server-side
+encryption, under keys protected by our root key, and any that have not been
+moved still do. We can read the values in those. The environment's key settings
+say so — *This environment uses server-side encryption*. An existing
+environment cannot be switched over: create a new one and move the values
+across, which encrypts them on the way. Every environment created since is
+end-to-end encrypted from its first key.
+
 ## What xecret does not protect you from
 
 Stated plainly, because these are the failures people are surprised by:
 
-- **A compromised laptop.** If somebody has your machine and your unlocked
-  keychain, they have what you have. Revoke the device; the audit log tells you
-  what it read.
+- **A compromised laptop.** If somebody has your machine with the vault
+  unlocked, or your unlocked keychain, they have what you have. Revoke the
+  device; the audit log tells you what it read.
 - **Your own code leaking values.** `xecret run` puts secrets into your
   process's environment. If your app logs `process.env`, or a crash reporter
   ships it, xecret cannot stop that.
@@ -97,8 +212,9 @@ Stated plainly, because these are the failures people are surprised by:
   export](../features/policies.md#disabling-plaintext-export) and the secret
   policy's value rules are enforced by the clients that hold the plaintext, so
   they stop honest mistakes, not somebody who means to get round them — anyone
-  who may read a value can write it down.
-- **A server that misbehaves, in two narrow ways**, even where values are
+  who may read a value can write it down. A removed member's own offline cache
+  keeps working on their machine for up to seven days, too; rotate.
+- **A server that misbehaves, in two narrow ways**, even though values are
   end-to-end encrypted. It could answer a [reference](../features/references.md)
   or an inherited name with a *different value you can already decrypt* —
   another secret, or one from another environment whose key you hold — because
@@ -110,42 +226,36 @@ Stated plainly, because these are the failures people are surprised by:
 - **Anything a browser can read.** `NEXT_PUBLIC_` and `VITE_` variables are
   inlined into bundles you serve to the public. Managed and versioned, yes;
   private, no. See [React / Vite](../guides/react-vite.md).
-- **Us.** We can decrypt. That is this page's first sentence.
+
+## If you would rather not trust our JavaScript
+
+The CLI is the client you can check for yourself: Go, MIT-licensed, every
+release signed with cosign, and buildable from source. Reading and writing
+values with it — and running CI with a service token — never involves a page we
+serve.
+
+The dashboard cannot be avoided entirely today. Vaults are set up there,
+projects and environments are created there (their keys are generated in the
+browser), and CLI logins are approved there. Keeping those visits few is what
+narrows the window.
 
 ## If you self-host
 
-Self-hosting does not change the model — it changes **who** you are trusting
-from us to your own Cloudflare account, your own database, and your own key
-custody.
+Self-hosting does not change the model. Whoever operates the deployment —
+you — cannot read end-to-end encrypted values either. What moves to you is
+everything else on this page: the metadata, the audit log, availability, and
+the JavaScript your dashboard serves.
 
-That is a real improvement if you can operate key custody well, and a real
-downgrade if you cannot. The root key is the whole ballgame:
+The root key is still yours to keep. It protects the deployment's own
+operational secrets, such as webhook signing secrets, and any environment still
+on server-side encryption.
 
-> **Important** — Lose the root key and every secret is permanently
-> unrecoverable. There is no support ticket that fixes it. Generate it, split
-> it, and escrow the shares in physically separate places **before** the first
-> real secret is stored.
+> **Important** — Lose the root key and those are permanently unrecoverable:
+> webhooks need new signing secrets, and server-side encrypted environments are
+> gone. End-to-end encrypted values are not affected. Generate it, split it, and
+> escrow the shares in physically separate places **before** you go live.
 
 See [self-hosting](../self-hosting.md).
-
-## Choosing something else
-
-You should pick a zero-knowledge product instead if:
-
-- a regulator or contract requires that the provider be technically incapable
-  of reading your data; or
-- your threat model includes the provider being compelled to hand over
-  plaintext; or
-- you are storing secrets whose exposure would be unrecoverable regardless of
-  rotation.
-
-You are fine here if:
-
-- your main problem is `.env` files sprawling across laptops and Slack;
-- you need CI, teams and rotation to be simple; and
-- you are willing to trust an operator with credentials you can rotate.
-
-We would rather write that paragraph than have you discover it later.
 
 ## Reading the source
 
@@ -153,8 +263,16 @@ The server is AGPL-3.0 and the CLI is MIT. The cryptography and authorisation
 logic live in a package that imports nothing runtime-specific, so both can be
 audited and unit-tested in isolation rather than read through a web framework.
 
+The byte-level format — every key derivation, every blob layout, the sealed box,
+the recovery codes and the test vectors — is specified in
+`docs/security/e2ee-crypto-spec.md` in the
+[source code](https://github.com/playxoft/xecret/tree/main/docs/security), so a
+second implementation, or an auditor, can check ours against it. There has been
+no external security audit yet, and xecret holds no certification.
+
 ## Next
 
 - [The audit log](audit-log.md) — what is recorded and how to read it.
+- [Resetting your vault](vault-archive.md) — the way out when every key is lost.
 - [Tokens](../api/tokens.md) — scoping credentials, and what to do if one leaks.
-- [Self-hosting](../self-hosting.md) — moving the trust to yourself.
+- [Self-hosting](../self-hosting.md) — running it yourself.

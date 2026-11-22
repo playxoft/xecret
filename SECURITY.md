@@ -35,39 +35,76 @@ currently run a paid bounty programme.
 
 We would rather be plainly honest than reassuring. Read
 [`docs/security/threat-model.md`](docs/security/threat-model.md) for the full
-analysis.
+analysis and [ADR 0009](docs/adr/0009-zero-knowledge-encryption.md) for the
+design.
 
 ### The most important thing to understand
 
-**xecret uses server-side envelope encryption. This means the service can
-technically decrypt your secrets.**
+**Secret values and notes are end-to-end encrypted. xecret — the service, and
+Playxoft — cannot decrypt them.**
 
-This is the same model Doppler uses, and it is what makes team sharing, CI
-tokens, web-based import, and `xecret run` work simply. It is a deliberate
-trade-off, recorded in [ADR 0001](docs/adr/0001-trust-model.md).
+They are encrypted on the user's device, by the web dashboard (Web Crypto) or
+the Go CLI, with AES-256-GCM under a per-environment data key the client
+generates. That key is sealed with X25519 to the public key of every member and
+service token allowed to read the environment. Private keys stay on users'
+devices, wrapped under a User Key that a master passphrase (Argon2id, m=64 MiB,
+t=3, p=1, run on the device), a passkey (WebAuthn PRF) or one of five one-time
+recovery codes unlocks. A service token carries its own private key inside the
+token string; the server keeps only the public half and an authentication hash,
+so CI decrypts on the runner.
 
-If your threat model requires that the operator *cannot* read your secrets even
-in principle, you need a zero-knowledge product. We would rather tell you that
-than have you discover it later.
+The server stores ciphertext and holds no key that opens it. The byte-level
+format is specified in
+[`docs/security/e2ee-crypto-spec.md`](docs/security/e2ee-crypto-spec.md).
+
+The consequence we will not soften: a user who loses their passphrase, every
+recovery code and every passkey cannot be recovered by us. There is no escrow
+and no support reset.
 
 ### What we do protect against
 
 | Attack | Protection |
 |---|---|
-| Database breach | Secrets are encrypted with keys never stored in the database. A dump yields ciphertext. Session and API tokens are stored as hashes. |
+| Database breach | A dump yields ciphertext, wrapped keys and public keys — nothing that opens a value. It does allow offline guessing of each user's passphrase, at Argon2id's cost per guess. Session and API tokens are stored as hashes. |
+| Root key compromise | The server's root key protects only its own operational secrets (webhook signing secrets) and environments created before end-to-end encryption shipped. It opens no end-to-end encrypted value. |
+| An xecret operator, or compelled disclosure | There is no key on our side to use or hand over. |
 | Another tenant's user | Every request is authorized against current database state through one function. Cross-tenant probes get 404, not 403, so existence is not confirmed. |
 | Stolen CLI credential | Credentials live in the OS keychain, are revocable, expire, and every use is logged with IP and device. |
 | Compromised CI | Service tokens are scoped to one project and one environment, read-only by default, and carry no user identity. |
-| Ciphertext relocation | Every ciphertext is bound to its org, environment, secret, and version. Moving a row makes decryption fail rather than succeed. |
+| Ciphertext relocation | Every ciphertext is bound to its organisation, environment, secret and version. Moving a row makes decryption fail rather than succeed. |
 | Audit tampering | The audit table is append-only enforced by database grants — the application role has no UPDATE or DELETE on it. |
 
 ### What we do not protect against
 
-- **A compromised xecret Worker.** Code running inside our trust boundary can
-  decrypt. This is the highest residual risk in the system.
-- **An xecret operator with production access.** See ADR 0001.
-- **Exfiltration by someone with legitimate access.** Audit logs make it
-  detectable, not preventable.
+The limits of the guarantee, stated as plainly as the guarantee itself:
+
+- **The web dashboard is JavaScript we serve.** A server willing to deliver a
+  malicious bundle to a targeted user could capture what that user decrypts in
+  the browser. A strict CSP narrows this; it cannot close it. The CLI — Go,
+  MIT-licensed, releases signed with cosign, buildable from source — is the
+  verifiable client.
+- **Public keys are trusted on first use.** A server that substituted a
+  member's public key could receive keys sealed to that member afterwards.
+  Clients pin keys they have seen, key changes are audited, and fingerprints are
+  shown for out-of-band comparison.
+- **Grant signatures are created but not yet verified.** Until they are, a
+  malicious server could insert a grant of its own and read values written
+  afterwards.
+- **Secret names and metadata are plaintext** — names, project and environment
+  names, members, the audit log, IP addresses. Deliberately, so listing and
+  search stay server-side.
+- **No rollback protection yet.** A server could serve stale values or stale
+  grants, and a client could not tell.
+- **The encryption mode is pinned, not proved.** Once a client has seen an
+  environment as end-to-end encrypted it refuses a later downgrade; a client at
+  first contact cannot detect one.
+- **Environments created before end-to-end encryption shipped** still use
+  server-side envelope encryption until they are moved, and their values can
+  be decrypted by the server.
+- **Exfiltration by someone with legitimate access.** Anyone an environment is
+  shared with can read it. Audit logs make it detectable, not preventable, and
+  rotating an environment's key after removing someone cannot un-read what they
+  already saw.
 - **Your own compromised systems** after a secret has been legitimately
   delivered to them.
 
@@ -91,6 +128,8 @@ physical attacks, and denial of service through resource exhaustion.
 ## Cryptography
 
 Never invent cryptography, and never implement a primitive by hand. xecret uses
-Web Crypto AES-256-GCM with a versioned key hierarchy. If you believe you have
-found a cryptographic weakness, that is a high-severity report — please say so
-in the subject line.
+Web Crypto AES-256-GCM, X25519 and Ed25519 from `@noble/curves`, Argon2id and
+HKDF-SHA256, under a versioned format specified byte for byte in
+[`docs/security/e2ee-crypto-spec.md`](docs/security/e2ee-crypto-spec.md). If you
+believe you have found a cryptographic weakness, that is a high-severity report
+— please say so in the subject line.

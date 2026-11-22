@@ -3,11 +3,16 @@ title: The audit log
 navTitle: Audit log
 description: Every event xecret records, what each one means, how to filter the log, and how to use it during an incident when a credential has leaked.
 keywords: [secret audit log, who read secret, security audit trail, incident response, compliance logging]
-updated: 2026-10-20
+updated: 2026-11-22
 ---
 
-Every mutation, every decryption, and **every denial** is recorded. A system
-that records only what succeeded cannot detect an attack in progress.
+Every mutation, every read, and **every denial** is recorded. A system that
+records only what succeeded cannot detect an attack in progress.
+
+Values are decrypted on your device, where the server cannot see it happen. So
+a read is recorded at the moment the server hands somebody the encrypted value
+— to a person or token that holds the key to open it, which is as good as
+reading it.
 
 Owners and admins can read the log. It is append-only, enforced by database
 grants rather than by convention — the application's own credentials cannot
@@ -52,9 +57,8 @@ person's name on a write they did not make is worse than useless.
 | `auth.login_failed` | A sign-in was rejected |
 | `auth.logout` | Somebody signed out |
 | `auth.session_revoked` | A session was revoked |
-| `auth.locked` | A session was PIN-locked without being signed out |
-| `auth.pin_set` `auth.pin_changed` | The unlock PIN was created or replaced |
-| `auth.pin_reset` | The PIN was reset through an emailed link — somebody proved control of the mailbox rather than knowledge of the PIN |
+| `auth.locked` | Somebody locked their vault on demand — in every session at once, or this one — without signing out. A lock the idle timer fires is not recorded |
+| `auth.pin_set` `auth.pin_changed` `auth.pin_reset` | The account unlock PIN, since retired in favour of the vault lock, was set, replaced or reset. Found only in older records |
 | `auth.autolock_changed` | The idle auto-lock interval changed |
 | `auth.account_deleted` | An account deleted itself. Terminal. |
 | `auth.reauthenticated` | The account proved itself again for a vault reset — signed in again, then entered the emailed code (and its authenticator code, if one is enrolled) — and was given the five-minute proof the reset spends. A reset that follows it was not a stolen session alone |
@@ -89,10 +93,10 @@ not which of many OAuth providers.
 | `secret.rotated` | A value was rotated |
 | `secret.imported` | A bulk import ran |
 | `secret.read` | A **bulk** read — one row per `xecret run` or `pull`, with a count |
-| `secret.revealed` | A **single** value was decrypted and returned |
+| `secret.revealed` | A **single** value was returned — as ciphertext, decrypted on the reader's device |
 
-`secret.read` and `secret.revealed` are the two rows that mean a plaintext left
-the server, and the distinction is deliberate. A 200-secret pull writes **one**
+`secret.read` and `secret.revealed` are the two rows that mean somebody obtained
+a value, and the distinction is deliberate. A 200-secret pull writes **one**
 `secret.read` row with a count, not 200 rows — otherwise the audit table
 becomes a denial-of-service surface against itself.
 

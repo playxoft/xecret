@@ -3,7 +3,7 @@ title: API endpoint reference
 navTitle: Endpoint reference
 description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
-updated: 2026-10-20
+updated: 2026-11-22
 ---
 
 Every route, grouped the way you will look for them. Paths are relative to
@@ -50,21 +50,39 @@ deployment is configured, which is not public.
 | `GET` | `/auth/login` | Starts a sign-in: sets a short-lived signed cookie and redirects (**307**) to the identity provider's hosted sign-in page. Optional `?next=` (a path on this site to land on afterwards), `?hint=sign-up`, `?org=<slug>` (start that organisation's single sign-on directly, if it has one). A link, not an API call. |
 | `GET` | `/auth/callback` | Where the identity provider sends the browser back. Checks the flow belongs to this browser, verifies the sign-in with the provider, creates the account on first sign-in, bootstraps a personal organisation, sets the session and CSRF cookies, and redirects (**303**) to `next`. |
 | `DELETE` | `/auth/session` | Signs out. Idempotent. Answers `{ logoutUrl }`: the sign-in provider's logout address for the session you signed in with, which the dashboard opens so that you are signed out there too — or `null` when there is none to end. |
-| `GET` | `/auth/me` | You, your organisations, your role in each — with `sso: { required, blocked }`, whether the organisation requires single sign-on and whether that refuses the credential you are using — and the PIN state. |
-| `GET` `POST` | `/auth/pin` | Read the PIN state; set or change the PIN. Changing requires the current one. |
-| `POST` | `/auth/pin/unlock` | Body `{ pin }`. Unlocks this session for 8 hours. |
-| `POST` | `/auth/pin/lock` | Locks this session, or all of them with `{ everywhere: true }`. Does not sign you out. |
-| `POST` | `/auth/pin/reset` | Emails a single-use reset link to your own address. Returns `{ sent, reason? }` — read the flag, not the status. |
-| `POST` | `/auth/pin/reset/confirm` | Body `{ token, pin }`. Needs the emailed token **and** a session for the same account. |
+| `GET` | `/auth/me` | You, your organisations, your role in each — with `sso: { required, blocked }`, whether the organisation requires single sign-on and whether that refuses the credential you are using — and `vault`: whether you have one and whether this session has unlocked it. |
 | `GET` | `/auth/sessions` | Your active sessions. Never returns a token hash. |
 | `DELETE` | `/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
-| `DELETE` | `/auth/account` | Deletes your account. Body `{ confirm: "<your email>" }`. Browser sessions only, PIN-gated. **409** if you are the only active owner of an organisation other people are in. |
+| `DELETE` | `/auth/account` | Deletes your account. Body `{ confirm: "<your email>" }`. Browser sessions only, and the vault must be unlocked. **409** if you are the only active owner of an organisation other people are in. |
 
 Signing in is a sequence of browser navigations, not an API call: nothing on
 this server accepts an identity-provider token, and there is no endpoint to post
 a password to. A refused sign-in redirects to `/sign-in?error=<code>`, which
 shows a fixed sentence for that code. The specific reason is logged and never
 shown: telling a caller which part of a forged request to fix is a gift.
+
+### The vault
+
+Values are decrypted in your browser, so these endpoints move wrapped keys and
+verifiers — never a key, and never your passphrase. Reading the vault, setting
+one up, unlocking and recovery work from a locked session; everything else here
+needs it unlocked.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/auth/vault` | Whether you have a vault, whether this session has unlocked it, and the wrapped material an unlock needs: the passphrase and passkey wraps, the Argon2id salt and parameters, and your encrypted private keys. Usable while locked. A CLI token may read it too, for `xecret login --passphrase` — rate-limited, and audited as `vault.material_read`. |
+| `POST` | `/auth/vault` | Sets up a vault: public keys, encrypted private keys, the passphrase wrap, the five recovery wraps and the unlock verifier, in one transaction. **409** if you already have one. |
+| `PATCH` | `/auth/vault` | Body `{ autoLockMinutes }`: how long the vault may sit idle before it locks, held between 15 and 720. Applies to every signed-in browser. |
+| `POST` | `/auth/vault/unlock` | Marks this session unlocked, with a verifier your browser derived — the unlock itself already happened there. Wrong verifiers are counted and slowed down. |
+| `POST` | `/auth/vault/lock` | Locks this session, or every one with `{ everywhere: true }`. Does not sign you out. Returns `{ locked }`, the number of sessions locked. |
+| `POST` | `/auth/vault/passphrase` | Replaces the passphrase wrap, proved with the current passphrase's verifier. Nothing else is re-encrypted. |
+| `GET` `POST` `DELETE` | `/auth/vault/pin` | List your device PINs, enrol this browser, or turn every one off. The server keeps only its half of each enrolment's key; the wrap stays in that browser. |
+| `DELETE` | `/auth/vault/pin/{deviceId}` | Turns off one browser's device PIN. |
+| `POST` | `/auth/vault/pin/attempt` | One device-PIN attempt. Five wrong in a row destroy that enrolment. |
+| `GET` `POST` | `/auth/vault/prf` | List passkeys enrolled for unlocking (WebAuthn PRF), or enrol one. |
+| `DELETE` | `/auth/vault/prf/{passkeyId}` | Removes a passkey. The passphrase always remains a way in. |
+| `POST` `PUT` | `/auth/vault/recovery` | Exchange a recovery code's lookup hash for the wrap it opens, or replace the whole kit of five codes. |
+| `POST` | `/auth/vault/recovery/complete` | Finishes a recovery: marks the code used, sets a new passphrase and reissues all five codes, in one transaction. |
 
 ### Re-authentication for a vault reset
 
@@ -152,7 +170,7 @@ environment without a key cannot hold a secret and cannot be repaired.
 |---|---|---|
 | `GET` | `…/environments/{envSlug}/secrets` | **Masked.** Names, versions, timestamps, who updated. No ciphertext leaves the database. |
 | `POST` | `…/secrets` | Create. Body `{ name, value, note?, valueType? }`. |
-| `GET` | `…/secrets/{name}` | **Reveal.** Decrypts one value. Audited as `secret.revealed` every time. |
+| `GET` | `…/secrets/{name}` | **Reveal.** One value, as ciphertext for the client to decrypt — or, in an environment still on server-side encryption, decrypted. Audited as `secret.revealed` every time. |
 | `PATCH` | `…/secrets/{name}` | Appends a new version. Body `{ value, valueType? }`. A value identical to the current one is a no-op, detected without decrypting. |
 | `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, valueType? }`. Appends no version: declaring a type is not a rotation, and neither is a rename. |
 | `DELETE` | `…/secrets/{name}` | Soft delete, erased for good after 30 days — or after your plan's point-in-time restore window, if that is longer. |
@@ -160,9 +178,10 @@ environment without a key cannot hold a secret and cannot be repaired.
 | `GET` | `…/secrets/{name}/versions/{version}` | Reveal one historical version. Audited, with the version recorded. |
 | `POST` | `…/secrets/{name}/restore` | Body `{ version }`. Re-appends an earlier value as a new version; never rewrites history. |
 
-The masked listing and the reveal endpoint are **separate routes on purpose**.
-Decryption happens in exactly one handler, so "where can a plaintext secret be
-produced?" has a one-line answer a reviewer can verify by searching the code.
+The masked listing and the reveal endpoint are **separate routes on purpose**,
+so "where can a value leave the server?" — as ciphertext, or as plaintext from
+an environment still on server-side encryption — has a one-line answer a
+reviewer can verify by searching the code.
 
 ## Bulk read
 
@@ -172,9 +191,13 @@ The path `xecret run` depends on.
 |---|---|
 | `GET` | `…/environments/{envSlug}/pull?format=env\|json\|yaml\|shell\|docker` |
 
-One environment, every current secret, decrypted server-side. Its budget is at
-most three database queries and **zero** outgoing network calls, constant in
-the number of secrets.
+One environment, every current secret. For an end-to-end encrypted
+environment the answer is a JSON bundle of ciphertexts plus your own sealed copy
+of the environment's key, and the client decrypts and formats it — so a
+`format` is refused there. An environment still on server-side encryption
+answers in the format asked for, decrypted. Its budget is at most three
+database queries and **zero** outgoing network calls, constant in the number of
+secrets.
 
 Audited **once per call** as `secret.read` with a count — not once per secret,
 which would make a 200-secret pull write 200 audit rows and turn the audit

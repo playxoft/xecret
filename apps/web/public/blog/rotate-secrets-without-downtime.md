@@ -3,6 +3,7 @@ title: How to rotate a secret without taking production down
 description: Rotation is avoided because it is a distributed change, not a hard one. The overlap pattern, finding every consumer first, and what to do without overlap.
 keywords: [secret rotation, key rotation, rotate API keys, credential rotation, zero downtime rotation]
 published: 2026-06-30
+updated: 2026-11-22
 author: The xecret team
 role: Playxoft
 category: Practices
@@ -209,8 +210,7 @@ the value is edited rather than a dozen files on a dozen laptops, and there is
 an append-only record of every read, so "who is still using this?" has an answer
 before you start rather than after something breaks. Writes are versioned, so
 the previous value stays visible and restorable during the overlap. Values are
-decrypted server-side and we can technically read them — the model is written
-out plainly in the [trust model](/docs/security/trust-model) — which is the
-trade that makes CI tokens and team sharing work without a key exchange. The
+end-to-end encrypted, so we cannot read them — the old one or the new one; the
+model is written out plainly in the [trust model](/docs/security/trust-model). The
 [quickstart](/docs/quickstart) takes five minutes, and [what it
 does](/features) is the short version.

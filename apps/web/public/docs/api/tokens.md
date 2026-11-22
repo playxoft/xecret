@@ -3,7 +3,7 @@ title: Tokens and credentials
 navTitle: Tokens
 description: Sessions, CLI tokens and service tokens — what each can do, how they are scoped and stored, how to rotate them, and what happens when one leaks.
 keywords: [service token, cli token xct, xst token, api authentication, token rotation, revoke token]
-updated: 2026-08-16
+updated: 2026-11-22
 ---
 
 Three ways to prove who you are. Choosing the right one is most of the security
@@ -30,21 +30,29 @@ value must be echoed in the `X-Xecret-Csrf` header on every mutation.
 You can see and revoke your active sessions under *Settings → Security*, and
 sign out everywhere at once.
 
-### The PIN lock
+### The vault lock
 
-A session can be locked with a PIN separately from being signed out. An
-unlocked session lasts 8 hours; a locked one keeps you signed in but refuses
-anything sensitive with `session_locked`.
+Signed in and unlocked are different things. Your secrets are decrypted in the
+browser with keys your vault holds, and the vault locks when the session has
+been idle for a while — an hour by default; 15 minutes, 4 hours or 12 hours if
+you choose under *Settings → Security*. You can also lock it on demand, in this
+browser or in every signed-in session at once.
+
+A locked session keeps you signed in but refuses almost everything with
+`session_locked` until you unlock it again with your master passphrase, a
+passkey, or a device PIN you have set up on that browser. Unlocking happens in
+the browser: the passphrase is never sent.
 
 This is what makes it safe to stay signed in on a laptop you leave on a desk.
-Setting, changing and resetting the PIN are on the same settings page; a reset
-emails a single-use link to your own address and still requires the session, so
-there is no way to use it to probe whether an account exists.
+The cookie on its own carries no key, so somebody who copies it still cannot
+decrypt a value. CLI and service tokens are not subject to the lock.
 
 ## CLI tokens
 
 Created by `xecret login`, through a browser consent flow with PKCE. The token
-is stored in your operating system's keychain, never in a dotfile.
+is stored in your operating system's keychain, never in a dotfile. The same
+flow hands the CLI your vault's key, sealed to a key only that process holds,
+so it decrypts on your machine; that key is kept in the keychain too.
 
 **A CLI token adds no authority.** It acts as you: your role, your grants, and
 nothing more. That is why creating one requires only active membership rather
@@ -84,9 +92,16 @@ For CI, containers and anything else with no human at the keyboard.
 | Expiry | Optional, and worth setting |
 | IP allowlist | Optional; use it if your runners have stable egress addresses |
 
-The value is shown **once**. Only its hash is stored, so there is no listing
-that could return it and no support process that can recover it. Lost means
-mint a new one.
+The value is shown **once**. Your browser generates it, and it carries two
+things: the part that authenticates, and a private key that opens this
+environment's data key. The server stores a hash of the first and only the
+public half of the second, so `xecret run` decrypts on your runner, and there
+is no listing that could return the token and no support process that can
+recover it. Lost means mint a new one.
+
+The same fact makes the token itself sensitive: whoever has the whole string
+can read that environment, so keep it in your CI provider's secret store and
+nowhere else.
 
 ### What a service token cannot do
 
