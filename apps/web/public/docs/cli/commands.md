@@ -3,7 +3,7 @@ title: CLI command reference
 navTitle: Command reference
 description: Every xecret command and flag — login, init, projects, secrets, versions, import, pull, export, run, audit, tokens and cache — with examples and the exact behaviour of each.
 keywords: [xecret command reference, xecret run flags, xecret secrets set, xecret secrets versions, xecret audit, xecret import, xecret pull, cli reference]
-updated: 2026-10-20
+updated: 2026-11-22
 ---
 
 Every command the `xecret` binary accepts. Run `xecret help` for the same list
@@ -222,9 +222,12 @@ Note      primary read-write connection
 psql "$(xecret secrets get DATABASE_URL --plain)"
 ```
 
-Every `--plain` read is audited server-side as `secret.revealed`. An audit row
-therefore always means a plaintext actually left the server — which is what
-makes the log worth reading during an incident.
+Every `--plain` read is audited server-side as `secret.revealed`. The value is
+decrypted here, on your machine, but the server records handing over its
+ciphertext, so an audit row always means somebody obtained the value — which
+is what makes the log worth reading during an incident. (In an older
+environment still on server-side encryption, the server decrypts the value and
+sends it in plaintext; the row means the same thing.)
 
 `--version N` reveals one earlier value instead of the current one, and requires
 `--plain`, because the value is the only thing it adds over

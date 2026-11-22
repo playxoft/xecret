@@ -32,6 +32,7 @@ disk, no secrets in Slack, no "works on my machine".
 
 | | |
 |---|---|
+| **End-to-end encrypted** | Values and notes are encrypted on your device before they are sent. We store ciphertext and cannot read it. |
 | **Fast** | Runs on Cloudflare's edge. Secret reads make zero external network calls. |
 | **Works offline** | An encrypted local cache means an xecret outage never stops your `npm run dev` or your CI build. |
 | **Built for CI** | Scoped, read-only service tokens are a first-class feature, not a v2 afterthought. |
@@ -71,22 +72,33 @@ points your `AGENTS.md` at it. Commit the result and your teammates' agents
 know it too. Details, and how to give an agent an environment that holds
 nothing real: [AI agents](https://xecret.playxoft.com/docs/ai-agents).
 
-## Honesty about the security model
+## The security model
 
-xecret uses **server-side envelope encryption**. The service can technically
-decrypt your secrets — the same model Doppler uses, and what makes team sharing,
-CI tokens, and web import work simply.
+**xecret cannot read your secrets.** Secret values and notes are end-to-end
+encrypted: the dashboard (Web Crypto) or the CLI encrypts each one with
+AES-256-GCM under a per-environment key the client generates, and that key is
+sealed (X25519) to every member and service token allowed to read it. Private
+keys leave your devices only encrypted — wrapped under a User Key that your
+master passphrase (Argon2id, run on your device), a passkey or a one-time
+recovery code unlocks. A CI service token carries its own private key, so CI
+decrypts on the runner. The server stores ciphertext; a database breach, an
+insider or a court order gets nothing that opens it.
 
-If you need a provider that *cannot* read your secrets even in principle, you
-need a zero-knowledge product. We would rather say so here than have you find
-out later. Full reasoning: [ADR 0001](docs/adr/0001-trust-model.md) ·
-[Threat model](docs/security/threat-model.md) · [Security policy](SECURITY.md)
+What the server does see: secret **names**, project and environment names,
+members, the audit log of who read what, and billing details. Names are
+deliberately plaintext so listing and search stay server-side. And the
+guarantee has edges — the dashboard is JavaScript we serve, public keys are
+trusted on first use, grant signatures are not yet verified. We list them
+rather than bury them: [what xecret can and cannot see](https://xecret.playxoft.com/docs/security/trust-model) ·
+[ADR 0009](docs/adr/0009-zero-knowledge-encryption.md) ·
+[crypto spec](docs/security/e2ee-crypto-spec.md) ·
+[Security policy](SECURITY.md)
 
 ## Stack
 
 Next.js 16 on Cloudflare Workers · Neon PostgreSQL via Hyperdrive · Drizzle ·
-WorkOS AuthKit (identity only — sessions are ours) · Go CLI · AES-256-GCM
-envelope encryption
+WorkOS AuthKit (identity only — sessions are ours) · Go CLI · end-to-end
+encryption (AES-256-GCM, X25519, Argon2id)
 
 Every significant decision is written down in [`docs/adr/`](docs/adr/), including
 the trade-offs we accepted.

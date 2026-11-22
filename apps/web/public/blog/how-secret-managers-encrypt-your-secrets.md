@@ -3,6 +3,7 @@ title: Envelope encryption, zero-knowledge, or plain trust: how to read a secret
 description: Every secret manager encrypts your data. Only some cannot read it. How envelope encryption works, what zero-knowledge really costs, and the questions to ask.
 keywords: [envelope encryption, zero-knowledge secret manager, secrets manager security, how secrets managers work, data key root key]
 published: 2026-07-08
+updated: 2026-11-22
 author: The xecret team
 role: Playxoft
 category: Security
@@ -32,10 +33,10 @@ happens on their servers, in response to a request they authorised.
 Answer to the test: **yes**. An operator with sufficient access to the running
 system can produce plaintext.
 
-Most developer-facing secret managers sit here: any product whose dashboard can
-show you a value, whose CI token reads an environment with no other key
-material, or whose support can help after you forget your password. xecret
-included — its own section is below.
+Most developer-facing secret managers sit here: any product whose dashboard
+shows you a value its server decrypted, whose CI token reads an environment with
+no key material of its own, or whose support can help after you forget your
+password.
 
 ### (b) End-to-end, or zero-knowledge
 
@@ -115,19 +116,26 @@ Two details separate a careful implementation from a box-ticking one: binding
 each ciphertext to its position, as the sketch does, and a key per environment
 rather than per account.
 
+Model (b) keeps the same shape and moves its top. The per-environment data key
+is still there, still bound to its rows; what wraps it is no longer a root key
+on the server but each reader's own public key, and the wrapping and unwrapping
+happen on their devices.
+
 ## What an audit log adds that encryption does not
 
 Encryption answers one question: what does an attacker get from a stolen
 database? It says nothing about a legitimate credential used illegitimately — a
 stolen CLI token, a leaked CI token, somebody reading values they have no
-business reading. In each case the system decrypts correctly, because it was
-asked correctly.
+business reading. In each case the value is decrypted correctly, because it was
+asked for correctly.
 
 The control for that is a log the writer cannot edit:
 
 - **Append-only by database grant**, not by convention. If the application's own
   credentials can delete a row, so can an attacker holding them.
-- **One row per decryption**, so a row always means a plaintext left the server.
+- **One row per read**, so a row always means somebody obtained a value. In
+  model (b) the server never sees the decryption, so it records the moment it
+  handed ciphertext to somebody holding the key — which comes to the same thing.
 - **Denials recorded too.** Successes alone cannot show an attack in progress,
   which usually looks like refusals just before one.
 - **Precise attribution.** A CI write recorded under the name of whoever minted
@@ -142,7 +150,7 @@ with a consumer list you never had to write.
 ## What each model costs you
 
 Few developer tools ship zero-knowledge, and not out of laziness: the property
-you gain removes capabilities teams use daily.
+you gain makes capabilities teams use daily much harder to build.
 
 | | (a) Provider holds keys | (b) Zero-knowledge | (c) Bring your own key |
 |---|---|---|---|
@@ -151,48 +159,61 @@ you gain removes capabilities teams use daily.
 | A root key leak yields | Everything | Nothing; the key is not there | Everything it can reach |
 | Adding a team member | A server-side grant | A key re-wrap per member, needing their public key | A server-side grant |
 | Browser `.env` import | Straightforward | Client-only, and the client is the browser | Straightforward |
-| A read-only CI token | Straightforward | Hard — the runner needs the key, so the key lives in CI | Straightforward |
-| You forget your password | Recoverable | Data loss, absent a recovery key | Recoverable |
+| A read-only CI token | Straightforward | Harder — the runner needs a key, so the token must carry one | Straightforward |
+| You forget your password | Recoverable | Data loss, absent a recovery code | Recoverable |
 | Server-side validation or search | Possible | Impossible on values | Possible |
 | Who you must trust | The provider and their infrastructure | The client build and its update channel | The provider, plus your key custody |
 
 The CI row decides the market. A build runner is unattended by definition, so
-something must hand it the key — at which point the key lives in CI, [the
-softest target you own](/blog/secrets-in-ci-pipelines). Teams answer this with
-an exception for CI, and the exception is where the guarantee stops applying.
+something must hand it a key. The careless answer is an exception for CI — the
+server decrypts for the runner — and the exception is where the guarantee stops
+applying. The careful one gives each CI token a key pair of its own, scoped to
+one environment, so the runner decrypts and the server still cannot. The key
+then lives in CI, [the softest target you own](/blog/secrets-in-ci-pipelines),
+which is why that token should reach as little as possible.
 
-None of that makes zero-knowledge wrong. It makes it a different product,
-chosen from a threat model rather than from which security page sounded better.
+None of that makes either model wrong. Each is a different product, chosen from
+a threat model rather than from which security page sounded better.
 
-## xecret is model (a), and here is why
+## xecret is model (b), and here is how
 
-**xecret uses server-side envelope encryption. We can technically decrypt your
-secrets.** A root key we hold wraps an organisation key, which wraps a
-per-environment data key, which encrypts your values. Decryption happens in one
-request handler on our servers, and writes an audit row every time.
+**xecret cannot read your secrets.** Secret values and notes are encrypted on
+your device — in the browser, or by the CLI — before they are sent. The design
+is the envelope above with its top moved to the client:
 
-We chose it for the reasons in that table's first column: importing a `.env`
-from a browser with no key ceremony, adding a colleague without exchanging
-public keys, giving a CI runner a read-only token, and not losing your data
-because you forgot a password. A model that made those hard is a model people
-work around — usually by putting the value back in a file.
+```text
+Your passphrase, a passkey or a recovery code   on your device; never sent
+   │  opens
+   ▼
+Your private key       stored wrapped; opened only on your device
+   │  unseals
+   ▼
+Data key               one per environment; sealed to each member and CI token
+   │  encrypts
+   ▼
+Secret value           in our database, as ciphertext bound to its row
+```
 
-We reduce what the trust costs where we can. The root key sits in a secrets
-store bound to the Worker, never in the database, so a stolen backup is
-ciphertext at every layer. Decryption exists in exactly one place, so "where can
-a plaintext be produced?" is answerable by reading the source. Every decryption
-and every denial lands in a table the application's own credentials cannot
-alter. And it self-hosts, which moves the trust from us to you.
+The costs in that table's middle column are the ones we pay, and they are where
+most of the work went. Importing a `.env` in the browser parses and encrypts it
+there. Adding a colleague means a teammate's browser seals the environment's key
+to their public key. A CI service token carries its own private key inside the
+token string, so the runner decrypts and our servers only ever hand it
+ciphertext. And forgetting your passphrase is survivable with one of five
+recovery codes or a passkey — but not without them, because a way for us to
+recover your data would be a way for us to read it.
 
-> **Important** — Choose a zero-knowledge product instead if a regulator or a
-> contract requires the provider to be technically incapable of reading your
-> data, if your threat model includes the provider being compelled to hand over
-> plaintext, or if exposure of these secrets would be unrecoverable regardless
-> of rotation. We would rather write that here than have you find it out after
-> migrating.
+What we can still see is the metadata: secret names, project and environment
+names, members, and an audit log of every read and every denial, in a table the
+application's own credentials cannot alter. Names stay in the clear so listing
+and search can happen on the server.
 
-The long version, including what each kind of compromise yields, is in the
-[trust model](/docs/security/trust-model).
+> **Important** — Model (b)'s caveat applies to us too. The dashboard is
+> JavaScript we serve, and a server willing to send a poisoned page to one
+> person could capture what they decrypt in it. The CLI is the client you can
+> verify: Go, MIT-licensed, signed releases, buildable from source. That, and
+> the guarantee's other edges, are written out in the
+> [trust model](/docs/security/trust-model).
 
 ## Nine questions for any vendor, including us
 
@@ -221,9 +242,10 @@ your answer. A security model that exists only in a sales call is not one.
 
 Its own section, so you can skip it. xecret is open-source secret management
 that replaces the `.env` file: values stored once per environment, injected by
-`xecret run`, with an append-only audit log of every read. It is model (a) —
-envelope encryption, provider-held root key, and we can technically decrypt —
-which we would rather put in our own explainer than bury in an FAQ. Generally
-available, AGPL-3.0 server, MIT CLI, threat model in the repository. If the questions above
+`xecret run`, with an append-only audit log of every read. It is model (b) —
+end-to-end encrypted, with keys held on your devices, so we cannot decrypt —
+and its limits are in our own documentation rather than buried in an FAQ.
+Generally available, AGPL-3.0 server, MIT CLI, byte-level crypto spec and threat
+model in the repository. If the questions above
 lead you elsewhere, that is a good outcome; the
 [quickstart](/docs/quickstart) is here if they do not.

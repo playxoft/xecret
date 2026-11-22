@@ -55,9 +55,10 @@ import { takesPayments } from '@/server/billing/payments-live';
  * where a company is most tempted to round up, and on a secrets product one
  * rounded-up claim ends the relationship the moment a reader checks it.
  *
- * The candour is not modesty either. "We can technically decrypt your secrets"
- * is a stronger sentence than any certification we could claim, because it is
- * the sentence a competitor's about page will not print.
+ * The candour is not modesty either. "We cannot read your secrets" is a sentence
+ * anybody can print; what makes it worth something here is that the format
+ * specification, the code that encrypts and the list of what we *can* see all
+ * sit in public beside it.
  *
  * ── One layout rule ────────────────────────────────────────────────────────
  * Every section here is either centred or genuinely two-up: a heading with a
@@ -143,13 +144,13 @@ const PRINCIPLES = [
   {
     icon: EyeIcon,
     title: 'We describe the trust model as it is',
-    body: 'xecret decrypts on the server. Every environment has its own data key, encrypted under a root key we hold, and every decryption lands in an append-only log. So we can technically read your secrets, and we say that before you migrate rather than after.',
-    cost: 'The vaguer sentence sells better. "Zero-knowledge" converts; "we hold a root key" does not. We will not print the first one, because it is not true of us.',
+    body: 'Your secret values are encrypted on your device, under keys shared only with the people and tokens you choose, so we cannot read them. Names, structure and the audit log are not encrypted, and we list exactly what we can see rather than letting "end-to-end" imply more than it covers.',
+    cost: 'No escrow means no rescue. If you lose your passphrase and every recovery code, we cannot open your vault for you — a teammate has to share your environments with you again.',
   },
   {
     icon: GitHubIcon,
     title: 'The source is readable before you trust it',
-    body: 'The server is AGPL-3.0 and the CLI is MIT. The cryptography you are relying on, the schema your secrets sit in and the handler that decrypts them are all in one public repository, next to the threat model.',
+    body: 'The server is AGPL-3.0 and the CLI is MIT. The cryptography you are relying on, the byte-level format your secrets are stored in and the client code that encrypts them are all in one public repository, next to the threat model.',
     cost: 'An MIT CLI can be shipped inside a competing product, and an AGPL server can be read by anyone deciding to build one. That is the trade for a binary your legal team can clear in an afternoon.',
   },
   {
@@ -244,7 +245,7 @@ const MILESTONES = [
   {
     state: 'shipped',
     title: 'An append-only audit log',
-    body: 'Every decryption is written down, including the ones the server performs on your behalf. This is the feature the rest of the product is arranged around — encryption is the easy half.',
+    body: 'Every value fetched, every write and every rotation is written down, including your own. Encryption keeps a value private; the log is what tells you who was handed it, which is what you need on the day something leaks.',
   },
   {
     state: 'shipped',
@@ -347,7 +348,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can you read my secrets?',
     answer:
-      'Technically, yes. xecret uses server-side envelope encryption: every environment has its own data key, itself encrypted under a root key we hold, and values are decrypted inside a single request handler with every decryption written to an append-only audit log. It is the same model Doppler uses, and it is what makes team sharing, CI tokens and browser-side .env import work without a key-exchange ceremony. If you need a provider that cannot read your secrets even in principle, you need a zero-knowledge product, and we would rather you knew that now than after migrating.',
+      'No. Secret values and notes are encrypted on your device — in the browser or the CLI — under a key generated for each environment and shared only with the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. What we can see — secret names, project and environment names, and the audit log — is listed plainly in the trust model. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
   },
   {
     question: 'How do you make money?',
@@ -527,11 +528,11 @@ export default async function AboutPage() {
                   >
                     {PUBLISHER.name}
                   </a>
-                  , a small software company, and the middle ground has a price. xecret decrypts on
-                  the server, which means we can technically read your secrets. That is the trade
-                  that makes team sharing, CI tokens and browser-side import work without a
-                  key-exchange ceremony, and it is the first thing we would want to know about a
-                  company holding our credentials.
+                  , a small software company, and it is built so that you never have to trust us
+                  with a value. Secrets are encrypted on your device and shared only with the
+                  teammates and tokens you choose; we store ciphertext we cannot open. The price is
+                  a master passphrase and a set of recovery codes that are yours to keep, because
+                  there is no copy on our side to fall back on.
                 </p>
               </div>
             </div>

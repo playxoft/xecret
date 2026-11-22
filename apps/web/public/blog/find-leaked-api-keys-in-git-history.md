@@ -3,7 +3,7 @@ title: There is an API key in your git history. Here is how to find it, and what
 description: A key deleted in a later commit is still live and still readable. How to find secrets in git history, plus the rotate-first runbook that keeps production up.
 keywords: [leaked API key, git history secrets, secret scanning, gitleaks, trufflehog, rotate credentials, incident runbook]
 published: 2026-07-29
-updated: 2026-10-20
+updated: 2026-11-22
 author: The xecret team
 role: Playxoft
 category: Security
@@ -199,9 +199,8 @@ trace anywhere. The best you get is your git host's access log, which tells
 you who *could* have read it.
 
 For a credential held in a secret manager, the question has an actual answer.
-Every decryption in xecret writes an append-only audit record naming the
-actor — a person, a CLI token or a CI service token — the environment, and
-the time. So step two of the runbook stops being archaeology: you filter the
+Every read in xecret writes an append-only audit record naming the actor —
+a person, a CLI token or a CI service token — the environment, and the time. So step two of the runbook stops being archaeology: you filter the
 log by that secret, and you have the list of everyone who ever retrieved it
 and when. Denials are recorded too, because a system that logs only successes
 cannot show you an attack in progress.
@@ -233,10 +232,10 @@ Kept to one paragraph. xecret is open-source secret management: values are
 stored per environment and injected by `xecret run -- your-command`, so there
 is no file to commit and every read is audited — see
 [the quickstart](/docs/quickstart) and the
-[CLI reference](/docs/cli/commands). It is not zero-knowledge: xecret uses
-server-side envelope encryption, so the service can technically decrypt your
-values, and we would rather you read the
-[trust model](/docs/security/trust-model) now than discover the model later.
+[CLI reference](/docs/cli/commands). Values are end-to-end encrypted on your
+own machine before they are sent, so we cannot read them — the
+[trust model](/docs/security/trust-model) says exactly what we can see instead,
+and where the guarantee stops.
 It is generally available; [the pricing page](/pricing) says what each plan includes and
 what, if anything, it costs on the day you read this, and
 [the feature set](/features) is public before you decide.
