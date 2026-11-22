@@ -154,7 +154,7 @@ const CATEGORIES: readonly FaqCategory[] = [
     lede: (
       <>
         The full reasoning — the key hierarchy, what each kind of compromise actually yields, and
-        the cases where you should pick a different product — is in{' '}
+        exactly where the guarantee stops — is in{' '}
         <Link href="/docs/security/trust-model" className={INLINE_LINK}>
           the trust model
         </Link>
@@ -165,32 +165,32 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Can xecret read my secrets?',
         answer:
-          'Yes, technically, and you should know that before you migrate rather than after. xecret uses server-side envelope encryption: every environment has its own data key, itself encrypted under a root key we hold, and values are decrypted inside a single request handler. Every one of those decryptions is written to an append-only audit log. This is the same model Doppler uses, and it is what makes team sharing, CI tokens and browser-side .env import work without a key-exchange ceremony.',
+          'No. Secret values and notes are encrypted on your device — in the browser or the CLI — before they are sent, under a key generated for each environment. That key is sealed to the public key of each member and service token you give access to, and never to us. We store ciphertext, so neither our staff, nor anyone who obtains our database, nor anyone who compels us to hand it over can read your values. Secret names, project and environment names and the audit log are not encrypted.',
       },
       {
         question: 'Is xecret zero-knowledge or end-to-end encrypted?',
         answer:
-          'No, and we do not use those words about xecret because they would not be true. If you need a provider that cannot read your secrets even in principle — because a regulator requires it, or because your threat model includes the provider being compelled — you need a zero-knowledge product, and you should choose one now. The trust model page makes the same argument at greater length.',
+          'Yes, for secret values and notes. Keys are generated on your device and only ever shared with the people and service tokens you give access to, and there is no escrow copy on our side. Names and metadata are deliberately not encrypted, so that listing and search stay fast. The web dashboard runs code we serve; if that matters to your threat model, the CLI is open source, signed, and can be built from source. The trust model sets out every edge of the claim.',
       },
       {
         question: 'What happens if your database is breached?',
         answer:
-          'The attacker gets ciphertext. No key material at any layer is stored in the database: the root key lives in a Cloudflare Secrets Store binding the database has no access to. Each ciphertext is also bound to its exact position in the key hierarchy, so a secret row copied from staging to production simply does not decrypt.',
+          'The attacker gets ciphertext and names. Every environment key is stored only sealed to its members’ public keys, and each member’s private key is stored only wrapped under a key derived from their passphrase with Argon2id, on their own device. To open anything, an attacker would have to guess a member’s passphrase at Argon2id’s deliberate cost per guess — which is why xecret asks for a strong one. Each ciphertext is also bound to its exact position, so a secret row copied from staging to production simply does not decrypt.',
       },
       {
-        question: 'What happens if your root key leaks?',
+        question: 'What happens if your servers are compromised?',
         answer:
-          'The root key together with a database dump exposes everything, and that is the one scenario this model does not defend against. It is why the two are kept in different systems with no path between them. If you self-host, custody of that key becomes yours — generate it, split it, and escrow the shares before the first real credential goes in.',
+          'Stored values stay sealed. Our servers never hold a key that opens an end-to-end encrypted value, so nothing on them — the database, the server’s own root key, or both together — yields a secret. The residual risk is the web dashboard: a compromised server could serve altered code to the people using it. A strict Content Security Policy narrows that, and the CLI never depends on code we serve.',
       },
       {
         question: 'How are encryption keys rotated?',
         answer:
-          'Every layer of the hierarchy — root, organisation, environment — is versioned, so any one of them can be rotated independently of the others. A key rotation is itself an audited event. Rotating an individual secret is just a write: the new version becomes current and the history stays readable.',
+          'An environment’s key is rotated from the dashboard: a new key is generated in your browser and sealed to everybody still entitled to it, and removing a member prompts exactly that. Changing your passphrase re-wraps a single key and re-encrypts nothing. A key rotation is itself an audited event. Rotating an individual secret is just a write: the new version becomes current and the history stays readable.',
       },
       {
         question: 'Is there an audit log?',
         answer:
-          'Yes, and every decryption is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
+          'Yes, and every read is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
       },
       {
         question: 'Could one of my secret values end up in a log line?',
@@ -381,12 +381,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How do I remove somebody who leaves?',
         answer:
-          'Remove their membership. Their sessions and CLI tokens stop working straight away, and the offline cache does not soften that: the CLI treats a rejection as a decision and fails, rather than falling back to a cached copy on their laptop.',
+          'Remove their membership. Their sessions and CLI tokens stop working straight away, and the CLI treats that rejection as a decision rather than falling back to its offline cache. The dashboard then asks you to rotate the key of every environment they could read, so a copy of the old key opens nothing written afterwards.',
       },
       {
         question: 'What can a departing employee still see?',
         answer:
-          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they decrypted and when, and that list is what you rotate — which is the whole reason every decryption is recorded.',
+          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they read and when, and that list is what you rotate — which is the whole reason every read is recorded.',
       },
     ],
   },

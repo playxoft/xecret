@@ -574,8 +574,8 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
         values: EVERYWHERE,
       },
       {
-        label: 'Per-environment encryption, zero-knowledge',
-        hint: 'Values are sealed in your browser. The server stores ciphertext it cannot open.',
+        label: 'End-to-end encryption, a key per environment',
+        hint: 'Values are encrypted on your device. The server stores ciphertext it cannot open.',
         values: EVERYWHERE,
       },
       flagRow(
@@ -646,8 +646,8 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
         values: EVERYWHERE,
       },
       {
-        label: 'PIN lock and idle auto-lock',
-        hint: 'The vault relocks itself after a period of inactivity.',
+        label: 'Vault lock and idle auto-lock',
+        hint: 'The vault relocks itself after a period of inactivity; a passphrase, passkey or device PIN opens it.',
         values: EVERYWHERE,
       },
       // The row the Pro → Team decision turns on, and the reason Pro can offer

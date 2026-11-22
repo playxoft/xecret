@@ -73,7 +73,7 @@ import {
 
 const TITLE = 'Secret management features for developers';
 const DESCRIPTION =
-  'Environment variables encrypted per environment, CLI injection instead of a .env file, an append-only secrets audit log, CI service tokens and self-hosting.';
+  'Environment variables end-to-end encrypted per environment, CLI injection instead of a .env file, an append-only secrets audit log, CI service tokens and self-hosting.';
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -125,9 +125,9 @@ const FEATURES: readonly Feature[] = [
   {
     icon: KeyIcon,
     title: 'A key for every environment',
-    body: "Each environment is created with its own data key, written in the same database transaction as the environment itself — there is no moment where one exists without the other. That key is wrapped under an organisation key, which is wrapped under a root key. Ciphertext copied out of staging cannot be read with production's key.",
+    body: "Each environment is created with its own data key, generated in your browser and stored in the same database transaction as the environment itself — there is no moment where one exists without the other. That key is sealed to the public key of each member and service token allowed to read the environment, and never to us. Ciphertext copied out of staging cannot be read with production's key.",
     proofKind: 'Key hierarchy',
-    proof: 'root → organisation → environment → version',
+    proof: 'passphrase → private key → environment → version',
   },
   {
     icon: TerminalIcon,
@@ -146,7 +146,7 @@ const FEATURES: readonly Feature[] = [
   {
     icon: HistoryIcon,
     title: 'An append-only audit log',
-    body: "Every mutation, every decryption and every denial is recorded; a log of what succeeded cannot show an attack in progress. Append-only is enforced by database grants rather than by convention, so the application's own credentials cannot alter it. No record can hold a secret value — the metadata type is a fixed allowlist of field names with no catch-all.",
+    body: "Every read, every mutation and every denial is recorded; a log of what succeeded cannot show an attack in progress. Append-only is enforced by database grants rather than by convention, so the application's own credentials cannot alter it. No record can hold a secret value — the metadata type is a fixed allowlist of field names with no catch-all.",
     proofKind: 'Audit events',
     proof: 'secret.read · secret.revealed · access.denied',
   },
@@ -251,35 +251,35 @@ const ENVIRONMENTS = [
 ] as const;
 
 /**
- * The key hierarchy, copied from the trust-model document rather than
+ * The key hierarchy, taken from the trust-model document rather than
  * paraphrased.
  *
- * `relation` is the verb the document's own diagram uses between two layers.
- * The last one is `encrypts` and not `wraps` because the bottom of the chain
- * is where a key stops protecting another key and starts protecting a value —
- * a distinction the diagram makes and a marketing page has no business
- * flattening.
+ * `relation` is the verb between two layers. The last one is `encrypts`
+ * because the bottom of the chain is where a key stops protecting another key
+ * and starts protecting a value — a distinction the document makes and a
+ * marketing page has no business flattening. Every `where` says who can open
+ * that layer, because "on your device" is the whole of the claim.
  */
 const KEY_HIERARCHY = [
   {
-    layer: 'Root key',
+    layer: 'Master passphrase',
     relation: null,
-    where: 'Cloudflare Secrets Store, bound to the Worker. Never in the database.',
+    where: 'Only in your head. Stretched with Argon2id on your device and never sent anywhere.',
   },
   {
-    layer: 'Organisation key',
-    relation: 'wraps',
-    where: 'In the database, encrypted under the root key.',
+    layer: 'Your private key',
+    relation: 'unlocks',
+    where: 'Stored only wrapped under the key your passphrase derives, and opened on your device.',
   },
   {
     layer: 'Environment key',
-    relation: 'wraps',
-    where: "In the database, encrypted under its organisation's key.",
+    relation: 'opens',
+    where: "Sealed to each member's and service token's public key. Never sealed to us.",
   },
   {
     layer: 'Secret version',
     relation: 'encrypts',
-    where: "In the database, encrypted under its environment's key.",
+    where: "Encrypted on your device under its environment's key. We store the ciphertext.",
   },
 ] as const;
 
@@ -326,9 +326,9 @@ const COMPARISON = [
   {
     axis: 'What the provider can read',
     dotenv:
-      'Nothing. The file never leaves machines you control. This is the one row where the file you already have wins, and it wins outright.',
+      'Nothing, for as long as the file stays on machines you control — which lasts until the first time somebody pastes it into a chat.',
     xecret:
-      'xecret can technically decrypt your secrets, and writes an audit row every time it does. That trade is what pays for the six rows above.',
+      'Nothing. Values are encrypted on your device before they are sent, under keys we never hold, so the six rows above cost you no privacy.',
   },
 ] as const;
 
@@ -336,7 +336,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret zero-knowledge?',
     answer:
-      'No, and we will not describe it that way. xecret uses server-side envelope encryption: every environment has its own data key, that key is encrypted under a root key we hold, and values are decrypted inside a single request handler with every decryption written to an append-only audit log. So xecret can technically decrypt your secrets. It is the same model Doppler uses, and it is what makes team sharing, CI tokens and browser-side .env import work without a key-exchange ceremony. If you need a provider that cannot read your secrets even in principle, you need a zero-knowledge product.',
+      'Yes, for the values and notes you store. Every environment has its own data key, generated in your browser and sealed only to the members and service tokens you give access to, and values are encrypted and decrypted on your device, in the browser or the CLI. We hold no key that opens them, so xecret cannot read your secrets. Secret names, project and environment names and the audit log are not encrypted, so that listing and search stay fast — the trust model lists everything we can see.',
   },
   {
     question: 'Do I still need a .env file?',
@@ -483,19 +483,19 @@ export default async function FeaturesPage() {
 
           <DetailRow
             reverse
-            title="Every decryption leaves a row you can read"
+            title="Every read leaves a row behind"
             visual={<AuditVisual />}
             copy={
               <>
                 <p>
-                  Mutations, decryptions and denials, all recorded. Denials are the half most tools
-                  leave out, and they are the half that shows an attack in progress rather than an
-                  attack that already worked.
+                  Reads, mutations and denials, all recorded. Denials are the half most tools leave
+                  out, and they are the half that shows an attack in progress rather than an attack
+                  that already worked.
                 </p>
                 <p>
                   <code className="font-mono text-[0.9375rem]">secret.read</code> and{' '}
                   <code className="font-mono text-[0.9375rem]">secret.revealed</code> are the two
-                  rows that mean a plaintext left the server. A 200-secret pull writes one{' '}
+                  rows that mean somebody was handed a value. A 200-secret pull writes one{' '}
                   <code className="font-mono text-[0.9375rem]">secret.read</code> row with a count,
                   not 200 rows — an audit table that grows with every value read becomes a
                   denial-of-service surface aimed at itself.
@@ -592,13 +592,13 @@ export default async function FeaturesPage() {
       </Section>
 
       <Section id="trust-model" tone="canvas" aria-labelledby="trust-model-heading">
-        {/* ── The admission, with the diagram that backs it ────────────────
+        {/* ── The claim, with the diagram that backs it ────────────────────
             The paragraph on the left used to sit alone in a `max-w-3xl` card
             with half the band empty beside it, which on the one section that
-            admits a limitation reads as a page that ran out of things to say.
-            The key hierarchy answers it: the claim is "every environment has
-            its own key, wrapped under a root key we hold", and the ladder is
-            that sentence drawn. Nobody has to take the paragraph on faith
+            makes the product's central claim reads as a page that ran out of
+            things to say. The key hierarchy answers it: the claim is "only the
+            people you choose hold the key", and the ladder is that sentence
+            drawn. Nobody has to take the paragraph on faith
             when the four layers and where each one lives are printed next
             to it. */}
         <Reveal>
@@ -614,14 +614,13 @@ export default async function FeaturesPage() {
                 </h2>
               </div>
               <p className="text-fg-muted text-sm leading-7">
-                xecret uses server-side envelope encryption. Every environment has its own data key,
-                itself encrypted under a root key we hold; values are decrypted only inside a single
-                request handler, and every decryption is written to an append-only audit log. That
-                means we <span className="text-fg font-medium">can</span> technically decrypt your
-                secrets — the same model Doppler uses, and the reason team sharing, CI tokens and
-                browser-side import work without a key-exchange ceremony. If you need a provider
-                that cannot read your secrets even in principle, you need a zero-knowledge product,
-                and we would rather you learned that here than after migrating.
+                Your secrets are end-to-end encrypted. Every environment has its own data key,
+                generated in your browser and sealed only to the members and service tokens you give
+                access to; values are encrypted and decrypted on your device, in the browser or the
+                CLI. We store ciphertext and hold no key that opens it, which means we{' '}
+                <span className="text-fg font-medium">cannot</span> read your secrets — and neither
+                can anyone who obtains our database. Names, structure and the audit log are not
+                encrypted, so the dashboard can list and search them.
               </p>
               <div className="mt-auto flex flex-wrap gap-x-5 gap-y-2 text-sm">
                 <Link href="/docs/security/trust-model" className={QUIET_LINK}>
@@ -641,8 +640,9 @@ export default async function FeaturesPage() {
 
         <Reveal delay={120} className="mt-8">
           <p className="text-fg-muted mx-auto max-w-2xl text-center text-sm leading-7">
-            The threat model, the root-key ceremony and every architecture decision are documents in
-            the repository rather than blog-post promises. We write the reasoning up as we go on the{' '}
+            The threat model, the encryption format specification and every architecture decision
+            are documents in the repository rather than blog-post promises. We write the reasoning
+            up as we go on the{' '}
             <Link href="/blog" className={QUIET_LINK}>
               engineering blog
             </Link>
@@ -936,9 +936,9 @@ function EnvironmentVisual() {
  * Unlike the three visuals above it, this is not a mock-up of an interface —
  * it is the trust-model document's own table, laid out vertically so the
  * wrapping order is something you can see rather than something you have to
- * hold in your head. It sits beside the paragraph that admits we can decrypt,
- * because that admission is only worth reading if the structure behind it is
- * on the same screen.
+ * hold in your head. It sits beside the paragraph that says we cannot decrypt,
+ * because that claim is only worth reading if the structure behind it is on
+ * the same screen.
  *
  * The connectors are `aria-hidden`: each layer's own line already says what it
  * is encrypted under, so the verb between two rows is a second telling for the
@@ -949,8 +949,8 @@ function KeyHierarchyVisual() {
   return (
     <figure className="border-line bg-surface shadow-raised h-full overflow-hidden rounded-xl border">
       <figcaption className="sr-only">
-        The key hierarchy: four layers, from the root key down to a single encrypted secret version,
-        with where each one is stored.
+        The key hierarchy: four layers, from your master passphrase down to a single encrypted
+        secret version, with who can open each one.
       </figcaption>
       <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-sm">
         <KeyIcon className="size-3.5" />

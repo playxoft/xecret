@@ -35,8 +35,8 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-11-11';
-const EFFECTIVE = '2026-11-11';
+const UPDATED = '2026-11-22';
+const EFFECTIVE = '2026-11-22';
 
 const CANONICAL = absoluteUrl('/privacy');
 
@@ -65,8 +65,8 @@ export const metadata: Metadata = {
 };
 
 const SUMMARY = [
-  'We hold your email address, the names of your organisations, projects, environments and secrets, the encrypted secret values themselves, and a log of who read or changed what.',
-  'xecret can technically decrypt your secret values. Envelope encryption, decryption inside one request handler, and every decryption written to an append-only audit log. This is not a zero-knowledge product and we will not describe it as one.',
+  'We hold your email address, the names of your organisations, projects, environments and secrets, your secret values as ciphertext we cannot decrypt, and a log of who read or changed what.',
+  'Your secret values and notes are end-to-end encrypted. They are encrypted on your device before they reach us, under keys we never hold, so we cannot read them — and neither can anyone who obtains our database or compels us to hand it over.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
   'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
   'What you delete is kept for 30 days, so that a mistake can be undone, and then erased for good — a deleted secret longer only where your plan’s restore window needs it. You can export everything with the CLI and delete your own account.',
@@ -169,9 +169,18 @@ const SECTIONS: readonly LegalSection[] = [
           card number; Dodo holds the card.
         </>,
         <>
-          <strong className="text-fg font-medium">Your PIN, as a hash.</strong> Plus the
-          failed-attempt counter and lockout state that stop it being guessed. We cannot recover a
-          PIN; a reset link goes to the address on the account.
+          <strong className="text-fg font-medium">
+            Your vault&rsquo;s key material, none of which we can open.
+          </strong>{' '}
+          Your public keys; your private keys, stored only encrypted under your vault key; your
+          vault key, stored only encrypted under your master passphrase, under each recovery code
+          and under each passkey you register, with the salt and Argon2id settings your passphrase
+          is stretched with; a hash that lets the lock screen check an unlock without learning your
+          passphrase; and the copies of each environment&rsquo;s key that are sealed to you. For a
+          browser where you set up a device PIN: half of the key that browser&rsquo;s copy is
+          encrypted under, a hash derived from the PIN, and the failed-attempt counter that stops it
+          being guessed. We never receive your passphrase, a recovery code or a PIN &mdash; only
+          values derived from them on your device &mdash; and we cannot recover any of them.
         </>,
         <>
           <strong className="text-fg font-medium">Request logs.</strong> Method, path, a request
@@ -181,8 +190,8 @@ const SECTIONS: readonly LegalSection[] = [
           authorisation headers are scrubbed out of message text by pattern.
         </>,
         <>
-          <strong className="text-fg font-medium">Mail we send.</strong> A PIN reset link;
-          organisation invitations to the address you type; and, when you reset your vault, your{' '}
+          <strong className="text-fg font-medium">Mail we send.</strong> Organisation invitations to
+          the address you type; and, when you reset your vault, your{' '}
           <LegalLink href="/docs/security/vault-archive">vault archive</LegalLink> — your secrets,
           still encrypted, with the names of your organisations, projects, environments and secrets
           in plain text — attached to a message to your own address, or a notice in its place if you
@@ -202,23 +211,25 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'trust-model',
     heading: 'What our encryption protects, and what it does not',
     paragraphs: [
-      'xecret uses server-side envelope encryption. Every environment has its own data key; that key is encrypted under its organisation’s key, which is itself encrypted under a root key we hold in a Cloudflare Secrets Store binding the database has no access to. Values are AES-256-GCM, and each ciphertext is bound to its exact position in that hierarchy — a row copied from staging into production does not decrypt.',
-      'Decryption happens inside a single request handler, and every decryption writes a row to an append-only audit log that the application’s own database credentials cannot alter. An audit row therefore means a plaintext actually left the server.',
+      'Secret values and notes are end-to-end encrypted. Every environment has its own data key, generated on a member’s device. That key is sealed to the public key of each member and service token allowed to read the environment, and each member’s private key is stored only encrypted under a key that their master passphrase unlocks on their own device. Values are encrypted with AES-256-GCM in your browser or the CLI before they are sent, and each ciphertext is bound to its exact position — a row copied from staging into production does not decrypt.',
+      'We store the ciphertext and never hold a key that opens it. Your master passphrase and recovery codes never leave your device. Every read is still written to an append-only audit log that the application’s own database credentials cannot alter, so an organisation can see who was handed which value, and when.',
       <>
         <strong className="text-fg font-medium">
-          Which means xecret can technically decrypt your secret values.
+          Which means xecret cannot decrypt your secret values.
         </strong>{' '}
-        It is the same model Doppler uses, and it is what makes team sharing, CI tokens and
-        browser-side <code className="text-fg font-mono text-[0.9em]">.env</code> import work
-        without a key-exchange ceremony. We do not call xecret zero-knowledge or end-to-end
-        encrypted, because it is neither.
+        Not our staff, not anybody who obtains our database, and not anybody who compels us to hand
+        it over: there is no plaintext value on our side to give. The same is true in reverse. If
+        you lose your passphrase, every recovery code and every passkey, we cannot recover your
+        vault either &mdash; a teammate can share your environments with you again.
       </>,
       'What is not encrypted the way values are: the names of your secrets, organisations, projects and environments; membership, roles and access grants; audit metadata; and everything in the request logs. Those are readable by us and by anybody who obtains the database. The values are not.',
       <>
-        If you need a provider that cannot read your secrets even in principle, you need a
-        zero-knowledge product, and we would rather you knew that now than after migrating.{' '}
+        The guarantee rests on the code that does the encrypting. The CLI is open source and its
+        releases are signed; the web dashboard runs code we serve, under a strict Content Security
+        Policy.{' '}
         <LegalLink href="/docs/security/trust-model">What xecret can and cannot see</LegalLink> sets
-        out the full key hierarchy and what each kind of compromise yields.
+        out the full key hierarchy, what each kind of compromise yields, and where the guarantee
+        stops.
       </>,
     ],
   },
@@ -263,7 +274,8 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Cloudflare</strong> — hosting, the Workers runtime
           that serves every request, the edge network, rate limiting, and the Secrets Store binding
-          that holds the root key.
+          that holds the service&rsquo;s root key, which protects our own operational secrets
+          &mdash; webhook signing keys, for example &mdash; and never your secret values.
         </>,
         <>
           <strong className="text-fg font-medium">Neon</strong> — the managed PostgreSQL database
@@ -279,10 +291,10 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:
-          PIN reset links, organisation invitations, the billing emails an organisation&rsquo;s
-          owners receive on a paid plan, and the vault archive or notice sent when you reset your
-          vault. The archive passes through it as an attachment: encrypted values it cannot read,
-          and names in plain text.
+          organisation invitations, the billing emails an organisation&rsquo;s owners receive on a
+          paid plan, and the vault archive or notice sent when you reset your vault. The archive
+          passes through it as an attachment: encrypted values it cannot read, and names in plain
+          text.
         </>,
         <>
           <strong className="text-fg font-medium">Better Stack</strong> — log shipping, when a
@@ -358,14 +370,14 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">Closed accounts</strong> — deleting your account
-          revokes every session and CLI token, deletes your PIN, removes you from the organisations
-          you are not the last owner of, and deletes the organisations that were only yours, which
-          are then erased 30 days later as described above. The user record itself is soft-deleted
-          rather than erased, because the audit records you made have to keep meaning something; the
-          actor&rsquo;s label was written into each record at the time, so the log still reads
-          correctly with the account gone. A vault you reset in the last seven days is kept until
-          its window ends, then purged as above. Ask us if you need the identity record erased
-          outright.
+          revokes every session and CLI token, deletes your vault and any device PINs, removes you
+          from the organisations you are not the last owner of, and deletes the organisations that
+          were only yours, which are then erased 30 days later as described above. The user record
+          itself is soft-deleted rather than erased, because the audit records you made have to keep
+          meaning something; the actor&rsquo;s label was written into each record at the time, so
+          the log still reads correctly with the account gone. A vault you reset in the last seven
+          days is kept until its window ends, then purged as above. Ask us if you need the identity
+          record erased outright.
         </>,
         <>
           <strong className="text-fg font-medium">Sessions</strong> — 30 days from creation, and
@@ -563,11 +575,11 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'How we protect it',
     paragraphs: [
       [
-        'Secrets are AES-256-GCM under a per-environment key, wrapped up a four-layer hierarchy whose root key is never in the database.',
-        'Session tokens, CLI tokens, service tokens and PINs are stored as hashes. A token is shown once, at creation, and cannot be re-read afterwards.',
+        'Secret values and notes are AES-256-GCM, encrypted on your device under a per-environment key that is sealed only to the members and service tokens allowed to read it. We hold no key that opens them.',
+        'Session tokens, CLI tokens and service tokens are stored as hashes. A token is shown once, at creation, and cannot be re-read afterwards.',
         'The application’s database role cannot alter the audit table. It is append-only by grant rather than by discipline.',
         'Error messages returned to a client are fixed strings — never derived from an exception, a database error or the rejected input, because the rejected input may itself be a secret.',
-        'Reveals and destructive actions sit behind a PIN lock with an idle auto-lock, so an unattended session cannot read a value.',
+        'Your vault locks after a period of inactivity, so an unattended session cannot read a value until it is unlocked again with your passphrase, a passkey or a device PIN.',
       ],
       <>
         No system is perfect. If we discover a breach affecting your personal data, we will notify
@@ -589,12 +601,12 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'self-hosting',
     heading: 'Self-hosted deployments',
     paragraphs: [
-      'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the root key, and writes their own privacy policy.',
+      'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the server’s root key, and writes their own privacy policy. End-to-end encryption works the same way there: the operator cannot read secret values either.',
       <>
         We receive nothing from a self-hosted instance — no telemetry, no phone-home, no licence
         check. <LegalLink href="/docs/self-hosting">Self-hosting</LegalLink> states the real
-        dependency list, including the parts that are friction, and is blunt about the one
-        irreversible risk: lose the root key and every secret is unrecoverable.
+        dependency list, including the parts that are friction, and is blunt about what the
+        server&rsquo;s root key protects and what losing it would cost.
       </>,
     ],
   },
@@ -604,11 +616,15 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       'When this policy changes, the date at the top of the page changes with it. For a change that materially affects your rights, we will email the owners of every organisation and announce it in the repository before it takes effect.',
       <>
-        The version of 11 November 2026 is not a material change. It names the company that operates
+        The version of 22 November 2026 is not a material change. It names the company that operates
         xecret and how to reach it, and it sets how long deleted data is kept &mdash; 30 days, then
         erased, under <LegalLink href="#retention">How long we keep it</LegalLink> &mdash; where the
-        version before it left that period to be decided. That shortens how long we hold data; what
-        we collect, why we process it, who processes it for us, and your rights are unchanged.
+        version before it left that period to be decided. It also describes the end-to-end
+        encryption the product already uses, under{' '}
+        <LegalLink href="#trust-model">What our encryption protects</LegalLink>, and lists the vault
+        key material that comes with it &mdash; material we already held, none of which we can open.
+        What we can read is narrower than the version before it said, not wider; why we process
+        data, who processes it for us, and your rights are unchanged.
       </>,
       <>
         This page lives in the same repository as the product, so its history is the git history:

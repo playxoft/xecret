@@ -927,8 +927,8 @@ const ADDONS = [
 const INCLUDED = [
   {
     icon: LockIcon,
-    title: 'Per-environment encryption',
-    body: 'Every environment gets its own data key the moment it is created, encrypted under a root key we hold. Nothing about that changes with the plan you are on — and we say plainly what it does and does not protect you from.',
+    title: 'End-to-end encryption',
+    body: 'Every environment gets its own data key the moment it is created, generated on your device and shared only with the people and tokens you choose. We never hold it, on any plan — and we say plainly what that does and does not protect you from.',
     link: { href: '/docs/security/trust-model', label: 'What xecret can and cannot see' },
   },
   {

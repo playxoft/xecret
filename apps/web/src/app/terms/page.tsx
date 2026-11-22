@@ -32,14 +32,15 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: availability and change, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-11-11';
+const UPDATED = '2026-11-22';
 /**
- * The day it was written: this version only names the company and how to
- * reach it, which §Changes says is not a material change. The version before
- * it — 3 November 2026, the plan limits — took effect on its publication, and
- * §Changes still says so.
+ * The day it was written: this version names the company and how to reach it,
+ * and describes the end-to-end encryption already in the product — neither
+ * takes anything from you, which is why §Changes says it is not a material
+ * change. The version before it — 3 November 2026, the plan limits — took
+ * effect on its publication, and §Changes still says so.
  */
-const EFFECTIVE: string | null = '2026-11-11';
+const EFFECTIVE: string | null = '2026-11-22';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -81,7 +82,7 @@ function summaryFor(paymentsLive: boolean): readonly string[] {
     paymentsLive
       ? 'Paid plans are bought by an organisation’s owner, at the checkout of Dodo Payments, our merchant of record. A declined card never stops a build.'
       : 'No card is collected and nothing is charged. Each plan’s limits have applied since the version of 3 November 2026 was published; nothing starts charging without telling you first.',
-    'You are responsible for your account, your PIN and your tokens — including revoking one when a laptop or a CI system goes away.',
+    'Your secret values are end-to-end encrypted, so we cannot read them — or recover them. You are responsible for your account, your passphrase and recovery codes, and your tokens, including revoking one when a laptop or a CI system goes away.',
     'The server is AGPL-3.0 and the CLI is MIT. Running it yourself is governed by those licences, not by these terms, and we receive nothing from your deployment.',
     paymentsLive
       ? 'Our total liability is capped at the greater of what you paid us in the last twelve months and US$100. Read section 13 before you store something whose loss would be catastrophic.'
@@ -127,8 +128,8 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           Two documents sit alongside these terms and are part of the deal:{' '}
           <LegalLink href="/privacy">the privacy policy</LegalLink>, and{' '}
           <LegalLink href="/docs/security/trust-model">what xecret can and cannot see</LegalLink>.
-          Read the second one before you store a real credential — it is the document that says we
-          can technically decrypt what you store.
+          Read the second one before you store a real credential — it is the document that says
+          exactly what we can read, and what we cannot.
         </>,
       ],
     },
@@ -153,16 +154,19 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
             authentication wherever you sign in from.
           </>,
           <>
-            <strong className="text-fg font-medium">Your PIN.</strong> It gates reveals and
-            destructive actions on a session that is already signed in. We store only a hash of it
-            and cannot recover it; a reset link goes to the address on the account. Choosing a
-            guessable PIN, or writing it on the laptop, is not a failure of the service.
+            <strong className="text-fg font-medium">Your passphrase and recovery codes.</strong>{' '}
+            They unlock the keys your secret values are encrypted under, and they never leave your
+            device, so we cannot reset or recover them. If you lose your passphrase, every recovery
+            code and every passkey, what only you could open is gone; a teammate who still holds an
+            environment&rsquo;s key can share it with you again. Choosing a guessable passphrase, or
+            losing your recovery codes, is not a failure of the service.
           </>,
           <>
             <strong className="text-fg font-medium">Your tokens.</strong> CLI tokens and service
             tokens act as you within their scope. Scope them narrowly, give them an expiry, and
             revoke them the moment a laptop is lost or a CI system is retired. Revocation is
-            immediate and is never softened by the CLI&rsquo;s offline cache.
+            immediate: the CLI never falls back to its offline cache when we refuse a token, though
+            a copy already cached on a machine stays readable there, offline, until it expires.
           </>,
           <>
             <strong className="text-fg font-medium">Your members.</strong> Removing somebody who has
@@ -204,13 +208,16 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       id: 'your-data',
       heading: 'Your content, and your own compliance',
       paragraphs: [
-        'Your secrets, your names, your structure and your audit history are yours. We claim no ownership of them. You grant us only the licence we need to run the service: to store, transmit, encrypt, decrypt on your instruction, back up, and display that content to the people you have authorised.',
+        'Your secrets, your names, your structure and your audit history are yours. We claim no ownership of them. You grant us only the licence we need to run the service: to store, transmit, back up, and display that content to the people you have authorised. Secret values and notes reach us already encrypted, and we have no means to decrypt them.',
         'What you store is your decision, and so is whether you are permitted to store it. If personal data ends up inside a secret value, you are its controller and we process it on your instructions. If you are subject to a regime with specific requirements — PCI DSS, HIPAA, a sector regulator, a customer contract — decide whether this service meets them before you store anything under it. We hold no certification and publish no attestation, and we would rather write that sentence than let you assume otherwise.',
         <>
           Read <LegalLink href="/docs/security/trust-model">the trust model</LegalLink> first.
-          xecret uses server-side envelope encryption and can technically decrypt your values. If
-          your obligations require a provider that cannot, this is not that product, and we would
-          rather tell you here than after you have migrated.
+          Secret values and notes are end-to-end encrypted: they are encrypted on your devices, and
+          we hold no key that can decrypt them. Secret names, structure and audit history are not
+          encrypted that way, so keep anything confidential out of a name. And because we cannot
+          decrypt your values, we cannot recover them either: if everybody who holds an
+          environment&rsquo;s key loses access to it, its values are gone, for us as much as for
+          you.
         </>,
       ],
     },
@@ -362,8 +369,8 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           The AGPL&rsquo;s network clause applies to you in turn: if you offer a modified version to
           users over a network, they are entitled to the source of your modifications.{' '}
           <LegalLink href="/docs/self-hosting">The self-hosting guide</LegalLink> walks through the
-          deployment and is blunt about the one irreversible risk — lose the root key and every
-          secret is permanently unrecoverable, and there is no support ticket that fixes it.
+          deployment and is blunt about what running it asks of you, including custody of the
+          server&rsquo;s root key.
         </>,
       ],
     },
@@ -413,14 +420,16 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
         <>
-          The version of 11 November 2026 is not a material change. It names the company you are
+          The version of 22 November 2026 is not a material change. It names the company you are
           agreeing with and how to reach it, and it names the law and the courts the version before
           it already pointed to without naming them: the law of India, where that company is
           established, and the courts at Kanchipuram, where its registered office is. It describes
           xecret as the generally available service it now is, and adds two things we owe you: we
           announce a breaking change, and the removal of a feature, before it happens wherever we
-          reasonably can. Nothing you owe us has changed, and neither has your right to the
-          protection of the law where you live, or to bring proceedings there.
+          reasonably can. It describes the end-to-end encryption the product already uses, which
+          narrows what we are able to read rather than widening it. Nothing you owe us has changed,
+          and neither has your right to the protection of the law where you live, or to bring
+          proceedings there.
         </>,
         <>
           The version of 3 November 2026 was a change made without that notice, and took effect on
