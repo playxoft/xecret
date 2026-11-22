@@ -206,7 +206,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can xecret read my secrets?',
     answer:
-      'No. Secret values and notes are end-to-end encrypted: they are encrypted on your device, in the browser or the CLI, under a key that is shared only with the teammates and service tokens you give access to. We store ciphertext and never hold a key that opens it, so a breach of our database, our own staff, or an order to hand data over cannot produce your values. Secret names, project names and the audit log are not encrypted, and the trust model lists exactly what we can see.',
+      'No. Secret values and notes are end-to-end encrypted: they are encrypted on your device, in the browser or the CLI, under a key that is shared only with the teammates and service tokens you give access to. We store ciphertext and never hold a key that opens it, so a breach of our database, our own staff, or an order to hand data over cannot produce your values. Secret names, project names and the audit log are not encrypted, and the trust model lists exactly what we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
   },
   {
     question: 'Do I have to change my application code?',

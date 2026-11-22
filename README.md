@@ -78,7 +78,7 @@ nothing real: [AI agents](https://xecret.playxoft.com/docs/ai-agents).
 encrypted: the dashboard (Web Crypto) or the CLI encrypts each one with
 AES-256-GCM under a per-environment key the client generates, and that key is
 sealed (X25519) to every member and service token allowed to read it. Private
-keys never leave your devices — they are wrapped under a User Key that your
+keys leave your devices only encrypted — wrapped under a User Key that your
 master passphrase (Argon2id, run on your device), a passkey or a one-time
 recovery code unlocks. A CI service token carries its own private key, so CI
 decrypts on the runner. The server stores ciphertext; a database breach, an

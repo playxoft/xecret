@@ -145,7 +145,7 @@ table, that degradation is severe.
 
 | Bucket | Applies to | Counted per |
 |---|---|---|
-| `RL_LOGIN` | sign-in, vault unlock and recovery attempts | IP + identity |
+| `RL_LOGIN` | sign-in, vault unlock, recovery and reset attempts | IP + identity; the account alone for vault recovery and reset |
 | `RL_CLI_TOKEN` | CLI token creation and exchange | user |
 | `RL_INVITE` | invitations | organisation |
 | `RL_SECRET_READ` | reveal and pull | actor |
@@ -158,7 +158,7 @@ secret is authentication, authorisation and the audit trail.
 
 ## What is audited
 
-Every mutation, every read, and **every denial**. A system that records only
+Every mutation, every fetch of values, and **every denial**. A system that records only
 what succeeded cannot detect an attack in progress. Values are decrypted by the
 client, so a read is recorded when the server hands over the ciphertext.
 

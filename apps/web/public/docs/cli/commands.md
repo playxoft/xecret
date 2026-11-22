@@ -225,7 +225,9 @@ psql "$(xecret secrets get DATABASE_URL --plain)"
 Every `--plain` read is audited server-side as `secret.revealed`. The value is
 decrypted here, on your machine, but the server records handing over its
 ciphertext, so an audit row always means somebody obtained the value — which
-is what makes the log worth reading during an incident.
+is what makes the log worth reading during an incident. (In an older
+environment still on server-side encryption, the server decrypts the value and
+sends it in plaintext; the row means the same thing.)
 
 `--version N` reveals one earlier value instead of the current one, and requires
 `--plain`, because the value is the only thing it adds over

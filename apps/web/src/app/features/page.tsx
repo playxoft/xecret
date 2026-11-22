@@ -146,7 +146,7 @@ const FEATURES: readonly Feature[] = [
   {
     icon: HistoryIcon,
     title: 'An append-only audit log',
-    body: "Every read, every mutation and every denial is recorded; a log of what succeeded cannot show an attack in progress. Append-only is enforced by database grants rather than by convention, so the application's own credentials cannot alter it. No record can hold a secret value — the metadata type is a fixed allowlist of field names with no catch-all.",
+    body: "Every value fetched, every mutation and every denial is recorded; a log of what succeeded cannot show an attack in progress. Append-only is enforced by database grants rather than by convention, so the application's own credentials cannot alter it. No record can hold a secret value — the metadata type is a fixed allowlist of field names with no catch-all.",
     proofKind: 'Audit events',
     proof: 'secret.read · secret.revealed · access.denied',
   },
@@ -328,7 +328,7 @@ const COMPARISON = [
     dotenv:
       'Nothing, for as long as the file stays on machines you control — which lasts until the first time somebody pastes it into a chat.',
     xecret:
-      'Nothing. Values are encrypted on your device before they are sent, under keys we never hold, so the six rows above cost you no privacy.',
+      'Not your values or notes: they are encrypted on your device before they are sent, under keys we never hold. Names, structure and the audit log are visible to us.',
   },
 ] as const;
 
@@ -336,7 +336,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret zero-knowledge?',
     answer:
-      'Yes, for the values and notes you store. Every environment has its own data key, generated in your browser and sealed only to the members and service tokens you give access to, and values are encrypted and decrypted on your device, in the browser or the CLI. We hold no key that opens them, so xecret cannot read your secrets. Secret names, project and environment names and the audit log are not encrypted, so that listing and search stay fast — the trust model lists everything we can see.',
+      'Yes, for the values and notes you store. Every environment has its own data key, generated in your browser and sealed only to the members and service tokens you give access to, and values are encrypted and decrypted on your device, in the browser or the CLI. We hold no key that opens them, so xecret cannot read your secrets. Secret names, project and environment names and the audit log are not encrypted, so that listing and search stay fast — the trust model lists everything we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
   },
   {
     question: 'Do I still need a .env file?',
@@ -483,14 +483,14 @@ export default async function FeaturesPage() {
 
           <DetailRow
             reverse
-            title="Every read leaves a row behind"
+            title="Every value fetched leaves a row behind"
             visual={<AuditVisual />}
             copy={
               <>
                 <p>
-                  Reads, mutations and denials, all recorded. Denials are the half most tools leave
-                  out, and they are the half that shows an attack in progress rather than an attack
-                  that already worked.
+                  Value reads, mutations and denials, all recorded. Denials are the half most tools
+                  leave out, and they are the half that shows an attack in progress rather than an
+                  attack that already worked.
                 </p>
                 <p>
                   <code className="font-mono text-[0.9375rem]">secret.read</code> and{' '}

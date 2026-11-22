@@ -46,8 +46,8 @@ Playxoft — cannot decrypt them.**
 They are encrypted on the user's device, by the web dashboard (Web Crypto) or
 the Go CLI, with AES-256-GCM under a per-environment data key the client
 generates. That key is sealed with X25519 to the public key of every member and
-service token allowed to read the environment. Private keys stay on users'
-devices, wrapped under a User Key that a master passphrase (Argon2id, m=64 MiB,
+service token allowed to read the environment. Private keys leave users'
+devices only wrapped under a User Key that a master passphrase (Argon2id, m=64 MiB,
 t=3, p=1, run on the device), a passkey (WebAuthn PRF) or one of five one-time
 recovery codes unlocks. A service token carries its own private key inside the
 token string; the server keeps only the public half and an authentication hash,
@@ -69,7 +69,7 @@ and no support reset.
 | Root key compromise | The server's root key protects only its own operational secrets (webhook signing secrets) and environments created before end-to-end encryption shipped. It opens no end-to-end encrypted value. |
 | An xecret operator, or compelled disclosure | There is no key on our side to use or hand over. |
 | Another tenant's user | Every request is authorized against current database state through one function. Cross-tenant probes get 404, not 403, so existence is not confirmed. |
-| Stolen CLI credential | Credentials live in the OS keychain, are revocable, expire, and every use is logged with IP and device. |
+| Stolen CLI credential | Credentials live in the OS keychain (or a 0600 file where there is none), are revocable, expire, and every use is logged with IP and device. |
 | Compromised CI | Service tokens are scoped to one project and one environment, read-only by default, and carry no user identity. |
 | Ciphertext relocation | Every ciphertext is bound to its organisation, environment, secret and version. Moving a row makes decryption fail rather than succeed. |
 | Audit tampering | The audit table is append-only enforced by database grants — the application role has no UPDATE or DELETE on it. |

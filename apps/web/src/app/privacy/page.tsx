@@ -66,7 +66,7 @@ export const metadata: Metadata = {
 
 const SUMMARY = [
   'We hold your email address, the names of your organisations, projects, environments and secrets, your secret values as ciphertext we cannot decrypt, and a log of who read or changed what.',
-  'Your secret values and notes are end-to-end encrypted. They are encrypted on your device before they reach us, under keys we never hold, so we cannot read them — and neither can anyone who obtains our database or compels us to hand it over.',
+  'Your secret values and notes are end-to-end encrypted. They are encrypted on your device before they reach us, under keys we never hold, so we cannot read them — and neither can anyone who obtains our database or compels us to hand it over. The one exception is an older environment still on server-side encryption, which section 3 explains.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
   'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
   'What you delete is kept for 30 days, so that a mistake can be undone, and then erased for good — a deleted secret longer only where your plan’s restore window needs it. You can export everything with the CLI and delete your own account.',
@@ -175,12 +175,14 @@ const SECTIONS: readonly LegalSection[] = [
           Your public keys; your private keys, stored only encrypted under your vault key; your
           vault key, stored only encrypted under your master passphrase, under each recovery code
           and under each passkey you register, with the salt and Argon2id settings your passphrase
-          is stretched with; a hash that lets the lock screen check an unlock without learning your
-          passphrase; and the copies of each environment&rsquo;s key that are sealed to you. For a
-          browser where you set up a device PIN: half of the key that browser&rsquo;s copy is
-          encrypted under, a hash derived from the PIN, and the failed-attempt counter that stops it
-          being guessed. We never receive your passphrase, a recovery code or a PIN &mdash; only
-          values derived from them on your device &mdash; and we cannot recover any of them.
+          is stretched with; for each passkey, its credential identifier, the label you give it, the
+          transports your browser reports, and when it was added and last used; a hash that lets the
+          lock screen check an unlock without learning your passphrase; and the copies of each
+          environment&rsquo;s key that are sealed to you. For a browser where you set up a device
+          PIN: half of the key that browser&rsquo;s copy is encrypted under, a hash derived from the
+          PIN, and the failed-attempt counter that stops it being guessed. We never receive your
+          passphrase, a recovery code or a PIN &mdash; only values derived from them on your device
+          &mdash; and we cannot recover any of them.
         </>,
         <>
           <strong className="text-fg font-medium">Request logs.</strong> Method, path, a request
@@ -212,7 +214,7 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'What our encryption protects, and what it does not',
     paragraphs: [
       'Secret values and notes are end-to-end encrypted. Every environment has its own data key, generated on a member’s device. That key is sealed to the public key of each member and service token allowed to read the environment, and each member’s private key is stored only encrypted under a key that their master passphrase unlocks on their own device. Values are encrypted with AES-256-GCM in your browser or the CLI before they are sent, and each ciphertext is bound to its exact position — a row copied from staging into production does not decrypt.',
-      'We store the ciphertext and never hold a key that opens it. Your master passphrase and recovery codes never leave your device. Every read is still written to an append-only audit log that the application’s own database credentials cannot alter, so an organisation can see who was handed which value, and when.',
+      'We store the ciphertext and never hold a key that opens it. Your master passphrase and recovery codes never leave your device. Every value fetched is still written to an append-only audit log that the application’s own database credentials cannot alter, so an organisation can see who was handed which value, and when.',
       <>
         <strong className="text-fg font-medium">
           Which means xecret cannot decrypt your secret values.
@@ -222,6 +224,7 @@ const SECTIONS: readonly LegalSection[] = [
         you lose your passphrase, every recovery code and every passkey, we cannot recover your
         vault either &mdash; a teammate can share your environments with you again.
       </>,
+      'One exception, stated as plainly. An environment created before end-to-end encryption became the default uses server-side encryption: its values are encrypted under a key our server unwraps with the service’s root key, so we can decrypt them, and importing a .env file into one sends the file to us to parse. The environment’s key settings in the dashboard say so. It cannot be converted in place: create a new environment, move the values across — which encrypts them on your device — and delete the old one. Every environment created since is end-to-end encrypted from its first key.',
       'What is not encrypted the way values are: the names of your secrets, organisations, projects and environments; membership, roles and access grants; audit metadata; and everything in the request logs. Those are readable by us and by anybody who obtains the database. The values are not.',
       <>
         The guarantee rests on the code that does the encrypting. The CLI is open source and its
@@ -275,7 +278,8 @@ const SECTIONS: readonly LegalSection[] = [
           <strong className="text-fg font-medium">Cloudflare</strong> — hosting, the Workers runtime
           that serves every request, the edge network, rate limiting, and the Secrets Store binding
           that holds the service&rsquo;s root key, which protects our own operational secrets
-          &mdash; webhook signing keys, for example &mdash; and never your secret values.
+          &mdash; webhook signing keys, for example &mdash; and the keys of any older environment
+          still on server-side encryption, but never a value in an end-to-end encrypted one.
         </>,
         <>
           <strong className="text-fg font-medium">Neon</strong> — the managed PostgreSQL database
@@ -370,14 +374,14 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">Closed accounts</strong> — deleting your account
-          revokes every session and CLI token, deletes your vault and any device PINs, removes you
-          from the organisations you are not the last owner of, and deletes the organisations that
-          were only yours, which are then erased 30 days later as described above. The user record
-          itself is soft-deleted rather than erased, because the audit records you made have to keep
-          meaning something; the actor&rsquo;s label was written into each record at the time, so
-          the log still reads correctly with the account gone. A vault you reset in the last seven
-          days is kept until its window ends, then purged as above. Ask us if you need the identity
-          record erased outright.
+          revokes every session and CLI token, deletes your vault, your passkeys and any device
+          PINs, removes you from the organisations you are not the last owner of, and deletes the
+          organisations that were only yours, which are then erased 30 days later as described
+          above. The user record itself is soft-deleted rather than erased, because the audit
+          records you made have to keep meaning something; the actor&rsquo;s label was written into
+          each record at the time, so the log still reads correctly with the account gone. A vault
+          you reset in the last seven days is kept until its window ends, then purged as above. Ask
+          us if you need the identity record erased outright.
         </>,
         <>
           <strong className="text-fg font-medium">Sessions</strong> — 30 days from creation, and
@@ -601,7 +605,7 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'self-hosting',
     heading: 'Self-hosted deployments',
     paragraphs: [
-      'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the server’s root key, and writes their own privacy policy. End-to-end encryption works the same way there: the operator cannot read secret values either.',
+      'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the server’s root key, and writes their own privacy policy. End-to-end encryption works the same way there: the operator cannot read the values in an end-to-end encrypted environment either.',
       <>
         We receive nothing from a self-hosted instance — no telemetry, no phone-home, no licence
         check. <LegalLink href="/docs/self-hosting">Self-hosting</LegalLink> states the real

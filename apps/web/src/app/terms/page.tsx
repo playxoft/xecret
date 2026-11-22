@@ -165,8 +165,10 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
             <strong className="text-fg font-medium">Your tokens.</strong> CLI tokens and service
             tokens act as you within their scope. Scope them narrowly, give them an expiry, and
             revoke them the moment a laptop is lost or a CI system is retired. Revocation is
-            immediate: the CLI never falls back to its offline cache when we refuse a token, though
-            a copy already cached on a machine stays readable there, offline, until it expires.
+            immediate: the CLI never falls back to its offline cache when we refuse a token. A copy
+            already cached on a machine stays readable there, offline, for as long as that machine
+            keeps it, which is why removing somebody should be followed by rotating what they could
+            read.
           </>,
           <>
             <strong className="text-fg font-medium">Your members.</strong> Removing somebody who has
@@ -208,16 +210,18 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       id: 'your-data',
       heading: 'Your content, and your own compliance',
       paragraphs: [
-        'Your secrets, your names, your structure and your audit history are yours. We claim no ownership of them. You grant us only the licence we need to run the service: to store, transmit, back up, and display that content to the people you have authorised. Secret values and notes reach us already encrypted, and we have no means to decrypt them.',
+        'Your secrets, your names, your structure and your audit history are yours. We claim no ownership of them. You grant us only the licence we need to run the service: to store, transmit, back up, and display that content to the people you have authorised, and, for an older environment still on server-side encryption, to encrypt and decrypt its values on your instruction. Values and notes in an end-to-end encrypted environment reach us already encrypted, and we have no means to decrypt them.',
         'What you store is your decision, and so is whether you are permitted to store it. If personal data ends up inside a secret value, you are its controller and we process it on your instructions. If you are subject to a regime with specific requirements — PCI DSS, HIPAA, a sector regulator, a customer contract — decide whether this service meets them before you store anything under it. We hold no certification and publish no attestation, and we would rather write that sentence than let you assume otherwise.',
         <>
           Read <LegalLink href="/docs/security/trust-model">the trust model</LegalLink> first.
           Secret values and notes are end-to-end encrypted: they are encrypted on your devices, and
-          we hold no key that can decrypt them. Secret names, structure and audit history are not
-          encrypted that way, so keep anything confidential out of a name. And because we cannot
-          decrypt your values, we cannot recover them either: if everybody who holds an
-          environment&rsquo;s key loses access to it, its values are gone, for us as much as for
-          you.
+          we hold no key that can decrypt them. The exception is an environment created before
+          end-to-end encryption became the default: it stays on server-side encryption, which we can
+          decrypt, until you move its values to a new environment, and its key settings say so.
+          Secret names, structure and audit history are not encrypted that way, so keep anything
+          confidential out of a name. And because we cannot decrypt your values, we cannot recover
+          them either: if everybody who holds an environment&rsquo;s key loses access to it, its
+          values are gone, for us as much as for you.
         </>,
       ],
     },

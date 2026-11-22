@@ -93,7 +93,7 @@ not which of many OAuth providers.
 | `secret.rotated` | A value was rotated |
 | `secret.imported` | A bulk import ran |
 | `secret.read` | A **bulk** read — one row per `xecret run` or `pull`, with a count |
-| `secret.revealed` | A **single** value was returned — as ciphertext, decrypted on the reader's device |
+| `secret.revealed` | A **single** value was returned — as ciphertext, decrypted on the reader's device. In an older environment still on server-side encryption, the server decrypted it and returned plaintext |
 
 `secret.read` and `secret.revealed` are the two rows that mean somebody obtained
 a value, and the distinction is deliberate. A 200-secret pull writes **one**

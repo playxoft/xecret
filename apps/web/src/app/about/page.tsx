@@ -245,7 +245,7 @@ const MILESTONES = [
   {
     state: 'shipped',
     title: 'An append-only audit log',
-    body: 'Every read, write and rotation is written down, including your own. Encryption keeps a value private; the log is what tells you who was handed it, which is what you need on the day something leaks.',
+    body: 'Every value fetched, every write and every rotation is written down, including your own. Encryption keeps a value private; the log is what tells you who was handed it, which is what you need on the day something leaks.',
   },
   {
     state: 'shipped',
@@ -348,7 +348,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can you read my secrets?',
     answer:
-      'No. Secret values and notes are encrypted on your device — in the browser or the CLI — under a key generated for each environment and shared only with the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. What we can see — secret names, project and environment names, and the audit log — is listed plainly in the trust model.',
+      'No. Secret values and notes are encrypted on your device — in the browser or the CLI — under a key generated for each environment and shared only with the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. What we can see — secret names, project and environment names, and the audit log — is listed plainly in the trust model. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
   },
   {
     question: 'How do you make money?',

@@ -34,8 +34,9 @@ sign out everywhere at once.
 
 Signed in and unlocked are different things. Your secrets are decrypted in the
 browser with keys your vault holds, and the vault locks when the session has
-been idle for a while — an hour by default; 15 minutes, 4 hours or 12 hours if
-you choose under *Settings → Security*. You can also lock it on demand, in this
+been idle for a while — an hour by default; 15 minutes, 4 hours, or until the
+tab closes if you choose under *Settings → Security*. However active you are, an
+unlock never lasts more than 8 hours. You can also lock it on demand, in this
 browser or in every signed-in session at once.
 
 A locked session keeps you signed in but refuses almost everything with
@@ -50,9 +51,11 @@ decrypt a value. CLI and service tokens are not subject to the lock.
 ## CLI tokens
 
 Created by `xecret login`, through a browser consent flow with PKCE. The token
-is stored in your operating system's keychain, never in a dotfile. The same
+is stored in your operating system's keychain. On a machine with none — or
+with `XECRET_KEYRING=file`, for containers — it goes in a file readable only by
+you, `~/.xecret/credentials.json`, and the CLI warns you that it has. The same
 flow hands the CLI your vault's key, sealed to a key only that process holds,
-so it decrypts on your machine; that key is kept in the keychain too.
+so it decrypts on your machine; that key is kept in the same place.
 
 **A CLI token adds no authority.** It acts as you: your role, your grants, and
 nothing more. That is why creating one requires only active membership rather
@@ -92,9 +95,9 @@ For CI, containers and anything else with no human at the keyboard.
 | Expiry | Optional, and worth setting |
 | IP allowlist | Optional; use it if your runners have stable egress addresses |
 
-The value is shown **once**. Your browser generates it, and it carries two
-things: the part that authenticates, and a private key that opens this
-environment's data key. The server stores a hash of the first and only the
+The value is shown **once**. It carries two things: the part that
+authenticates, which the server issues, and a private key your browser
+generates, which opens this environment's data key. The server stores a hash of the first and only the
 public half of the second, so `xecret run` decrypts on your runner, and there
 is no listing that could return the token and no support process that can
 recover it. Lost means mint a new one.

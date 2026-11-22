@@ -9,19 +9,30 @@
  *
  * ## Why this exists
  *
- * The website, the privacy policy and the terms say that xecret cannot read
- * your secret values. That is true of every `e2ee` environment, which is every
- * environment created since migration 0013. It is **not** true of an
- * environment that migration backfilled to `server`: its values are still
- * encrypted under an `env_keys` row the Worker unwraps with the root key, and
- * `secrets-service.ts` still decrypts them. ADR 0009 gates the claim on exactly
- * this — "until the last environment is migrated … we can read *some* customer
- * secrets".
+ * The website says that xecret cannot read your secret values. That is true of
+ * every `e2ee` environment, which is every environment created since migration
+ * 0013. It is **not** true of an environment that migration backfilled to
+ * `server`: its values are still encrypted under an `env_keys` row the Worker
+ * unwraps with the root key, and `secrets-service.ts` still decrypts them. The
+ * privacy policy and the terms state that exception; this report says whether
+ * anybody is still in it.
  *
- * So the claim holds on a deployment exactly when this report finds no live
- * secret in a server-mode environment. Soft-deleted ones count too: deleting an
- * environment or a secret leaves its ciphertext, and the key that opens it, in
- * place until the 30-day purge erases them.
+ * ADR 0009 gates the unqualified claim on two things: no environment left in
+ * server mode, and the envelope decrypt path deleted. This answers the first
+ * only. A clean run means no stored value is one the server can open; the
+ * server-mode code path still exists until it is removed.
+ *
+ * ## Live, and awaiting purge
+ *
+ * An environment is live only when it, its project and its organisation are
+ * all undeleted: deleting a project or an organisation marks only that row, so
+ * an environment inside one keeps a null `deleted_at` (the same shape
+ * `check-unkeyed-environments.ts` relies on). Deleted ones are counted too,
+ * because a soft delete leaves the ciphertext and the key that opens it in
+ * place until the purge erases them — 30 days after the delete, or, for a secret
+ * deleted from an environment that still exists, at the end of its
+ * organisation's point-in-time restore window if that is longer
+ * (`deletedSecretRetentionDays`).
  *
  * ## What to do about a hit
  *
@@ -42,13 +53,17 @@ interface ModeRow {
   deleted_environments: string;
   organisations: string;
   live_secrets: string;
-  secrets_in_deleted_environments: string;
+  deleted_secrets: string;
 }
 
 async function main(): Promise<void> {
   const url = process.env['DATABASE_URL'];
   if (!url) {
-    console.error('DATABASE_URL is not set. Try: phase run -- npm run check:server-encrypted');
+    // `--env Production` spelled out: the default Phase environment is
+    // development, where a clean run proves nothing about the live service.
+    console.error(
+      'DATABASE_URL is not set. Try: phase run --env Production -- npm run check:server-encrypted',
+    );
     process.exit(1);
   }
 
@@ -56,34 +71,34 @@ async function main(): Promise<void> {
 
   try {
     const [row] = (await db.execute(sql`
+      WITH server_envs AS (
+        SELECT
+          e.id,
+          p.org_id,
+          (e.deleted_at IS NULL AND p.deleted_at IS NULL AND o.deleted_at IS NULL) AS live
+        FROM environments e
+        JOIN projects p ON p.id = e.project_id
+        JOIN organizations o ON o.id = p.org_id
+        WHERE e.encryption_mode = 'server'
+      )
       SELECT
-        count(*) FILTER (WHERE e.deleted_at IS NULL) AS live_environments,
-        count(*) FILTER (WHERE e.deleted_at IS NOT NULL) AS deleted_environments,
-        count(DISTINCT p.org_id) AS organisations,
+        (SELECT count(*) FROM server_envs WHERE live) AS live_environments,
+        (SELECT count(*) FROM server_envs WHERE NOT live) AS deleted_environments,
+        (SELECT count(DISTINCT org_id) FROM server_envs) AS organisations,
         (
-          SELECT count(*)
-          FROM secrets s
-          JOIN environments se ON se.id = s.environment_id
-          WHERE se.encryption_mode = 'server'
-            AND se.deleted_at IS NULL
-            AND s.deleted_at IS NULL
+          SELECT count(*) FROM secrets s JOIN server_envs se ON se.id = s.environment_id
+          WHERE se.live AND s.deleted_at IS NULL
         ) AS live_secrets,
         (
-          SELECT count(*)
-          FROM secrets s
-          JOIN environments se ON se.id = s.environment_id
-          WHERE se.encryption_mode = 'server'
-            AND (se.deleted_at IS NOT NULL OR s.deleted_at IS NOT NULL)
-        ) AS secrets_in_deleted_environments
-      FROM environments e
-      JOIN projects p ON p.id = e.project_id
-      WHERE e.encryption_mode = 'server'
+          SELECT count(*) FROM secrets s JOIN server_envs se ON se.id = s.environment_id
+          WHERE NOT se.live OR s.deleted_at IS NOT NULL
+        ) AS deleted_secrets
     `)) as unknown as ModeRow[];
 
     const live = Number(row?.live_environments ?? 0);
     const deleted = Number(row?.deleted_environments ?? 0);
     const secrets = Number(row?.live_secrets ?? 0);
-    const buried = Number(row?.secrets_in_deleted_environments ?? 0);
+    const buried = Number(row?.deleted_secrets ?? 0);
 
     if (live + deleted === 0) {
       console.warn(
@@ -97,10 +112,10 @@ async function main(): Promise<void> {
     console.warn(`  deleted, awaiting purge:    ${deleted}`);
     console.warn(`  organisations:              ${Number(row?.organisations ?? 0)}`);
     console.warn(`  live secrets in them:       ${secrets}`);
-    console.warn(`  deleted secrets in them:    ${buried}`);
+    console.warn(`  deleted, awaiting purge:    ${buried}`);
     console.warn('');
     console.warn(
-      'Until these are moved to new environments and purged, "xecret cannot read your secrets" is not true of them.',
+      'Until these are moved to new environments and purged, the server can decrypt the values in them.',
     );
     process.exitCode = 1;
   } finally {

@@ -39,9 +39,9 @@ PowerShell, `cmd.exe` and WSL all work. See [installing the CLI](install.md).
 ### Can xecret read my secrets?
 
 No. Secret values and notes are end-to-end encrypted: your browser or the CLI
-encrypts them before they are sent, under keys that never leave your devices.
-We store ciphertext and hold nothing that opens it, so neither does anyone who
-breaks into our servers or orders us to hand them over.
+encrypts them before they are sent, under keys that leave your devices only
+encrypted. We store ciphertext and hold nothing that opens it, and neither does
+anyone who steals our database or orders us to hand it over.
 
 We can see secret *names*, who read what and when, and your account details.
 The full list, and the limits of the guarantee, are in

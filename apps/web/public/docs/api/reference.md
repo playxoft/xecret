@@ -71,7 +71,7 @@ needs it unlocked.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/auth/vault` | Whether you have a vault, whether this session has unlocked it, and the wrapped material an unlock needs: the passphrase and passkey wraps, the Argon2id salt and parameters, and your encrypted private keys. Usable while locked. A CLI token may read it too, for `xecret login --passphrase` — rate-limited, and audited as `vault.material_read`. |
-| `POST` | `/auth/vault` | Sets up a vault: public keys, encrypted private keys, the passphrase wrap, the five recovery wraps and the unlock verifier, in one transaction. **409** if you already have one. |
+| `POST` | `/auth/vault` | Sets up a vault: public keys, encrypted private keys, the passphrase wrap, the five recovery wraps and the two unlock verifiers, in one transaction. **409** if you already have one. |
 | `PATCH` | `/auth/vault` | Body `{ autoLockMinutes }`: how long the vault may sit idle before it locks, held between 15 and 720. Applies to every signed-in browser. |
 | `POST` | `/auth/vault/unlock` | Marks this session unlocked, with a verifier your browser derived — the unlock itself already happened there. Wrong verifiers are counted and slowed down. |
 | `POST` | `/auth/vault/lock` | Locks this session, or every one with `{ everywhere: true }`. Does not sign you out. Returns `{ locked }`, the number of sessions locked. |
@@ -81,8 +81,8 @@ needs it unlocked.
 | `POST` | `/auth/vault/pin/attempt` | One device-PIN attempt. Five wrong in a row destroy that enrolment. |
 | `GET` `POST` | `/auth/vault/prf` | List passkeys enrolled for unlocking (WebAuthn PRF), or enrol one. |
 | `DELETE` | `/auth/vault/prf/{passkeyId}` | Removes a passkey. The passphrase always remains a way in. |
-| `POST` `PUT` | `/auth/vault/recovery` | Exchange a recovery code's lookup hash for the wrap it opens, or replace the whole kit of five codes. |
-| `POST` | `/auth/vault/recovery/complete` | Finishes a recovery: marks the code used, sets a new passphrase and reissues all five codes, in one transaction. |
+| `POST` `PUT` | `/auth/vault/recovery` | `POST` exchanges a recovery code's lookup hash for the wrap it opens. `PUT` replaces the whole kit of five codes, and needs an unlocked session and the current passphrase's verifier. |
+| `POST` | `/auth/vault/recovery/complete` | Finishes a recovery: marks the code used, sets a new passphrase, reissues all five codes and unlocks this session, in one transaction. |
 
 ### Re-authentication for a vault reset
 

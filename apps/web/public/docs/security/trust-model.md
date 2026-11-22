@@ -81,10 +81,12 @@ Giving somebody an environment means sealing its data key to their public key.
 Only a client that already holds the key can do that, so it is done by a
 teammate's browser, not by us.
 
-Removing somebody deletes their copies of the key, and the dashboard asks you to
-**rotate** it: a new data key, sealed to everyone still entitled. Rotation stops
-the removed person opening anything written afterwards. It cannot make them
-forget values they already read — rotate those secrets at their source.
+Removing somebody deletes their copies of the key. Then **rotate** it, from the
+environment's key settings: a new data key, sealed to everyone still entitled.
+The dashboard does not do this for you on removal, so make it part of
+offboarding. Rotation stops the removed person opening anything written
+afterwards. It cannot make them forget values they already read — rotate those
+secrets at their source.
 
 ### Forgetting your passphrase
 
@@ -105,8 +107,8 @@ emails you an encrypted archive of it first — see
 | A database backup | **Ciphertext.** Plus the metadata listed below, and the wrapped keys — which let them try guesses at each person's passphrase offline, at Argon2id's cost per guess. A strong passphrase holds; a weak one may not. |
 | The database *and* our root key | The same. The root key protects the server's own operational secrets, such as webhook signing secrets, and opens no end-to-end encrypted value. |
 | Somebody inside xecret, or a court order | The same again. We hold no key to hand over. |
-| Your CLI token | On its own: the ciphertext you can reach, and your passphrase wrap to guess against offline. With the key the CLI keeps in your OS keychain as well: everything you can read. Revoke it; every use is audited. |
-| A CI service token | One environment of one project, because the token carries that environment's key. Read-only unless you made it otherwise. |
+| Your CLI token | On its own: the ciphertext you can reach, and your passphrase wrap to guess against offline. With the key the CLI keeps in your OS keychain (or, where there is none, its 0600 credentials file) as well: everything you can read. Revoke it; every use is audited. |
+| A CI service token | One environment of one project: the server scopes the token to it, and the token can open only that environment's key. Read-only unless you made it otherwise. |
 | Your session cookie | Your account's authority on the server while the session is unlocked — but no value: your keys are held by your browser, not carried in the cookie. A locked vault refuses nearly everything until it is unlocked again. |
 
 ## What xecret can see
@@ -127,7 +129,8 @@ Saying this plainly is part of the guarantee being worth anything.
 - **Billing details** for paid plans.
 
 What we never receive: values, notes, your personal overrides, the text of a
-template, your passphrase, your recovery codes, or any private key.
+template, your passphrase, your recovery codes, or any key in a form that
+opens something — private keys and the User Key reach us only wrapped.
 
 ## The rules the implementation follows
 
@@ -136,11 +139,12 @@ These are enforced structurally, not by convention:
 - **Clients encrypt; the server stores.** Write handlers check shapes, names
   and permissions and store ciphertext. No server code path holds a key for an
   end-to-end encrypted environment.
-- **No secret material is ever sent to the server.** Not the passphrase, not
-  the User Key, not a private key, not the half of a service token that holds
-  its key — including in diagnostics and error reports.
-- **Every read is audited.** Each fetch of an environment's values, or of a
-  single value, writes a record. The server cannot see you decrypt, so it
+- **No secret material is ever sent to the server.** Not the passphrase, and
+  never a key in usable form: the User Key and private keys arrive only wrapped,
+  and the half of a service token that holds its key not at all — including in
+  diagnostics and error reports.
+- **Every value fetched is audited.** Each pull, run, reveal or export writes a
+  record. The server cannot see you decrypt, so it
   records the moment it handed ciphertext to somebody holding the key — which
   is the moment that matters.
 - **Every denial is audited too.** A system that records only what succeeded
@@ -212,8 +216,10 @@ Stated plainly, because these are the failures people are surprised by:
   export](../features/policies.md#disabling-plaintext-export) and the secret
   policy's value rules are enforced by the clients that hold the plaintext, so
   they stop honest mistakes, not somebody who means to get round them — anyone
-  who may read a value can write it down. A removed member's own offline cache
-  keeps working on their machine for up to seven days, too; rotate.
+  who may read a value can write it down. A removed member's offline cache also
+  stays readable on their machine for as long as they keep it: the seven-day
+  limit is enforced by their own CLI, which they can raise or turn off. Rotate
+  what they could read.
 - **A server that misbehaves, in two narrow ways**, even though values are
   end-to-end encrypted. It could answer a [reference](../features/references.md)
   or an inherited name with a *different value you can already decrypt* —

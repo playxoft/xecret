@@ -165,7 +165,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Can xecret read my secrets?',
         answer:
-          'No. Secret values and notes are encrypted on your device — in the browser or the CLI — before they are sent, under a key generated for each environment. That key is sealed to the public key of each member and service token you give access to, and never to us. We store ciphertext, so neither our staff, nor anyone who obtains our database, nor anyone who compels us to hand it over can read your values. Secret names, project and environment names and the audit log are not encrypted.',
+          'No. Secret values and notes are encrypted on your device — in the browser or the CLI — before they are sent, under a key generated for each environment. That key is sealed to the public key of each member and service token you give access to, and never to us. We store ciphertext, so neither our staff, nor anyone who obtains our database, nor anyone who compels us to hand it over can read your values. Secret names, project and environment names and the audit log are not encrypted. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
       },
       {
         question: 'Is xecret zero-knowledge or end-to-end encrypted?',
@@ -180,17 +180,17 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What happens if your servers are compromised?',
         answer:
-          'Stored values stay sealed. Our servers never hold a key that opens an end-to-end encrypted value, so nothing on them — the database, the server’s own root key, or both together — yields a secret. The residual risk is the web dashboard: a compromised server could serve altered code to the people using it. A strict Content Security Policy narrows that, and the CLI never depends on code we serve.',
+          'Stored values stay sealed. Our servers never hold a key that opens an end-to-end encrypted value, so nothing on them — the database, the server’s own root key, or both together — yields one. The residual risk is the web dashboard: a compromised server could serve altered code to the people using it. A strict Content Security Policy narrows that, and the CLI never depends on code we serve.',
       },
       {
         question: 'How are encryption keys rotated?',
         answer:
-          'An environment’s key is rotated from the dashboard: a new key is generated in your browser and sealed to everybody still entitled to it, and removing a member prompts exactly that. Changing your passphrase re-wraps a single key and re-encrypts nothing. A key rotation is itself an audited event. Rotating an individual secret is just a write: the new version becomes current and the history stays readable.',
+          'An environment’s key is rotated from the dashboard: a new key is generated in your browser and sealed to everybody still entitled to it, and it is the step to take after removing a member. Changing your passphrase re-wraps a single key and re-encrypts nothing. A key rotation is itself an audited event. Rotating an individual secret is just a write: the new version becomes current and the history stays readable.',
       },
       {
         question: 'Is there an audit log?',
         answer:
-          'Yes, and every read is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
+          'Yes, and every value fetched is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
       },
       {
         question: 'Could one of my secret values end up in a log line?',
@@ -381,12 +381,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How do I remove somebody who leaves?',
         answer:
-          'Remove their membership. Their sessions and CLI tokens stop working straight away, and the CLI treats that rejection as a decision rather than falling back to its offline cache. The dashboard then asks you to rotate the key of every environment they could read, so a copy of the old key opens nothing written afterwards.',
+          'Remove their membership. Their sessions and CLI tokens stop working straight away, and the CLI treats that rejection as a decision rather than falling back to its offline cache. Then rotate the key of each environment they could read, from its key settings, so a copy of the old key opens nothing written afterwards.',
       },
       {
         question: 'What can a departing employee still see?',
         answer:
-          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they read and when, and that list is what you rotate — which is the whole reason every read is recorded.',
+          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they read and when, and that list is what you rotate — which is the whole reason every value fetched is recorded.',
       },
     ],
   },
