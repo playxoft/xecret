@@ -255,7 +255,7 @@ const MILESTONES = [
   {
     state: 'shipped',
     title: 'Browser-side .env import',
-    body: 'The file you already have is parsed and encrypted in your tab, so your production credentials are never sent to us in plaintext.',
+    body: 'Into an end-to-end encrypted environment, the file you already have is parsed and encrypted in your tab, so your production credentials never reach us in plaintext.',
   },
   {
     state: 'shipped',
@@ -363,7 +363,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret production-ready?',
     answer:
-      'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production locked down by default, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship, and Enterprise agreements add an SLA.',
+      'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production closed to developers by default on Team and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship wherever we reasonably can, and an Enterprise agreement can add an SLA.',
   },
 ];
 
@@ -686,8 +686,8 @@ export default async function AboutPage() {
 
         <Reveal className="mx-auto mt-12 max-w-2xl">
           <p className="text-fg-muted text-center text-sm leading-7">
-            Breaking changes are announced before they ship, never sprung on you. What changed and
-            why goes up on{' '}
+            Breaking changes are announced before they ship wherever we reasonably can. What changed
+            and why goes up on{' '}
             <Link href="/blog" className={QUIET_LINK}>
               the xecret blog
             </Link>{' '}

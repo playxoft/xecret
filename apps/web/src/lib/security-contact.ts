@@ -8,7 +8,7 @@ import { absoluteUrl, REPO_URL } from '@/lib/site';
  * a researcher's tooling reads before a human ever opens a page. A disclosure
  * address that differs between two of them is the one typo that sends a report
  * about a production credential store to nobody, so the page and the file read
- * these constants, and `security-contact.test.ts` fails when `SECURITY.md`
+ * these constants, and `marketing-pages.test.ts` fails when `SECURITY.md`
  * stops agreeing with them.
  */
 
@@ -36,6 +36,15 @@ export const DISCLOSURE_COMMITMENTS = [
   { label: 'Fix or mitigation plan', value: 'within 30 days for high severity' },
   { label: 'Public disclosure', value: 'coordinated with you, after a fix ships' },
 ] as const;
+
+/** A commitment's value, looked up by its label rather than by its position in the table. */
+export function disclosureCommitment(
+  label: (typeof DISCLOSURE_COMMITMENTS)[number]['label'],
+): string {
+  const row = DISCLOSURE_COMMITMENTS.find((commitment) => commitment.label === label);
+  if (row === undefined) throw new Error(`No disclosure commitment labelled ${label}`);
+  return row.value;
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

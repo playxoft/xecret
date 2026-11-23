@@ -112,9 +112,9 @@ The limits of the guarantee, stated as plainly as the guarantee itself:
 
 ## Supported versions
 
-xecret is pre-1.0 and under active development. Only the latest release
-receives security fixes. Once 1.0 ships, this section will state a support
-window.
+Security fixes ship in the latest release of the server and the CLI. The
+hosted service always runs the latest server; self-hosted deployments and CLI
+installs should track the latest release to receive them.
 
 ## Scope
 

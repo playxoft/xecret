@@ -102,7 +102,7 @@ const FEATURES = [
   {
     Icon: KeyIcon,
     title: 'End-to-end encrypted',
-    body: 'Every environment has its own data key, generated on your device and shared only with the people and CI tokens you choose — never with us. Development, staging and production never share a key.',
+    body: 'Every environment you create has its own data key, generated on your device and shared only with the people and CI tokens you choose — never with us. Development, staging and production never share a key.',
   },
   {
     Icon: TerminalIcon,
@@ -216,7 +216,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What happens if xecret is down when I need to deploy?',
     answer:
-      'xecret runs on Cloudflare’s global network, and the CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working even when the network does not. For deploys, keep a break-glass copy of your most critical credentials somewhere you control — good practice with any provider.',
+      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working even when xecret cannot be reached. For deploys, keep a break-glass copy of your most critical credentials somewhere you control — good practice with any provider.',
   },
   {
     question: 'Is it really open source, or is the useful half proprietary?',
@@ -237,7 +237,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret ready for production?',
     answer:
-      'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production locked down by default, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship, and Enterprise agreements add an SLA.',
+      'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production closed to developers by default on Team and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship wherever we reasonably can, and an Enterprise agreement can add an SLA.',
   },
 ];
 

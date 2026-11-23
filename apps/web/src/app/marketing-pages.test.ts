@@ -418,7 +418,7 @@ describe('the legal pages state what the code does, about whom', () => {
   // Both documents name the contracting company; one with a mistyped CIN or
   // an old address beside one without is two companies as far as a reader can
   // tell. The register is the source; these strings are copied from it.
-  it.each(['privacy', 'terms'] as const)(
+  it.each(['privacy', 'terms', 'security'] as const)(
     '%s names the company by its registered details',
     (page) => {
       const text = (SOURCES.get(page) ?? '').replace(/\s+/g, ' ');

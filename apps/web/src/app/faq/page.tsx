@@ -19,6 +19,7 @@ import {
   graph,
 } from '@/components/marketing';
 import { AlertCircleIcon, BookIcon, GitHubIcon } from '@/components/ui/icons';
+import { disclosureCommitment, SECURITY_EMAIL } from '@/lib/security-contact';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 import { takesPayments } from '@/server/billing/payments-live';
 
@@ -205,17 +206,16 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do you have SOC 2 or ISO 27001?',
         answer:
-          'Not today: xecret does not hold a SOC 2 or ISO 27001 certification, and we do not imply otherwise. What a security review can verify instead is public — the source, the encryption specification, the threat model and the security page — and a data processing agreement is available on request.',
+          'No. xecret does not hold a SOC 2 or ISO 27001 certification, and we do not imply otherwise. What a security review can verify instead is public — the source, the encryption specification, the threat model and the security page — and you can ask us for a data processing agreement at support@playxoft.com.',
       },
       {
         question: 'Is xecret production-ready?',
         answer:
-          'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production locked down by default, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship, and Enterprise agreements add an SLA.',
+          'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production closed to developers by default on Team and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship wherever we reasonably can, and an Enterprise agreement can add an SLA.',
       },
       {
         question: 'How do I report a vulnerability?',
-        answer:
-          'Privately — open a security advisory on the GitHub repository, or email security@playxoft.com. Please do not open a public issue. You get an acknowledgement within 48 hours and an initial assessment within five working days, and we credit you in the advisory unless you would rather we did not.',
+        answer: `Privately — open a security advisory on the GitHub repository, or email ${SECURITY_EMAIL}. Please do not open a public issue. You get an acknowledgement ${disclosureCommitment('Acknowledgement')} and an initial assessment ${disclosureCommitment('Initial assessment')}, and we credit you in the advisory unless you would rather we did not.`,
       },
     ],
   },

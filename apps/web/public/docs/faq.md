@@ -171,11 +171,12 @@ unencumbered so it can ship inside your Docker images without licence friction.
 ### Is it production-ready?
 
 Yes. xecret is built for production credentials: end-to-end encryption with a
-published specification, production locked down by default, scoped and
-revocable CI tokens, an append-only audit log, and an offline cache that keeps
-a local run going through a network outage. Breaking changes are announced
-before they ship, and Enterprise agreements add an SLA. See
-[security at xecret](/security) and [the trust model](security/trust-model.md).
+published specification, production closed to developers by default on Team
+and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an
+offline cache that keeps a local run going through a network outage. Breaking
+changes are announced before they ship wherever we reasonably can, and an
+Enterprise agreement can add an SLA. See [security at xecret](/security) and
+[the trust model](security/trust-model.md).
 
 ## Comparisons
 

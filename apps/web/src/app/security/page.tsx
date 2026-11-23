@@ -43,6 +43,7 @@ import {
 } from '@/components/ui/icons';
 import {
   DISCLOSURE_COMMITMENTS,
+  disclosureCommitment,
   SECURITY_ADVISORY_URL,
   SECURITY_EMAIL,
   SECURITY_POLICY_URL,
@@ -110,7 +111,9 @@ interface IconFact extends Fact {
   readonly icon: IconComponent;
 }
 
-const [ACKNOWLEDGEMENT, ASSESSMENT, FIX_PLAN] = DISCLOSURE_COMMITMENTS;
+const ACKNOWLEDGEMENT = disclosureCommitment('Acknowledgement');
+const ASSESSMENT = disclosureCommitment('Initial assessment');
+const FIX_PLAN = disclosureCommitment('Fix or mitigation plan');
 
 /* ── At a glance ────────────────────────────────────────────────────────────
    The six answers a questionnaire asks for first, each expanded further down. */
@@ -131,7 +134,7 @@ const GLANCE: readonly { icon: IconComponent; label: string; value: string }[] =
   {
     icon: MailIcon,
     label: 'Vulnerability reports',
-    value: `Acknowledged ${ACKNOWLEDGEMENT.value}`,
+    value: `Acknowledged ${ACKNOWLEDGEMENT}`,
   },
 ];
 
@@ -155,12 +158,12 @@ const ENCRYPTION: readonly Fact[] = [
     body: 'Every ciphertext is bound to its organisation, environment, secret and version. A row moved anywhere else fails to decrypt instead of quietly succeeding.',
   },
   {
-    title: 'Imports never upload plaintext',
-    body: 'A .env file is parsed and encrypted in your browser. Only ciphertext is sent.',
+    title: 'Imports encrypt before they upload',
+    body: 'Into an end-to-end encrypted environment, a .env file is parsed and encrypted in your browser, and only ciphertext is sent.',
   },
   {
     title: 'CI decrypts on the runner',
-    body: 'A service token carries its own private key. We keep only the public half and a hash of the part that authenticates, so a pipeline decrypts on its runner, never on our servers.',
+    body: 'A service token carries its own private key. We keep only the public half and a hash of the part that authenticates, so in an end-to-end encrypted environment a pipeline decrypts on its runner, never on our servers.',
   },
 ];
 
@@ -184,8 +187,8 @@ const NEVER_REACHES_US = [
 const ACCESS: readonly IconFact[] = [
   {
     icon: UsersIcon,
-    title: 'Four roles, scoped by grants',
-    body: 'Viewer, developer, admin and owner decide what kind of action is available to someone; grants on a project or a single environment decide where. The more specific grant wins, and no grant lifts anyone above their role.',
+    title: 'Built-in roles, scoped by grants',
+    body: 'Viewer, developer, admin and owner — plus custom roles on Enterprise — decide what kind of action is available to someone; grants on a project or a single environment decide where. The more specific grant wins, and no grant lifts anyone above their role.',
   },
   {
     icon: ShieldIcon,
@@ -195,7 +198,7 @@ const ACCESS: readonly IconFact[] = [
   {
     icon: KeyIcon,
     title: 'Service tokens, pinned',
-    body: 'Each is pinned to one project and one environment, read-only by default, and can never delete a secret. Expiry is optional; from Pro, so is an IP allowlist, and an organisation can require both.',
+    body: 'Each is pinned to one project and one environment, read-only by default, and can never delete a secret. Expiry and an IP allowlist are optional on every plan; from Pro, an organisation can require both.',
   },
   {
     icon: LogOutIcon,
@@ -226,7 +229,7 @@ const AUDIT_RECORDED: readonly Fact[] = [
   },
   {
     title: 'The right name on every write',
-    body: 'A service token’s write is recorded as that token, never as the person who minted it, with a database constraint holding the two apart.',
+    body: 'A service token’s write is recorded as that token, never as the person who minted it, and each secret’s row names exactly one writer, enforced by a database constraint.',
   },
 ];
 
@@ -241,7 +244,7 @@ const AUDIT_PROTECTED: readonly Fact[] = [
   },
   {
     title: 'Filtered when you need it',
-    body: 'By actor, action, project, environment, outcome and date range, in the dashboard or over the API.',
+    body: 'In the dashboard by actor, action, project and outcome; over the API by those and by environment and date range too.',
   },
 ];
 
@@ -309,7 +312,7 @@ const HARDENING: readonly Fact[] = [
     body: 'Never derived from an exception, a database error or the rejected input, because the rejected input may itself be a secret.',
   },
   {
-    title: 'A root key that opens no secret',
+    title: 'A root key kept away from your values',
     body: 'Held in Cloudflare Secrets Store, it protects the service’s own operational secrets, such as webhook signing keys, and opens no end-to-end encrypted value.',
   },
   {
@@ -373,11 +376,11 @@ const COMPLIANCE: readonly Fact[] = [
   },
   {
     title: 'Deletion that finishes',
-    body: 'Deleted organisations, projects, environments and secrets are erased for good after 30 days — longer only where your plan’s restore window needs it — by a daily job that records each erasure in the audit log.',
+    body: 'Deleted organisations, projects, environments and secrets are erased for good after 30 days — longer only where your plan’s restore window needs it — by a daily job that records each erasure in the audit log. Database backups expire on their own rotation.',
   },
   {
     title: 'Breach notification',
-    body: 'The owners of an affected organisation are told without undue delay, and the supervisory authority within 72 hours where the law requires it.',
+    body: 'If a breach affects your personal data, the owners of an affected organisation are told without undue delay, and the supervisory authority within 72 hours where the law requires it.',
   },
   {
     title: 'No trackers',
@@ -405,11 +408,11 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Is xecret SOC 2 or ISO 27001 certified?',
     answer:
-      'No. xecret does not hold SOC 2 or ISO 27001 certification, and has not had an external security audit. What a review gets instead is the evidence itself: the source code, the byte-level encryption specification and the threat model are public, and the guarantee that matters most — that we cannot read your secret values — rests on cryptography you can check rather than on a policy we attest to. Under the GDPR and the UK GDPR we act as your processor, and a data processing agreement is available on request at support@playxoft.com.',
+      'No. xecret does not hold SOC 2 or ISO 27001 certification, and has not had an external security audit. What a review gets instead is the evidence itself: the source code, the byte-level encryption specification and the threat model are public, and the guarantee that matters most — that we cannot read your secret values — rests on cryptography you can check rather than on a policy we attest to. Under the GDPR and the UK GDPR we act as your processor, and a data processing agreement can be requested at support@playxoft.com.',
   },
   {
     question: 'How do I report a vulnerability?',
-    answer: `Privately, through a GitHub security advisory on the xecret repository or by email to ${SECURITY_EMAIL} — never in a public issue. We acknowledge a report ${ACKNOWLEDGEMENT.value}, send an initial assessment ${ASSESSMENT.value}, have a fix or mitigation plan ${FIX_PLAN.value}, and coordinate public disclosure with you after a fix ships. We credit you in the advisory unless you prefer otherwise.`,
+    answer: `Privately, through a GitHub security advisory on the xecret repository or by email to ${SECURITY_EMAIL} — never in a public issue. We acknowledge a report ${ACKNOWLEDGEMENT}, send an initial assessment ${ASSESSMENT}, have a fix or mitigation plan ${FIX_PLAN}, and coordinate public disclosure with you after a fix ships. We credit you in the advisory unless you prefer otherwise.`,
   },
   {
     question: 'What happens if I lose my master passphrase?',
