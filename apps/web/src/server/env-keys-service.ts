@@ -660,6 +660,64 @@ async function entitledPrincipals(
 }
 
 /**
+ * Queues a key share for every member entitled to this environment except
+ * `exceptUserId` — what an environment that has just become end-to-end
+ * encrypted owes its readers, since at that moment only one person holds its key.
+ *
+ * The same `entitledPrincipals` a rotation is checked against, so the members
+ * owed a key and the members a rotation must reach cannot be two different
+ * sets. Members who have a vault are then sealed to straight away by the
+ * upgrading browser through `POST …/keys/grants`, which clears their row in the
+ * same transaction; the rest wait in the queue, exactly as a member granted
+ * access without a key does today, until somebody holding the key shares it.
+ *
+ * Takes the executor of the transaction that changed the mode, so a share is
+ * never queued for an environment whose upgrade rolled back.
+ */
+export async function queueSharesForEntitledMembers(
+  exec: Executor,
+  scope: EnvironmentScope,
+  exceptUserId: string,
+): Promise<number> {
+  const entitled = await entitledPrincipals(exec, scope);
+  let queued = 0;
+  for (const userId of entitled.memberUserIds) {
+    if (userId === exceptUserId) continue;
+    if (
+      await queuePendingKeyGrant(exec, {
+        environmentId: scope.environment.id,
+        targetUserId: userId,
+        requestedBy: exceptUserId,
+      })
+    ) {
+      queued += 1;
+    }
+  }
+  return queued;
+}
+
+/**
+ * How many principals other than `userId` may read this environment and would
+ * need its key — members by `can()`, and the service tokens that could be sealed
+ * to. The same computation a rotation is checked against.
+ *
+ * What decides whether an upgrade to end-to-end encryption may run without
+ * asking: an environment nobody else may read loses nobody's access when its
+ * only key is born in one browser, and one somebody else may read must go
+ * through the dialog, which shares the key straight afterwards.
+ */
+export async function countOtherEntitledPrincipals(
+  exec: Executor,
+  scope: EnvironmentScope,
+  userId: string,
+): Promise<number> {
+  const entitled = await entitledPrincipals(exec, scope);
+  return (
+    entitled.memberUserIds.filter((memberId) => memberId !== userId).length + entitled.tokens.length
+  );
+}
+
+/**
  * Who a client may seal this environment's key to, and who already holds it.
  *
  * ── The gap this closes ──

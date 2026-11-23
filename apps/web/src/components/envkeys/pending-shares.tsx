@@ -6,11 +6,9 @@ import { errorMessage } from '@/lib/api';
 import { pluralize } from '@/lib/format';
 import { Alert, Button, useToast } from '@/components/ui';
 import { useVaultKeys } from '@/components/vault';
-import { decodeRecipientKey, fetchRecipients, sealGrantFor, submitGrants } from './env-keys';
 import type { EnvironmentRef } from './env-keys';
 import type { EnvKeyMaterial } from './env-key-store';
-import { checkPin, readPins, recordPin, writePins } from './pins';
-import { shareTargets } from './rotation';
+import { shareWithMissingRecipients } from './share';
 
 /**
  * "N people are waiting for this environment's key", and the button that ends it.
@@ -69,10 +67,11 @@ export function PendingSharesBanner({
     setProblem(null);
 
     try {
-      const response = await fetchRecipients(target);
-      const targets = shareTargets(response.recipients);
+      // The same flow an upgrade to end-to-end encryption runs once it lands —
+      // see `share.ts` for the rules it keeps.
+      const outcome = await shareWithMissingRecipients({ target, vault, material });
 
-      if (targets.length === 0) {
+      if (outcome.status === 'nothing-to-share') {
         // The queue and the recipient list disagree, which means somebody else
         // fulfilled it between the banner rendering and this click. Reloading is
         // the whole remedy.
@@ -80,49 +79,12 @@ export function PendingSharesBanner({
         return;
       }
 
-      const pins = readPins();
-      const substituted = targets.filter(
-        (recipient) =>
-          checkPin(pins, recipient.kind, recipient.id, recipient.publicKey).status === 'changed',
-      );
-
-      if (substituted.length > 0) {
+      if (outcome.status === 'substituted') {
         setProblem(
-          `${pluralize(substituted.length, 'recipient')} presented a different public key from the one this browser recorded. Confirm it with them out of band, then share from the rotation dialog where the fingerprints are shown.`,
+          `${pluralize(outcome.count, 'recipient')} presented a different public key from the one this browser recorded. Confirm it with them out of band, then share from the rotation dialog where the fingerprints are shown.`,
         );
         return;
       }
-
-      // Sealed against whichever key is live, not against the snapshot this
-      // banner rendered with. A rotation between the render and the click used
-      // to surface as a bare 409; `submitGrants` re-reads and seals again once.
-      const outcome = await submitGrants({
-        target,
-        vault,
-        material,
-        seal: (current) =>
-          Promise.all(
-            targets.map((recipient) =>
-              sealGrantFor({
-                vault,
-                environmentId: current.environmentId,
-                edkVersion: current.edkVersion,
-                edk: current.edk,
-                ehk: current.ehk,
-                recipientKind: recipient.kind,
-                recipientId: recipient.id,
-                recipientPublicKey: decodeRecipientKey(recipient.publicKey),
-              }),
-            ),
-          ),
-      });
-
-      // Recorded only now — after the seal that a person deliberately performed.
-      let next = pins;
-      for (const recipient of targets) {
-        next = recordPin(next, recipient.kind, recipient.id, recipient.publicKey);
-      }
-      if (next !== pins) writePins(next);
 
       toast({
         variant: 'success',

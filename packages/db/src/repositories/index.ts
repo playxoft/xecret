@@ -24,6 +24,7 @@ export {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   FieldConflictError,
+  isTransactionRace,
   QuotaExceededError,
   RepositoryError,
 } from './shared';
@@ -346,6 +347,8 @@ export {
   listEnvironments,
   listEnvironmentsForOrganization,
   loadEnvironmentKeyChain,
+  lockEnvironmentMode,
+  readEnvironmentMode,
   softDeleteEnvironment,
   toBytes,
   toCipherAlgorithm,
@@ -370,9 +373,12 @@ export {
   getSecretVersion,
   listSecretVersions,
   listSecrets,
+  loadEnvironmentHistory,
   loadEnvironmentSecrets,
   loadEnvironmentSecretsAt,
   loadSecretsForEnvironments,
+  reencryptVersionsInPlace,
+  sealNotesInPlace,
   restoreSecret,
   softDeleteSecret,
   updateSecretMetadata,
@@ -381,6 +387,8 @@ export {
 export type {
   AddSecretVersionParams,
   CreateSecretParams,
+  HistorySecret,
+  ReencryptedVersion,
   SecretListItem,
   SecretMaterial,
   SecretPage,
@@ -391,6 +399,20 @@ export type {
   SecretWriterRef,
   UpdateSecretMetadataParams,
 } from './secrets';
+
+export {
+  EncryptionUpgradeConflict,
+  loadEncryptionUpgradeObligations,
+  upgradeEnvironmentEncryption,
+} from './encryption-upgrade';
+export type {
+  EncryptionUpgradeObligations,
+  EncryptionUpgradeRefusal,
+  UpgradedSecret,
+  UpgradedVersion,
+  UpgradeEnvironmentParams,
+  UpgradeEnvironmentResult,
+} from './encryption-upgrade';
 
 export {
   acceptInvitation,

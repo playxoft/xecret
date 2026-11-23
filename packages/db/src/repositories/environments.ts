@@ -522,6 +522,66 @@ export async function loadEnvironmentKeyChain(
 }
 
 /**
+ * The environment's encryption mode as of now, held `FOR SHARE` until the
+ * transaction ends — or `null` for an environment that is not there.
+ *
+ * For a write that depends on the mode a request resolved at its start: a
+ * server-mode value write, a keyless service token being minted, a plaintext
+ * note. An upgrade to end-to-end encryption (`encryption-upgrade.ts`) holds
+ * the same row `FOR UPDATE` while it changes the mode, so a caller of this
+ * either waits for that upgrade and sees `e2ee`, or holds the row first and the
+ * upgrade waits for it — there is no moment at which a write decided on
+ * `server` can land after the mode has moved.
+ *
+ * **Take it first**, after any advisory lock and before any other row lock or
+ * write. The upgrade takes the environment row before anything else of the
+ * environment's, so a writer that does the same can never hold a row the
+ * upgrade is waiting for while waiting for one it holds.
+ */
+export async function lockEnvironmentMode(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+): Promise<'server' | 'e2ee' | null> {
+  const [row] = await exec
+    .select({ encryptionMode: environments.encryptionMode })
+    .from(environments)
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        eq(environments.id, environmentId),
+        eq(projects.orgId, orgId),
+        isNull(environments.deletedAt),
+        isNull(projects.deletedAt),
+      ),
+    )
+    .for('share', { of: environments });
+
+  if (!row) return null;
+  return row.encryptionMode === 'e2ee' ? 'e2ee' : 'server';
+}
+
+/**
+ * The environment's encryption mode, read without a lock — for a caller that
+ * only needs to explain a failure it has already had (see `withEnvironmentKey`).
+ */
+export async function readEnvironmentMode(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+): Promise<'server' | 'e2ee' | null> {
+  const [row] = await exec
+    .select({ encryptionMode: environments.encryptionMode })
+    .from(environments)
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(and(eq(environments.id, environmentId), eq(projects.orgId, orgId)))
+    .limit(1);
+
+  if (!row) return null;
+  return row.encryptionMode === 'e2ee' ? 'e2ee' : 'server';
+}
+
+/**
  * The `org_id` predicate for statements whose target table is `environments`.
  *
  * `UPDATE` cannot join in the way a `SELECT` does, so the reach into `projects`

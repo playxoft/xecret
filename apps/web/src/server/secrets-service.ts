@@ -25,9 +25,13 @@ import {
   RepositoryError,
   addSecretVersion,
   createSecret,
+  isTransactionRace,
+  loadEnvironmentHistory,
   loadEnvironmentKeyChain,
   loadEnvironmentKeyState,
   loadEnvironmentSecrets,
+  lockEnvironmentMode,
+  readEnvironmentMode,
   softDeleteSecret,
   toBytes,
   updateSecretMetadata,
@@ -314,6 +318,95 @@ export async function decryptOne(
   return withEnvironmentKey(scope, services, (key) =>
     openValue(scope, services, key.bytes, stored),
   );
+}
+
+/** One live secret of a `server`-mode environment, with its whole history in plaintext. */
+export interface DecryptedHistorySecret {
+  secretId: string;
+  name: string;
+  valueType: string;
+  note: string | null;
+  /** See `HistorySecret.revision` — the staleness token the upgrade checks. */
+  revision: string;
+  /** Oldest first. Never logged, never audited. */
+  versions: { versionId: string; version: number; value: string }[];
+}
+
+/**
+ * Decrypts every version of every live secret in a `server`-mode environment —
+ * the read an upgrade to end-to-end encryption (ADR 0009, Phase 5) is built on.
+ *
+ * The last thing the server half is asked to do for an environment, and it is
+ * the same act as every other read here: one key unwrap, every context built
+ * from the stored row, sequential decryption, bytes zeroed in a `finally`. What
+ * is different is how much it returns, which is why its one route is gated like
+ * the strongest read there is and audited as a bulk one.
+ *
+ * ── Refused rather than attempted ──
+ * A version written under any `env_keys` row but the active one is refused,
+ * not decrypted with the wrong key: no code path rotates a server envelope key,
+ * so such a row means the environment is in a state nobody designed, and an
+ * upgrade that deletes the server's keys afterwards must not be the code path
+ * that finds out what that state was. A client-encrypted row in a `server`-mode
+ * environment is refused by `openValue` for the same reason.
+ */
+export async function decryptEnvironmentHistory(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<DecryptedHistorySecret[]> {
+  return withEnvironmentKey(scope, services, async (key) => {
+    const history = await loadEnvironmentHistory(
+      services.db,
+      scope.organization.id,
+      scope.environment.id,
+    );
+
+    const bySecret = new Map<string, DecryptedHistorySecret>();
+    for (const secret of history.secrets) {
+      bySecret.set(secret.id, {
+        secretId: secret.id,
+        name: secret.name,
+        valueType: secret.valueType,
+        note: secret.note,
+        revision: secret.revision,
+        versions: [],
+      });
+    }
+
+    for (const material of history.versions) {
+      if (material.envKeyId !== key.envKeyId) {
+        services.log
+          .at('decryptEnvironmentHistory')
+          .error(
+            'A version of a server-mode secret names a key other than the environment’s active ' +
+              'one. Nothing rotates a server envelope key, so the history is refused rather ' +
+              'than decrypted under a key that cannot open it.',
+            { environmentId: scope.environment.id, reason: 'foreignEnvKey' },
+          );
+        throw errors.conflict(
+          'upgrade_unsupported: this environment holds values this upgrade cannot read. Contact support.',
+        );
+      }
+
+      const secret = bySecret.get(material.secretId);
+      // The two statements read the same live set; a version whose secret is
+      // missing means one was deleted between them, which the upgrade's own
+      // transaction would refuse anyway. Refused here so nothing partial leaves.
+      if (secret === undefined) {
+        throw errors.conflict(
+          'version_conflict: this environment changed while it was being read. Try again.',
+        );
+      }
+
+      secret.versions.push({
+        versionId: material.versionId,
+        version: material.version,
+        value: await openValue(scope, services, key.bytes, material),
+      });
+    }
+
+    return [...bySecret.values()];
+  });
 }
 
 /** Writes one secret. See `applySecretWrites` for the semantics. */
@@ -1298,6 +1391,14 @@ async function commitWrites(
       // can never create — see `checkCapacity`.
       await checkCapacity(capacity, tx, writes, [], true);
 
+      // Then the mode, held until commit, as the first row lock — the order the
+      // upgrade to end-to-end encryption relies on (`encryption-upgrade.ts` in
+      // the repositories). The values were encrypted under a key unwrapped
+      // before this transaction opened; an upgrade that committed since has
+      // deleted that key, and these rows must not follow it into an environment
+      // that is now end-to-end encrypted.
+      await assertStillServerMode(tx, scope);
+
       for (const write of writes) {
         const payload = {
           mode: 'server' as const,
@@ -1405,10 +1506,23 @@ async function withEnvironmentKey<T>(
   );
 
   if (!chain) {
-    // An environment is created together with its key, in one transaction, so
-    // this is not reachable by any normal path. If it happens, the environment
-    // is unusable and only an operator holding the Root KEK can repair it —
-    // which is a 503, not a 500: the deployment is broken, not the request.
+    // One ordinary way to get here: this request resolved the environment as
+    // `server`-mode, and its upgrade to end-to-end encryption committed before
+    // the key was read — deleting the key, as an upgrade does. That is a race,
+    // not a broken deployment, and it is answered as the retryable conflict it
+    // is, without the alarm below.
+    const mode = await readEnvironmentMode(
+      services.db,
+      scope.organization.id,
+      scope.environment.id,
+    );
+    if (mode === 'e2ee') throw modeChanged();
+
+    // Otherwise: an environment is created together with its key, in one
+    // transaction, so this is not reachable by any normal path. If it happens,
+    // the environment is unusable and only an operator holding the Root KEK can
+    // repair it — which is a 503, not a 500: the deployment is broken, not the
+    // request.
     services.log
       .at('withEnvironmentKey')
       .error(
@@ -1457,8 +1571,19 @@ async function openValue(
   stored: StoredSecretValue,
 ): Promise<string> {
   if (stored.encrypted === null) {
-    // An `e2ee` row on the server decryption path: a routing fault, not a
-    // cryptographic one. It means a caller reached `decryptOne` for an
+    // One ordinary way to get here: this request read the key chain before the
+    // environment's upgrade to end-to-end encryption committed, and the rows
+    // after it. That is the race `withEnvironmentKey` answers too — a
+    // retryable conflict, without the alarm below.
+    const mode = await readEnvironmentMode(
+      services.db,
+      scope.organization.id,
+      stored.environmentId,
+    );
+    if (mode === 'e2ee') throw modeChanged();
+
+    // Otherwise an `e2ee` row on the server decryption path: a routing fault,
+    // not a cryptographic one. It means a caller reached `decryptOne` for an
     // environment whose values the server holds no key for, and the correct
     // answer is a loud 500 rather than a `DecryptionError` that would read as
     // tampering and send an operator hunting for a corrupted row.
@@ -1485,6 +1610,25 @@ async function openValue(
   } catch (cause) {
     rethrowCryptoFailure(cause, services);
   }
+}
+
+/**
+ * The answer to a server-mode request that reached an environment after its
+ * upgrade to end-to-end encryption committed. A 409 with a stable prefix, so a
+ * client re-reads the environment — and finds it end-to-end encrypted — rather
+ * than reporting a failure; nothing was written.
+ */
+function modeChanged() {
+  return errors.conflict(
+    'mode_changed: this environment was upgraded to end-to-end encryption while this request ' +
+      'was in flight. Nothing was written — reload it and try again.',
+  );
+}
+
+/** Refuses a server-mode write into an environment whose mode has moved. See `commitWrites`. */
+async function assertStillServerMode(tx: Executor, scope: EnvironmentScope): Promise<void> {
+  const mode = await lockEnvironmentMode(tx, scope.organization.id, scope.environment.id);
+  if (mode === 'e2ee') throw modeChanged();
 }
 
 /**
@@ -1543,6 +1687,11 @@ function rethrowCryptoFailure(cause: unknown, services: ServiceContext): never {
  * response a caller with no right to it would have received.
  */
 export function rethrowRepositoryFailure(cause: unknown): never {
+  // PostgreSQL broke a deadlock or a serialisation conflict by abandoning this
+  // transaction: nothing was written, and the same request again is correct.
+  if (isTransactionRace(cause)) {
+    throw errors.conflict('This environment was changed by another request. Retry the write.');
+  }
   if (cause instanceof RepositoryError) {
     switch (cause.code) {
       case 'conflict':

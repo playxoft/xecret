@@ -481,6 +481,18 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.environmentCount !== undefined && Number.isFinite(metadata.environmentCount)) {
     clean.environmentCount = metadata.environmentCount;
   }
+  // The upgrade to end-to-end encryption. Decided here when the fields were
+  // added to the contract, not afterwards — see the note on `principalKind`
+  // below for what happens otherwise.
+  for (const field of [
+    'versionCount',
+    'noteCount',
+    'purgedSecretCount',
+    'revokedTokenCount',
+  ] as const) {
+    const value = metadata[field];
+    if (value !== undefined && Number.isFinite(value)) clean[field] = value;
+  }
 
   // Closed unions of literals; there is nothing to sanitise.
   if (metadata.source !== undefined) clean.source = metadata.source;

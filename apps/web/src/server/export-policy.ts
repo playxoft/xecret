@@ -21,6 +21,24 @@ import type { EnvironmentScope } from './tenancy';
  * writing them anywhere, which is exactly the habit the policy exists to
  * encourage, and a CI pipeline that runs a build must keep running it.
  *
+ * ── The one bulk plaintext read it does not refuse ──
+ * Upgrading a `server`-mode environment to end-to-end encryption
+ * (`encryption-upgrade.ts`) reads every value and every older version into the
+ * upgrading browser in plaintext — more than any export — so that the browser
+ * can re-encrypt them. It is neither refused nor narrowed here, and the reason
+ * is the honest limit of this switch: it is changed with `environment.update`,
+ * which everybody who may upgrade already holds, so any gate keyed on it would
+ * be one the gated person could switch off, pass, and switch back on. Refusing
+ * outright would also pin a policy-protected environment to the one mode in
+ * which the server *can* read it, the opposite of what the policy is for.
+ *
+ * What it does instead is make the read visible: the `secret.read` and
+ * `environment.encryption_upgraded` records carry `policyName: plaintextExport`
+ * and `enabled` (`false` where export is disabled), and where it is disabled
+ * the read raises the environment's new-address read alert unless alerts were
+ * switched off outright. The values reach the upgrading browser's memory and
+ * leave it only as ciphertext, never as a file.
+ *
  * ── Who enforces it ──
  * For a `server`-mode environment the server refuses the document formats
  * itself, and marks the JSON pull — the one `xecret run` uses, which it cannot

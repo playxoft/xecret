@@ -3,9 +3,15 @@
  * Reports environments still on server-side encryption, and the secrets they hold.
  *
  *   phase run --env Production -- npm run check:server-encrypted
+ *   phase run --env Production -- npm run check:server-encrypted -- --details
  *
- * Read-only. Prints counts and nothing else — no organisation, project or
- * secret name — so its output can be pasted into a pull request.
+ * Read-only. By default it prints counts and nothing else — no organisation,
+ * project or secret name — so its output can be pasted into a pull request.
+ * `--details` adds one line per affected organisation for the operator: its
+ * slug, its owners' email addresses, how many of its members have a vault,
+ * when a member last signed in, and how many service tokens are pinned to its
+ * server-mode environments. Never a value, a secret name or a key. Keep that
+ * output out of pull requests and chat — it names people.
  *
  * ## Why this exists
  *
@@ -36,15 +42,40 @@
  *
  * ## What to do about a hit
  *
- * An environment cannot be switched over in place (`environment-key-card.tsx`
- * says so to anybody who opens one). Its owner creates a new environment, moves
- * the values across from the dashboard, and deletes the old one; the purge then
- * erases it. Exits non-zero while anything is left, so a CI job wired to it goes
- * red on the state rather than reporting it into a log nobody reads.
+ * A live one: an owner or admin of the organisation opens the environment in the
+ * dashboard with an unlocked vault and presses *Upgrade to end-to-end
+ * encryption* (ADR 0009, Phase 5 — `encryption-upgrade-panel.tsx`). Their
+ * browser re-encrypts every value, version and note in place, the server deletes
+ * its `env_keys` row in the same transaction, and the environment drops out of
+ * this report. The dialog names what it costs first: keyless CI tokens on the
+ * environment are revoked, and its deleted secrets are erased. An environment
+ * with nothing in it that only one member may read upgrades itself the first
+ * time that member opens it, so those clear as their owners next sign in —
+ * `--details` says who those owners are and whether they have a vault yet. One
+ * that more members may read waits for one of them to press the button.
+ *
+ * A deleted one cannot be upgraded; the purge erases it, key and all, thirty days
+ * after the delete.
+ *
+ * Exits non-zero while anything is left, so a CI job wired to it goes red on the
+ * state rather than reporting it into a log nobody reads.
  */
 
 import { sql } from 'drizzle-orm';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
+
+interface OrgRow {
+  slug: string;
+  org_deleted: boolean;
+  owners: string | null;
+  members: string;
+  members_with_vault: string;
+  last_login: Date | string | null;
+  server_envs: string;
+  e2ee_envs: string;
+  live_secrets: string;
+  live_tokens: string;
+}
 
 interface ModeRow {
   // `string`, not `number`: postgres.js hands back `count()` — an `int8` — as a
@@ -115,11 +146,84 @@ async function main(): Promise<void> {
     console.warn(`  deleted, awaiting purge:    ${buried}`);
     console.warn('');
     console.warn(
-      'Until these are moved to new environments and purged, the server can decrypt the values in them.',
+      'Until these are upgraded (open each one in the dashboard and press "Upgrade to end-to-end',
     );
+    console.warn('encryption") or, if deleted, purged, the server can decrypt the values in them.');
+    if (process.argv.includes('--details')) await printDetails(db);
     process.exitCode = 1;
   } finally {
     await end();
+  }
+}
+
+/** One line per organisation holding a server-mode environment. Names people; operator eyes only. */
+async function printDetails(db: ReturnType<typeof createDatabaseHandle>['db']): Promise<void> {
+  const rows = (await db.execute(sql`
+    SELECT
+      o.slug,
+      (o.deleted_at IS NOT NULL) AS org_deleted,
+      (
+        SELECT string_agg(u.email::text, ', ' ORDER BY u.email)
+        FROM org_members m JOIN users u ON u.id = m.user_id
+        WHERE m.org_id = o.id AND m.role = 'owner' AND m.status = 'active'
+      ) AS owners,
+      (
+        SELECT count(*) FROM org_members m
+        WHERE m.org_id = o.id AND m.status = 'active'
+      ) AS members,
+      (
+        SELECT count(*) FROM org_members m
+        WHERE m.org_id = o.id AND m.status = 'active'
+          AND EXISTS (SELECT 1 FROM user_keys k WHERE k.user_id = m.user_id)
+      ) AS members_with_vault,
+      (
+        SELECT max(u.last_login_at) FROM org_members m JOIN users u ON u.id = m.user_id
+        WHERE m.org_id = o.id
+      ) AS last_login,
+      (
+        SELECT count(*) FROM environments e JOIN projects p ON p.id = e.project_id
+        WHERE p.org_id = o.id AND e.encryption_mode = 'server' AND e.deleted_at IS NULL
+          AND p.deleted_at IS NULL
+      ) AS server_envs,
+      (
+        SELECT count(*) FROM environments e JOIN projects p ON p.id = e.project_id
+        WHERE p.org_id = o.id AND e.encryption_mode = 'e2ee' AND e.deleted_at IS NULL
+          AND p.deleted_at IS NULL
+      ) AS e2ee_envs,
+      (
+        SELECT count(*) FROM secrets s
+        JOIN environments e ON e.id = s.environment_id
+        JOIN projects p ON p.id = e.project_id
+        WHERE p.org_id = o.id AND e.encryption_mode = 'server' AND s.deleted_at IS NULL
+          AND e.deleted_at IS NULL AND p.deleted_at IS NULL
+      ) AS live_secrets,
+      (
+        SELECT count(*) FROM service_tokens t
+        JOIN environments e ON e.id = t.environment_id
+        JOIN projects p ON p.id = e.project_id
+        WHERE t.org_id = o.id AND e.encryption_mode = 'server' AND t.revoked_at IS NULL
+          AND (t.expires_at IS NULL OR t.expires_at > now())
+          AND e.deleted_at IS NULL AND p.deleted_at IS NULL
+      ) AS live_tokens
+    FROM organizations o
+    WHERE EXISTS (
+      SELECT 1 FROM environments e JOIN projects p ON p.id = e.project_id
+      WHERE p.org_id = o.id AND e.encryption_mode = 'server'
+    )
+    ORDER BY o.created_at
+  `)) as unknown as OrgRow[];
+
+  console.warn('');
+  console.warn('By organisation (operator eyes only — this names people):');
+  for (const row of rows) {
+    const login =
+      row.last_login === null ? 'never' : new Date(row.last_login).toISOString().slice(0, 10);
+    console.warn(
+      `  ${row.slug}${row.org_deleted ? ' (deleted)' : ''} — owners: ${row.owners ?? 'none'}; ` +
+        `members ${row.members} (${row.members_with_vault} with a vault); last sign-in ${login}; ` +
+        `server-mode envs ${row.server_envs}, e2ee envs ${row.e2ee_envs}; ` +
+        `live secrets ${row.live_secrets}; live service tokens on them ${row.live_tokens}`,
+    );
   }
 }
 

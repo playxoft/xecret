@@ -121,3 +121,13 @@ regexes = [
 description = "the service-token prefix fixture in the tokens screen test"
 regexTarget = "secret"
 regexes = ['''^xst_live_ab12$''']
+
+# A deliberately malformed grant signature. The encryption-upgrade route tests
+# post `xk2.ed25519.short` to prove a signature that is not 64 bytes is refused
+# with a 422; it is the versioned blob prefix plus a word, and opens nothing.
+# Matched on the exact value: `gitleaks git` reads the commit that introduced
+# it for as long as the history exists.
+[[allowlists]]
+description = "the encryption-upgrade tests' malformed grant signature"
+regexTarget = "secret"
+regexes = ['''^xk2\.ed25519\.short$''']

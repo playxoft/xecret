@@ -194,11 +194,60 @@ it still rests on us, listed so you can weigh them:
 
 Environments created before end-to-end encryption shipped used server-side
 encryption, under keys protected by our root key, and any that have not been
-moved still do. We can read the values in those. The environment's key settings
-say so — *This environment uses server-side encryption*. An existing
-environment cannot be switched over: create a new one and move the values
-across, which encrypts them on the way. Every environment created since is
-end-to-end encrypted from its first key.
+upgraded still do. We can read the values in those. The environment says so —
+*This environment uses server-side encryption* — above its values and in its
+key settings. Every environment created since is end-to-end encrypted from its
+first key.
+
+An owner or admin of such an environment can **upgrade it in place**: open it
+and press *Upgrade to end-to-end encryption*. It keeps its name, its access,
+its policies and its settings. What happens:
+
+- **Your browser does the encrypting.** It reads every value, every older
+  version and every note once — the last time our server decrypts anything in
+  that environment, recorded in the audit log as a read — generates a new key,
+  re-encrypts all of it, opens every value again to check it before anything is
+  sent, and sends back only ciphertext.
+- **It lands all at once, or not at all.** The server checks that what came
+  back is exactly what the environment holds — nothing written in between is
+  dropped — rewrites every value in one transaction, and deletes the key it used
+  to hold. If anything fails, nothing changes.
+- **CI tokens made for the old environment stop working.** They have no key of
+  their own, so the new key cannot be shared with them; the upgrade revokes them
+  and names them before you confirm. Issue new tokens afterwards.
+- **Deleted secrets are erased now**, rather than kept for the usual thirty
+  days, because they cannot be re-encrypted. The dialog lists them first.
+- **Your teammates get the key from your browser**, straight after you confirm
+  the upgrade — each one who may read the environment and has a vault, except
+  anyone whose public key has changed since your browser last saw it, who is
+  left for you to confirm and share with from the key settings. Anyone without
+  a vault gets it once they set one up and somebody who holds it shares it.
+  Until then they see the secret names and cannot read the values.
+
+An environment with nothing in it — no secrets, no deleted secrets, no CI
+tokens — **that nobody else may read** has nothing to decide and nobody to
+leave out, so it is upgraded automatically the first time its owner or admin
+opens it with an unlocked vault. Anywhere a teammate may read it, the dialog
+asks first, so the key is shared with them as part of the same act.
+
+Upgrading reads every value into one browser in plaintext — more than an
+export would — even though nothing is written to a file and nothing leaves that
+browser except as ciphertext. Where an environment's policy disables plaintext
+export, the upgrade is still allowed: the policy is changed by the same
+environment admins who can upgrade, so refusing would stop nobody it was meant
+to. Instead the audit records say whether the policy was in force, and the read
+triggers the environment's new-address read alert unless alerts were switched
+off.
+
+Two copies outlast an upgrade, and we say so rather than let the word
+"deleted" imply otherwise. Our database backups from before it still hold the
+old ciphertext and the server's old key for it until that backup history ages
+out — until then, the values as they stood on the day of the upgrade could be
+recovered from a backup by us. Nothing written afterwards can. And a machine
+whose CLI cached the environment before the upgrade keeps that offline copy
+until its next successful read replaces it, or until `xecret cache clear`; the
+CLI refuses to serve it once it has seen the environment as end-to-end
+encrypted.
 
 ## What xecret does not protect you from
 
