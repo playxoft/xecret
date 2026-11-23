@@ -1427,11 +1427,7 @@ describe('the scheduled routes', () => {
       return new Response(null, { status: 404 });
     };
 
-    await scheduled.runScheduledJobs(
-      app,
-      ORIGIN,
-      scheduled.jobsForCron(scheduled.FIVE_MINUTE_CRON),
-    );
+    await scheduled.runScheduledJob(app, ORIGIN, scheduled.NOTIFICATIONS_PATH);
     expect(hits).toHaveLength(1);
     expect(hits[0]!.headers.get('webhook-id')).toBe(due);
 
@@ -1443,15 +1439,15 @@ describe('the scheduled routes', () => {
   });
 
   it('are dispatched by the expression that fired', () => {
-    expect(scheduled.jobsForCron(scheduled.FIVE_MINUTE_CRON)).toEqual([
-      scheduled.NOTIFICATIONS_PATH,
-    ]);
-    expect(scheduled.jobsForCron(scheduled.HOURLY_CRON)).toEqual([
+    const periodic = [
       scheduled.VAULT_PURGE_PATH,
       scheduled.PRUNE_PATH,
+      scheduled.NOTIFICATIONS_PATH,
       scheduled.BILLING_HOURLY_PATH,
-    ]);
+    ];
+    expect(scheduled.jobsForCron(scheduled.PERIODIC_CRON)).toEqual(periodic);
     expect(scheduled.jobsForCron(scheduled.DAILY_CRON)).toEqual([
+      ...periodic,
       scheduled.DELETED_DATA_PURGE_PATH,
       scheduled.BILLING_DAILY_PATH,
     ]);

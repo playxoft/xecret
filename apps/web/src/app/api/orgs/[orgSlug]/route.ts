@@ -124,7 +124,7 @@ export const PATCH = authenticatedRoute<Params>(
  * Not a hard delete, here. The organisation is kept, unreachable, for thirty
  * days — long enough for a deletion made by mistake, or by somebody who should
  * not have made it, to be noticed and undone by an operator — and then the
- * nightly deleted-data purge erases it, keys and all
+ * daily deleted-data purge erases it, keys and all
  * (`server/deleted-data-purge.ts`). The wrapped keys stay wrapped until then;
  * nothing here touches key material, so this request is not cryptographic
  * erasure and does not pretend to be. The audit records filed against `org_id`

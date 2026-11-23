@@ -64,7 +64,7 @@ export const AUDIT_FILTER_ACTIONS = [
   'secret.updated',
   'secret.rotated',
   'secret.deleted',
-  // Erased by the nightly purge, thirty days after `secret.deleted` (or at the
+  // Erased by the daily purge, thirty days after `secret.deleted` (or at the
   // end of the plan's restore window): the record a reviewer looks for when a
   // deleted secret can no longer be brought back.
   'secret.purged',

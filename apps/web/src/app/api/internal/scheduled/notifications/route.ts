@@ -6,9 +6,10 @@ import { isScheduledRequest } from '@/server/scheduled';
 import { sweepWebhookDeliveries } from '@/server/webhooks-service';
 
 /**
- * The five-minute notifications run, reachable only from the Worker's own Cron
- * Trigger (`worker.ts`, `server/scheduled.ts`): webhook deliveries that are
- * due, then read-alert digests whose hour is up (P19 §5, §7).
+ * The notifications run, part of every periodic run and reachable only from the
+ * Worker's own Cron Trigger (`worker.ts`, `server/scheduled.ts`): webhook
+ * deliveries that are due, then read-alert digests whose hour is up (P19 §5,
+ * §7).
  *
  * Anything else — every request from the internet — gets a bare 404 with no
  * body, decided before anything is built, exactly as the vault purge does.

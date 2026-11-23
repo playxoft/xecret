@@ -137,7 +137,10 @@ address.
   production's setting — and of staging under staging's.
 - **Digest-throttled**: at most one email an hour per organisation. Everything
   else seen in the hour waits for the next digest, so a CI fleet on rotating
-  addresses produces one email listing them, never one per runner.
+  addresses produces one email listing them, never one per runner. Digests are
+  sent by a scheduled run, currently twice a day (10:17 and 22:17 UTC), so what
+  waits for one can arrive up to twelve hours after the read; the first alert
+  after a quiet hour is still sent straight away.
 - **Recorded after the response.** A read is never slower, and never refused, for
   being noted.
 

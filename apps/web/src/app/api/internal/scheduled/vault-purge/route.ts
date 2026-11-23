@@ -7,7 +7,7 @@ import { SIGN_IN_FAILURE_WINDOW_MS } from '@/server/sign-in-throttle';
 import { purgeRetainedVaults } from '@/server/vault-purge';
 
 /**
- * The hourly housekeeping, reachable only from the Worker's own Cron Trigger
+ * The scheduled housekeeping, reachable only from the Worker's own Cron Trigger
  * (`worker.ts`, `server/scheduled.ts`): the retained-vault purge, the spent
  * sign-in confirmations, and the failed sign-ins that can no longer hold
  * anybody back (`sign_in_failures`: last failure older than its window, and

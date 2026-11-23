@@ -18,7 +18,7 @@ import { describeError } from './logging';
 import { IdentityProviderUnavailableError, workosProvider } from './workos';
 
 /**
- * The nightly deleted-data purge: organisations, projects, environments and
+ * The daily deleted-data purge: organisations, projects, environments and
  * secrets that were deleted at least {@link DELETED_DATA_RETENTION_DAYS} days
  * ago are erased for good. Why thirty days, what is erased and in what order,
  * and what holds a purge back are all in `@xecret/db`'s `deleted-data.ts`; this

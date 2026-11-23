@@ -26,7 +26,7 @@ goes wrong. The code is `apps/web/src/server/billing/`; the plan it was built fr
         │              Dodo change-plan after the commit (one push per org at a time)
         ├─► usage: fetches counted in the isolate ──► org_usage_counters (≤ 15 s) ──►
         │          Dodo meter (hourly, paid periods only)
-        └─► nightly reconciler: our rows and the membership vs Dodo — reports drift, corrects nothing
+        └─► daily reconciler: our rows and the membership vs Dodo — reports drift, corrects nothing
 ```
 
 **Dodo is the billing truth; `org_subscriptions` is the access truth (D15).** Nothing on a
@@ -42,10 +42,20 @@ they disagree.
 | Seat sync | `billing/seats.ts` | after every membership change; retried hourly |
 | Usage metering | `billing/usage.ts` | counted per fetch; flushed within 15 s; reported hourly |
 | Reminder emails | `billing/reminders.ts`, `mail.ts` | from webhooks, the seat sync and the hourly job |
-| Hourly job | `billing/jobs.ts` | Cron `17 * * * *`, after the vault purge |
-| Reconciler | `billing/reconcile.ts` | Cron `41 3 * * *` |
+| Hourly job | `billing/jobs.ts` | Crons `17 10 * * *` and `17 22 * * *` — twice a day for now, see below — after the vault purge and the notifications |
+| Reconciler | `billing/reconcile.ts` | Cron `17 10 * * *`, after the hourly job in the same run |
 | Public "do we take payments?" | `billing/payments-live.ts` | pricing, terms, about, FAQ, features, home |
 | Operator tool | `scripts/plan-set.ts` | by hand — trials, overrides, Enterprise |
+
+**"Hourly" means "every scheduled run", which is twice a day (10:17 and 22:17 UTC) since
+2026-11-15.** Every run wakes the database, and Neon's free plan sleeps it only after five
+quiet minutes: the old five-minute run kept it awake around the clock and spent 89% of the
+month's compute allowance in two weeks. So "retried hourly", "within the hour" and "the next
+run" in this document mean up to twelve hours while the schedule stays there; once real traffic
+justifies it, dial it back to every three hours (`17 1,4,7,13,16,19,22 * * *`) or hourly
+(`17 0-9,11-23 * * *`) — `PERIODIC_CRON` in `src/server/scheduled.ts` and `wrangler.toml`. The
+10:17 run, which also checks cards and reconciles, stays as it is, and the periodic expression
+never names hour 10, or the billing job runs twice side by side.
 
 ### How a subscription is placed
 
@@ -210,7 +220,7 @@ same as committing `WORKOS_CLIENT_ID`.
 7. `npm run phase:check-env:production`.
 8. **Apply migrations 0024 to 0027** to the production database before deploying (see §5).
 9. `npm run phase:check-deploy` — the `billing (group)` line must say every member is in place.
-10. Deploy. Confirm all three Cron Triggers (`17 * * * *`, `*/5 * * * *`, `41 3 * * *`) are listed on the Worker,
+10. Deploy. Confirm both Cron Triggers (`17 10 * * *`, `17 22 * * *`) are listed on the Worker,
     and that `/api/internal/scheduled/billing-hourly` and `…/billing-daily` answer 404 from
     outside. Then one real purchase in each currency, refunded.
 

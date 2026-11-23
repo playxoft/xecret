@@ -7,7 +7,7 @@ import { createLogger } from './logging';
 import type { LogEntry } from './logging';
 
 /**
- * The nightly deleted-data purge as the Cron Trigger runs it: against a real
+ * The daily deleted-data purge as the Cron Trigger runs it: against a real
  * database, with WorkOS stubbed. What is erased, and what is not, is pinned
  * row by row in `@xecret/db`'s `deleted-data.test.ts`; this file pins what the
  * job adds — the audit record of each erasure, the WorkOS step, and the route

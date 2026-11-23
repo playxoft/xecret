@@ -103,7 +103,7 @@ describe('describeEvent', () => {
     ).toBe('hooks.example.com · secret.updated, environment.promoted');
   });
 
-  it('says what the nightly purge erased, and after how long', () => {
+  it('says what the daily purge erased, and after how long', () => {
     expect(
       describeEvent(
         event('secret.purged', {

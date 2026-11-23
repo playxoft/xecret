@@ -398,7 +398,7 @@ describe('audit retention agrees with the engine everywhere it is stated', () =>
 });
 
 describe('the legal pages state what the code does, about whom', () => {
-  // The nightly purge erases deleted data after `DELETED_DATA_RETENTION_DAYS`,
+  // The daily purge erases deleted data after `DELETED_DATA_RETENTION_DAYS`,
   // and `/privacy` publishes the number. A purge shortened in code and not on
   // the page — or the other way round — is a privacy policy that is wrong
   // about the one thing a deletion request turns on.

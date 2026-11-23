@@ -4,7 +4,7 @@ import { publicRoute } from '@/server/route';
 import { isScheduledRequest } from '@/server/scheduled';
 
 /**
- * The nightly deleted-data purge, reachable only from the Worker's own Cron
+ * The daily deleted-data purge, reachable only from the Worker's own Cron
  * Trigger (`worker.ts`, `server/scheduled.ts`); every request from the
  * internet gets a bare 404, decided before anything is built.
  *
