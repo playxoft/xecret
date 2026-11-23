@@ -96,7 +96,7 @@ Production's.
    (`[env.production.triggers]`, `crons = ["17 10 * * *", "17 22 * * *"]`):
    every run the retained-vault purge, the prunes, the webhook delivery sweep
    and read-alert digests, then the billing job; the 10:17 run then also the
-   billing reconciler. Twice a day on purpose, so Neon's free-plan compute can
+   deleted-data purge and the billing reconciler. Twice a day on purpose, so Neon's free-plan compute can
    scale to zero (`src/server/scheduled.ts` says why) — **never restore a
    `*/5` or other sub-hourly trigger** to "fix" a delay: it keeps the database
    awake around the clock and spends the month's compute in two weeks.
@@ -106,10 +106,11 @@ Production's.
      never purged — the seven-day promise breaks silently — and seat-sync
      retries, overage reports, dated reminders and queued webhook deliveries
      beyond the inline first attempts never go out; no `17 10` trigger also
-     means no card-expiry reminders and no reconciler.
+     means no card-expiry reminders, no 30-day deleted-data purge and no
+     reconciler.
    - The internal routes must **not** answer the internet:
      ```sh
-     for job in vault-purge prune billing-hourly notifications billing-daily; do
+     for job in vault-purge prune billing-hourly notifications deleted-data-purge billing-daily; do
        curl -s -o /dev/null -w "$job %{http_code}\n" -X POST "https://xecret.playxoft.com/api/internal/scheduled/$job"
      done
      ```
@@ -117,8 +118,8 @@ Production's.
      that lets anybody run them, and is rolled back.
    - After the next 10:17 or 22:17 UTC, the Worker's logs show the scheduled
      run: `POST /api/internal/scheduled/vault-purge`, then `…/prune`, then
-     `…/notifications`, then `…/billing-hourly` (and at 10:17 `…/billing-daily`
-     last), each answered `200`, made in-process by the Cron Trigger rather
+     `…/notifications`, then `…/billing-hourly` (and at 10:17
+     `…/deleted-data-purge`, then `…/billing-daily` last), each answered `200`, made in-process by the Cron Trigger rather
      than from outside.
 10. If payments are on (P12): the Dodo webhook endpoint
     `https://xecret.playxoft.com/api/billing/webhook` is registered in the Dodo

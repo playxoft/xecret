@@ -47,6 +47,7 @@ const {
   jobsForCron,
   BILLING_DAILY_PATH,
   BILLING_HOURLY_PATH,
+  DELETED_DATA_PURGE_PATH,
   NOTIFICATIONS_PATH,
   PRUNE_PATH,
   VAULT_PURGE_PATH,
@@ -173,10 +174,14 @@ async function seedOrg(subscription: Record<string, unknown>, members = 3): Prom
 const subjects = () => mail.sent.map((message) => message.subject);
 
 describe('the schedule', () => {
-  it('runs the purge, the pruning, the notifications, then billing every run, and the reconciler after them once a day', () => {
+  it('runs the purge, the pruning, the notifications, then billing every run, and the deleted-data purge then the reconciler after them once a day', () => {
     const periodic = [VAULT_PURGE_PATH, PRUNE_PATH, NOTIFICATIONS_PATH, BILLING_HOURLY_PATH];
     expect(jobsForCron(PERIODIC_CRON)).toEqual(periodic);
-    expect(jobsForCron(DAILY_CRON)).toEqual([...periodic, BILLING_DAILY_PATH]);
+    expect(jobsForCron(DAILY_CRON)).toEqual([
+      ...periodic,
+      DELETED_DATA_PURGE_PATH,
+      BILLING_DAILY_PATH,
+    ]);
   });
 
   it('runs the daily job in the card-check hour, and the periodic one never in the same hour', () => {

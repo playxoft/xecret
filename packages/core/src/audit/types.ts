@@ -229,14 +229,24 @@ export type AuditAction =
    * An organisation was soft-deleted, taking every project, environment and
    * secret inside it out of reach in one act.
    *
-   * The row it points at survives the deletion — that is what a soft delete is
-   * for here — so this record, and every record filed against the organisation
-   * before it, stays readable by an operator afterwards. Nobody in the product
+   * The row it points at survives the deletion for thirty days — that is what
+   * a soft delete is for here — and then `org.purged` erases it. This record,
+   * and every record filed against the organisation before it, stays readable
+   * by an operator throughout and afterwards. Nobody in the product
    * can read them: the audit route resolves through `organizations` with a
    * `deleted_at is null` filter, so the organisation stops answering the moment
    * this event is written.
    */
   | 'org.deleted'
+  /**
+   * An organisation deleted thirty days earlier was erased by the nightly
+   * deleted-data purge: its projects, environments, secrets and keys, its
+   * members, invitations and tokens, and its billing rows. The audit records
+   * filed against it are not touched — the log has no foreign keys — so this
+   * one is the last of them, readable by an operator. `environmentCount` and
+   * `secretCount` say how much went. Recorded with a `system` actor.
+   */
+  | 'org.purged'
   /**
    * The organisation turned single sign-on on: xecret created the WorkOS
    * Organization its identity-provider connections will hang off, and linked
@@ -269,9 +279,22 @@ export type AuditAction =
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'
+  /**
+   * A project deleted thirty days earlier was erased by the nightly
+   * deleted-data purge: its environments, their secrets and every version of
+   * them, and the keys they were encrypted under. `environmentCount` and
+   * `secretCount` say how much went. Recorded with a `system` actor.
+   */
+  | 'project.purged'
   | 'environment.created'
   | 'environment.updated'
   | 'environment.deleted'
+  /**
+   * An environment deleted thirty days earlier was erased by the nightly
+   * deleted-data purge, with its secrets and its keys. `secretCount` says how
+   * many secrets went. Recorded with a `system` actor.
+   */
+  | 'environment.purged'
   /**
    * An environment's parent was set, changed or cleared (P19 §1): what its
    * view inherits from now differs. `parentEnvironmentSlug` names the new
@@ -356,6 +379,13 @@ export type AuditAction =
   | 'secret.created'
   | 'secret.updated'
   | 'secret.deleted'
+  /**
+   * A deleted secret was erased, with every version of its value, by the
+   * nightly deleted-data purge — thirty days after `secret.deleted`, or at the
+   * end of the organisation's point-in-time restore window if that is longer.
+   * Recorded with a `system` actor; `reason` says which period ended.
+   */
+  | 'secret.purged'
   | 'secret.rotated'
   | 'secret.read'
   | 'secret.revealed'

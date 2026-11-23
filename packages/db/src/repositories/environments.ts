@@ -425,7 +425,8 @@ export async function updateEnvironment(
  * The `env_keys` row is left alone. Deleting it is cryptographic erasure — it
  * makes every secret in the environment permanently unreadable, including from
  * backups — and that is far too consequential to happen as a side effect of a
- * soft delete a user may want to undo.
+ * soft delete a user may want to undo. The deleted-data purge does it, thirty
+ * days later (`deleted-data.ts`).
  */
 export async function softDeleteEnvironment(
   exec: Executor,

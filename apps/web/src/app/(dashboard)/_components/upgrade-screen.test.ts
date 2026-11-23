@@ -407,7 +407,7 @@ describe('UpgradeScreen, the questions', () => {
     expect(html.indexOf('How do I pay?')).toBeLessThan(html.indexOf('What counts as a member?'));
     // This page's answer, not the one that sends the reader elsewhere to pay.
     expect(html).toContain('From this page, as an owner of the organisation');
-    expect(html).not.toContain('Do you take a card during pre-alpha?');
+    expect(html).not.toContain('Do you take a card yet?');
   });
 
   it('asks them of everybody where it sells, owner or not', () => {

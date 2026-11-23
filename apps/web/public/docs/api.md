@@ -3,7 +3,7 @@ title: HTTP API overview
 navTitle: Overview
 description: The contract the dashboard, CLI and CI all speak — authentication, request shape, error codes, pagination, rate limits and CSRF.
 keywords: [xecret api, secrets rest api, bearer token api, api error codes, rate limits, csrf]
-updated: 2026-08-16
+updated: 2026-11-22
 ---
 
 Everything the dashboard does, the CLI does, and CI does, it does through this
@@ -104,7 +104,7 @@ A leaked CI token must not be able to grow itself into a permanent one.
 | `payload_too_large` | 413 | Body over 1 MB, or a secret over 64 KB |
 | `rate_limited` | 429 | Bucket exhausted |
 | `csrf_failed` | 403 | Double-submit pair missing or mismatched |
-| `session_locked` | 403 | Authenticated, but the session's PIN has not been entered recently |
+| `session_locked` | 403 | Authenticated, but the session's vault is locked — idle too long, or locked on purpose |
 | `unavailable` | 503 | Misconfigured deployment — a missing binding, an unreachable database |
 | `internal_error` | 500 | Unhandled fault |
 
@@ -145,7 +145,7 @@ table, that degradation is severe.
 
 | Bucket | Applies to | Counted per |
 |---|---|---|
-| `RL_LOGIN` | sign-in, PIN operations | IP + identity |
+| `RL_LOGIN` | sign-in, vault unlock, recovery and reset attempts | IP + identity; the account alone for vault recovery and reset |
 | `RL_CLI_TOKEN` | CLI token creation and exchange | user |
 | `RL_INVITE` | invitations | organisation |
 | `RL_SECRET_READ` | reveal and pull | actor |
@@ -158,8 +158,9 @@ secret is authentication, authorisation and the audit trail.
 
 ## What is audited
 
-Every mutation, every decryption, and **every denial**. A system that records
-only what succeeded cannot detect an attack in progress.
+Every mutation, every fetch of values, and **every denial**. A system that records only
+what succeeded cannot detect an attack in progress. Values are decrypted by the
+client, so a read is recorded when the server hands over the ciphertext.
 
 Audit metadata is typed as a fixed allowlist of fields with no catch-all, so a
 secret value cannot be placed into a record — the type system rejects it rather

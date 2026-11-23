@@ -2,11 +2,9 @@ import type { Metadata } from 'next';
 
 import { graph, LegalPage } from '@/components/marketing';
 import type { LegalSection } from '@/components/marketing';
-// Not from the barrel: these two are authoring tools for the documents' data,
-// not pieces of the public-site kit. `Placeholder` in particular should stop
-// existing the day the company details are filled in, and an export nobody can
-// see the end of is an export that outlives its reason.
-import { LegalLink, Placeholder } from '@/components/marketing/legal-page';
+// Not from the barrel: an authoring tool for the documents' data, not a piece
+// of the public-site kit.
+import { LegalLink } from '@/components/marketing/legal-page';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 
 /**
@@ -14,9 +12,10 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  *
  * ── The rule this page is written under ──
  * Every claim here is checkable against the code or against
- * `public/docs/security/trust-model.md`, and where a fact does not exist yet —
- * the registered address, the supervisory authority, a support mailbox — the
- * page says so in the rendered text rather than inventing something plausible.
+ * `public/docs/security/trust-model.md`, and the company details are the ones
+ * on the public register (Ministry of Corporate Affairs, by the CIN below).
+ * Where a fact does not exist — no data protection officer has been appointed
+ * — the page says so plainly rather than inventing something plausible.
  * A privacy policy on a secrets product is read by exactly the sort of person
  * who checks, and the first invented sentence costs more than the whole
  * document earns.
@@ -36,8 +35,8 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-11-07';
-const EFFECTIVE = '2026-11-07';
+const UPDATED = '2026-11-22';
+const EFFECTIVE = '2026-11-22';
 
 const CANONICAL = absoluteUrl('/privacy');
 
@@ -66,11 +65,12 @@ export const metadata: Metadata = {
 };
 
 const SUMMARY = [
-  'We hold your email address, the names of your organisations, projects, environments and secrets, the encrypted secret values themselves, and a log of who read or changed what.',
-  'xecret can technically decrypt your secret values. Envelope encryption, decryption inside one request handler, and every decryption written to an append-only audit log. This is not a zero-knowledge product and we will not describe it as one.',
+  'We hold your email address, the names of your organisations, projects, environments and secrets, your secret values as ciphertext we cannot decrypt, and a log of who read or changed what.',
+  'Your secret values and notes are end-to-end encrypted. They are encrypted on your device before they reach us, under keys we never hold, so we cannot read them — and neither can anyone who obtains our database or compels us to hand it over. The one exception is an older environment still on server-side encryption, which section 3 explains.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
   'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
-  'You can export everything with the CLI and delete your own account. If you self-host, none of this is us: the operator of that deployment writes their own policy.',
+  'What you delete is kept for 30 days, so that a mistake can be undone, and then erased for good — a deleted secret longer only where your plan’s restore window needs it. You can export everything with the CLI and delete your own account.',
+  'If you self-host, none of this is us: the operator of that deployment writes their own policy.',
 ] as const;
 
 const SECTIONS: readonly LegalSection[] = [
@@ -79,10 +79,11 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'Who we are, and what this covers',
     paragraphs: [
       <>
-        xecret is a secret-management service operated by Playxoft (
-        <Placeholder>Playxoft legal entity name and company registration number</Placeholder>, of{' '}
-        <Placeholder>Playxoft registered address</Placeholder>). Playxoft is the controller for the
-        personal data described below, and &ldquo;we&rdquo; means Playxoft throughout.
+        xecret is a secret-management service operated by Playxoft Studios Private Limited
+        (&ldquo;Playxoft&rdquo;), a company incorporated in India with corporate identity number
+        U58203TN2025PTC178070, whose registered office is at 19B/1, Ananthapettai Street,
+        Kanchipuram, Tamil Nadu 631501, India. Playxoft is the controller for the personal data
+        described below, and &ldquo;we&rdquo; means Playxoft throughout.
       </>,
       'This policy covers the hosted service we run, this website, the documentation, and the CLI when it talks to our servers. It does not cover a xecret server that somebody else runs — see section 13.',
       <>
@@ -168,9 +169,20 @@ const SECTIONS: readonly LegalSection[] = [
           card number; Dodo holds the card.
         </>,
         <>
-          <strong className="text-fg font-medium">Your PIN, as a hash.</strong> Plus the
-          failed-attempt counter and lockout state that stop it being guessed. We cannot recover a
-          PIN; a reset link goes to the address on the account.
+          <strong className="text-fg font-medium">
+            Your vault&rsquo;s key material, none of which we can open.
+          </strong>{' '}
+          Your public keys; your private keys, stored only encrypted under your vault key; your
+          vault key, stored only encrypted under your master passphrase, under each recovery code
+          and under each passkey you register, with the salt and Argon2id settings your passphrase
+          is stretched with; for each passkey, its credential identifier, the label you give it, the
+          transports your browser reports, and when it was added and last used; a hash that lets the
+          lock screen check an unlock without learning your passphrase; and the copies of each
+          environment&rsquo;s key that are sealed to you. For a browser where you set up a device
+          PIN: half of the key that browser&rsquo;s copy is encrypted under, a hash derived from the
+          PIN, and the failed-attempt counter that stops it being guessed. We never receive your
+          passphrase, a recovery code or a PIN &mdash; only values derived from them on your device
+          &mdash; and we cannot recover any of them.
         </>,
         <>
           <strong className="text-fg font-medium">Request logs.</strong> Method, path, a request
@@ -180,8 +192,8 @@ const SECTIONS: readonly LegalSection[] = [
           authorisation headers are scrubbed out of message text by pattern.
         </>,
         <>
-          <strong className="text-fg font-medium">Mail we send.</strong> A PIN reset link;
-          organisation invitations to the address you type; and, when you reset your vault, your{' '}
+          <strong className="text-fg font-medium">Mail we send.</strong> Organisation invitations to
+          the address you type; and, when you reset your vault, your{' '}
           <LegalLink href="/docs/security/vault-archive">vault archive</LegalLink> — your secrets,
           still encrypted, with the names of your organisations, projects, environments and secrets
           in plain text — attached to a message to your own address, or a notice in its place if you
@@ -201,23 +213,26 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'trust-model',
     heading: 'What our encryption protects, and what it does not',
     paragraphs: [
-      'xecret uses server-side envelope encryption. Every environment has its own data key; that key is encrypted under its organisation’s key, which is itself encrypted under a root key we hold in a Cloudflare Secrets Store binding the database has no access to. Values are AES-256-GCM, and each ciphertext is bound to its exact position in that hierarchy — a row copied from staging into production does not decrypt.',
-      'Decryption happens inside a single request handler, and every decryption writes a row to an append-only audit log that the application’s own database credentials cannot alter. An audit row therefore means a plaintext actually left the server.',
+      'Secret values and notes are end-to-end encrypted. Every environment has its own data key, generated on a member’s device. That key is sealed to the public key of each member and service token allowed to read the environment, and each member’s private key is stored only encrypted under a key that their master passphrase unlocks on their own device. Values are encrypted with AES-256-GCM in your browser or the CLI before they are sent, and each ciphertext is bound to its exact position — a row copied from staging into production does not decrypt.',
+      'We store the ciphertext and never hold a key that opens it. Your master passphrase and recovery codes never leave your device. Every value fetched is still written to an append-only audit log that the application’s own database credentials cannot alter, so an organisation can see who was handed which value, and when.',
       <>
         <strong className="text-fg font-medium">
-          Which means xecret can technically decrypt your secret values.
+          Which means xecret cannot decrypt your secret values.
         </strong>{' '}
-        It is the same model Doppler uses, and it is what makes team sharing, CI tokens and
-        browser-side <code className="text-fg font-mono text-[0.9em]">.env</code> import work
-        without a key-exchange ceremony. We do not call xecret zero-knowledge or end-to-end
-        encrypted, because it is neither.
+        Not our staff, not anybody who obtains our database, and not anybody who compels us to hand
+        it over: there is no plaintext value on our side to give. The same is true in reverse. If
+        you lose your passphrase, every recovery code and every passkey, we cannot recover your
+        vault either &mdash; a teammate can share your environments with you again.
       </>,
+      'One exception, stated as plainly. An environment created before end-to-end encryption became the default uses server-side encryption: its values are encrypted under a key our server unwraps with the service’s root key, so we can decrypt them, and importing a .env file into one sends the file to us to parse. The environment’s key settings in the dashboard say so. It cannot be converted in place: create a new environment, move the values across — which encrypts them on your device — and delete the old one. Every environment created since is end-to-end encrypted from its first key.',
       'What is not encrypted the way values are: the names of your secrets, organisations, projects and environments; membership, roles and access grants; audit metadata; and everything in the request logs. Those are readable by us and by anybody who obtains the database. The values are not.',
       <>
-        If you need a provider that cannot read your secrets even in principle, you need a
-        zero-knowledge product, and we would rather you knew that now than after migrating.{' '}
+        The guarantee rests on the code that does the encrypting. The CLI is open source and its
+        releases are signed; the web dashboard runs code we serve, under a strict Content Security
+        Policy.{' '}
         <LegalLink href="/docs/security/trust-model">What xecret can and cannot see</LegalLink> sets
-        out the full key hierarchy and what each kind of compromise yields.
+        out the full key hierarchy, what each kind of compromise yields, and where the guarantee
+        stops.
       </>,
     ],
   },
@@ -249,7 +264,7 @@ const SECTIONS: readonly LegalSection[] = [
           analytics cookie to consent to.
         </>,
       ],
-      'Two roles, and the distinction matters. For your account data we are the controller. For what you put into xecret — secrets, names, structure, and the audit records about them — we act as a processor on the instructions of the organisation that owns it, and that organisation is the controller. A standard data processing agreement will be published before general availability; until then, ask for one through the repository.',
+      'Two roles, and the distinction matters. For your account data we are the controller. For what you put into xecret — secrets, names, structure, and the audit records about them — we act as a processor on the instructions of the organisation that owns it, and that organisation is the controller. If your organisation needs a data processing agreement with us, ask at support@playxoft.com.',
       'We do not use your data to train models. We do not profile you, we do not enrich your account from third-party data sources, and we make no automated decision that produces a legal effect for you.',
     ],
   },
@@ -262,7 +277,9 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Cloudflare</strong> — hosting, the Workers runtime
           that serves every request, the edge network, rate limiting, and the Secrets Store binding
-          that holds the root key.
+          that holds the service&rsquo;s root key, which protects our own operational secrets
+          &mdash; webhook signing keys, for example &mdash; and the keys of any older environment
+          still on server-side encryption, but never a value in an end-to-end encrypted one.
         </>,
         <>
           <strong className="text-fg font-medium">Neon</strong> — the managed PostgreSQL database
@@ -278,10 +295,10 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:
-          PIN reset links, organisation invitations, the billing emails an organisation&rsquo;s
-          owners receive on a paid plan, and the vault archive or notice sent when you reset your
-          vault. The archive passes through it as an attachment: encrypted values it cannot read,
-          and names in plain text.
+          organisation invitations, the billing emails an organisation&rsquo;s owners receive on a
+          paid plan, and the vault archive or notice sent when you reset your vault. The archive
+          passes through it as an attachment: encrypted values it cannot read, and names in plain
+          text.
         </>,
         <>
           <strong className="text-fg font-medium">Better Stack</strong> — log shipping, when a
@@ -319,17 +336,33 @@ const SECTIONS: readonly LegalSection[] = [
           on the query and not on the retention.
         </>,
         <>
-          <strong className="text-fg font-medium">Secrets</strong> — for as long as the environment
-          exists. Deleting a secret soft-deletes it: the ciphertext and its earlier versions stay,
-          so that the audit record still refers to something real and so a rollback remains
-          possible. They go when the environment, project or organisation is purged.
+          <strong className="text-fg font-medium">Secrets</strong> — for as long as you keep them.
+          Every earlier version of a value is kept with it, which is what lets you roll one back.
         </>,
         <>
-          <strong className="text-fg font-medium">Soft-deleted records</strong> — purged{' '}
-          <Placeholder>
-            Playxoft purge window for soft-deleted organisations, projects and secrets
-          </Placeholder>{' '}
-          after deletion.
+          <strong className="text-fg font-medium">
+            Deleted organisations, projects, environments and secrets
+          </strong>{' '}
+          — kept for 30 days after deletion, out of everybody&rsquo;s reach, and then erased for
+          good: the values, every earlier version of them, and the keys they were encrypted under. A
+          job runs every night to do it, and it records each erasure in the audit log.
+        </>,
+        <>
+          <strong className="text-fg font-medium">Why 30 days.</strong> What xecret holds is
+          credentials, and a credential is deleted by mistake far more often than on purpose: the
+          wrong environment, a script that cleaned up too much, a value somebody did not know was
+          still in use &mdash; or an account that had been taken over. The first sign is usually an
+          outage days later, when an application restarts and cannot fetch what it needs. Thirty
+          days gives you time to notice and ask us to put it back, and gives an investigation the
+          record of what existed. After that, keeping a credential nobody can use would only add
+          risk, so we erase it.
+        </>,
+        <>
+          <strong className="text-fg font-medium">One exception.</strong> A secret deleted from an
+          environment that still exists is kept for your plan&rsquo;s point-in-time restore window
+          when that is longer than 30 days &mdash; 180 days on Team, a year on Enterprise &mdash;
+          because restoring the environment to an earlier moment brings such secrets back, and it
+          can only do that while they are still here.
         </>,
         <>
           <strong className="text-fg font-medium">Reset vaults</strong> — when you reset your vault,
@@ -341,13 +374,14 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">Closed accounts</strong> — deleting your account
-          revokes every session and CLI token, deletes your PIN, removes you from the organisations
-          you are not the last owner of, and soft-deletes the organisations that were only yours.
-          The user record itself is soft-deleted rather than erased, because the audit records you
-          made have to keep meaning something; the actor&rsquo;s label was written into each record
-          at the time, so the log still reads correctly with the account gone. A vault you reset in
-          the last seven days is kept until its window ends, then purged as above. Ask us if you
-          need the identity record erased outright.
+          revokes every session and CLI token, deletes your vault, your passkeys and any device
+          PINs, removes you from the organisations you are not the last owner of, and deletes the
+          organisations that were only yours, which are then erased 30 days later as described
+          above. The user record itself is soft-deleted rather than erased, because the audit
+          records you made have to keep meaning something; the actor&rsquo;s label was written into
+          each record at the time, so the log still reads correctly with the account gone. A vault
+          you reset in the last seven days is kept until its window ends, then purged as above. Ask
+          us if you need the identity record erased outright.
         </>,
         <>
           <strong className="text-fg font-medium">Sessions</strong> — 30 days from creation, and
@@ -377,24 +411,17 @@ const SECTIONS: readonly LegalSection[] = [
         delete account, which does everything described in section 6.
       </>,
       <>
-        For anything else, ask through the repository —{' '}
-        <LegalLink href={`${REPO_URL}/issues`}>open an issue on GitHub</LegalLink> — or at{' '}
-        <Placeholder>Playxoft contact email address</Placeholder> once that address exists. We
-        answer within one month, which is the period the GDPR allows, and sooner where we can. We
-        may have to verify that you are who you say you are before acting on a request about an
-        account.
-      </>,
-      <>
-        If a request would mean writing personal information into a public issue, say so in the
-        issue <em>without</em> including it, and we will give you a private channel.
+        For anything else, email{' '}
+        <LegalLink href="mailto:support@playxoft.com">support@playxoft.com</LegalLink>. We answer
+        within one month, which is the period the GDPR allows, and sooner where we can. We may have
+        to verify that you are who you say you are before acting on a request about an account.
       </>,
       <>
         If you think we have got this wrong, you can complain to the data protection authority where
-        you live, or to{' '}
-        <Placeholder>
-          lead supervisory authority for Playxoft&rsquo;s place of establishment
-        </Placeholder>
-        . We would rather you told us first.
+        you live &mdash; in the United Kingdom the Information Commissioner&rsquo;s Office, in the
+        EEA the authority of your own country. Playxoft is established in India, where the authority
+        under the Digital Personal Data Protection Act, 2023 is the Data Protection Board of India.
+        We would rather you told us first.
       </>,
     ],
   },
@@ -412,10 +439,8 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'International transfers',
     paragraphs: [
       <>
-        Playxoft is established in{' '}
-        <Placeholder>Playxoft&rsquo;s place of establishment</Placeholder>. The sub-processors in
-        section 5 are global companies, so your data will be processed outside the country you are
-        in.
+        Playxoft is established in India. The sub-processors in section 5 are global companies, so
+        your data will be processed outside the country you are in.
       </>,
       'Where a transfer leaves the United Kingdom or the EEA, it relies on the European Commission’s standard contractual clauses and the UK international data transfer addendum, together with each provider’s own transfer arrangements. The Workers runtime serves each request from whichever data centre is nearest to the caller and stores nothing; the database that holds your data lives in one region, fixed when the deployment was created.',
     ],
@@ -554,17 +579,16 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'How we protect it',
     paragraphs: [
       [
-        'Secrets are AES-256-GCM under a per-environment key, wrapped up a four-layer hierarchy whose root key is never in the database.',
-        'Session tokens, CLI tokens, service tokens and PINs are stored as hashes. A token is shown once, at creation, and cannot be re-read afterwards.',
+        'Secret values and notes are AES-256-GCM, encrypted on your device under a per-environment key that is sealed only to the members and service tokens allowed to read it. We hold no key that opens them.',
+        'Session tokens, CLI tokens and service tokens are stored as hashes. A token is shown once, at creation, and cannot be re-read afterwards.',
         'The application’s database role cannot alter the audit table. It is append-only by grant rather than by discipline.',
         'Error messages returned to a client are fixed strings — never derived from an exception, a database error or the rejected input, because the rejected input may itself be a secret.',
-        'Reveals and destructive actions sit behind a PIN lock with an idle auto-lock, so an unattended session cannot read a value.',
+        'Your vault locks after a period of inactivity, so an unattended session cannot read a value until it is unlocked again with your passphrase, a passkey or a device PIN.',
       ],
       <>
-        No system is perfect, and this one is pre-alpha. If we discover a breach affecting your
-        personal data, we will notify the affected organisation&rsquo;s owners without undue delay,
-        and the relevant supervisory authority within 72 hours where the law requires it. To report
-        a vulnerability, follow{' '}
+        No system is perfect. If we discover a breach affecting your personal data, we will notify
+        the affected organisation&rsquo;s owners without undue delay, and the relevant supervisory
+        authority within 72 hours where the law requires it. To report a vulnerability, follow{' '}
         <LegalLink href={`${REPO_URL}/blob/main/SECURITY.md`}>SECURITY.md</LegalLink> in the
         repository rather than opening a public issue.
       </>,
@@ -581,12 +605,12 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'self-hosting',
     heading: 'Self-hosted deployments',
     paragraphs: [
-      'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the root key, and writes their own privacy policy.',
+      'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the server’s root key, and writes their own privacy policy. End-to-end encryption works the same way there: the operator cannot read the values in an end-to-end encrypted environment either.',
       <>
         We receive nothing from a self-hosted instance — no telemetry, no phone-home, no licence
         check. <LegalLink href="/docs/self-hosting">Self-hosting</LegalLink> states the real
-        dependency list, including the parts that are friction, and is blunt about the one
-        irreversible risk: lose the root key and every secret is unrecoverable.
+        dependency list, including the parts that are friction, and is blunt about what the
+        server&rsquo;s root key protects and what losing it would cost.
       </>,
     ],
   },
@@ -596,11 +620,15 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       'When this policy changes, the date at the top of the page changes with it. For a change that materially affects your rights, we will email the owners of every organisation and announce it in the repository before it takes effect.',
       <>
-        The version of 7 November 2026 is not a material change. It describes more completely what
-        this site keeps in your browser, under{' '}
-        <LegalLink href="#cookies">Cookies and browser storage</LegalLink>, including one new
-        display preference. What we collect, why we process it, who processes it for us, and your
-        rights are unchanged.
+        The version of 22 November 2026 is not a material change. It names the company that operates
+        xecret and how to reach it, and it sets how long deleted data is kept &mdash; 30 days, then
+        erased, under <LegalLink href="#retention">How long we keep it</LegalLink> &mdash; where the
+        version before it left that period to be decided. It also describes the end-to-end
+        encryption the product already uses, under{' '}
+        <LegalLink href="#trust-model">What our encryption protects</LegalLink>, and lists the vault
+        key material that comes with it &mdash; material we already held, none of which we can open.
+        What we can read is narrower than the version before it said, not wider; why we process
+        data, who processes it for us, and your rights are unchanged.
       </>,
       <>
         This page lives in the same repository as the product, so its history is the git history:
@@ -615,15 +643,19 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'How to contact us',
     paragraphs: [
       <>
-        There is no support email address published yet, and we would rather say that than invent
-        one. Until <Placeholder>Playxoft contact email address</Placeholder> is live, the way to
-        reach us about anything on this page is{' '}
-        <LegalLink href={`${REPO_URL}/issues`}>an issue in the repository</LegalLink>.
+        Email <LegalLink href="mailto:support@playxoft.com">support@playxoft.com</LegalLink> about
+        anything on this page. For a question that is not about you personally, you are welcome to{' '}
+        <LegalLink href={`${REPO_URL}/issues`}>open an issue in the repository</LegalLink> instead
+        &mdash; but please keep personal information out of it, since issues are public.
       </>,
       <>
-        Postal address: <Placeholder>Playxoft registered address</Placeholder>. Data protection
-        officer or Article 27 representative:{' '}
-        <Placeholder>none appointed — to be confirmed before general availability</Placeholder>.
+        By post: Playxoft Studios Private Limited, 19B/1, Ananthapettai Street, Kanchipuram, Tamil
+        Nadu 631501, India.
+      </>,
+      <>
+        We have not appointed a data protection officer, or a representative in the EU or the United
+        Kingdom. While xecret is at this early stage, privacy requests go straight to the people who
+        build it, at the address above. If we appoint either, this section will name them.
       </>,
       <>
         The two documents that answer most follow-up questions before you have to ask them are{' '}

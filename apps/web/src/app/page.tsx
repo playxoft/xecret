@@ -58,7 +58,7 @@ const RUN_COMMAND = 'xecret run -- npm run dev';
 
 const TITLE = 'Secret management for developers';
 const DESCRIPTION =
-  'xecret replaces your .env file. Environment variables encrypted per environment, audited on every read, and injected into your app with one command. Open source.';
+  'xecret replaces your .env file. Environment variables end-to-end encrypted, audited on every read, and injected into your app with one command. Open source.';
 
 export const metadata: Metadata = {
   // The root layout's title template appends the product name, so the home
@@ -90,11 +90,11 @@ const STEPS = [
   },
   {
     title: 'Import your .env',
-    body: 'Drag in the file you already have. Parsing happens in your browser, so a pasted blob of production credentials never becomes a request body.',
+    body: 'Drag in the file you already have. It is parsed and encrypted in your browser, so your production credentials never reach us in plaintext.',
   },
   {
     title: 'Run your app',
-    body: 'The CLI resolves the environment, decrypts server-side, and injects everything into the process. No .env file on disk, and every read is in the audit log.',
+    body: 'The CLI fetches the environment, decrypts it on your machine, and injects everything into the process. No .env file on disk, and every read is in the audit log.',
   },
 ] as const;
 
@@ -102,7 +102,7 @@ const FEATURES = [
   {
     Icon: KeyIcon,
     title: 'A key per environment',
-    body: 'Development, staging and production never share a data key. Compromising one environment does not hand over the others.',
+    body: 'Development, staging and production never share a data key, and each key is generated on your device and shared only with the people you choose. Compromising one environment does not hand over the others.',
   },
   {
     Icon: TerminalIcon,
@@ -189,34 +189,34 @@ const WORKS_WITH = [
    paragraph they have to parse. The paragraph beside it is still there for the
    reader who wants the reasoning. */
 const CAN_SEE = [
-  'Encrypted secret values, which we can technically decrypt — the root key is ours',
+  'Your secret values as ciphertext, with no key that opens it',
   'Secret names, project names, environment names and organisation names, unencrypted',
   'Your email address and the identity provider you signed in with',
   'Every read, write and rotation, in the audit log, with who and when',
 ] as const;
 
 const CANNOT_SEE = [
-  'Your source code — xecret never sees a repository',
-  'The contents of the .env file you imported, before you imported it: parsing happens in your browser',
-  'Your PIN, which unlocks the dashboard locally and is never sent to us',
-  'Anything at all, on a self-hosted deployment — that database is yours',
+  'Your secret values and notes — they are encrypted on your device before they are sent',
+  'The keys that open them, which are shared with you, your teammates and your service tokens, never with us',
+  'Your master passphrase and recovery codes, which never leave your device',
+  'The .env file you import — it is parsed and encrypted in your browser',
 ] as const;
 
 const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can xecret read my secrets?',
     answer:
-      'Technically, yes. xecret uses server-side envelope encryption: every environment has its own data key, encrypted under a root key we hold, and values are decrypted inside a single request handler. That is the same model Doppler uses, and it is what makes team sharing, CI tokens and browser-side import work without a key-exchange ceremony. If you need a provider that cannot read your secrets even in principle, you need a zero-knowledge product, and we would rather you knew that now than after migrating.',
+      'No. Secret values and notes are end-to-end encrypted: they are encrypted on your device, in the browser or the CLI, under a key that is shared only with the teammates and service tokens you give access to. We store ciphertext and never hold a key that opens it, so a breach of our database, our own staff, or an order to hand data over cannot produce your values. Secret names, project names and the audit log are not encrypted, and the trust model lists exactly what we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
   },
   {
     question: 'Do I have to change my application code?',
     answer:
-      'No. The CLI resolves the environment, decrypts it, and injects the variables into the process it starts — your code carries on reading process.env, os.Getenv or whatever it already used. The only file that changes is .xecret.yaml, which holds slugs rather than secrets and is meant to be committed.',
+      'No. The CLI resolves the environment, decrypts it on your machine, and injects the variables into the process it starts — your code carries on reading process.env, os.Getenv or whatever it already used. The only file that changes is .xecret.yaml, which holds slugs rather than secrets and is meant to be committed.',
   },
   {
     question: 'What happens if xecret is down when I need to deploy?',
     answer:
-      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working. For a deploy, the honest answer for a pre-alpha product is to hold a break-glass copy of your production credentials somewhere you control, and to treat any single provider — us included — as something that can fail.',
+      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working. For a deploy, the honest answer for any hosted service is to hold a break-glass copy of your production credentials somewhere you control, and to treat any single provider — us included — as something that can fail.',
   },
   {
     question: 'Is it really open source, or is the useful half proprietary?',
@@ -226,8 +226,8 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What does it cost?',
     answer:
-      'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. While xecret is in pre-alpha no card is collected, and each plan’s limits apply now.',
-    // Pre-alpha copy until this deployment takes real payments (P12).
+      'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. No card is collected today, and each plan’s limits apply now.',
+    // The copy for a deployment that does not take payments (P12).
     whenPaymentsLive: {
       question: 'What does it cost?',
       answer:
@@ -237,7 +237,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret ready for production?',
     answer:
-      'It is pre-alpha. The encryption, the audit log, the CLI and self-hosting all work today, but the API surface can still change and there is no SLA. Use it for a side project or a new service; do not migrate a payments system to it this week.',
+      'Yes — xecret is generally available. The encryption, the audit log, the CLI and self-hosting are all in use today. Two things to know before you move production credentials: there is no SLA below an Enterprise agreement, and there has been no external security audit yet, so the source and the threat model are public for you to judge instead. Keep a break-glass copy of anything you cannot afford to lose, as you would with any provider.',
   },
 ];
 
@@ -576,9 +576,10 @@ export default async function LandingPage() {
             What xecret can and cannot see
           </h2>
           <p className="text-fg-muted mt-5 text-base leading-8 text-pretty">
-            xecret uses server-side envelope encryption. Every environment has its own data key,
-            which is itself encrypted under a root key we hold; values are decrypted only inside a
-            single request handler, and every decryption is written to an append-only audit log.
+            Your secrets are end-to-end encrypted. Values are encrypted on your device, in the
+            browser or the CLI, under a key generated for each environment, and that key is shared
+            only with the people and service tokens you give access to. We store the ciphertext and
+            never hold a key that opens it.
           </p>
         </Reveal>
 
@@ -603,7 +604,7 @@ export default async function LandingPage() {
           <div className="border-line bg-surface h-full rounded-xl border p-6">
             <h3 className="text-fg flex items-center gap-2 text-sm font-semibold">
               <EyeMarker tone="cannot" />
-              What we never receive
+              What we can never read
             </h3>
             <ul className="mt-4 flex flex-col gap-3">
               {CANNOT_SEE.map((item) => (
@@ -621,11 +622,10 @@ export default async function LandingPage() {
             written for. */}
         <Reveal className="mx-auto mt-10 max-w-3xl text-center">
           <p className="text-fg-muted text-base leading-8 text-pretty">
-            That means we <span className="text-fg font-medium">can</span> technically decrypt your
-            secrets — it is the same model Doppler uses, and it is what makes team sharing, CI
-            tokens and browser-side import work without a key-exchange ceremony. If you need a
-            provider that cannot read your secrets even in principle, you need a zero-knowledge
-            product, and we would rather you knew that now than after migrating.
+            That means we <span className="text-fg font-medium">cannot</span> read your secrets —
+            not from a database backup, not with our own production access, and not if we are
+            ordered to hand data over. Names are the exception: they stay unencrypted so the
+            dashboard can list and search them, so keep secrets out of the names you give things.
           </p>
           <div className="mt-7 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-sm">
             <Link href="/docs/security/trust-model" className={QUIET_LINK}>

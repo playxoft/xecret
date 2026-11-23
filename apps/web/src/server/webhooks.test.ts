@@ -1448,6 +1448,7 @@ describe('the scheduled routes', () => {
     expect(scheduled.jobsForCron(scheduled.PERIODIC_CRON)).toEqual(periodic);
     expect(scheduled.jobsForCron(scheduled.DAILY_CRON)).toEqual([
       ...periodic,
+      scheduled.DELETED_DATA_PURGE_PATH,
       scheduled.BILLING_DAILY_PATH,
     ]);
   });

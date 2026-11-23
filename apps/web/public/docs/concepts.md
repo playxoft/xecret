@@ -3,7 +3,7 @@ title: Core concepts
 navTitle: Core concepts
 description: Organisations, projects, environments, secrets, versions and tokens — the vocabulary every other page assumes, defined once.
 keywords: [xecret concepts, organisation project environment, secret versions, access levels, service token, glossary]
-updated: 2026-08-16
+updated: 2026-11-22
 ---
 
 Six words carry the whole product. Learn them here and every other page reads
@@ -47,8 +47,10 @@ project, and you can add more.
 
 Two things make an environment more than a folder:
 
-- **It has its own encryption key**, created in the same transaction as the
-  environment itself.
+- **It has its own encryption key**, generated in the browser that creates the
+  environment and sealed to each person and token allowed to read it. Values
+  are encrypted under it on your device, so the server only ever stores
+  ciphertext.
 - **One of them may be marked production**, which changes who can reach it by
   default. See [access levels](#access-levels) below.
 
@@ -147,7 +149,7 @@ never delete a secret. See [tokens](api/tokens.md).
 
 ## The audit log
 
-Every mutation, every decryption, and **every denial** is recorded, in an
+Every mutation, every read, and **every denial** is recorded, in an
 append-only table nobody can edit. A system that records only what succeeded
 cannot detect an attack in progress.
 

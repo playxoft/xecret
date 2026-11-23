@@ -3,7 +3,7 @@ title: What is xecret?
 navTitle: What is xecret?
 description: A plain-English explanation of the problem xecret solves, who it is for, and how it compares to keeping a .env file.
 keywords: [what is a secret manager, dotenv alternative, env file problem, secret management explained]
-updated: 2026-08-16
+updated: 2026-11-22
 ---
 
 If you have ever pasted a database password into Slack, or asked a teammate to
@@ -30,16 +30,16 @@ they are *copies*, and a copy is something you have stopped tracking.
 
 ## What xecret does instead
 
-xecret stores each environment's variables once, on a server, encrypted. Your
-app never reads them from a file — a command-line tool fetches them and hands
+xecret stores each environment's variables once, on a server, encrypted on
+your own device before they leave it. Your app never reads them from a file — a command-line tool fetches them and hands
 them to your program as it starts:
 
 ```bash
 xecret run -- npm run dev
 ```
 
-That command asks the server for the current secrets, puts them into the
-environment of the process it starts, and runs your app. Your code is
+That command fetches the current secrets, decrypts them on your machine, puts
+them into the environment of the process it starts, and runs your app. Your code is
 unchanged: it still reads `process.env.DATABASE_URL`, or `os.Getenv`, or
 whatever your language calls it. What changed is where the value came from.
 
@@ -68,28 +68,29 @@ login. It is for credentials that programs use.
 | **`.env` files** | Copies you cannot track, no rotation story, no audit trail. Free and fine for a solo hobby project. |
 | **CI provider secrets** (GitHub Actions secrets, etc.) | Fine for CI, but they do not help on your laptop, and each provider is a separate silo you keep in sync by hand. |
 | **Cloud KMS / Secrets Manager** (AWS, GCP) | Powerful, and built for infrastructure rather than for `npm run dev`. Usually needs SDK changes in your app. |
-| **xecret** | One store for laptop, CI and production, injected without code changes, audited. You trust a server with your secrets — see below. |
+| **xecret** | One store for laptop, CI and production, injected without code changes, audited — and end-to-end encrypted, so the server holding it cannot read it. |
 
-## The honest part
+## Who can read your secrets
 
-xecret uses **server-side envelope encryption**. Each environment has its own
-encryption key; that key is itself encrypted under a root key the server holds.
-Values are decrypted inside a single request handler, and every decryption is
-written to an append-only log.
+You, and the people you share an environment with. Not us.
 
-That design means the service **can** technically decrypt your secrets. This is
-the same model Doppler uses, and it is what makes team sharing, CI tokens and
-browser-side import work without every user performing a key exchange.
+Every value is encrypted in your browser or by the CLI before it is sent, with
+a key that belongs to its environment. That key is sealed to each person and
+each CI token allowed to read it, and only they hold the private keys that
+unseal it.
+xecret's servers store ciphertext and hold nothing that opens it — so a breach
+of our database, somebody at Playxoft, or a court order has no values to give
+up.
 
-If you need a provider that *cannot* read your secrets even in principle, you
-need a zero-knowledge product, and you should know that before you migrate
-rather than after. The full reasoning is in
+What we can see is the shape around them: secret names, project and
+environment names, who is a member, and the audit log of who read what. The
+details, and the limits of the guarantee, are in
 [what xecret can and cannot see](security/trust-model.md).
 
-> **Important** — xecret is currently pre-alpha. The features described in this
-> documentation are built, but the service has not yet run against production
-> infrastructure. Do not put credentials you cannot afford to rotate into it
-> yet.
+> **Note** — xecret is generally available. There is no SLA below an
+> Enterprise agreement and there has been no external security audit yet;
+> [the trust model](security/trust-model.md) says exactly what the service can
+> and cannot see.
 
 ## What to read next
 
