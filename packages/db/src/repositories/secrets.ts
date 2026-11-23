@@ -6,6 +6,7 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   notInArray,
@@ -33,6 +34,15 @@ import type { PageRequest } from './projects';
  *    here issues an `UPDATE` against it, and nothing should: rotation, rollback,
  *    and "what was this value on Tuesday" all fall out of the history for free,
  *    and they all stop working the moment one row is mutated in place.
+ *
+ *    **One exception, and what it does not change.** `reencryptVersionInPlace`
+ *    rewrites a `server`-mode row's ciphertext as the client-encrypted form of
+ *    *the same value*, once, when its environment is upgraded to end-to-end
+ *    encryption (ADR 0009, Phase 5). The version number, the author and the
+ *    timestamp stay; only the key that opens the bytes changes. History reads
+ *    the same before and after — which is the property the rule above exists to
+ *    protect — and appending instead would have doubled every history and
+ *    stamped every value "changed" on the day nothing changed.
  *
  * 2. **Exactly three functions return ciphertext** — `loadEnvironmentSecrets`,
  *    `findSecretByName`, and `getSecretVersion`. That is a deliberately small,
@@ -237,6 +247,65 @@ function payloadColumns(payload: SecretPayload) {
     algorithm: 'AES-256-GCM',
     clientAlgorithm: payload.clientAlgorithm,
   };
+}
+
+/** One `server`-mode version, and the client-encrypted form of the same value. */
+export interface ReencryptVersionParams {
+  /** The `secret_versions` row. */
+  versionId: string;
+  secretId: string;
+  /** The version number the row holds — and the one the new ciphertext's AAD binds. */
+  version: number;
+  envDataKeyId: string;
+  /** The ASCII of an `xk2.gcm.` blob. Stored verbatim, never parsed. */
+  ciphertext: Uint8Array;
+  clientAlgorithm: string;
+  /** Keyed from the new EHK, so no-op detection works on the first write afterwards. */
+  valueHmac: Uint8Array;
+}
+
+/**
+ * Rewrites one `server`-mode version as its client-encrypted form, in place —
+ * the single `UPDATE` this file issues against `secret_versions` (see the
+ * header, rule 1).
+ *
+ * The column set is `payloadColumns`'s `e2ee` arm, so the row leaves this
+ * function exactly as `createSecret` would have written it in an `e2ee`
+ * environment: no IV column, no `env_key_id`, the data key and the client's
+ * label set. All of it in one statement, which is what keeps the three CHECKs
+ * that pair those columns satisfied at every instant.
+ *
+ * Matched on the row id, the secret **and** the version number, and only while
+ * the row is still a server-envelope row. A row that does not match all four
+ * is not the row the browser re-encrypted for, and the caller is told so —
+ * `false` — rather than the statement quietly updating nothing.
+ */
+export async function reencryptVersionInPlace(
+  exec: Executor,
+  params: ReencryptVersionParams,
+): Promise<boolean> {
+  const rows = await exec
+    .update(secretVersions)
+    .set({
+      ...payloadColumns({
+        mode: 'e2ee',
+        envDataKeyId: params.envDataKeyId,
+        ciphertext: params.ciphertext,
+        clientAlgorithm: params.clientAlgorithm,
+      }),
+      valueHmac: params.valueHmac,
+    })
+    .where(
+      and(
+        eq(secretVersions.id, params.versionId),
+        eq(secretVersions.secretId, params.secretId),
+        eq(secretVersions.version, params.version),
+        isNotNull(secretVersions.envKeyId),
+      ),
+    )
+    .returning({ id: secretVersions.id });
+
+  return rows.length === 1;
 }
 
 export interface CreateSecretParams {
@@ -519,6 +588,110 @@ export async function loadSecretsForEnvironments(
     .orderBy(asc(secretVersions.secretId), desc(secretVersions.version));
 
   return rows.map(toSecretMaterial);
+}
+
+/** One live secret as the upgrade to end-to-end encryption has to re-encrypt it. */
+export interface HistorySecret {
+  id: string;
+  name: string;
+  valueType: string;
+  /** The plaintext note of a `server`-mode secret. */
+  note: string | null;
+  /**
+   * `secrets.updated_at` in whole microseconds since the epoch — see
+   * {@link secretRevision}.
+   */
+  revision: string;
+}
+
+/**
+ * A secret row's staleness token: `updated_at` in whole microseconds since the
+ * epoch, as decimal text.
+ *
+ * Not a timestamp anybody reads. Every change to a secret's row — a note, a
+ * rename, a type, a new version — moves `updated_at`, so an upgrade that
+ * re-encrypted a note from one snapshot can tell, inside its own transaction,
+ * that the note it sealed is no longer the note stored. Microseconds rather
+ * than a `Date`, which keeps milliseconds, so two edits inside one millisecond
+ * do not compare equal; and an epoch count rather than `::text`, whose form
+ * follows the connection's `TimeZone` and could differ between the read and
+ * the write on two pooled connections.
+ */
+export function secretRevision(): SQL<string> {
+  return sql<string>`(extract(epoch from ${secrets.updatedAt}) * 1000000)::bigint::text`;
+}
+
+/**
+ * Every live secret of an environment **and every version of each** — the
+ * sixth function that returns ciphertext, and the only one that returns history
+ * in bulk.
+ *
+ * It exists for one caller: the upgrade of a `server`-mode environment to
+ * end-to-end encryption (ADR 0009, Phase 5), which has to hand an upgrading
+ * browser every value the environment has ever held so it can re-encrypt each
+ * one for the row and the version it already occupies. Two statements, both
+ * constant in the number of secrets, and unpaginated for the reason
+ * `loadEnvironmentSecrets` is: an upgrade over a partial history would leave the
+ * versions it never saw under a key the upgrade then deletes.
+ *
+ * Versions come back ordered by secret and then by version, with the context
+ * every one of them needs to be opened (`toSecretMaterial`).
+ */
+export async function loadEnvironmentHistory(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+): Promise<{ secrets: HistorySecret[]; versions: SecretMaterial[] }> {
+  const live = and(
+    eq(secrets.environmentId, environmentId),
+    eq(projects.orgId, orgId),
+    isNull(secrets.deletedAt),
+    isNull(environments.deletedAt),
+    isNull(projects.deletedAt),
+  );
+
+  const secretRows = await exec
+    .select({
+      id: secrets.id,
+      name: secrets.name,
+      valueType: secrets.valueType,
+      note: secrets.note,
+      revision: secretRevision(),
+    })
+    .from(secrets)
+    .innerJoin(environments, eq(environments.id, secrets.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(live)
+    .orderBy(asc(secrets.name));
+
+  const versionRows = await exec
+    .select({
+      secretId: secrets.id,
+      name: secrets.name,
+      valueType: secrets.valueType,
+      environmentId: secrets.environmentId,
+      versionId: secretVersions.id,
+      version: secretVersions.version,
+      envKeyId: secretVersions.envKeyId,
+      envDataKeyId: secretVersions.envDataKeyId,
+      ciphertext: secretVersions.ciphertext,
+      iv: secretVersions.iv,
+      algorithm: secretVersions.algorithm,
+      clientAlgorithm: secretVersions.clientAlgorithm,
+      valueHmac: secretVersions.valueHmac,
+      declaredReferences: secretVersions.declaredReferences,
+      createdBy: secretVersions.createdBy,
+      createdByServiceTokenId: secretVersions.createdByServiceTokenId,
+      createdAt: secretVersions.createdAt,
+    })
+    .from(secretVersions)
+    .innerJoin(secrets, eq(secrets.id, secretVersions.secretId))
+    .innerJoin(environments, eq(environments.id, secrets.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(live)
+    .orderBy(asc(secretVersions.secretId), asc(secretVersions.version));
+
+  return { secrets: secretRows, versions: versionRows.map(toSecretMaterial) };
 }
 
 /**
@@ -968,6 +1141,43 @@ export async function updateSecretMetadata(
     throw new RepositoryError('invalid', 'No secret metadata was supplied to update.');
   }
 
+  // ── A plaintext note is written only into an environment still in `server` mode ──
+  // The route decides between `note` and `encNote` from the mode it resolved at
+  // the start of the request, and an upgrade to end-to-end encryption can commit
+  // between that read and this write. Without this, the write would wait on the
+  // upgrade's row locks, then land a plaintext note on a secret the upgrade had
+  // just made end-to-end encrypted — the one column of free text the upgrade
+  // exists to take away from the server. Reading the mode `FOR SHARE` conflicts
+  // with the upgrade's `FOR UPDATE` on the same row, so this waits for it and
+  // then sees the mode it committed; a `server` answer holds until this
+  // transaction ends, because the upgrade cannot take its lock meanwhile.
+  if (typeof params.note === 'string') {
+    return exec.transaction(async (tx) => {
+      const [environment] = await tx
+        .select({ encryptionMode: environments.encryptionMode })
+        .from(environments)
+        .where(eq(environments.id, params.environmentId))
+        .for('share');
+      // An absent row falls through to the write, whose tenancy predicate
+      // answers `notFound` exactly as it always has.
+      if (environment !== undefined && environment.encryptionMode !== 'server') {
+        throw new RepositoryError(
+          'invalid',
+          'A plaintext note can only be written in an environment that uses server-side encryption.',
+        );
+      }
+      return writeSecretMetadata(tx, params, patch);
+    });
+  }
+
+  return writeSecretMetadata(exec, params, patch);
+}
+
+async function writeSecretMetadata(
+  exec: Executor,
+  params: UpdateSecretMetadataParams,
+  patch: Record<string, unknown>,
+): Promise<SecretRecord> {
   try {
     const [row] = await exec
       .update(secrets)

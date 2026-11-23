@@ -115,7 +115,7 @@ const MIN_SECRET_BLOB_LENGTH = 'xk2.gcm.'.length + Math.ceil((28 * 4) / 3);
 
 const MALFORMED_BLOB = 'That value is not a well-formed xk2 blob.';
 
-const secretBlobSchema = z
+export const secretBlobSchema = z
   .string()
   .check(
     z.regex(/^xk2\.gcm\.[A-Za-z0-9_-]+$/, MALFORMED_BLOB),
@@ -160,7 +160,7 @@ const valueHmacSchema = z.string().check(
 const dataKeyIdSchema = uuidField('A key is named by a UUID.');
 
 /** One client-encrypted value, with everything needed to store and to re-find it. */
-const clientValueSchema = z.object({
+export const clientValueSchema = z.object({
   ciphertext: secretBlobSchema,
   /**
    * The construction the client used, e.g. `xk2.gcm`. Recorded verbatim so an
@@ -192,7 +192,7 @@ const clientValueSchema = z.object({
  * id produces a ciphertext that fails to authenticate on the first read, which
  * is the same failure mode as every other AAD component.
  */
-const secretIdSchema = uuidField('A secret is named by a UUID.');
+export const secretIdSchema = uuidField('A secret is named by a UUID.');
 
 /**
  * The version this ciphertext was sealed for.
@@ -215,7 +215,7 @@ const secretIdSchema = uuidField('A secret is named by a UUID.');
  * A mismatch is a `conflict`, not a validation error: the body was well formed and
  * was correct when it was built, and the remedy is to re-read and encrypt again.
  */
-const expectedVersionSchema = z
+export const expectedVersionSchema = z
   .int()
   .check(z.gte(1, 'A version is at least 1.'), z.lte(2_147_483_647));
 

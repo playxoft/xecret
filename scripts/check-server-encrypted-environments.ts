@@ -42,11 +42,22 @@
  *
  * ## What to do about a hit
  *
- * An environment cannot be switched over in place (`environment-key-card.tsx`
- * says so to anybody who opens one). Its owner creates a new environment, moves
- * the values across from the dashboard, and deletes the old one; the purge then
- * erases it. Exits non-zero while anything is left, so a CI job wired to it goes
- * red on the state rather than reporting it into a log nobody reads.
+ * A live one: an owner or admin of the organisation opens the environment in the
+ * dashboard with an unlocked vault and presses *Upgrade to end-to-end
+ * encryption* (ADR 0009, Phase 5 — `encryption-upgrade-panel.tsx`). Their
+ * browser re-encrypts every value, version and note in place, the server deletes
+ * its `env_keys` row in the same transaction, and the environment drops out of
+ * this report. The dialog names what it costs first: keyless CI tokens on the
+ * environment are revoked, and its deleted secrets are erased. An environment
+ * with nothing in it upgrades itself the first time such a member opens it, so
+ * the empty ones clear as their owners next sign in — `--details` says who those
+ * owners are and whether they have a vault yet.
+ *
+ * A deleted one cannot be upgraded; the purge erases it, key and all, thirty days
+ * after the delete.
+ *
+ * Exits non-zero while anything is left, so a CI job wired to it goes red on the
+ * state rather than reporting it into a log nobody reads.
  */
 
 import { sql } from 'drizzle-orm';
@@ -134,8 +145,9 @@ async function main(): Promise<void> {
     console.warn(`  deleted, awaiting purge:    ${buried}`);
     console.warn('');
     console.warn(
-      'Until these are moved to new environments and purged, the server can decrypt the values in them.',
+      'Until these are upgraded (open each one in the dashboard and press "Upgrade to end-to-end',
     );
+    console.warn('encryption") or, if deleted, purged, the server can decrypt the values in them.');
     if (process.argv.includes('--details')) await printDetails(db);
     process.exitCode = 1;
   } finally {

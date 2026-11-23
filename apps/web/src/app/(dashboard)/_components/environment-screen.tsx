@@ -20,6 +20,7 @@ import {
 import { PromoteDialog } from '@/components/changes/promote-dialog';
 import { RestorePointDialog } from '@/components/changes/restore-point-dialog';
 import {
+  EncryptionUpgradePanel,
   EnvKeyUnavailableState,
   NeedsRotationBanner,
   PendingSharesBanner,
@@ -315,6 +316,26 @@ export function EnvironmentScreen({
             material={material}
             pendingCount={pendingCount}
             onShared={keys.reload}
+          />
+        ) : null}
+
+        {/* A `server`-mode environment, to somebody who may manage it: what the
+          server can read here, and the upgrade — run without asking when the
+          environment is empty (see `encryption-upgrade-panel.tsx`). After it
+          lands, the key state is re-read and the listing with it, so the table
+          switches to the end-to-end encrypted IO and the notes it now opens. */}
+        {keys.state.status === 'server' ? (
+          <EncryptionUpgradePanel
+            target={{ orgSlug, projectSlug, envSlug }}
+            orgId={organization?.id ?? null}
+            environmentName={environment?.name ?? envSlug}
+            isProduction={isProduction}
+            canManage={canRotate}
+            placement="banner"
+            onUpgraded={() => {
+              keys.reload();
+              secrets.reload();
+            }}
           />
         ) : null}
 

@@ -14,6 +14,7 @@ import {
   Skeleton,
 } from '@/components/ui';
 import { useOrganization } from '@/app/(dashboard)/_components/session';
+import { EncryptionUpgradePanel } from './encryption-upgrade-panel';
 import { EnvKeyUnavailableState } from './env-key-notice';
 import type { EnvironmentRef } from './env-keys';
 import { PendingSharesBanner } from './pending-shares';
@@ -31,11 +32,12 @@ import { useEnvironmentKeys } from './use-environment-keys';
  * only appeared after a revocation would make the deliberate version of the same
  * act something an administrator had to manufacture a revocation to reach.
  *
- * ── What the card says when it cannot say much ──
- * A `server`-mode environment has no client key at all, and this renders the one
- * sentence that explains why the rest of the card is absent rather than an empty
- * panel. That state is a migration artefact — `server` mode is not a choice a
- * client can make — so the copy says so rather than offering a switch.
+ * ── What the card says about a `server`-mode environment ──
+ * Such an environment has no client key at all — it predates end-to-end
+ * encryption, and the server can read its values. The card says so plainly and,
+ * to somebody who may manage the environment, offers the way out: an in-place
+ * upgrade to end-to-end encryption (`encryption-upgrade-panel.tsx`), after which
+ * the rest of this card appears as it does for every other environment.
  */
 export function EnvironmentKeyCard({
   orgSlug,
@@ -83,13 +85,15 @@ export function EnvironmentKeyCard({
             <p>Reload the page and try again.</p>
           </Alert>
         ) : keys.state.status === 'server' ? (
-          <Alert tone="info" title="This environment uses server-side encryption">
-            <p>
-              Its values are encrypted with a key the server unwraps, which predates end-to-end
-              encryption. There is no client-held key to rotate, and no way to switch an existing
-              environment over — create a new one and move the values across.
-            </p>
-          </Alert>
+          <EncryptionUpgradePanel
+            target={{ orgSlug, projectSlug, envSlug }}
+            orgId={organization?.id ?? null}
+            environmentName={environmentName}
+            isProduction={isProduction}
+            canManage={canManage}
+            placement="card"
+            onUpgraded={keys.reload}
+          />
         ) : keys.state.status === 'unavailable' ? (
           <EnvKeyUnavailableState reason={keys.state.reason} onRetry={keys.reload} />
         ) : (

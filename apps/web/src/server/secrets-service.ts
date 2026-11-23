@@ -25,6 +25,7 @@ import {
   RepositoryError,
   addSecretVersion,
   createSecret,
+  loadEnvironmentHistory,
   loadEnvironmentKeyChain,
   loadEnvironmentKeyState,
   loadEnvironmentSecrets,
@@ -314,6 +315,95 @@ export async function decryptOne(
   return withEnvironmentKey(scope, services, (key) =>
     openValue(scope, services, key.bytes, stored),
   );
+}
+
+/** One live secret of a `server`-mode environment, with its whole history in plaintext. */
+export interface DecryptedHistorySecret {
+  secretId: string;
+  name: string;
+  valueType: string;
+  note: string | null;
+  /** See `HistorySecret.revision` — the staleness token the upgrade checks. */
+  revision: string;
+  /** Oldest first. Never logged, never audited. */
+  versions: { versionId: string; version: number; value: string }[];
+}
+
+/**
+ * Decrypts every version of every live secret in a `server`-mode environment —
+ * the read an upgrade to end-to-end encryption (ADR 0009, Phase 5) is built on.
+ *
+ * The last thing the server half is asked to do for an environment, and it is
+ * the same act as every other read here: one key unwrap, every context built
+ * from the stored row, sequential decryption, bytes zeroed in a `finally`. What
+ * is different is how much it returns, which is why its one route is gated like
+ * the strongest read there is and audited as a bulk one.
+ *
+ * ── Refused rather than attempted ──
+ * A version written under any `env_keys` row but the active one is refused,
+ * not decrypted with the wrong key: no code path rotates a server envelope key,
+ * so such a row means the environment is in a state nobody designed, and an
+ * upgrade that deletes the server's keys afterwards must not be the code path
+ * that finds out what that state was. A client-encrypted row in a `server`-mode
+ * environment is refused by `openValue` for the same reason.
+ */
+export async function decryptEnvironmentHistory(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<DecryptedHistorySecret[]> {
+  return withEnvironmentKey(scope, services, async (key) => {
+    const history = await loadEnvironmentHistory(
+      services.db,
+      scope.organization.id,
+      scope.environment.id,
+    );
+
+    const bySecret = new Map<string, DecryptedHistorySecret>();
+    for (const secret of history.secrets) {
+      bySecret.set(secret.id, {
+        secretId: secret.id,
+        name: secret.name,
+        valueType: secret.valueType,
+        note: secret.note,
+        revision: secret.revision,
+        versions: [],
+      });
+    }
+
+    for (const material of history.versions) {
+      if (material.envKeyId !== key.envKeyId) {
+        services.log
+          .at('decryptEnvironmentHistory')
+          .error(
+            'A version of a server-mode secret names a key other than the environment’s active ' +
+              'one. Nothing rotates a server envelope key, so the history is refused rather ' +
+              'than decrypted under a key that cannot open it.',
+            { environmentId: scope.environment.id, reason: 'foreignEnvKey' },
+          );
+        throw errors.conflict(
+          'upgrade_unsupported: this environment holds values this upgrade cannot read. Contact support.',
+        );
+      }
+
+      const secret = bySecret.get(material.secretId);
+      // The two statements read the same live set; a version whose secret is
+      // missing means one was deleted between them, which the upgrade's own
+      // transaction would refuse anyway. Refused here so nothing partial leaves.
+      if (secret === undefined) {
+        throw errors.conflict(
+          'version_conflict: this environment changed while it was being read. Try again.',
+        );
+      }
+
+      secret.versions.push({
+        versionId: material.versionId,
+        version: material.version,
+        value: await openValue(scope, services, key.bytes, material),
+      });
+    }
+
+    return [...bySecret.values()];
+  });
 }
 
 /** Writes one secret. See `applySecretWrites` for the semantics. */

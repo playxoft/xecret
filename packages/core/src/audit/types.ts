@@ -296,6 +296,19 @@ export type AuditAction =
    */
   | 'environment.purged'
   /**
+   * A `server`-mode environment was upgraded to end-to-end encryption in place
+   * (ADR 0009, Phase 5): every value, every version and every note re-encrypted
+   * in a member's browser under a key generated there, and the server-held
+   * `env_keys` row deleted, so the server can no longer open anything in it.
+   *
+   * Counts only — `secretCount`, `versionCount`, `noteCount`, and what could not
+   * cross: `purgedSecretCount` deleted secrets erased early and
+   * `revokedTokenCount` keyless CI tokens revoked (each of those also has its
+   * own `secret.purged` or `token.revoked` record, reason `encryption-upgrade`).
+   * One record per environment, ever: the mode moves one way.
+   */
+  | 'environment.encryption_upgraded'
+  /**
    * An environment's parent was set, changed or cleared (P19 §1): what its
    * view inherits from now differs. `parentEnvironmentSlug` names the new
    * parent — `null` when it was cleared — and `previousParentEnvironmentSlug`
@@ -824,6 +837,18 @@ export interface AuditMetadata {
    */
   partCount?: number;
   environmentCount?: number;
+  /**
+   * What an upgrade to end-to-end encryption carried across
+   * (`environment.encryption_upgraded`): how many secret versions and notes were
+   * re-encrypted, how many soft-deleted secrets were erased because they could
+   * not be, and how many keyless CI tokens were revoked because nothing could be
+   * sealed to them. Counts, never names — the per-secret and per-token records
+   * beside it carry those.
+   */
+  versionCount?: number;
+  noteCount?: number;
+  purgedSecretCount?: number;
+  revokedTokenCount?: number;
   /** How many recovery codes a regeneration issued. A count, never a code. */
   recoveryCodeCount?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */

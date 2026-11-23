@@ -125,13 +125,16 @@ export function noContent(cookies: readonly string[] = []): Response {
  * with a running byte count because a chunked request may omit or understate it.
  * Trusting the declared length alone is a well-worn way past a size limit.
  */
-export async function readJsonBody(request: Request): Promise<unknown> {
+export async function readJsonBody(
+  request: Request,
+  maxBytes: number = MAX_REQUEST_BODY_BYTES,
+): Promise<unknown> {
   const declared = request.headers.get('content-length');
-  if (declared !== null && Number(declared) > MAX_REQUEST_BODY_BYTES) {
+  if (declared !== null && Number(declared) > maxBytes) {
     throw errors.tooLarge('Request body is too large.');
   }
 
-  const text = await readBoundedText(request);
+  const text = await readBoundedText(request, maxBytes);
   if (text.trim() === '') return undefined;
 
   try {
@@ -212,8 +215,17 @@ export function parseWith<T>(schema: ZodMiniType<T>, value: unknown): T {
   throw errors.validation(fields);
 }
 
-export async function parseJsonBody<T>(request: Request, schema: ZodMiniType<T>): Promise<T> {
-  return parseWith(schema, await readJsonBody(request));
+/**
+ * `maxBytes` raises the ceiling for the one route that needs it — the upgrade to
+ * end-to-end encryption, which carries a whole environment's history in one
+ * transaction (`MAX_UPGRADE_BODY_BYTES`). Every other route keeps the default.
+ */
+export async function parseJsonBody<T>(
+  request: Request,
+  schema: ZodMiniType<T>,
+  maxBytes: number = MAX_REQUEST_BODY_BYTES,
+): Promise<T> {
+  return parseWith(schema, await readJsonBody(request, maxBytes));
 }
 
 export function parseQuery<T>(request: Request, schema: ZodMiniType<T>): T {

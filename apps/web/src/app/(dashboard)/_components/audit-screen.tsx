@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api, errorMessage, isApiError } from '@/lib/api';
-import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
+import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
 import {
   Alert,
@@ -76,6 +76,10 @@ export const AUDIT_FILTER_ACTIONS = [
   'environment.promoted',
   'environment.restored',
   'environment.policy_changed',
+  // ADR 0009, Phase 5: the in-place upgrade from server-side encryption — the
+  // record a reviewer looks for to see when the server stopped being able to
+  // read an environment.
+  'environment.encryption_upgraded',
   'org.policy_changed',
   'override.set',
   'override.removed',
@@ -830,6 +834,16 @@ function describeP19(event: AuditEvent, parts: string[]): void {
 
   const restoredTo = text('restoredTo');
   if (restoredTo !== null) parts.push(`to ${restoredTo}`);
+
+  // The upgrade to end-to-end encryption: what crossed, and what could not.
+  if (event.action === 'environment.encryption_upgraded') {
+    const number = (key: string) => (typeof m[key] === 'number' ? (m[key] as number) : 0);
+    parts.push(
+      `${pluralize(number('versionCount'), 'version')} re-encrypted, ` +
+        `${pluralize(number('purgedSecretCount'), 'deleted secret')} erased, ` +
+        `${pluralize(number('revokedTokenCount'), 'CI token')} revoked`,
+    );
+  }
 
   const policy = text('policyName');
   if (policy !== null) parts.push(POLICY_WORDS[policy] ?? policy);

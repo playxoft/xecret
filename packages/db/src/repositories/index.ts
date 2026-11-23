@@ -370,9 +370,11 @@ export {
   getSecretVersion,
   listSecretVersions,
   listSecrets,
+  loadEnvironmentHistory,
   loadEnvironmentSecrets,
   loadEnvironmentSecretsAt,
   loadSecretsForEnvironments,
+  reencryptVersionInPlace,
   restoreSecret,
   softDeleteSecret,
   updateSecretMetadata,
@@ -381,6 +383,8 @@ export {
 export type {
   AddSecretVersionParams,
   CreateSecretParams,
+  HistorySecret,
+  ReencryptVersionParams,
   SecretListItem,
   SecretMaterial,
   SecretPage,
@@ -391,6 +395,20 @@ export type {
   SecretWriterRef,
   UpdateSecretMetadataParams,
 } from './secrets';
+
+export {
+  EncryptionUpgradeConflict,
+  loadEncryptionUpgradeObligations,
+  upgradeEnvironmentEncryption,
+} from './encryption-upgrade';
+export type {
+  EncryptionUpgradeObligations,
+  EncryptionUpgradeRefusal,
+  UpgradedSecret,
+  UpgradedVersion,
+  UpgradeEnvironmentParams,
+  UpgradeEnvironmentResult,
+} from './encryption-upgrade';
 
 export {
   acceptInvitation,

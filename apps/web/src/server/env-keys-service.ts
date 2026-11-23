@@ -660,6 +660,43 @@ async function entitledPrincipals(
 }
 
 /**
+ * Queues a key share for every member entitled to this environment except
+ * `exceptUserId` — what an environment that has just become end-to-end
+ * encrypted owes its readers, since at that moment only one person holds its key.
+ *
+ * The same `entitledPrincipals` a rotation is checked against, so the members
+ * owed a key and the members a rotation must reach cannot be two different
+ * sets. Members who have a vault are then sealed to straight away by the
+ * upgrading browser through `POST …/keys/grants`, which clears their row in the
+ * same transaction; the rest wait in the queue, exactly as a member granted
+ * access without a key does today, until somebody holding the key shares it.
+ *
+ * Takes the executor of the transaction that changed the mode, so a share is
+ * never queued for an environment whose upgrade rolled back.
+ */
+export async function queueSharesForEntitledMembers(
+  exec: Executor,
+  scope: EnvironmentScope,
+  exceptUserId: string,
+): Promise<number> {
+  const entitled = await entitledPrincipals(exec, scope);
+  let queued = 0;
+  for (const userId of entitled.memberUserIds) {
+    if (userId === exceptUserId) continue;
+    if (
+      await queuePendingKeyGrant(exec, {
+        environmentId: scope.environment.id,
+        targetUserId: userId,
+        requestedBy: exceptUserId,
+      })
+    ) {
+      queued += 1;
+    }
+  }
+  return queued;
+}
+
+/**
  * Who a client may seal this environment's key to, and who already holds it.
  *
  * ── The gap this closes ──
