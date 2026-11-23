@@ -382,16 +382,8 @@ func secretsSet(args []string) error {
 			ctx, a, client, material, resolved, keys.IsProduction, name, value, *valueType, *note, options...)
 		err = withCrossingHint(err)
 	} else {
-		// Create, and on "already exists" append a version instead. Two calls in
-		// the worst case, but the create path stays the same one the dashboard
-		// uses, and the server's unique index remains the arbiter of the race.
-		result, err = client.CreateSecret(ctx,
-			resolved.Org, resolved.Project, resolved.Environment, name, value, *valueType, *note)
-		if apiErr, ok := api.AsError(err); ok && apiErr.Code == "conflict" {
-			appended = true
-			result, err = client.UpdateSecret(ctx,
-				resolved.Org, resolved.Project, resolved.Environment, name, value, *valueType)
-		}
+		appended, result, err = createOrAppendServerSecret(
+			ctx, client, resolved, name, value, *valueType, *note)
 	}
 	if err != nil {
 		return err
@@ -1184,6 +1176,50 @@ func restoreClientSecret(
 	return result, withWriteConflictHint(err)
 }
 
+// nameTakenMessage is the server's refusal of a create whose name a live secret
+// already holds — word for word, from `rethrowRepositoryFailure` and the plan
+// ceiling's name check. The only 409 a server-mode create answers that means
+// "append a version instead".
+const nameTakenMessage = "A secret with that name already exists in this environment."
+
+// isNameTaken tells the server's "that name is taken" from every other 409 a
+// create can be answered with: a deadlock or serialisation failure ("changed by
+// another request"), or an environment upgraded to end-to-end encryption while
+// the request was in flight (`mode_changed:`). Falling back to an append on any
+// of those would send a plaintext value to a second endpoint on a guess.
+func isNameTaken(err error) bool {
+	apiErr, ok := api.AsError(err)
+	return ok && apiErr.Status == 409 && apiErr.Code == "conflict" && apiErr.Message == nameTakenMessage
+}
+
+// createOrAppendServerSecret writes a value to a server-mode environment:
+// create, and on "that name is taken" append a version instead. Two calls in the
+// worst case, but the create path stays the same one the dashboard uses, and the
+// server's unique index remains the arbiter of the race.
+//
+// Only that refusal falls back. Any other 409 is returned as it is, with the
+// run-again hint where running again is the remedy — a write that lost a race,
+// or one that reached an environment as it was upgraded, which the next run
+// reads as end-to-end encrypted and writes through the encrypted path.
+func createOrAppendServerSecret(
+	ctx context.Context,
+	client *api.Client,
+	resolved scope,
+	name, value, valueType, note string,
+) (bool, *api.WriteResult, error) {
+	result, err := client.CreateSecret(ctx,
+		resolved.Org, resolved.Project, resolved.Environment, name, value, valueType, note)
+	if err == nil {
+		return false, result, nil
+	}
+	if !isNameTaken(err) {
+		return false, nil, withWriteConflictHint(err)
+	}
+	result, err = client.UpdateSecret(ctx,
+		resolved.Org, resolved.Project, resolved.Environment, name, value, valueType)
+	return true, result, withWriteConflictHint(err)
+}
+
 // withWriteConflictHint turns the server's refusal of a client-encrypted write
 // into an instruction.
 //
@@ -1219,7 +1255,10 @@ func isWriteRace(apiErr *api.Error) bool {
 		return false
 	}
 	if reason := reasonPrefix.FindString(apiErr.Message); reason != "" {
-		return reason == "version_conflict:"
+		// `mode_changed:` — the environment was upgraded to end-to-end
+		// encryption mid-request. Nothing was written, and the next run reads
+		// the new mode and writes through the encrypted path.
+		return reason == "version_conflict:" || reason == "mode_changed:"
 	}
 	return true
 }

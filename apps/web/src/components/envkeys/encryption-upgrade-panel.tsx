@@ -57,7 +57,7 @@ import type {
  * one sentence that says what the server can read here, and nothing above the
  * values. Somebody who can sees the button — and, where the server says they
  * may not after all (no vault yet; CI tokens only an owner or admin may
- * revoke; plaintext export disabled), why not. The server's answer comes from
+ * revoke), why not. The server's answer comes from
  * `GET …/encryption-upgrade`, which refuses nobody and records nothing, so
  * asking it on every page view costs no audit noise and no rate limit.
  */
@@ -287,9 +287,6 @@ function blockerSentence(
     return 'Upgrading it takes an admin of this environment.';
   }
   if (reasons.includes('no-vault')) return 'Set up your vault first — the new key is sealed to it.';
-  if (reasons.includes('export-policy')) {
-    return 'Plaintext export is disabled here, so upgrading it — which reads every value into your browser — takes an owner or admin of the organisation.';
-  }
   if (reasons.includes('token-revoke')) {
     return `It has ${pluralize(details?.keylessTokens.length ?? 0, 'CI token')} that the upgrade revokes, and only an owner or an admin can revoke tokens.`;
   }

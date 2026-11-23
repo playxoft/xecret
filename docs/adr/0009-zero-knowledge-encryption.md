@@ -512,8 +512,10 @@ member's Ed25519 signature (`env_key_grants.signature` is NOT NULL). So the dash
   **nobody else entitled to read it** is upgraded without a dialog the first time a member who
   may upgrade it opens it. Anywhere a teammate may read it, the dialog asks, so nobody is left
   holding names they cannot read because of an act they did not see.
-- Where plaintext export is disabled, the upgrade's plaintext read is reserved for an owner or
-  admin of the organisation and recorded with the policy's state.
+- Plaintext export disabled does not gate the upgrade's plaintext read: the policy is switched
+  by `environment.update`, which every upgrader holds, so a gate on it would be one the gated
+  person could lift. The read and the upgrade are recorded with the policy's state instead,
+  and where export is disabled the read raises the environment's new-address read alert.
 
 Values whose bytes NFC normalisation would change are refused rather than upgraded: the
 envelope stored text as given and every e2ee value is normalised, so re-encrypting one would

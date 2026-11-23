@@ -63,6 +63,38 @@ const MAX_UPGRADE_SIDE_EFFECTS = 5_000;
  */
 export const MAX_UPGRADE_BODY_BYTES = 8 * 1024 * 1024;
 
+/**
+ * An upper estimate of the POST body an upgrade of this history will take,
+ * from sizes the database can sum without decrypting anything.
+ *
+ * A server-envelope ciphertext is the plaintext plus a 16-byte tag (its IV is a
+ * column of its own), and the browser's `xk2.gcm.` blob of the same plaintext is
+ * the prefix and the base64url of IV, plaintext and tag — 12 more bytes, times
+ * four thirds, rounded up per row. A note's blob is the same shape over its
+ * UTF-8. Around each, the JSON the body wraps it in: ids, the version, the
+ * HMAC, the key id — a generous fixed allowance per version and per secret,
+ * and one for the grant and the lists.
+ */
+export function estimateUpgradeBodyBytes(history: {
+  liveSecretCount: number;
+  versionCount: number;
+  ciphertextBytes: number;
+  noteCount: number;
+  noteBytes: number;
+  deletedSecrets: readonly unknown[];
+  keylessTokens: readonly unknown[];
+}): number {
+  const blobs = (bytes: number, rows: number) => ((bytes + 12 * rows) * 4) / 3 + 12 * rows;
+  return Math.ceil(
+    blobs(history.ciphertextBytes, history.versionCount) +
+      256 * history.versionCount +
+      blobs(history.noteBytes + 28 * history.noteCount, history.noteCount) +
+      128 * history.liveSecretCount +
+      40 * (history.deletedSecrets.length + history.keylessTokens.length) +
+      2048,
+  );
+}
+
 const MALFORMED_REVISION = 'A revision is the number the material endpoint returned.';
 
 const upgradedVersionSchema = z.strictObject(
@@ -143,11 +175,9 @@ export type EncryptionUpgradeBody = z.infer<typeof encryptionUpgradeBody>;
  *  - `no-vault` — nothing to seal the new key to yet.
  *  - `token-revoke` — CI tokens would be revoked, and that is an owner's or an
  *    admin's act.
- *  - `export-policy` — plaintext export is disabled here, which reserves the
- *    upgrade's plaintext read for an owner or admin of the organisation.
  */
 export type UpgradeBlocker =
-  'already-e2ee' | 'not-a-person' | 'not-permitted' | 'no-vault' | 'token-revoke' | 'export-policy';
+  'already-e2ee' | 'not-a-person' | 'not-permitted' | 'no-vault' | 'token-revoke';
 
 /** What an upgrade would do. Counts and names — never a value, never a note. */
 export interface EncryptionUpgradeDetails {

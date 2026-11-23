@@ -3,8 +3,7 @@ import type { Denial } from '@xecret/core/authz';
 import {
   authorizeUpgrade,
   encryptionUpgradeMaterial,
-  exportPolicyBlocks,
-  exportPolicyRefusal,
+  exportPolicyState,
 } from '@/server/encryption-upgrade';
 import { json } from '@/server/http';
 import { noteEnvironmentRead } from '@/server/read-alerts';
@@ -27,10 +26,12 @@ import { resolveEnvironmentPath } from '@/server/tenancy';
  * anything here to decrypt. Metered on `RL_SECRET_READ` like a reveal.
  *
  * ── Plaintext export disabled ──
- * Where the environment's policy disables plaintext export, this read is
- * reserved for an owner or admin of the organisation — see
- * `server/encryption-upgrade.ts` and `export-policy.ts` — and the record says
- * the policy was in force.
+ * Not refused, and not narrowed: the policy is switched by the same
+ * `environment.update` this read requires, so a gate on it would be one the
+ * caller could lift. The record carries the policy's state instead, and where
+ * the policy disables export the read raises the environment's new-address read
+ * alert even if alerts were left at their default — see
+ * `server/encryption-upgrade.ts` and `export-policy.ts`.
  *
  * ── Audited as the bulk read it is ──
  * `secret.read` with reason `encryption-upgrade`, the number of secrets and of
@@ -63,36 +64,34 @@ export const GET = authenticatedRoute<Params>(
       () => authorizeUpgrade(scope),
     );
 
-    const context = {
-      projectSlug: scope.project.slug,
-      environmentSlug: scope.environment.slug,
-      reason: 'encryption-upgrade',
-      source: auditSource(principal),
-      // The policy's state, whenever it applies — "this was read while plaintext
-      // export was switched off" is the fact a reviewer of that policy needs.
-      ...(scope.environment.plaintextExportDisabled
-        ? { policyName: 'plaintextExport' as const, enabled: false }
-        : {}),
-    };
-
-    // Plaintext export disabled: this read is the organisation's owners' and
-    // admins' to make, not every environment admin's. Recorded as the policy
-    // refusal every other export path files.
-    if (scope.environment.encryptionMode === 'server' && exportPolicyBlocks(scope)) {
-      record(builder.error('secret.read', resource, 'policyRefused', context));
-      throw exportPolicyRefusal(scope);
-    }
-
     const material = await encryptionUpgradeMaterial(scope, services, principal);
 
     record(
       builder.success('secret.read', resource, {
-        ...context,
+        projectSlug: scope.project.slug,
+        environmentSlug: scope.environment.slug,
+        reason: 'encryption-upgrade',
+        source: auditSource(principal),
+        // Whether plaintext export was allowed here — "this was read while it
+        // was switched off" is the fact a reviewer of that policy needs.
+        ...exportPolicyState(scope),
         secretCount: material.secrets.length,
         versionCount: material.secrets.reduce((total, secret) => total + secret.versions.length, 0),
       }),
     );
-    noteEnvironmentRead(scope, services, principal);
+    // Where plaintext export is disabled, a bulk plaintext read is the event the
+    // policy's owners would want to hear about, so the environment's
+    // new-address alert counts as on unless somebody switched it off outright.
+    noteEnvironmentRead(
+      scope.environment.plaintextExportDisabled
+        ? {
+            ...scope,
+            environment: { ...scope.environment, readAlerts: scope.environment.readAlerts ?? true },
+          }
+        : scope,
+      services,
+      principal,
+    );
 
     return json({ material });
   },

@@ -25,15 +25,19 @@ import type { EnvironmentScope } from './tenancy';
  * Upgrading a `server`-mode environment to end-to-end encryption
  * (`encryption-upgrade.ts`) reads every value and every older version into the
  * upgrading browser in plaintext — more than any export — so that the browser
- * can re-encrypt them. Refusing it outright would pin a policy-protected
- * environment to the one encryption mode in which the server *can* read it,
- * which is the opposite of what the policy is for. So it is narrowed instead:
- * where this switch is on, only an **owner or admin of the organisation** may
- * make that read (and so the upgrade), not every administrator of the
- * environment; the values reach that browser's memory and leave it only as
- * ciphertext, never as a file; and the `secret.read` and
+ * can re-encrypt them. It is neither refused nor narrowed here, and the reason
+ * is the honest limit of this switch: it is changed with `environment.update`,
+ * which everybody who may upgrade already holds, so any gate keyed on it would
+ * be one the gated person could switch off, pass, and switch back on. Refusing
+ * outright would also pin a policy-protected environment to the one mode in
+ * which the server *can* read it, the opposite of what the policy is for.
+ *
+ * What it does instead is make the read visible: the `secret.read` and
  * `environment.encryption_upgraded` records carry `policyName: plaintextExport`
- * with `enabled: false`, so the policy's owners can see it was used.
+ * and `enabled` (`false` where export is disabled), and where it is disabled
+ * the read raises the environment's new-address read alert unless alerts were
+ * switched off outright. The values reach the upgrading browser's memory and
+ * leave it only as ciphertext, never as a file.
  *
  * ── Who enforces it ──
  * For a `server`-mode environment the server refuses the document formats

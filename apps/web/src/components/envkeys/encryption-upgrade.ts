@@ -1,10 +1,12 @@
 'use client';
 
 import {
+  computeValueHmac,
   encodePublicKey,
   generateEnvironmentDataKey,
   generateEnvironmentHmacKey,
   openGrant,
+  toBase64Url,
   zeroize,
 } from '@xecret/core/crypto/client';
 import type { Bytes } from '@xecret/core/crypto/client';
@@ -54,19 +56,18 @@ import type { ClientValueBody, GrantBody } from './types';
  *     nobody to share with.
  *
  * ── The one thing refused here that the server could never notice ──
- * A value that is not in Unicode normal form C. Every end-to-end encrypted
- * value is NFC-normalised before it is encrypted (`normalizedUtf8`), so that the
- * same value typed on two platforms has one HMAC — and the server envelope
- * never normalised anything. Re-encrypting such a value would quietly change
- * its bytes: harmless for a label, fatal for a password typed on a keyboard
- * that composed it differently. So the upgrade stops and names the secret
- * instead of changing a credential behind its owner's back. Notes are labels
- * and are normalised like every other note.
+ * Text that is not in Unicode normal form C. Every end-to-end encrypted value
+ * and note is NFC-normalised before it is encrypted (`normalizedUtf8`), so that
+ * the same text typed on two platforms has one HMAC — and the server envelope
+ * never normalised anything. Re-encrypting such text would quietly change its
+ * bytes: fatal for a password typed on a keyboard that composed it
+ * differently, and for a note somebody pasted one into. So the upgrade stops
+ * and names the secret instead of changing anything behind its owner's back.
  */
 
 /** Why a caller cannot upgrade. Mirrors `UpgradeBlocker` in `schemas/encryption-upgrade.ts`. */
 export type UpgradeBlocker =
-  'already-e2ee' | 'not-a-person' | 'not-permitted' | 'no-vault' | 'token-revoke' | 'export-policy';
+  'already-e2ee' | 'not-a-person' | 'not-permitted' | 'no-vault' | 'token-revoke';
 
 /** What an upgrade would do. Served only to a caller who holds its permissions. */
 export interface UpgradeDetails {
@@ -210,10 +211,10 @@ const UPGRADE_REFUSALS: Record<
   (names: readonly string[]) => string
 > = {
   'not-normalised': (names) =>
-    `${names.join(', ')} ${names.length === 1 ? 'holds' : 'hold'} text that end-to-end ` +
-    'encryption stores in Unicode normal form, which would change the bytes of the value. ' +
-    'Nothing was changed. Write a new value for each (delete and recreate the secret if an older ' +
-    'version is the one affected), then upgrade.',
+    `${names.join(', ')} ${names.length === 1 ? 'holds' : 'hold'} a value or a note in text ` +
+    'that end-to-end encryption stores in Unicode normal form, which would change its bytes. ' +
+    'Nothing was changed. Rewrite the note, or write a new value (delete and recreate the secret ' +
+    'if an older version is the one affected), then upgrade.',
   'changed-since-preview': () =>
     'The deleted secrets or the CI tokens of this environment changed since this dialog opened. ' +
     'Nothing was changed. Close it and open it again to see what the upgrade will do now.',
@@ -230,9 +231,9 @@ const UPGRADE_REFUSALS: Record<
     'This environment was upgraded to end-to-end encryption by another request while this one ' +
     'was in flight. Reload the page to use it.',
   unconfirmed: () =>
-    'The upgrade was sent, and the answer was lost on the way back, so it is not yet known ' +
-    'whether it landed. Reload the page: the environment will say whether it is end-to-end ' +
-    'encrypted. Do not start it again until you have.',
+    'The upgrade was sent, and its answer was lost or was a server error, so it is not known ' +
+    'whether it landed. Reload the page in a minute: the environment will say whether it is ' +
+    'end-to-end encrypted. Do not start it again until you have.',
 };
 
 /** Whether a refusal is known to have left the environment exactly as it was. */
@@ -240,11 +241,14 @@ export function nothingChanged(error: unknown): boolean {
   return !(error instanceof UpgradeRefusedError && error.reason === 'unconfirmed');
 }
 
-/** The secrets with a version whose value NFC normalisation would change. */
+/** The secrets with a version value, or a note, whose bytes NFC normalisation would change. */
 export function notNormalisedSecrets(material: UpgradeMaterial): string[] {
+  const unstable = (text: string) => text.normalize('NFC') !== text;
   return material.secrets
-    .filter((secret) =>
-      secret.versions.some((version) => version.value.normalize('NFC') !== version.value),
+    .filter(
+      (secret) =>
+        secret.versions.some((version) => unstable(version.value)) ||
+        (secret.note !== null && unstable(secret.note)),
     )
     .map((secret) => secret.name);
 }
@@ -438,13 +442,20 @@ export async function verifyUpgradeBody(params: {
           ciphertext: written.value.ciphertext,
         });
         if (!sameText(reopened, version.value)) failed.add(secret.name);
+        // The change-detection tag, recomputed from the EHK: a wrong one is not
+        // a lost value, but every write afterwards would look like a change —
+        // or, worse, a changed value like none.
+        const hmac = toBase64Url(
+          await computeValueHmac({ ehk: params.keys.ehk, plaintext: version.value }),
+        );
+        if (hmac !== written.value.valueHmac) failed.add(secret.name);
       } catch {
         failed.add(secret.name);
       }
     }
 
-    // A note is NFC-normalised like every other note, so it reopens as its
-    // normal form; an empty note travels as no note at all.
+    // A note in anything but normal form was refused before encrypting, so it
+    // reopens as exactly the bytes read; an empty note travels as no note.
     const note = secret.note === null || secret.note.length === 0 ? null : secret.note;
     if (note === null) {
       if (entry.encNote !== null) failed.add(secret.name);
@@ -456,7 +467,7 @@ export async function verifyUpgradeBody(params: {
     }
     try {
       const reopened = await decryptNote({ material: envMaterial, target, blob: entry.encNote });
-      if (!sameText(reopened, note.normalize('NFC'))) failed.add(secret.name);
+      if (!sameText(reopened, note)) failed.add(secret.name);
     } catch {
       failed.add(secret.name);
     }
@@ -522,6 +533,8 @@ export async function runEncryptionUpgrade(params: {
   /** The automatic upgrade refuses anything that is not still empty. */
   automatic?: boolean;
   onProgress?: (step: UpgradeStep) => void;
+  /** How long to wait before asking the key state a second time. Tests pass 0. */
+  confirmDelayMs?: number;
 }): Promise<UpgradeOutcome> {
   let result: UpgradeResult;
   let confirmedByKeyState = false;
@@ -573,11 +586,7 @@ export async function runEncryptionUpgrade(params: {
         // Worker that may already have committed — leaves the question open,
         // and "nothing changed" would be a guess. The key state settles it.
         if (!answerLost(error)) throw error;
-        const confirmed = await confirmFromKeyState(params.target, body);
-        // Still `server`-mode: it did not land, and the original failure is
-        // the truthful thing to report.
-        if (confirmed === null) throw error;
-        result = confirmed;
+        result = await confirmFromKeyState(params.target, body, params.confirmDelayMs ?? 1500);
         confirmedByKeyState = true;
       }
     } finally {
@@ -624,40 +633,47 @@ function answerLost(error: unknown): boolean {
 }
 
 /**
- * Settles a write whose answer was lost, from the environment's key state.
+ * Settles a write whose answer was lost — the connection dropped, or a 5xx
+ * arrived from a Worker or a gateway that may already have committed — from the
+ * environment's key state.
  *
  * End-to-end encrypted under **the key this request created** means it landed;
- * the counts are then the ones sent, which the transaction accepted whole or
- * not at all. End-to-end encrypted under another key means somebody else's
- * upgrade won. Still `server` means it did not land — nothing changed — and
- * `null` tells the caller to report the original failure. A key state that cannot be read either
- * leaves the question open, and the caller is told so rather than told
- * "nothing changed".
+ * the counts are then the ones sent, which the transaction accepted whole or not
+ * at all. End-to-end encrypted under another key means somebody else's upgrade
+ * won. Still `server`-mode is asked once more after a pause, because a commit
+ * can trail the error that reported it — and if it still says `server`, the
+ * answer is "not known", never "nothing changed": a transaction this browser
+ * cannot see is not one it may call rolled back.
  */
 async function confirmFromKeyState(
   target: EnvironmentRef,
   body: UpgradeBody,
-): Promise<UpgradeResult | null> {
-  let keys: Awaited<ReturnType<typeof fetchEnvironmentKeys>>;
-  try {
-    keys = await fetchEnvironmentKeys(target);
-  } catch {
-    throw new UpgradeRefusedError('unconfirmed');
-  }
+  delayMs: number,
+): Promise<UpgradeResult> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
 
-  if (keys.encryptionMode !== 'e2ee') return null;
-  if (keys.activeEdk === null || keys.activeEdk.id !== body.envDataKeyId) {
-    throw new UpgradeRefusedError('upgraded-elsewhere');
-  }
+    let keys: Awaited<ReturnType<typeof fetchEnvironmentKeys>>;
+    try {
+      keys = await fetchEnvironmentKeys(target);
+    } catch {
+      throw new UpgradeRefusedError('unconfirmed');
+    }
+    if (keys.encryptionMode !== 'e2ee') continue;
+    if (keys.activeEdk === null || keys.activeEdk.id !== body.envDataKeyId) {
+      throw new UpgradeRefusedError('upgraded-elsewhere');
+    }
 
-  return {
-    activeEdk: keys.activeEdk,
-    secretCount: body.secrets.length,
-    versionCount: body.secrets.reduce((total, secret) => total + secret.versions.length, 0),
-    noteCount: body.secrets.filter((secret) => secret.encNote !== null).length,
-    erasedSecretCount: body.eraseSecretIds.length,
-    revokedTokenCount: body.revokeTokenIds.length,
-  };
+    return {
+      activeEdk: keys.activeEdk,
+      secretCount: body.secrets.length,
+      versionCount: body.secrets.reduce((total, secret) => total + secret.versions.length, 0),
+      noteCount: body.secrets.filter((secret) => secret.encNote !== null).length,
+      erasedSecretCount: body.eraseSecretIds.length,
+      revokedTokenCount: body.revokeTokenIds.length,
+    };
+  }
+  throw new UpgradeRefusedError('unconfirmed');
 }
 
 function sameIds(a: readonly { id: string }[], b: readonly { id: string }[]): boolean {

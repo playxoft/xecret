@@ -1,4 +1,3 @@
-import { compareOrgRole, effectiveRole } from '@xecret/core/authz';
 import type { Action } from '@xecret/core/authz';
 import { fromBase64Url } from '@xecret/core/crypto';
 import {
@@ -19,10 +18,13 @@ import {
   requireSealingUser,
 } from './env-keys-service';
 import { errors } from './errors';
-import { exportDisabledMessage } from './export-policy';
 import { mayActOn } from './references-service';
 import { toGrantSeed } from './schemas/env-keys';
-import { MAX_UPGRADE_VERSIONS } from './schemas/encryption-upgrade';
+import {
+  estimateUpgradeBodyBytes,
+  MAX_UPGRADE_BODY_BYTES,
+  MAX_UPGRADE_VERSIONS,
+} from './schemas/encryption-upgrade';
 import type {
   EncryptionUpgradeBody,
   EncryptionUpgradeMaterial,
@@ -32,7 +34,7 @@ import type {
 } from './schemas/encryption-upgrade';
 import { encodeBlob } from './schemas/vault';
 import { decryptEnvironmentHistory } from './secrets-service';
-import { authorize, toGrantContext } from './tenancy';
+import { authorize } from './tenancy';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -79,12 +81,16 @@ import type { EnvironmentScope } from './tenancy';
  *
  * ── Plaintext export disabled ──
  * The material read hands a browser every value an environment has ever held,
- * in plaintext — more than `xecret pull` would. Where the environment's policy
- * disables plaintext export, that read (and so the upgrade) is reserved for an
- * **owner or admin of the organisation**, the people who set the policy, rather
- * than anybody who administers the environment. It is still not a file: the
+ * in plaintext — more than `xecret pull` would. It is **not** refused where the
+ * environment's policy disables plaintext export, and no stricter gate is put
+ * in front of it there either: the policy is switched by `environment.update`,
+ * which everybody who may upgrade already holds, so any such gate would be a
+ * switch the person it stops could turn off, upgrade, and turn back on. What
+ * the policy does change is what is recorded and who is told: both records of
+ * the upgrade carry the policy's state, and the read raises the environment's
+ * new-address read alert even where alerts were left at their default. The
  * values go into the upgrading browser's memory and leave it only as
- * ciphertext. See `export-policy.ts`.
+ * ciphertext, never as a file. See `export-policy.ts`.
  */
 
 const UPGRADE_ACTIONS: readonly Action[] = [
@@ -132,34 +138,15 @@ export function requireServerMode(scope: EnvironmentScope): void {
 }
 
 /**
- * Whether the caller is an owner or an admin of the organisation — the people
- * who set an environment's export policy, by their effective role (a custom
- * role narrows it as everywhere else).
+ * The export policy's state, as both upgrade records carry it: `enabled` is
+ * whether plaintext export is allowed here — `false` where the policy disables
+ * it, which is the case a reviewer of that policy is looking for.
  */
-function isOrganizationAdministrator(scope: EnvironmentScope): boolean {
-  if (scope.membership === undefined) return false;
-  const membership = toGrantContext(scope.membership);
-  if (membership.memberStatus !== 'active') return false;
-  return compareOrgRole(effectiveRole(membership.role, membership.customRole), 'admin') >= 0;
-}
-
-/**
- * Whether the export policy reserves this environment's upgrade for an
- * organisation owner or admin, and this caller is not one. See the header.
- */
-export function exportPolicyBlocks(scope: EnvironmentScope): boolean {
-  return scope.environment.plaintextExportDisabled && !isOrganizationAdministrator(scope);
-}
-
-/**
- * The export policy's refusal, worded for the upgrade. The `export_disabled:`
- * prefix is the one every other export refusal carries.
- */
-export function exportPolicyRefusal(scope: EnvironmentScope) {
-  return errors.forbidden(
-    `${exportDisabledMessage(scope)} Upgrading it reads every value in plaintext into your ` +
-      'browser, so it takes an owner or admin of the organisation.',
-  );
+export function exportPolicyState(scope: EnvironmentScope) {
+  return {
+    policyName: 'plaintextExport' as const,
+    enabled: !scope.environment.plaintextExportDisabled,
+  };
 }
 
 /**
@@ -213,13 +200,19 @@ export async function encryptionUpgradePreview(
   ) {
     reasons.push('token-revoke');
   }
-  if (exportPolicyBlocks(scope)) reasons.push('export-policy');
 
   return {
     ...base,
     canUpgrade: reasons.length === 0,
     reasons,
-    details: { ...obligations, otherEntitledCount },
+    details: {
+      liveSecretCount: obligations.liveSecretCount,
+      versionCount: obligations.versionCount,
+      noteCount: obligations.noteCount,
+      deletedSecrets: obligations.deletedSecrets,
+      keylessTokens: obligations.keylessTokens,
+      otherEntitledCount,
+    },
   };
 }
 
@@ -244,19 +237,23 @@ export async function encryptionUpgradeMaterial(
   // Somebody with no vault could not complete the upgrade this read feeds —
   // there is nothing to seal the new key to — so nothing is decrypted for them.
   await requireVault(services, principal);
-  if (exportPolicyBlocks(scope)) throw exportPolicyRefusal(scope);
 
   // Measured before anything is decrypted: a history the POST would refuse as
-  // too large is not worth handing to a browser in plaintext first.
+  // too large — by count, or by the bytes its re-encrypted form would take — is
+  // not worth handing to a browser in plaintext first.
   const obligations = await loadEncryptionUpgradeObligations(
     services.db,
     scope.organization.id,
     scope.environment.id,
   );
-  if (obligations.versionCount > MAX_UPGRADE_VERSIONS) {
+  if (
+    obligations.versionCount > MAX_UPGRADE_VERSIONS ||
+    estimateUpgradeBodyBytes(obligations) > MAX_UPGRADE_BODY_BYTES
+  ) {
     throw errors.tooLarge(
-      `This environment holds more than ${MAX_UPGRADE_VERSIONS} secret versions, more than one ` +
-        'upgrade can carry. Nothing was read. Contact support.',
+      'This environment holds more history than one upgrade can carry ' +
+        `(${MAX_UPGRADE_VERSIONS} secret versions, or ${MAX_UPGRADE_BODY_BYTES / (1024 * 1024)} MB ` +
+        're-encrypted). Nothing was read. Contact support.',
     );
   }
 
@@ -309,7 +306,6 @@ export async function upgradeEncryption(
   authorizeUpgrade(scope, { revokesTokens: body.revokeTokenIds.length > 0 });
   requireServerMode(scope);
   await requireVault(services, principal);
-  if (exportPolicyBlocks(scope)) throw exportPolicyRefusal(scope);
 
   assertSelfGrant(body.keys.grant, userId);
   assertWellFormedSet(body);

@@ -427,12 +427,13 @@ func TestRestoreRedeclaresATemplatesReferences(t *testing.T) {
 // refusal that will recur, it is advice that fails identically every time.
 func TestTheRetryHintIsOnlyForAWriteRace(t *testing.T) {
 	for message, race := range map[string]bool{
-		`version_conflict: "URL" changed while you were editing it. Re-read it and try again.`:                 true,
-		"This environment was rotated while you were editing. Re-read its keys and try again.":                 true,
-		"This secret was changed by another request. Retry the update.":                                        true,
-		`"URL" is a template. An import cannot rewrite one; set it on its own so its references are declared.`: false,
-		"resolution_failed: this environment's references cannot be resolved — These references form a loop.":  false,
-		"e2ee_required: templates and references need an end-to-end encrypted environment.":                    false,
+		`version_conflict: "URL" changed while you were editing it. Re-read it and try again.`:                   true,
+		"This environment was rotated while you were editing. Re-read its keys and try again.":                   true,
+		"This secret was changed by another request. Retry the update.":                                          true,
+		`"URL" is a template. An import cannot rewrite one; set it on its own so its references are declared.`:   false,
+		"resolution_failed: this environment's references cannot be resolved — These references form a loop.":    false,
+		"e2ee_required: templates and references need an end-to-end encrypted environment.":                      false,
+		"mode_changed: this environment was upgraded to end-to-end encryption while this request was in flight.": true,
 	} {
 		err := withWriteConflictHint(&api.Error{Status: 409, Code: "conflict", Message: message})
 		hinted := strings.Contains(err.Error(), "Run the command again")

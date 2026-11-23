@@ -3,8 +3,7 @@ import type { Denial } from '@xecret/core/authz';
 import {
   authorizeUpgrade,
   encryptionUpgradePreview,
-  exportPolicyBlocks,
-  exportPolicyRefusal,
+  exportPolicyState,
   requireServerMode,
   requireUpgradingPerson,
   upgradeEncryption,
@@ -12,7 +11,7 @@ import {
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { encryptionUpgradeBody, MAX_UPGRADE_BODY_BYTES } from '@/server/schemas/encryption-upgrade';
-import { enforceSecretRateLimit } from '@/server/secrets-service';
+import { auditSource, enforceSecretRateLimit } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { EnvironmentScope } from '@/server/tenancy';
 
@@ -69,17 +68,6 @@ export const POST = authenticatedRoute<Params>(
     auditingDenials(fileDenial, () => authorizeUpgrade(scope));
     requireUpgradingPerson(principal);
     requireServerMode(scope);
-    if (exportPolicyBlocks(scope)) {
-      record(
-        builder.error('environment.encryption_upgraded', resource, 'policyRefused', {
-          policyName: 'plaintextExport',
-          projectSlug: scope.project.slug,
-          environmentSlug: scope.environment.slug,
-          source: 'dashboard',
-        }),
-      );
-      throw exportPolicyRefusal(scope);
-    }
 
     const body = await parseJsonBody(request, encryptionUpgradeBody, MAX_UPGRADE_BODY_BYTES);
 
@@ -95,7 +83,7 @@ export const POST = authenticatedRoute<Params>(
     const context = {
       projectSlug: scope.project.slug,
       environmentSlug: scope.environment.slug,
-      source: 'dashboard' as const,
+      source: auditSource(principal),
     };
 
     record(
@@ -107,12 +95,9 @@ export const POST = authenticatedRoute<Params>(
         purgedSecretCount: outcome.erased.length,
         revokedTokenCount: outcome.revoked.length,
         keyVersion: outcome.dataKey.version,
-        // Said when it applied: an environment whose policy disables plaintext
-        // export was upgraded — its values read into a browser — by an owner or
-        // admin of the organisation.
-        ...(scope.environment.plaintextExportDisabled
-          ? { policyName: 'plaintextExport' as const, enabled: false }
-          : {}),
+        // Whether plaintext export was allowed here when its values were read
+        // into a browser and re-encrypted — see `export-policy.ts`.
+        ...exportPolicyState(scope),
       }),
       // The key's own origin, exactly as creation and the repair endpoint record
       // it: a key-history review starts from `envkey.created`, and an upgraded

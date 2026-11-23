@@ -230,11 +230,14 @@ leave out, so it is upgraded automatically the first time its owner or admin
 opens it with an unlocked vault. Anywhere a teammate may read it, the dialog
 asks first, so the key is shared with them as part of the same act.
 
-Where an environment's policy disables plaintext export, upgrading it is
-reserved for an owner or admin of the organisation, because it reads every
-value into a browser in plaintext — more than an export would — even though
-nothing is written to a file and nothing leaves that browser except as
-ciphertext. The audit record says the policy was in force.
+Upgrading reads every value into one browser in plaintext — more than an
+export would — even though nothing is written to a file and nothing leaves that
+browser except as ciphertext. Where an environment's policy disables plaintext
+export, the upgrade is still allowed: the policy is changed by the same
+environment admins who can upgrade, so refusing would stop nobody it was meant
+to. Instead the audit records say whether the policy was in force, and the read
+triggers the environment's new-address read alert unless alerts were switched
+off.
 
 Two copies outlast an upgrade, and we say so rather than let the word
 "deleted" imply otherwise. Our database backups from before it still hold the

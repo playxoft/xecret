@@ -194,6 +194,13 @@ export interface EncryptionUpgradeObligations {
   liveSecretCount: number;
   versionCount: number;
   noteCount: number;
+  /**
+   * The summed length of every live version's server-envelope ciphertext, and
+   * of every non-empty note's UTF-8 — what the upgrade's request body will be
+   * built from, measured without decrypting anything (`estimateUpgradeBodyBytes`).
+   */
+  ciphertextBytes: number;
+  noteBytes: number;
   deletedSecrets: { id: string; name: string }[];
   keylessTokens: { id: string; name: string; tokenPrefix: string }[];
 }
@@ -235,6 +242,7 @@ export async function loadEncryptionUpgradeObligations(
       notes: sql<number>`count(${secrets.note}) filter (where ${secrets.note} <> '')`.mapWith(
         Number,
       ),
+      noteBytes: sql<number>`coalesce(sum(octet_length(${secrets.note})), 0)`.mapWith(Number),
     })
     .from(secrets)
     .innerJoin(environments, eq(environments.id, secrets.environmentId))
@@ -242,7 +250,11 @@ export async function loadEncryptionUpgradeObligations(
     .where(and(scoped, isNull(secrets.deletedAt)));
 
   const [history] = await exec
-    .select({ versions: count() })
+    .select({
+      versions: count(),
+      ciphertextBytes:
+        sql<number>`coalesce(sum(octet_length(${secretVersions.ciphertext})), 0)`.mapWith(Number),
+    })
     .from(secretVersions)
     .innerJoin(secrets, eq(secrets.id, secretVersions.secretId))
     .innerJoin(environments, eq(environments.id, secrets.environmentId))
@@ -271,6 +283,8 @@ export async function loadEncryptionUpgradeObligations(
     liveSecretCount: live?.secrets ?? 0,
     versionCount: history?.versions ?? 0,
     noteCount: live?.notes ?? 0,
+    ciphertextBytes: history?.ciphertextBytes ?? 0,
+    noteBytes: live?.noteBytes ?? 0,
     deletedSecrets,
     keylessTokens,
   };

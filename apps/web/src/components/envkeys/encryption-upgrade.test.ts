@@ -376,12 +376,16 @@ describe('buildUpgradeBody', () => {
       secretNames: ['API_KEY'],
     });
 
-    // A note is a label, and is normalised like every other note.
+    // A note's bytes can no more change silently than a value's (review round 2, 4).
     const noted = material();
-    noted.secrets[0]!.note = decomposed;
-    await expect(
-      buildUpgradeBody({ vault, orgId: ORG_ID, material: noted, keys: keys() }),
-    ).resolves.toBeDefined();
+    noted.secrets[0]!.note = `rotate ${decomposed} quarterly`;
+    expect(notNormalisedSecrets(noted)).toEqual(['DATABASE_URL']);
+    const notedAttempt = buildUpgradeBody({ vault, orgId: ORG_ID, material: noted, keys: keys() });
+    await expect(notedAttempt).rejects.toMatchObject({
+      reason: 'not-normalised',
+      secretNames: ['DATABASE_URL'],
+      message: expect.stringMatching(/^DATABASE_URL holds a value or a note/),
+    });
   });
 });
 
@@ -517,6 +521,20 @@ describe('verifyUpgradeBody — nothing is sent that would not open again', () =
       );
       expect(error.reason).toBe('verification-failed');
     }
+  });
+
+  it('refuses a value whose change-detection tag is not the one its plaintext has (review round 2, 5)', async () => {
+    const { vault, generated, read, body } = await built();
+    const mistagged = copy(body);
+    const api = mistagged.secrets.find((secret) => secret.id === API_ID)!;
+    api.versions[0]!.value.valueHmac = mistagged.secrets.find(
+      (secret) => secret.id === DB_ID,
+    )!.versions[0]!.value.valueHmac;
+
+    const error = await refusal(
+      verifyUpgradeBody({ vault, orgId: ORG_ID, material: read, keys: generated, body: mistagged }),
+    );
+    expect(error.secretNames).toEqual(['API_KEY']);
   });
 
   it('refuses a grant that does not open, with this vault, to the key that sealed the values', async () => {
@@ -787,13 +805,29 @@ describe('runEncryptionUpgrade', () => {
       expect(storage.size).toBe(1);
     });
 
-    it('is the original failure — nothing changed — when the environment is still server-mode', async () => {
-      stubStorage();
+    it('is never "nothing changed" when the environment still reads server-mode — it asks twice, then says unknown (review round 2, 7)', async () => {
+      const storage = stubStorage();
       const vault = vaultFor(USER_ID);
       holdVaultKeys(vault);
       responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
       lostAnswer();
-      keysSay('server', () => null);
+      let reads = 0;
+      responses.set(`GET ${BASE}/keys`, () => {
+        reads += 1;
+        return {
+          keys: {
+            encryptionMode: 'server',
+            environmentId: ENVIRONMENT_ID,
+            activeEdk: null,
+            myGrant: null,
+            ehkExists: false,
+            pendingGrants: null,
+            needsRotation: null,
+            missingGrants: null,
+            currentMaxSecretVersion: 0,
+          },
+        };
+      });
 
       const outcome = await runEncryptionUpgrade({
         target: TARGET,
@@ -801,10 +835,55 @@ describe('runEncryptionUpgrade', () => {
         vault,
         preview: preview(),
         share: true,
+        confirmDelayMs: 0,
       });
-      expect(outcome.status).toBe('failed');
-      expect(outcome.status === 'failed' && outcome.error).toBeInstanceOf(ApiError);
-      expect(outcome.status === 'failed' && nothingChanged(outcome.error)).toBe(true);
+      expect(reads).toBe(2);
+      expect(outcome.status === 'failed' && outcome.error).toMatchObject({ reason: 'unconfirmed' });
+      expect(outcome.status === 'failed' && nothingChanged(outcome.error)).toBe(false);
+      expect(storage.size).toBe(0);
+    });
+
+    it('finds an upgrade the second read sees, after a 5xx', async () => {
+      stubStorage();
+      const vault = vaultFor(USER_ID);
+      holdVaultKeys(vault);
+      responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
+      responses.set(`POST ${BASE}/encryption-upgrade`, () => {
+        throw new ApiError({
+          code: 'internal_error',
+          message: 'Something went wrong.',
+          status: 502,
+          requestId: null,
+        });
+      });
+      let reads = 0;
+      responses.set(`GET ${BASE}/keys`, () => {
+        reads += 1;
+        const landed = reads > 1;
+        return {
+          keys: {
+            encryptionMode: landed ? 'e2ee' : 'server',
+            environmentId: ENVIRONMENT_ID,
+            activeEdk: landed ? { id: sentKeyId(), version: 1 } : null,
+            myGrant: null,
+            ehkExists: landed,
+            pendingGrants: null,
+            needsRotation: null,
+            missingGrants: null,
+            currentMaxSecretVersion: 0,
+          },
+        };
+      });
+
+      const outcome = await runEncryptionUpgrade({
+        target: TARGET,
+        orgId: ORG_ID,
+        vault,
+        preview: preview(),
+        share: false,
+        confirmDelayMs: 0,
+      });
+      expect(outcome).toMatchObject({ status: 'upgraded', confirmedByKeyState: true });
     });
 
     it('says somebody else’s upgrade won when it is end-to-end encrypted under another key', async () => {

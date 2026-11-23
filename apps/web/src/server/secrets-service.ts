@@ -1571,8 +1571,19 @@ async function openValue(
   stored: StoredSecretValue,
 ): Promise<string> {
   if (stored.encrypted === null) {
-    // An `e2ee` row on the server decryption path: a routing fault, not a
-    // cryptographic one. It means a caller reached `decryptOne` for an
+    // One ordinary way to get here: this request read the key chain before the
+    // environment's upgrade to end-to-end encryption committed, and the rows
+    // after it. That is the race `withEnvironmentKey` answers too — a
+    // retryable conflict, without the alarm below.
+    const mode = await readEnvironmentMode(
+      services.db,
+      scope.organization.id,
+      stored.environmentId,
+    );
+    if (mode === 'e2ee') throw modeChanged();
+
+    // Otherwise an `e2ee` row on the server decryption path: a routing fault,
+    // not a cryptographic one. It means a caller reached `decryptOne` for an
     // environment whose values the server holds no key for, and the correct
     // answer is a loud 500 rather than a `DecryptionError` that would read as
     // tampering and send an operator hunting for a corrupted row.
