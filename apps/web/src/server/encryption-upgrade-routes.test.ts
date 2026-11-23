@@ -30,6 +30,7 @@ import type {
 } from '@/components/envkeys/encryption-upgrade';
 import type { VaultKeyMaterial } from '@/components/vault/key-store';
 import type { Principal } from './actor';
+import type { ServiceContext } from './context';
 import { errors } from './errors';
 import { createLogger } from './logging';
 import type { RequestLog } from './logging';
@@ -86,6 +87,33 @@ vi.mock('./billing/usage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./billing/usage')>()),
   countSecretFetch: meter.countSecretFetch,
 }));
+// The rate limiter, observed: the preview must spend nothing (review round 1, 7).
+const limiter = vi.hoisted(() => ({ spent: [] as string[] }));
+vi.mock('./rate-limit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./rate-limit')>();
+  return {
+    ...actual,
+    enforce: (env: never, bucket: string, key: string) => {
+      limiter.spent.push(bucket);
+      return actual.enforce(env, bucket as never, key);
+    },
+  };
+});
+// A seam in the token-minting route, between its early mode check and its
+// transaction, where a test lands an upgrade (review round 1, 9).
+const hooks = vi.hoisted(() => ({ beforeTokenTransaction: null as null | (() => Promise<void>) }));
+vi.mock('@xecret/db/repositories', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@xecret/db/repositories')>();
+  return {
+    ...actual,
+    loadOrgPolicies: async (...args: Parameters<typeof actual.loadOrgPolicies>) => {
+      const hook = hooks.beforeTokenTransaction;
+      hooks.beforeTokenTransaction = null;
+      if (hook !== null) await hook();
+      return actual.loadOrgPolicies(...args);
+    },
+  };
+});
 
 const upgradeRoute =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/encryption-upgrade/route');
@@ -99,6 +127,9 @@ const versionRoute =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/secrets/[name]/versions/[version]/route');
 const keysRoute =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/keys/route');
+const tokensRoute = await import('@/app/api/orgs/[orgSlug]/tokens/service/route');
+const { decryptEnvironment, writeSecretValue } = await import('./secrets-service');
+const { resolveEnvironmentPath } = await import('./tenancy');
 
 let t: TestDatabase;
 let envelope: EnvelopeService;
@@ -123,6 +154,8 @@ beforeEach(() => {
   actor.isUnlocked.mockImplementation(() => true);
   audit = [];
   deferred = [];
+  limiter.spent = [];
+  hooks.beforeTokenTransaction = null;
   const env = { XECRET_PUBLIC_URL: ORIGIN, XECRET_ENV: 'test' };
   logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
     createLogger({
@@ -458,18 +491,24 @@ describe('upgrading a server-mode environment to end-to-end encryption', () => {
     expect(before.body.upgrade).toMatchObject({
       encryptionMode: 'server',
       environmentId: world.env.id,
-      liveSecretCount: 2,
-      versionCount: 4,
-      noteCount: 1,
-      deletedSecrets: [{ name: 'RETIRED' }],
-      keylessTokens: [{ id: world.tokenId, name: 'deploy', tokenPrefix: 'xst_live_ab12' }],
-      mayUpgrade: true,
-      blockedBy: null,
+      canUpgrade: true,
+      reasons: [],
+      details: {
+        liveSecretCount: 2,
+        versionCount: 4,
+        noteCount: 1,
+        deletedSecrets: [{ name: 'RETIRED' }],
+        keylessTokens: [{ id: world.tokenId, name: 'deploy', tokenPrefix: 'xst_live_ab12' }],
+        // The developer may read it, so the upgrade would leave them owed a key.
+        otherEntitledCount: 1,
+      },
     });
     expect(autoUpgradeEligible(before.body.upgrade, true)).toBe(false);
 
     const read = await material(world);
     expect(read.environmentId).toBe(world.env.id);
+    // The first AAD component, for the browser to compare with its own.
+    expect(read.orgId).toBe(world.org.orgId);
     const database = read.secrets.find((secret) => secret.name === 'DATABASE_URL');
     expect(database?.note).toBe(DB_NOTE);
     expect(database?.versions.map((version) => [version.version, version.value])).toEqual([
@@ -696,41 +735,71 @@ describe('upgrading a server-mode environment to end-to-end encryption', () => {
     for (const value of [...DB_VALUES, API_VALUE, DB_NOTE]) expect(everything).not.toContain(value);
 
     // ── And it happens once ──
-    expect((await preview(world)).status).toBe(409);
+    const after = await preview(world);
+    expect(after.status).toBe(200);
+    expect(after.body.upgrade).toMatchObject({
+      encryptionMode: 'e2ee',
+      canUpgrade: false,
+      reasons: ['already-e2ee'],
+      details: null,
+    });
     expect((await readMaterial(world)).status).toBe(409);
     expect((await post(world, body)).status).toBe(409);
   });
 
-  it('upgrades an empty environment, which is what makes it eligible to upgrade without asking', async () => {
-    const world = await setup();
-    await f.seedEnv(world.org, world.projectId, 'empty', { mode: 'server' });
+  it('upgrades an empty environment nobody else may read — the only kind upgraded without asking', async () => {
+    // Somebody else may read this one: an upgrade nobody asked for would leave
+    // them with names they could not read, so it is not eligible.
+    const shared = await setup();
+    await f.seedEnv(shared.org, shared.projectId, 'empty', { mode: 'server' });
+    const sharedPreview = await preview(shared, 'empty');
+    expect(sharedPreview.body.upgrade.details).toMatchObject({
+      liveSecretCount: 0,
+      otherEntitledCount: 1,
+    });
+    expect(autoUpgradeEligible(sharedPreview.body.upgrade, true)).toBe(false);
 
-    const before = await preview(world, 'empty');
+    // An organisation of one: nothing to decide, nobody to lose.
+    const org = await f.seedOrg('pro');
+    const projectId = await f.seedProject(org);
+    await f.seedEnv(org, projectId, 'empty', { mode: 'server' });
+    const vault = await seedVault(org.owner);
+    caller = f.sessionOf(org.owner);
+    const solo: World = { ...shared, org, projectId, vault };
+
+    const before = await preview(solo, 'empty');
     expect(before.status).toBe(200);
     expect(before.body.upgrade).toMatchObject({
-      liveSecretCount: 0,
-      versionCount: 0,
-      deletedSecrets: [],
-      keylessTokens: [],
-      mayUpgrade: true,
+      canUpgrade: true,
+      details: {
+        liveSecretCount: 0,
+        versionCount: 0,
+        deletedSecrets: [],
+        keylessTokens: [],
+        otherEntitledCount: 0,
+      },
     });
     expect(autoUpgradeEligible(before.body.upgrade, true)).toBe(true);
     expect(autoUpgradeEligible(before.body.upgrade, false)).toBe(false);
 
-    const read = await material(world, 'empty');
+    const read = await material(solo, 'empty');
     expect(read.secrets).toEqual([]);
-    const { body } = await build(world, read);
-    const answer = await post(world, body, 'empty');
+    const { body } = await build(solo, read);
+    const answer = await post(solo, body, 'empty');
     expect(answer.status).toBe(200);
     expect(answer.body.upgraded).toMatchObject({ secretCount: 0, versionCount: 0 });
 
     const [environment] = await rows<{ id: string; encryption_mode: string }>(
       `select e.id, e.encryption_mode from environments e where e.slug = 'empty' and e.project_id = $1`,
-      [world.projectId],
+      [projectId],
     );
     expect(environment?.encryption_mode).toBe('e2ee');
     expect(
       await rows(`select id from env_keys where environment_id = $1`, [environment!.id]),
+    ).toHaveLength(0);
+    // Nobody else, so nobody is owed a key.
+    expect(
+      await rows(`select id from pending_key_grants where environment_id = $1`, [environment!.id]),
     ).toHaveLength(0);
   });
 
@@ -741,8 +810,11 @@ describe('upgrading a server-mode environment to end-to-end encryption', () => {
     await deleteSecret(world.org, 'tidy', 'ONCE');
 
     const answer = await preview(world, 'tidy');
-    expect(answer.body.upgrade).toMatchObject({ liveSecretCount: 0, mayUpgrade: true });
-    expect(answer.body.upgrade.deletedSecrets).toHaveLength(1);
+    expect(answer.body.upgrade).toMatchObject({
+      canUpgrade: true,
+      details: { liveSecretCount: 0 },
+    });
+    expect(answer.body.upgrade.details?.deletedSecrets).toHaveLength(1);
     expect(autoUpgradeEligible(answer.body.upgrade, true)).toBe(false);
   });
 });
@@ -754,7 +826,9 @@ describe('what the upgrade refuses, leaving the environment untouched', () => {
     const world = await setup();
     await f.seedEnv(world.org, world.projectId, 'modern');
 
-    expect((await preview(world, 'modern')).status).toBe(409);
+    const answer0 = await preview(world, 'modern');
+    expect(answer0.status).toBe(200);
+    expect(answer0.body.upgrade).toMatchObject({ canUpgrade: false, reasons: ['already-e2ee'] });
     expect((await readMaterial(world, 'modern')).status).toBe(409);
     const answer = await post(world, {}, 'modern');
     expect(answer.status).toBe(409);
@@ -765,7 +839,22 @@ describe('what the upgrade refuses, leaving the environment untouched', () => {
     const world = await setup();
     caller = f.sessionOf(world.developer);
 
-    expect((await preview(world)).status).toBe(403);
+    // The preview answers — quietly: no refusal, no audit record, no rate limit
+    // spent, and none of the names an upgrade would act on (review round 1, 7).
+    audit = [];
+    limiter.spent = [];
+    const quiet = await preview(world);
+    expect(quiet.status).toBe(200);
+    expect(quiet.body.upgrade).toEqual({
+      encryptionMode: 'server',
+      environmentId: world.env.id,
+      canUpgrade: false,
+      reasons: ['not-permitted'],
+      details: null,
+    });
+    expect(audit).toEqual([]);
+    expect(limiter.spent).toEqual([]);
+
     expect((await readMaterial(world)).status).toBe(403);
     caller = f.sessionOf(world.org.owner);
     const { body } = await build(world, await material(world));
@@ -845,7 +934,7 @@ describe('what the upgrade refuses, leaving the environment untouched', () => {
     caller = f.sessionOf(admin);
 
     const answer = await preview(world);
-    expect(answer.body.upgrade).toMatchObject({ mayUpgrade: false, blockedBy: 'no-vault' });
+    expect(answer.body.upgrade).toMatchObject({ canUpgrade: false, reasons: ['no-vault'] });
 
     // Nothing is decrypted for somebody who could not finish the upgrade.
     audit = [];
@@ -1062,7 +1151,7 @@ describe('what the upgrade refuses, leaving the environment untouched', () => {
     caller = f.sessionOf(lead);
 
     const blocked = await preview(leadWorld);
-    expect(blocked.body.upgrade).toMatchObject({ mayUpgrade: false, blockedBy: 'token-revoke' });
+    expect(blocked.body.upgrade).toMatchObject({ canUpgrade: false, reasons: ['token-revoke'] });
     const read = await material(leadWorld);
     const { body } = await build(leadWorld, read);
     audit = [];
@@ -1140,5 +1229,239 @@ describe('what the upgrade refuses, leaving the environment untouched', () => {
       [world.env.id],
     );
     expect(row?.note).toBeNull();
+  });
+
+  it('refuses a grant sealed to anything but the upgrader’s current vault key (review round 1, 2a)', async () => {
+    const world = await setup();
+    const { body } = await build(world, await material(world));
+
+    // A vault reset in another tab: the account's public key is not the one the
+    // grant was sealed to any more, and nobody holding the vault could open it.
+    await t.pg.query(`update user_keys set enc_public_key = $1 where user_id = $2`, [
+      bytes(32),
+      world.org.owner.id,
+    ]);
+
+    const answer = await post(world, body);
+    expect(answer.status).toBe(409);
+    expect(answer.body.error?.message).toMatch(/^grant_key_mismatch/);
+    await expectUntouched(world);
+  });
+
+  it('refuses a note dropped or invented on the way (review round 1, 2b)', async () => {
+    const world = await setup();
+    const { body } = await build(world, await material(world));
+    const databaseNote = body.secrets.find((secret) => secret.encNote !== null)!.encNote;
+
+    const dropped = copy(body);
+    for (const secret of dropped.secrets) secret.encNote = null;
+
+    const invented = copy(body);
+    for (const secret of invented.secrets) secret.encNote = databaseNote;
+
+    for (const attempt of [dropped, invented]) {
+      const answer = await post(world, attempt);
+      expect(answer.status).toBe(409);
+      expect(answer.body.error?.message).toMatch(/^notes_mismatch/);
+    }
+    await expectUntouched(world);
+  });
+
+  it('answers a deadlock or serialisation failure as a retryable 409, never a 500 (review round 1, 3)', async () => {
+    const world = await setup();
+    const { body } = await build(world, await material(world));
+
+    await t.pg.query(`
+      create or replace function lose_a_race() returns trigger language plpgsql as $$
+      begin raise exception 'deadlock detected' using errcode = '40P01'; end $$;
+    `);
+    await t.pg.query(`
+      create trigger lose_a_race before update on secret_versions
+      for each row execute function lose_a_race();
+    `);
+    try {
+      const answer = await post(world, body);
+      expect(answer.status).toBe(409);
+      expect(answer.body.error?.message).toMatch(/^version_conflict/);
+      await expectUntouched(world);
+    } finally {
+      await t.pg.query(`drop trigger lose_a_race on secret_versions`);
+    }
+
+    // The server-mode write path answers the same way.
+    await t.pg.query(`
+      create or replace function lose_a_race() returns trigger language plpgsql as $$
+      begin raise exception 'could not serialize' using errcode = '40001'; end $$;
+    `);
+    await t.pg.query(`
+      create trigger lose_a_race before insert on secret_versions
+      for each row execute function lose_a_race();
+    `);
+    try {
+      const { path, params } = at(world.org, 'legacy', '/secrets/API_KEY', { name: 'API_KEY' });
+      const answer = await f.call(secretRoute.PATCH, 'PATCH', path, params, { value: 'changed' });
+      expect(answer.status).toBe(409);
+    } finally {
+      await t.pg.query(`drop trigger lose_a_race on secret_versions`);
+      await t.pg.query(`drop function lose_a_race()`);
+    }
+  });
+
+  it('answers a server-mode request that arrives after the upgrade with a retryable 409, not a key-loss alarm (review round 1, 8)', async () => {
+    const world = await setup();
+    const lines: { level: string; message: string }[] = [];
+    const log = createLogger({
+      sink: { write: (entry) => void lines.push(entry), flush: () => Promise.resolve() },
+      minimum: 'debug',
+      base: {},
+    });
+    const services = {
+      env: { XECRET_PUBLIC_URL: ORIGIN, XECRET_ENV: 'test' },
+      db: t.db,
+      envelope,
+      meta: {
+        requestId: 'in-flight',
+        rayId: null,
+        ipAddress: '203.0.113.5',
+        userAgent: 'vitest',
+        method: 'GET',
+        path: '/',
+        startedAt: Date.now(),
+      },
+      log: log.logger,
+      bindLog: log.bind,
+      waitUntil: (promise: Promise<unknown>) => void deferred.push(promise),
+      settled: () => Promise.allSettled(deferred),
+      dispose: () => {},
+    } as unknown as ServiceContext;
+    const params = { orgSlug: world.org.slug, projectSlug: 'api', envSlug: 'legacy' };
+
+    // Resolved while the environment is still server-mode…
+    const stale = await resolveEnvironmentPath(f.sessionOf(world.org.owner), params, services);
+    expect(stale.environment.encryptionMode).toBe('server');
+
+    // …and the upgrade commits before the request reads the key.
+    const { body } = await build(world, await material(world));
+    expect((await post(world, body)).status).toBe(200);
+
+    await expect(decryptEnvironment(stale, services)).rejects.toMatchObject({
+      code: 'conflict',
+      message: expect.stringMatching(/^mode_changed/),
+    });
+    expect(lines.filter((line) => line.level === 'error')).toEqual([]);
+
+    // A server-mode write whose key was unwrapped before the mode moved is
+    // refused inside its own transaction, rather than landing in an
+    // environment that is now end-to-end encrypted.
+    await f.seedEnv(world.org, world.projectId, 'racing', { mode: 'server' });
+    const racing = await resolveEnvironmentPath(
+      f.sessionOf(world.org.owner),
+      { ...params, envSlug: 'racing' },
+      services,
+    );
+    await t.pg.query(`update environments set encryption_mode = 'e2ee' where id = $1`, [
+      racing.environment.id,
+    ]);
+    await expect(
+      writeSecretValue(racing, services, {
+        name: 'LATE',
+        value: 'in the clear',
+        writer: { userId: world.org.owner.id },
+        capacity: () => Promise.resolve(),
+      }),
+    ).rejects.toMatchObject({ code: 'conflict', message: expect.stringMatching(/^mode_changed/) });
+    expect(
+      await rows(`select id from secrets where environment_id = $1`, [racing.environment.id]),
+    ).toHaveLength(0);
+  });
+
+  it('never mints a keyless token into an environment that became end-to-end encrypted mid-request (review round 1, 9)', async () => {
+    const world = await setup();
+    const mint = (name: string) =>
+      f.call<{ error?: { message: string } }>(
+        tokensRoute.POST,
+        'POST',
+        `/api/orgs/${world.org.slug}/tokens/service`,
+        { orgSlug: world.org.slug },
+        { name, projectSlug: 'api', environmentSlug: 'legacy' },
+      );
+
+    // An ordinary keyless token, for a server-mode environment, is minted.
+    expect((await mint('ordinary')).status).toBe(201);
+
+    // The upgrade lands after the route checked the mode and before it writes.
+    hooks.beforeTokenTransaction = async () => {
+      await t.pg.query(`update environments set encryption_mode = 'e2ee' where id = $1`, [
+        world.env.id,
+      ]);
+    };
+    const raced = await mint('raced');
+    expect(raced.status).toBe(409);
+    expect(raced.body.error?.message).toMatch(/^mode_changed/);
+    expect(
+      await rows(`select id from service_tokens where environment_id = $1 and name = 'raced'`, [
+        world.env.id,
+      ]),
+    ).toHaveLength(0);
+  });
+
+  it('reserves the upgrade of an environment with plaintext export disabled for an organisation owner or admin (review round 1, 10)', async () => {
+    const world = await setup();
+    // An environment with values and no CI token, so `token.revoke` is not what refuses.
+    await f.seedEnv(world.org, world.projectId, 'locked', { mode: 'server' });
+    await writeServerSecret(world.org, 'locked', 'KEPT', 'kept-value');
+    await t.pg.query(
+      `update environments set plaintext_export_disabled = true where project_id = $1 and slug = 'locked'`,
+      [world.projectId],
+    );
+
+    // A developer made admin of the project: may upgrade an ordinary
+    // environment, may not read this one in bulk.
+    const { user: lead, memberId } = await seedMemberWithId(world.org, 'developer');
+    await t.pg.query(
+      `insert into access_grants (id, org_member_id, project_id, environment_id, access_level, granted_by)
+       values ($1, $2, $3, null, 'admin', $4)`,
+      [crypto.randomUUID(), memberId, world.projectId, world.org.owner.id],
+    );
+    const leadWorld: World = { ...world, vault: await seedVault(lead) };
+    caller = f.sessionOf(lead);
+
+    const blocked = await preview(leadWorld, 'locked');
+    expect(blocked.body.upgrade).toMatchObject({ canUpgrade: false, reasons: ['export-policy'] });
+
+    audit = [];
+    const refused = await readMaterial(leadWorld, 'locked');
+    expect(refused.status).toBe(403);
+    expect(refused.text).toContain('export_disabled');
+    expect(refused.text).not.toContain('kept-value');
+    const refusal = audit.find((record) => record.action === 'secret.read');
+    expect(refusal?.outcome).toBe('error');
+    expect(refusal?.metadata).toMatchObject({
+      reason: 'policyRefused',
+      policyName: 'plaintextExport',
+    });
+
+    // The owner may, and the records say the policy was in force.
+    caller = f.sessionOf(world.org.owner);
+    audit = [];
+    const read = await material(world, 'locked');
+    expect(read.secrets.map((secret) => secret.name)).toEqual(['KEPT']);
+    expect(audit.find((record) => record.action === 'secret.read')?.metadata).toMatchObject({
+      reason: 'encryption-upgrade',
+      policyName: 'plaintextExport',
+      enabled: false,
+    });
+
+    // The lead's POST is refused too, before its body is read.
+    const { body } = await build(world, read);
+    caller = f.sessionOf(lead);
+    expect((await post(leadWorld, body, 'locked')).status).toBe(403);
+
+    caller = f.sessionOf(world.org.owner);
+    audit = [];
+    expect((await post(world, body, 'locked')).status).toBe(200);
+    expect(
+      audit.find((record) => record.action === 'environment.encryption_upgraded')?.metadata,
+    ).toMatchObject({ policyName: 'plaintextExport', enabled: false });
   });
 });

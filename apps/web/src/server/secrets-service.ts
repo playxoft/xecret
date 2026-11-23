@@ -25,10 +25,13 @@ import {
   RepositoryError,
   addSecretVersion,
   createSecret,
+  isTransactionRace,
   loadEnvironmentHistory,
   loadEnvironmentKeyChain,
   loadEnvironmentKeyState,
   loadEnvironmentSecrets,
+  lockEnvironmentMode,
+  readEnvironmentMode,
   softDeleteSecret,
   toBytes,
   updateSecretMetadata,
@@ -1388,6 +1391,14 @@ async function commitWrites(
       // can never create — see `checkCapacity`.
       await checkCapacity(capacity, tx, writes, [], true);
 
+      // Then the mode, held until commit, as the first row lock — the order the
+      // upgrade to end-to-end encryption relies on (`encryption-upgrade.ts` in
+      // the repositories). The values were encrypted under a key unwrapped
+      // before this transaction opened; an upgrade that committed since has
+      // deleted that key, and these rows must not follow it into an environment
+      // that is now end-to-end encrypted.
+      await assertStillServerMode(tx, scope);
+
       for (const write of writes) {
         const payload = {
           mode: 'server' as const,
@@ -1495,10 +1506,23 @@ async function withEnvironmentKey<T>(
   );
 
   if (!chain) {
-    // An environment is created together with its key, in one transaction, so
-    // this is not reachable by any normal path. If it happens, the environment
-    // is unusable and only an operator holding the Root KEK can repair it —
-    // which is a 503, not a 500: the deployment is broken, not the request.
+    // One ordinary way to get here: this request resolved the environment as
+    // `server`-mode, and its upgrade to end-to-end encryption committed before
+    // the key was read — deleting the key, as an upgrade does. That is a race,
+    // not a broken deployment, and it is answered as the retryable conflict it
+    // is, without the alarm below.
+    const mode = await readEnvironmentMode(
+      services.db,
+      scope.organization.id,
+      scope.environment.id,
+    );
+    if (mode === 'e2ee') throw modeChanged();
+
+    // Otherwise: an environment is created together with its key, in one
+    // transaction, so this is not reachable by any normal path. If it happens,
+    // the environment is unusable and only an operator holding the Root KEK can
+    // repair it — which is a 503, not a 500: the deployment is broken, not the
+    // request.
     services.log
       .at('withEnvironmentKey')
       .error(
@@ -1578,6 +1602,25 @@ async function openValue(
 }
 
 /**
+ * The answer to a server-mode request that reached an environment after its
+ * upgrade to end-to-end encryption committed. A 409 with a stable prefix, so a
+ * client re-reads the environment — and finds it end-to-end encrypted — rather
+ * than reporting a failure; nothing was written.
+ */
+function modeChanged() {
+  return errors.conflict(
+    'mode_changed: this environment was upgraded to end-to-end encryption while this request ' +
+      'was in flight. Nothing was written — reload it and try again.',
+  );
+}
+
+/** Refuses a server-mode write into an environment whose mode has moved. See `commitWrites`. */
+async function assertStillServerMode(tx: Executor, scope: EnvironmentScope): Promise<void> {
+  const mode = await lockEnvironmentMode(tx, scope.organization.id, scope.environment.id);
+  if (mode === 'e2ee') throw modeChanged();
+}
+
+/**
  * Converts a cryptographic failure into a response, and logs only its category.
  *
  * A `DecryptionError` carries no detail on purpose — wrong key, wrong AAD,
@@ -1633,6 +1676,11 @@ function rethrowCryptoFailure(cause: unknown, services: ServiceContext): never {
  * response a caller with no right to it would have received.
  */
 export function rethrowRepositoryFailure(cause: unknown): never {
+  // PostgreSQL broke a deadlock or a serialisation conflict by abandoning this
+  // transaction: nothing was written, and the same request again is correct.
+  if (isTransactionRace(cause)) {
+    throw errors.conflict('This environment was changed by another request. Retry the write.');
+  }
   if (cause instanceof RepositoryError) {
     switch (cause.code) {
       case 'conflict':

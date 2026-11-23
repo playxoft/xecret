@@ -6,7 +6,6 @@ import {
   eq,
   gt,
   inArray,
-  isNotNull,
   isNull,
   lte,
   notInArray,
@@ -19,7 +18,7 @@ import type { EncryptedValue } from '@xecret/core/crypto';
 import type { DeclaredReference } from '@xecret/core/references';
 import { environments, projects } from '../schema/resources';
 import { secrets, secretVersions } from '../schema/secrets';
-import { toBytes, toCipherAlgorithm } from './environments';
+import { lockEnvironmentMode, toBytes, toCipherAlgorithm } from './environments';
 import { isUniqueViolation } from './users';
 import { clampPageSize, RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -35,7 +34,7 @@ import type { PageRequest } from './projects';
  *    and "what was this value on Tuesday" all fall out of the history for free,
  *    and they all stop working the moment one row is mutated in place.
  *
- *    **One exception, and what it does not change.** `reencryptVersionInPlace`
+ *    **One exception, and what it does not change.** `reencryptVersionsInPlace`
  *    rewrites a `server`-mode row's ciphertext as the client-encrypted form of
  *    *the same value*, once, when its environment is upgraded to end-to-end
  *    encryption (ADR 0009, Phase 5). The version number, the author and the
@@ -250,13 +249,12 @@ function payloadColumns(payload: SecretPayload) {
 }
 
 /** One `server`-mode version, and the client-encrypted form of the same value. */
-export interface ReencryptVersionParams {
+export interface ReencryptedVersion {
   /** The `secret_versions` row. */
   versionId: string;
   secretId: string;
   /** The version number the row holds — and the one the new ciphertext's AAD binds. */
   version: number;
-  envDataKeyId: string;
   /** The ASCII of an `xk2.gcm.` blob. Stored verbatim, never parsed. */
   ciphertext: Uint8Array;
   clientAlgorithm: string;
@@ -265,47 +263,127 @@ export interface ReencryptVersionParams {
 }
 
 /**
- * Rewrites one `server`-mode version as its client-encrypted form, in place —
- * the single `UPDATE` this file issues against `secret_versions` (see the
- * header, rule 1).
+ * Rows per statement for the two set-based rewrites below.
  *
- * The column set is `payloadColumns`'s `e2ee` arm, so the row leaves this
- * function exactly as `createSecret` would have written it in an `e2ee`
- * environment: no IV column, no `env_key_id`, the data key and the client's
- * label set. All of it in one statement, which is what keeps the three CHECKs
- * that pair those columns satisfied at every instant.
- *
- * Matched on the row id, the secret **and** the version number, and only while
- * the row is still a server-envelope row. A row that does not match all four
- * is not the row the browser re-encrypted for, and the caller is told so —
- * `false` — rather than the statement quietly updating nothing.
+ * Six parameters a row for the versions, so 500 rows is 3,000 bound values —
+ * far under PostgreSQL's 65,535 per statement, and few enough statements that a
+ * five-thousand-version upgrade is ten round trips rather than five thousand.
  */
-export async function reencryptVersionInPlace(
-  exec: Executor,
-  params: ReencryptVersionParams,
-): Promise<boolean> {
-  const rows = await exec
-    .update(secretVersions)
-    .set({
-      ...payloadColumns({
-        mode: 'e2ee',
-        envDataKeyId: params.envDataKeyId,
-        ciphertext: params.ciphertext,
-        clientAlgorithm: params.clientAlgorithm,
-      }),
-      valueHmac: params.valueHmac,
-    })
-    .where(
-      and(
-        eq(secretVersions.id, params.versionId),
-        eq(secretVersions.secretId, params.secretId),
-        eq(secretVersions.version, params.version),
-        isNotNull(secretVersions.envKeyId),
-      ),
-    )
-    .returning({ id: secretVersions.id });
+const REWRITE_CHUNK = 500;
 
-  return rows.length === 1;
+/**
+ * Rewrites `server`-mode versions as their client-encrypted form, in place —
+ * the only `UPDATE` this file issues against `secret_versions` (see the header,
+ * rule 1). Set-based: one `UPDATE … FROM (VALUES …)` per chunk of rows.
+ *
+ * The column set is `payloadColumns`'s `e2ee` arm, so each row leaves exactly
+ * as `createSecret` would have written it in an `e2ee` environment: no IV, no
+ * `env_key_id`, the data key and the client's label set — all in one statement
+ * per row, which is what keeps the three CHECKs pairing those columns
+ * satisfied at every instant.
+ *
+ * Each row is matched on its id, its secret **and** its version number, and only
+ * while it is still a server-envelope row. Returns how many rows matched; a
+ * caller comparing that with what it sent learns that one of them was not the
+ * row the browser re-encrypted for, rather than the statement quietly updating
+ * fewer than it was given.
+ */
+export async function reencryptVersionsInPlace(
+  exec: Executor,
+  envDataKeyId: string,
+  versions: readonly ReencryptedVersion[],
+): Promise<number> {
+  const columns = payloadColumns({
+    mode: 'e2ee',
+    envDataKeyId,
+    ciphertext: new Uint8Array(0),
+    clientAlgorithm: '',
+  });
+  let rewritten = 0;
+
+  for (let start = 0; start < versions.length; start += REWRITE_CHUNK) {
+    const chunk = versions.slice(start, start + REWRITE_CHUNK);
+    const values = sql.join(
+      chunk.map(
+        (row) =>
+          sql`(${row.versionId}::uuid, ${row.secretId}::uuid, ${row.version}::int, ${sql.param(row.ciphertext, secretVersions.ciphertext)}::bytea, ${row.clientAlgorithm}::text, ${sql.param(row.valueHmac, secretVersions.valueHmac)}::bytea)`,
+      ),
+      sql`, `,
+    );
+
+    const result = await exec.execute<{ id: string }>(sql`
+      update ${secretVersions}
+         set ciphertext = incoming.ciphertext,
+             iv = null,
+             env_key_id = null,
+             env_data_key_id = ${envDataKeyId}::uuid,
+             algorithm = ${columns.algorithm},
+             client_algorithm = incoming.client_algorithm,
+             value_hmac = incoming.value_hmac
+        from (values ${values})
+          as incoming(id, secret_id, version, ciphertext, client_algorithm, value_hmac)
+       where ${secretVersions.id} = incoming.id
+         and ${secretVersions.secretId} = incoming.secret_id
+         and ${secretVersions.version} = incoming.version
+         and ${secretVersions.envKeyId} is not null
+      returning ${secretVersions.id}
+    `);
+    rewritten += rowsOf(result).length;
+  }
+
+  return rewritten;
+}
+
+/**
+ * Moves the notes of an upgraded environment's secrets from `note` to
+ * `enc_note`, set-based — `note` NULL and the sealed blob (or NULL) in its
+ * place, for every listed live secret of this environment.
+ *
+ * `updated_at` is left alone on purpose: nothing about the secret changed that
+ * a person did, and "last changed" in the listing should not read as the day of
+ * the upgrade. Returns how many rows matched.
+ */
+export async function sealNotesInPlace(
+  exec: Executor,
+  environmentId: string,
+  notes: readonly { secretId: string; encNote: Uint8Array | null }[],
+): Promise<number> {
+  let moved = 0;
+
+  for (let start = 0; start < notes.length; start += REWRITE_CHUNK) {
+    const chunk = notes.slice(start, start + REWRITE_CHUNK);
+    const values = sql.join(
+      chunk.map(
+        (row) =>
+          sql`(${row.secretId}::uuid, ${row.encNote === null ? null : sql.param(row.encNote, secrets.encNote)}::bytea)`,
+      ),
+      sql`, `,
+    );
+
+    const result = await exec.execute<{ id: string }>(sql`
+      update ${secrets}
+         set note = null,
+             enc_note = incoming.enc_note
+        from (values ${values}) as incoming(id, enc_note)
+       where ${secrets.id} = incoming.id
+         and ${secrets.environmentId} = ${environmentId}::uuid
+         and ${secrets.deletedAt} is null
+      returning ${secrets.id}
+    `);
+    moved += rowsOf(result).length;
+  }
+
+  return moved;
+}
+
+/**
+ * The rows of an `execute` result, whichever driver ran it: postgres.js
+ * answers an array, PGlite an object carrying `rows`.
+ */
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as T[]) : [];
 }
 
 export interface CreateSecretParams {
@@ -1153,14 +1231,10 @@ export async function updateSecretMetadata(
   // transaction ends, because the upgrade cannot take its lock meanwhile.
   if (typeof params.note === 'string') {
     return exec.transaction(async (tx) => {
-      const [environment] = await tx
-        .select({ encryptionMode: environments.encryptionMode })
-        .from(environments)
-        .where(eq(environments.id, params.environmentId))
-        .for('share');
+      const mode = await lockEnvironmentMode(tx, params.orgId, params.environmentId);
       // An absent row falls through to the write, whose tenancy predicate
       // answers `notFound` exactly as it always has.
-      if (environment !== undefined && environment.encryptionMode !== 'server') {
+      if (mode !== null && mode !== 'server') {
         throw new RepositoryError(
           'invalid',
           'A plaintext note can only be written in an environment that uses server-side encryption.',

@@ -206,7 +206,8 @@ its policies and its settings. What happens:
 - **Your browser does the encrypting.** It reads every value, every older
   version and every note once — the last time our server decrypts anything in
   that environment, recorded in the audit log as a read — generates a new key,
-  re-encrypts all of it, and sends back only ciphertext.
+  re-encrypts all of it, opens every value again to check it before anything is
+  sent, and sends back only ciphertext.
 - **It lands all at once, or not at all.** The server checks that what came
   back is exactly what the environment holds — nothing written in between is
   dropped — rewrites every value in one transaction, and deletes the key it used
@@ -216,13 +217,24 @@ its policies and its settings. What happens:
   and names them before you confirm. Issue new tokens afterwards.
 - **Deleted secrets are erased now**, rather than kept for the usual thirty
   days, because they cannot be re-encrypted. The dialog lists them first.
-- **Your teammates get the key from your browser**, straight afterwards. Anyone
-  without a vault gets it once they set one up and somebody who holds it shares
-  it.
+- **Your teammates get the key from your browser**, straight after you confirm
+  the upgrade — each one who may read the environment and has a vault, except
+  anyone whose public key has changed since your browser last saw it, who is
+  left for you to confirm and share with from the key settings. Anyone without
+  a vault gets it once they set one up and somebody who holds it shares it.
+  Until then they see the secret names and cannot read the values.
 
 An environment with nothing in it — no secrets, no deleted secrets, no CI
-tokens — has nothing to decide, so it is upgraded automatically the first time
-an owner or admin with an unlocked vault opens it.
+tokens — **that nobody else may read** has nothing to decide and nobody to
+leave out, so it is upgraded automatically the first time its owner or admin
+opens it with an unlocked vault. Anywhere a teammate may read it, the dialog
+asks first, so the key is shared with them as part of the same act.
+
+Where an environment's policy disables plaintext export, upgrading it is
+reserved for an owner or admin of the organisation, because it reads every
+value into a browser in plaintext — more than an export would — even though
+nothing is written to a file and nothing leaves that browser except as
+ciphertext. The audit record says the policy was in force.
 
 Two copies outlast an upgrade, and we say so rather than let the word
 "deleted" imply otherwise. Our database backups from before it still hold the

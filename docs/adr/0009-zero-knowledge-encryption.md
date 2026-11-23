@@ -483,25 +483,37 @@ member's Ed25519 signature (`env_key_grants.signature` is NOT NULL). So the dash
 *Upgrade to end-to-end encryption* on every `server`-mode environment, to anybody with
 `environment.update` (and `secret.read`, `secret.update`, `secret.delete`) and a vault:
 
-- `GET …/encryption-upgrade` says what it will do — counts, the deleted secrets it erases, the
-  keyless CI tokens it revokes. `GET …/encryption-upgrade/material` hands over every version
+- `GET …/encryption-upgrade` says whether the caller can upgrade and, to one who may, what it
+  will do — counts, the deleted secrets it erases, the keyless CI tokens it revokes, how many
+  others need the key; it refuses nobody and records nothing. `GET …/encryption-upgrade/material` hands over every version
   of every live secret and every note, decrypted: the server half's last read of that
   environment, audited as `secret.read` with reason `encryption-upgrade`.
 - The browser generates the EDK and EHK, seals and signs its own grant exactly as environment
   creation does, and re-encrypts every value for **the secret id and version number it
-  already has** with the ordinary write path's functions.
-- `POST …/encryption-upgrade` commits it in one transaction, under locks on the organisation,
-  the environment row, its `env_keys` rows and its `secrets` rows, after checking the
-  submitted set is exactly the stored one — every live secret by id and revision, every
-  version by id and number, every soft-deleted secret, every live keyless token; any
-  difference is a 409 and nothing is written. Versions are rewritten in place (the one
-  `UPDATE` `secret_versions` has ever had), notes move to `enc_note`, soft-deleted secrets are
+  already has** with the ordinary write path's functions. Before anything is sent it opens
+  every value and note again with the read path's functions and compares them byte for byte,
+  and opens its own grant to the exact key bytes — the commit deletes the only key that could
+  recover from a ciphertext nothing opens.
+- `POST …/encryption-upgrade` commits it in one transaction — the organisation row and the
+  upgrader's vault row `FOR SHARE`, then the environment row, its `secrets` rows and its
+  `env_keys` rows `FOR UPDATE`; every server-mode writer takes the environment row first too,
+  so the two cannot deadlock — after checking the submitted set is exactly the stored one
+  (every live secret by id and revision, every version by id and number, every note present
+  exactly where one is stored, every soft-deleted secret, every live keyless token) and that
+  the grant is sealed to the upgrader's current vault key; any difference is a 409 and
+  nothing is written. Versions are rewritten in place, set-based (the one `UPDATE`
+  `secret_versions` has ever had), notes move to `enc_note`, soft-deleted secrets are
   erased (they cannot be re-encrypted and their versions pin `env_keys`), keyless tokens are
   revoked, the mode flips, and the `env_keys` rows are **deleted** — `ON DELETE RESTRICT`
   makes that delete the proof that no row still needs them. Key shares are queued for every
-  other entitled member and fulfilled from the upgrading browser straight afterwards.
-- An environment with nothing to decide — no secret, no deleted secret, no keyless token — is
-  upgraded without a dialog the first time a member who may upgrade it opens it.
+  other entitled member; after a confirmed upgrade the upgrading browser fulfils them straight
+  away for everyone with a vault whose pinned public key has not changed.
+- An environment with nothing to decide — no secret, no deleted secret, no keyless token — and
+  **nobody else entitled to read it** is upgraded without a dialog the first time a member who
+  may upgrade it opens it. Anywhere a teammate may read it, the dialog asks, so nobody is left
+  holding names they cannot read because of an act they did not see.
+- Where plaintext export is disabled, the upgrade's plaintext read is reserved for an owner or
+  admin of the organisation and recorded with the policy's state.
 
 Values whose bytes NFC normalisation would change are refused rather than upgraded: the
 envelope stored text as given and every e2ee value is normalised, so re-encrypting one would

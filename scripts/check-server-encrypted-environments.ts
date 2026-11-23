@@ -49,9 +49,10 @@
  * its `env_keys` row in the same transaction, and the environment drops out of
  * this report. The dialog names what it costs first: keyless CI tokens on the
  * environment are revoked, and its deleted secrets are erased. An environment
- * with nothing in it upgrades itself the first time such a member opens it, so
- * the empty ones clear as their owners next sign in — `--details` says who those
- * owners are and whether they have a vault yet.
+ * with nothing in it that only one member may read upgrades itself the first
+ * time that member opens it, so those clear as their owners next sign in —
+ * `--details` says who those owners are and whether they have a vault yet. One
+ * that more members may read waits for one of them to press the button.
  *
  * A deleted one cannot be upgraded; the purge erases it, key and all, thirty days
  * after the delete.
@@ -197,9 +198,12 @@ async function printDetails(db: ReturnType<typeof createDatabaseHandle>['db']): 
           AND e.deleted_at IS NULL AND p.deleted_at IS NULL
       ) AS live_secrets,
       (
-        SELECT count(*) FROM service_tokens t JOIN environments e ON e.id = t.environment_id
+        SELECT count(*) FROM service_tokens t
+        JOIN environments e ON e.id = t.environment_id
+        JOIN projects p ON p.id = e.project_id
         WHERE t.org_id = o.id AND e.encryption_mode = 'server' AND t.revoked_at IS NULL
           AND (t.expires_at IS NULL OR t.expires_at > now())
+          AND e.deleted_at IS NULL AND p.deleted_at IS NULL
       ) AS live_tokens
     FROM organizations o
     WHERE EXISTS (

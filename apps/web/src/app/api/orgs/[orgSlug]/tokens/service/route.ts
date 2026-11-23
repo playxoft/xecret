@@ -6,6 +6,7 @@ import {
   listEnvironmentsForOrganization,
   listServiceTokens,
   loadOrgPolicies,
+  lockEnvironmentMode,
 } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
@@ -236,6 +237,21 @@ export const POST = authenticatedRoute<Params>(
           ),
         },
       );
+
+      // The mode again, inside the transaction and held until it commits — the
+      // first row lock, after the capacity lock as that lock requires. The check
+      // above ran on the mode this request resolved at its start, and an upgrade
+      // to end-to-end encryption can commit in between: a keyless token minted
+      // into an environment that just became end-to-end encrypted would be a
+      // credential that authenticates and can never read anything — and one the
+      // upgrade, having already counted the tokens it revokes, never saw.
+      const mode = await lockEnvironmentMode(tx, orgId, environmentScope.environment.id);
+      if (mode !== null && mode !== environmentScope.environment.encryptionMode) {
+        throw errors.conflict(
+          'mode_changed: this environment was upgraded to end-to-end encryption while the token ' +
+            'was being created. Nothing was created — reload and create it again.',
+        );
+      }
 
       return createServiceToken(tx, {
         orgId,

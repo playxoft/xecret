@@ -3,6 +3,8 @@ import type { Denial } from '@xecret/core/authz';
 import {
   authorizeUpgrade,
   encryptionUpgradePreview,
+  exportPolicyBlocks,
+  exportPolicyRefusal,
   requireServerMode,
   requireUpgradingPerson,
   upgradeEncryption,
@@ -19,10 +21,12 @@ import type { EnvironmentScope } from '@/server/tenancy';
  * Phase 5). `server/encryption-upgrade.ts` says why the browser does the work
  * and who may ask; this file is the two ends of it.
  *
- * `GET` is what the upgrade would do — counts, and the names of the deleted
- * secrets it erases and the CI tokens it revokes — so a person can decide, and
- * so the dashboard can tell an empty environment it may upgrade without asking
- * anybody. No value, no note: not audited as a read, and metered like one.
+ * `GET` is whether this caller can upgrade, and — for a caller who may — what
+ * it would do: counts, the names of the deleted secrets it erases and the CI
+ * tokens it revokes, how many others need the key. The dashboard asks it on
+ * every view of a `server`-mode environment, so it refuses nobody, records
+ * nothing and spends no rate limit: a member who lacks a permission is told
+ * `canUpgrade: false` and why. No value and no note leave it.
  *
  * `POST` is the upgrade: the re-encrypted environment, committed in one
  * transaction or not at all. Audited as `environment.encryption_upgraded` with
@@ -45,26 +49,10 @@ function environmentResource(scope: EnvironmentScope) {
   };
 }
 
-export const GET = authenticatedRoute<Params>(
-  async ({ params, principal, services, audit, record }) => {
-    const scope = await resolveEnvironmentPath(principal, params, services);
-    await enforceSecretRateLimit(services, principal, 'read');
-
-    auditingDenials(
-      (decision: Denial) =>
-        record(
-          audit(scope.organization.id).denied(
-            'environment.encryption_upgraded',
-            environmentResource(scope),
-            decision,
-          ),
-        ),
-      () => authorizeUpgrade(scope),
-    );
-
-    return json({ upgrade: await encryptionUpgradePreview(scope, services, principal) });
-  },
-);
+export const GET = authenticatedRoute<Params>(async ({ params, principal, services }) => {
+  const scope = await resolveEnvironmentPath(principal, params, services);
+  return json({ upgrade: await encryptionUpgradePreview(scope, services, principal) });
+});
 
 export const POST = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
@@ -81,6 +69,17 @@ export const POST = authenticatedRoute<Params>(
     auditingDenials(fileDenial, () => authorizeUpgrade(scope));
     requireUpgradingPerson(principal);
     requireServerMode(scope);
+    if (exportPolicyBlocks(scope)) {
+      record(
+        builder.error('environment.encryption_upgraded', resource, 'policyRefused', {
+          policyName: 'plaintextExport',
+          projectSlug: scope.project.slug,
+          environmentSlug: scope.environment.slug,
+          source: 'dashboard',
+        }),
+      );
+      throw exportPolicyRefusal(scope);
+    }
 
     const body = await parseJsonBody(request, encryptionUpgradeBody, MAX_UPGRADE_BODY_BYTES);
 
@@ -108,6 +107,12 @@ export const POST = authenticatedRoute<Params>(
         purgedSecretCount: outcome.erased.length,
         revokedTokenCount: outcome.revoked.length,
         keyVersion: outcome.dataKey.version,
+        // Said when it applied: an environment whose policy disables plaintext
+        // export was upgraded — its values read into a browser — by an owner or
+        // admin of the organisation.
+        ...(scope.environment.plaintextExportDisabled
+          ? { policyName: 'plaintextExport' as const, enabled: false }
+          : {}),
       }),
       // The key's own origin, exactly as creation and the repair endpoint record
       // it: a key-history review starts from `envkey.created`, and an upgraded

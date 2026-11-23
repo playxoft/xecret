@@ -2,11 +2,12 @@ import { and, count, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm
 import { envKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
 import { secrets, secretVersions } from '../schema/secrets';
+import { organizations } from '../schema/tenancy';
 import { serviceTokens } from '../schema/tokens';
+import { userKeys } from '../schema/vault';
 import { initializeEnvironmentKeys } from './env-keys';
 import type { EnvDataKeyRecord, EnvKeyGrantSeed } from './env-keys';
-import { lockOrganization } from './membership';
-import { reencryptVersionInPlace, secretRevision } from './secrets';
+import { reencryptVersionsInPlace, sealNotesInPlace, secretRevision } from './secrets';
 import { RepositoryError } from './shared';
 import type { Executor } from './shared';
 
@@ -16,9 +17,11 @@ import type { Executor } from './shared';
  *
  * ── What "in place" means, and why it is the design ──
  * The environment row survives: its id, its slug, its access grants, its
- * policies, its webhooks, the templates that reach into it and the read-alert
- * settings all stay attached, because nothing about them depended on which key
- * the values were under. What changes is everything that did:
+ * policies, its webhooks, its CI tokens' scope and the read-alert settings all
+ * stay attached, because nothing about them depended on which key the values
+ * were under. (No template reaches into a `server`-mode environment and none
+ * inherits from one — both need end-to-end encryption — so there is no
+ * reference graph to carry across.) What changes is everything that did:
  *
  *  - every version of every live secret is rewritten from the server envelope
  *    to an `xk2.gcm.` blob the upgrading browser produced, under a key that
@@ -58,17 +61,45 @@ import type { Executor } from './shared';
  *
  * The locks, in the order they are taken, and who each one stops:
  *
- *  1. the organisation row — membership changes, so the share queue written at
- *     the end is computed from a roster that cannot move under it;
- *  2. the environment row, `FOR UPDATE` — a concurrent upgrade, a deletion, a
- *     settings change, and the plaintext-note write (`updateSecretMetadata`
- *     reads the mode `FOR SHARE` before it writes one);
- *  3. the environment's `env_keys` rows, `FOR UPDATE` — every server-mode value
- *     write, whose foreign-key check takes `FOR KEY SHARE` on the same row: one
- *     already past that check is waited for and then seen; one not yet there
- *     waits for this commit and then fails, because the key is gone;
- *  4. every `secrets` row of the environment — renames, notes, soft deletes and
- *     restores of existing rows.
+ *  1. the organisation row, **`FOR SHARE`** — membership and access changes take
+ *     it `FOR UPDATE` (`lockOrganization`), so the share queue written at the
+ *     end is computed from a roster that cannot move under it. Share, not
+ *     update: every insert that references the organisation takes `FOR KEY
+ *     SHARE` on it through its foreign key, and an upgrade holding the row
+ *     exclusively would stall every one of those across the organisation for
+ *     its whole length — and could close a cycle with a writer that holds this
+ *     environment and then inserts such a row (a service token being minted).
+ *     Two upgrades of different environments share it without waiting.
+ *  2. the upgrader's `user_keys` row, `FOR SHARE` — the public key the new
+ *     key's first grant must be sealed to cannot be replaced by a vault reset
+ *     between the check and the commit.
+ *  3. the environment row, `FOR UPDATE` — a concurrent upgrade, a deletion, a
+ *     settings change, and **every mode-dependent writer**: a server-mode value
+ *     write, a plaintext note and a keyless token being minted each read the
+ *     mode with `lockEnvironmentMode` (`FOR SHARE`) as the first row lock of
+ *     their own transaction.
+ *  4. every `secrets` row of the environment, `FOR UPDATE` — renames, notes,
+ *     soft deletes and restores of existing rows.
+ *  5. the environment's `env_keys` rows, `FOR UPDATE`.
+ *
+ * ── Why that order cannot deadlock ──
+ * A server-mode value write takes, in its own transaction and in this order:
+ * the plan's capacity advisory lock, the environment row (`FOR SHARE`), then —
+ * through the foreign keys of its inserts — the secret (`FOR KEY SHARE`), the
+ * `env_keys` row (`FOR KEY SHARE`), the environment again for a create, and the
+ * secret (`FOR NO KEY UPDATE`) to bump its `updated_at`. Before the mode lock
+ * existed it took no environment lock first, and its secret-then-key order was
+ * the reverse of the key-then-secret order this function used to take: each
+ * could hold the row the other waited for (`40P01`), and an import that
+ * appended and then created could do the same with the key and the environment
+ * row. Now both sides reach the environment row first, so one of them waits
+ * there holding nothing the other needs — the writer holds only an advisory
+ * lock this transaction never takes, and this transaction holds only the
+ * organisation and its own vault row `FOR SHARE`, which no writer's `FOR KEY
+ * SHARE` conflicts with. Secrets before keys here matches the writers' own
+ * foreign-key order besides, and a deadlock some path nobody listed still
+ * manages to produce is answered as a retryable conflict (`isTransactionRace`),
+ * never as a 500.
  *
  * ── Why it is a repository function at all ──
  * Every statement is a fact about rows, and the two decisions that are not —
@@ -140,7 +171,16 @@ export type EncryptionUpgradeRefusal =
   /** The keyless tokens are not the ones the person agreed to revoke. */
   | 'tokens-changed'
   /** A stored row is in a shape a `server`-mode environment cannot hold. */
-  | 'inconsistent';
+  | 'inconsistent'
+  /**
+   * The new key's first grant is not sealed to the upgrader's current vault
+   * key: a vault reset landed in between, or the request was built from
+   * somebody else's public key. Either way, nobody holding this account's vault
+   * could open the key, and every value under it would be lost.
+   */
+  | 'grant-key'
+  /** A note was dropped (a stored note with no sealed one) or invented (the reverse). */
+  | 'notes';
 
 export class EncryptionUpgradeConflict extends RepositoryError {
   constructor(readonly refusal: EncryptionUpgradeRefusal) {
@@ -253,7 +293,26 @@ export async function upgradeEnvironmentEncryption(
 ): Promise<UpgradeEnvironmentResult> {
   return exec.transaction(async (tx) => {
     // ── 1. Locks, in the order the header gives ──
-    await lockOrganization(tx, params.orgId);
+    const [organization] = await tx
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, params.orgId), isNull(organizations.deletedAt)))
+      .for('share');
+    if (!organization) throw new RepositoryError('notFound', 'Organisation not found.');
+
+    // The grant must be sealed to the key this account's vault holds *now*.
+    // Checked here, held `FOR SHARE`, rather than trusted from the request: a
+    // grant sealed to any other key is a key nobody holding this vault can
+    // open, and committing it would delete the only key that still could.
+    const [vault] = await tx
+      .select({ encPublicKey: userKeys.encPublicKey })
+      .from(userKeys)
+      .where(eq(userKeys.userId, params.createdBy))
+      .limit(1)
+      .for('share');
+    if (!vault || !bytesEqual(vault.encPublicKey, params.grant.recipientPublicKey)) {
+      throw new EncryptionUpgradeConflict('grant-key');
+    }
 
     const [environment] = await tx
       .select({ id: environments.id, encryptionMode: environments.encryptionMode })
@@ -278,21 +337,22 @@ export async function upgradeEnvironmentEncryption(
       throw new EncryptionUpgradeConflict('already-e2ee');
     }
 
-    await tx
-      .select({ id: envKeys.id })
-      .from(envKeys)
-      .where(eq(envKeys.environmentId, params.environmentId))
-      .for('update');
-
     const stored = await tx
       .select({
         id: secrets.id,
         name: secrets.name,
+        note: secrets.note,
         deletedAt: secrets.deletedAt,
         revision: secretRevision(),
       })
       .from(secrets)
       .where(eq(secrets.environmentId, params.environmentId))
+      .for('update');
+
+    await tx
+      .select({ id: envKeys.id })
+      .from(envKeys)
+      .where(eq(envKeys.environmentId, params.environmentId))
       .for('update');
 
     // ── 2. The stored world, read after every lock is held ──
@@ -343,8 +403,17 @@ export async function upgradeEnvironmentEncryption(
     }
 
     for (const secret of params.secrets) {
-      if (liveById.get(secret.id)?.revision !== secret.revision) {
+      const row = liveById.get(secret.id);
+      if (row === undefined || row.revision !== secret.revision) {
         throw new EncryptionUpgradeConflict('stale');
+      }
+      // A note travels or it does not exist — never one without the other. A
+      // stored note with no sealed one would be erased by this commit; a sealed
+      // note for a secret that had none is something the browser made up.
+      // `encodeNote` sends nothing for an empty note, so empty counts as none.
+      const hasNote = row.note !== null && row.note.length > 0;
+      if (hasNote !== (secret.encNote !== null)) {
+        throw new EncryptionUpgradeConflict('notes');
       }
       const storedVersions = versionsBySecret.get(secret.id) ?? new Map<string, number>();
       if (storedVersions.size !== secret.versions.length) {
@@ -380,41 +449,27 @@ export async function upgradeEnvironmentEncryption(
       dataKeyId: params.dataKeyId,
     });
 
-    // ── 5. Every version and every note, rewritten in place ──
-    let versionCount = 0;
-    let noteCount = 0;
-    for (const secret of params.secrets) {
-      for (const version of secret.versions) {
-        const rewritten = await reencryptVersionInPlace(tx, {
-          versionId: version.id,
-          secretId: secret.id,
-          version: version.version,
-          envDataKeyId: dataKey.id,
-          ciphertext: version.ciphertext,
-          clientAlgorithm: version.clientAlgorithm,
-          valueHmac: version.valueHmac,
-        });
-        if (!rewritten) throw new EncryptionUpgradeConflict('stale');
-        versionCount += 1;
-      }
+    // ── 5. Every version and every note, rewritten in place, set-based ──
+    const versionRows = params.secrets.flatMap((secret) =>
+      secret.versions.map((version) => ({
+        versionId: version.id,
+        secretId: secret.id,
+        version: version.version,
+        ciphertext: version.ciphertext,
+        clientAlgorithm: version.clientAlgorithm,
+        valueHmac: version.valueHmac,
+      })),
+    );
+    const versionCount = await reencryptVersionsInPlace(tx, dataKey.id, versionRows);
+    if (versionCount !== versionRows.length) throw new EncryptionUpgradeConflict('stale');
 
-      // `updated_at` is left alone on purpose: nothing about the secret changed
-      // that a person did, and "last changed" in the listing should not read as
-      // the day of the upgrade.
-      const noted = await tx
-        .update(secrets)
-        .set({ note: null, encNote: secret.encNote })
-        .where(
-          and(
-            eq(secrets.id, secret.id),
-            eq(secrets.environmentId, params.environmentId),
-            isNull(secrets.deletedAt),
-          ),
-        )
-        .returning({ id: secrets.id });
-      if (noted.length !== 1) throw new EncryptionUpgradeConflict('stale');
-      if (secret.encNote !== null) noteCount += 1;
-    }
+    const noted = await sealNotesInPlace(
+      tx,
+      params.environmentId,
+      params.secrets.map((secret) => ({ secretId: secret.id, encNote: secret.encNote })),
+    );
+    if (noted !== params.secrets.length) throw new EncryptionUpgradeConflict('stale');
+    const noteCount = params.secrets.filter((secret) => secret.encNote !== null).length;
 
     // ── 6. What cannot cross ──
     const erased =
@@ -521,4 +576,12 @@ function assertSameSet(
   for (const id of got) {
     if (!want.has(id)) throw new EncryptionUpgradeConflict(refusal);
   }
+}
+
+/** Constant-time over equal lengths; public keys, so the timing is not the point. */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let index = 0; index < a.length; index += 1) difference |= a[index]! ^ b[index]!;
+  return difference === 0;
 }

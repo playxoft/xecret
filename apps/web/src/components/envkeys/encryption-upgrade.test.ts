@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   computeValueHmac,
   DecryptionError,
+  encodePublicKey,
   generateEncryptionKeyPair,
   generateEnvironmentDataKey,
   generateEnvironmentHmacKey,
@@ -13,6 +14,7 @@ import {
 } from '@xecret/core/crypto/client';
 import { uuidv7 } from '@xecret/core/ids';
 
+import { ApiError } from '@/lib/api';
 import { parseWith } from '@/server/http';
 import { encryptionUpgradeBody } from '@/server/schemas/encryption-upgrade';
 import { holdVaultKeys, releaseVaultKeys } from '@/components/vault/key-store';
@@ -21,11 +23,18 @@ import type { VaultKeyMaterial } from '@/components/vault/key-store';
 import {
   autoUpgradeEligible,
   buildUpgradeBody,
+  nothingChanged,
   notNormalisedSecrets,
   runEncryptionUpgrade,
   UpgradeRefusedError,
+  verifyUpgradeBody,
 } from './encryption-upgrade';
-import type { UpgradeMaterial, UpgradePreview } from './encryption-upgrade';
+import type {
+  UpgradeBody,
+  UpgradeDetails,
+  UpgradeMaterial,
+  UpgradePreview,
+} from './encryption-upgrade';
 import type { EnvKeyMaterial } from './env-key-store';
 import { modePinKey, readModePins } from './pins';
 import { decryptNote, decryptValue, encryptNote, encryptValue } from './secret-crypto';
@@ -97,6 +106,7 @@ function vaultFor(userId: string): VaultKeyMaterial {
 
 function material(overrides: Partial<UpgradeMaterial> = {}): UpgradeMaterial {
   return {
+    orgId: ORG_ID,
     environmentId: ENVIRONMENT_ID,
     secrets: [
       {
@@ -126,19 +136,44 @@ function material(overrides: Partial<UpgradeMaterial> = {}): UpgradeMaterial {
   };
 }
 
-function preview(overrides: Partial<UpgradePreview> = {}): UpgradePreview {
+function details(overrides: Partial<UpgradeDetails> = {}): UpgradeDetails {
   return {
-    encryptionMode: 'server',
-    environmentId: ENVIRONMENT_ID,
     liveSecretCount: 2,
     versionCount: 4,
     noteCount: 1,
     deletedSecrets: [{ id: DELETED_ID, name: 'RETIRED' }],
     keylessTokens: [{ id: TOKEN_ID, name: 'deploy', tokenPrefix: 'xst_live_ab12' }],
-    mayUpgrade: true,
-    blockedBy: null,
+    otherEntitledCount: 1,
     ...overrides,
   };
+}
+
+function preview(overrides: Partial<UpgradeDetails> = {}): UpgradePreview {
+  return {
+    encryptionMode: 'server',
+    environmentId: ENVIRONMENT_ID,
+    canUpgrade: true,
+    reasons: [],
+    details: details(overrides),
+  };
+}
+
+/** The window's storage, for the mode pin. */
+function stubStorage(): Map<string, string> {
+  const storage = new Map<string, string>();
+  vi.stubGlobal('window', {
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+      removeItem: (key: string) => void storage.delete(key),
+    },
+  });
+  return storage;
+}
+
+/** A copy, so one test can damage a body without touching another's. */
+function copy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function keys() {
@@ -357,28 +392,164 @@ describe('autoUpgradeEligible', () => {
     noteCount: 0,
     deletedSecrets: [],
     keylessTokens: [],
+    otherEntitledCount: 0,
   });
 
-  it('is true only for an empty environment the caller may upgrade, with the vault open', () => {
+  it('is true only for an empty environment nobody else may read, the caller may upgrade, with the vault open', () => {
     expect(autoUpgradeEligible(empty, true)).toBe(true);
     expect(autoUpgradeEligible(empty, false)).toBe(false);
-    expect(autoUpgradeEligible({ ...empty, mayUpgrade: false, blockedBy: 'no-vault' }, true)).toBe(
+    expect(autoUpgradeEligible({ ...empty, canUpgrade: false, reasons: ['no-vault'] }, true)).toBe(
       false,
     );
+    expect(autoUpgradeEligible({ ...empty, details: null }, true)).toBe(false);
+  });
+
+  it('never locks a teammate out: anybody else who may read it means the dialog', () => {
+    expect(
+      autoUpgradeEligible(
+        { ...empty, details: { ...empty.details!, otherEntitledCount: 1 } },
+        true,
+      ),
+    ).toBe(false);
   });
 
   it('asks whenever there is anything to decide', () => {
-    expect(autoUpgradeEligible({ ...empty, liveSecretCount: 1, versionCount: 1 }, true)).toBe(
-      false,
-    );
-    expect(autoUpgradeEligible({ ...empty, keylessTokens: preview().keylessTokens }, true)).toBe(
+    const with_ = (overrides: Partial<UpgradeDetails>) => ({
+      ...empty,
+      details: { ...empty.details!, ...overrides },
+    });
+    expect(autoUpgradeEligible(with_({ liveSecretCount: 1, versionCount: 1 }), true)).toBe(false);
+    expect(autoUpgradeEligible(with_({ keylessTokens: details().keylessTokens }), true)).toBe(
       false,
     );
     // Erasing a deleted secret early is a decision too, however small.
-    expect(autoUpgradeEligible({ ...empty, deletedSecrets: preview().deletedSecrets }, true)).toBe(
+    expect(autoUpgradeEligible(with_({ deletedSecrets: details().deletedSecrets }), true)).toBe(
       false,
     );
-    expect(autoUpgradeEligible({ ...empty, versionCount: 1 }, true)).toBe(false);
+    expect(autoUpgradeEligible(with_({ versionCount: 1 }), true)).toBe(false);
+  });
+});
+
+describe('verifyUpgradeBody — nothing is sent that would not open again', () => {
+  async function built() {
+    const vault = vaultFor(USER_ID);
+    const generated = keys();
+    const read = material();
+    const body = await buildUpgradeBody({ vault, orgId: ORG_ID, material: read, keys: generated });
+    return { vault, generated, read, body };
+  }
+
+  async function refusal(promise: Promise<unknown>): Promise<UpgradeRefusedError> {
+    try {
+      await promise;
+    } catch (error) {
+      expect(error).toBeInstanceOf(UpgradeRefusedError);
+      return error as UpgradeRefusedError;
+    }
+    throw new Error('expected a refusal');
+  }
+
+  it('passes the body the builder produced', async () => {
+    const { vault, generated, read, body } = await built();
+    await expect(
+      verifyUpgradeBody({ vault, orgId: ORG_ID, material: read, keys: generated, body }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('refuses a value filed under another version, naming the secret', async () => {
+    const { vault, generated, read, body } = await built();
+    const swapped = copy(body);
+    const database = swapped.secrets.find((secret) => secret.id === DB_ID)!;
+    [database.versions[0]!.value, database.versions[1]!.value] = [
+      database.versions[1]!.value,
+      database.versions[0]!.value,
+    ];
+    const error = await refusal(
+      verifyUpgradeBody({ vault, orgId: ORG_ID, material: read, keys: generated, body: swapped }),
+    );
+    expect(error.reason).toBe('verification-failed');
+    expect(error.secretNames).toEqual(['DATABASE_URL']);
+  });
+
+  it('refuses a value sealed for another organisation', async () => {
+    const { vault, generated, read, body } = await built();
+    const error = await refusal(
+      verifyUpgradeBody({
+        vault,
+        orgId: '018f3f6a-0000-7000-8000-0000000000a9',
+        material: read,
+        keys: generated,
+        body,
+      }),
+    );
+    expect(error.secretNames).toEqual(expect.arrayContaining(['DATABASE_URL', 'API_KEY']));
+  });
+
+  it('refuses a dropped note, an invented one, and one sealed for another secret', async () => {
+    const { vault, generated, read, body } = await built();
+    const databaseNote = body.secrets.find((secret) => secret.id === DB_ID)!.encNote;
+
+    const dropped = copy(body);
+    dropped.secrets.find((secret) => secret.id === DB_ID)!.encNote = null;
+
+    const invented = copy(body);
+    invented.secrets.find((secret) => secret.id === API_ID)!.encNote = databaseNote;
+
+    // API_KEY does have a note this time — and is sent DATABASE_URL's sealed
+    // one, which opens only as DATABASE_URL's.
+    const readWithNote = copy(read);
+    readWithNote.secrets.find((secret) => secret.id === API_ID)!.note =
+      'primary — rotate quarterly';
+
+    for (const [attempt, readAs] of [
+      [dropped, read],
+      [invented, read],
+      [invented, readWithNote],
+    ] as const) {
+      const error = await refusal(
+        verifyUpgradeBody({
+          vault,
+          orgId: ORG_ID,
+          material: readAs,
+          keys: generated,
+          body: attempt,
+        }),
+      );
+      expect(error.reason).toBe('verification-failed');
+    }
+  });
+
+  it('refuses a grant that does not open, with this vault, to the key that sealed the values', async () => {
+    const { vault, generated, read, body } = await built();
+
+    // Sealed by a key other than the one the values are under.
+    const otherKeys = { ...generated, edk: generateEnvironmentDataKey() };
+    expect(
+      (
+        await refusal(
+          verifyUpgradeBody({ vault, orgId: ORG_ID, material: read, keys: otherKeys, body }),
+        )
+      ).secretNames,
+    ).toContain('the new key');
+
+    // Addressed to a public key this vault does not hold.
+    const readdressed = copy(body);
+    readdressed.keys.grant.recipientPublicKey = encodePublicKey(
+      generateEncryptionKeyPair().publicKey,
+    );
+    expect(
+      (
+        await refusal(
+          verifyUpgradeBody({
+            vault,
+            orgId: ORG_ID,
+            material: read,
+            keys: generated,
+            body: readdressed,
+          }),
+        )
+      ).secretNames,
+    ).toContain('the new key');
   });
 });
 
@@ -423,6 +594,7 @@ describe('runEncryptionUpgrade', () => {
         versionCount: 0,
         deletedSecrets: [],
         keylessTokens: [],
+        otherEntitledCount: 0,
       }),
       share: false,
       automatic: true,
@@ -434,14 +606,7 @@ describe('runEncryptionUpgrade', () => {
   });
 
   it('posts the built body, pins the mode forward, and shares nothing when not asked to', async () => {
-    const storage = new Map<string, string>();
-    vi.stubGlobal('window', {
-      localStorage: {
-        getItem: (key: string) => storage.get(key) ?? null,
-        setItem: (key: string, value: string) => void storage.set(key, value),
-        removeItem: (key: string) => void storage.delete(key),
-      },
-    });
+    stubStorage();
     const vault = vaultFor(USER_ID);
     holdVaultKeys(vault);
     const read = material();
@@ -476,21 +641,23 @@ describe('runEncryptionUpgrade', () => {
     expect(pins[modePinKey(TARGET)]?.mode).toBe('e2ee');
   });
 
-  it('reports a refused write as nothing having changed, and pins nothing', async () => {
-    const storage = new Map<string, string>();
-    vi.stubGlobal('window', {
-      localStorage: {
-        getItem: (key: string) => storage.get(key) ?? null,
-        setItem: (key: string, value: string) => void storage.set(key, value),
-        removeItem: (key: string) => void storage.delete(key),
-      },
-    });
+  it('reports a refused write as nothing having changed, re-reads nothing, and pins nothing', async () => {
+    const storage = stubStorage();
     const vault = vaultFor(USER_ID);
     holdVaultKeys(vault);
     responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
     responses.set(`POST ${BASE}/encryption-upgrade`, () => {
-      throw new Error('409 version_conflict');
+      throw new ApiError({
+        code: 'conflict',
+        message: 'version_conflict: changed',
+        status: 409,
+        requestId: null,
+      });
     });
+    const keysRead = vi.fn(() => {
+      throw new Error('the key state is not read after the server’s own refusal');
+    });
+    responses.set(`GET ${BASE}/keys`, keysRead);
 
     const outcome = await runEncryptionUpgrade({
       target: TARGET,
@@ -500,6 +667,192 @@ describe('runEncryptionUpgrade', () => {
       share: true,
     });
     expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && nothingChanged(outcome.error)).toBe(true);
+    expect(keysRead).not.toHaveBeenCalled();
     expect(storage.size).toBe(0);
+  });
+
+  it('refuses before encrypting when the material answers for another organisation', async () => {
+    const vault = vaultFor(USER_ID);
+    holdVaultKeys(vault);
+    responses.set(`GET ${BASE}/encryption-upgrade/material`, {
+      material: material({ orgId: '018f3f6a-0000-7000-8000-0000000000a9' }),
+    });
+
+    const outcome = await runEncryptionUpgrade({
+      target: TARGET,
+      orgId: ORG_ID,
+      vault,
+      preview: preview(),
+      share: true,
+    });
+    expect(outcome.status === 'failed' && outcome.error).toMatchObject({
+      reason: 'wrong-organisation',
+    });
+    expect(posted).toHaveLength(0);
+  });
+
+  it('sends nothing — the automatic upgrade included — when its own work does not verify', async () => {
+    const vault = vaultFor(USER_ID);
+    // A vault whose public key is not its private key's: the grant is sealed to
+    // one and cannot be opened by the other, which the verification finds.
+    vault.encPublicKey = generateEncryptionKeyPair().publicKey;
+    holdVaultKeys(vault);
+    responses.set(`GET ${BASE}/encryption-upgrade/material`, {
+      material: material({ secrets: [], deletedSecrets: [], keylessTokens: [] }),
+    });
+
+    const outcome = await runEncryptionUpgrade({
+      target: TARGET,
+      orgId: ORG_ID,
+      vault,
+      preview: preview({
+        liveSecretCount: 0,
+        versionCount: 0,
+        noteCount: 0,
+        deletedSecrets: [],
+        keylessTokens: [],
+        otherEntitledCount: 0,
+      }),
+      share: false,
+      automatic: true,
+    });
+    expect(outcome.status === 'failed' && outcome.error).toMatchObject({
+      reason: 'verification-failed',
+    });
+    expect(posted).toHaveLength(0);
+  });
+
+  describe('a response lost on the way back', () => {
+    function lostAnswer() {
+      responses.set(`POST ${BASE}/encryption-upgrade`, () => {
+        throw new ApiError({
+          code: 'network_error',
+          message: 'Could not reach xecret.',
+          status: 0,
+          requestId: null,
+        });
+      });
+    }
+
+    function keysSay(mode: 'server' | 'e2ee', keyId: () => string | null) {
+      responses.set(`GET ${BASE}/keys`, () => ({
+        keys: {
+          encryptionMode: mode,
+          environmentId: ENVIRONMENT_ID,
+          activeEdk: keyId() === null ? null : { id: keyId(), version: 1 },
+          myGrant: null,
+          ehkExists: mode === 'e2ee',
+          pendingGrants: null,
+          needsRotation: null,
+          missingGrants: null,
+          currentMaxSecretVersion: 0,
+        },
+      }));
+    }
+
+    const sentKeyId = () => (posted[0]!.body as UpgradeBody).envDataKeyId;
+
+    it('is an upgrade when the environment is now end-to-end encrypted under the key it sent', async () => {
+      const storage = stubStorage();
+      const vault = vaultFor(USER_ID);
+      holdVaultKeys(vault);
+      responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
+      lostAnswer();
+      keysSay('e2ee', sentKeyId);
+
+      const outcome = await runEncryptionUpgrade({
+        target: TARGET,
+        orgId: ORG_ID,
+        vault,
+        preview: preview(),
+        share: false,
+      });
+
+      expect(outcome).toMatchObject({
+        status: 'upgraded',
+        confirmedByKeyState: true,
+        result: {
+          activeEdk: { id: sentKeyId(), version: 1 },
+          secretCount: 2,
+          versionCount: 4,
+          noteCount: 1,
+          erasedSecretCount: 1,
+          revokedTokenCount: 1,
+        },
+      });
+      expect(
+        readModePins(window.localStorage as unknown as Storage)[modePinKey(TARGET)]?.mode,
+      ).toBe('e2ee');
+      expect(storage.size).toBe(1);
+    });
+
+    it('is the original failure — nothing changed — when the environment is still server-mode', async () => {
+      stubStorage();
+      const vault = vaultFor(USER_ID);
+      holdVaultKeys(vault);
+      responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
+      lostAnswer();
+      keysSay('server', () => null);
+
+      const outcome = await runEncryptionUpgrade({
+        target: TARGET,
+        orgId: ORG_ID,
+        vault,
+        preview: preview(),
+        share: true,
+      });
+      expect(outcome.status).toBe('failed');
+      expect(outcome.status === 'failed' && outcome.error).toBeInstanceOf(ApiError);
+      expect(outcome.status === 'failed' && nothingChanged(outcome.error)).toBe(true);
+    });
+
+    it('says somebody else’s upgrade won when it is end-to-end encrypted under another key', async () => {
+      stubStorage();
+      const vault = vaultFor(USER_ID);
+      holdVaultKeys(vault);
+      responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
+      lostAnswer();
+      const elsewhere = uuidv7();
+      keysSay('e2ee', () => elsewhere);
+
+      const outcome = await runEncryptionUpgrade({
+        target: TARGET,
+        orgId: ORG_ID,
+        vault,
+        preview: preview(),
+        share: true,
+      });
+      expect(outcome.status === 'failed' && outcome.error).toMatchObject({
+        reason: 'upgraded-elsewhere',
+      });
+    });
+
+    it('never says "nothing changed" when the key state cannot be read either', async () => {
+      const storage = stubStorage();
+      const vault = vaultFor(USER_ID);
+      holdVaultKeys(vault);
+      responses.set(`GET ${BASE}/encryption-upgrade/material`, { material: material() });
+      lostAnswer();
+      responses.set(`GET ${BASE}/keys`, () => {
+        throw new ApiError({
+          code: 'network_error',
+          message: 'Could not reach xecret.',
+          status: 0,
+          requestId: null,
+        });
+      });
+
+      const outcome = await runEncryptionUpgrade({
+        target: TARGET,
+        orgId: ORG_ID,
+        vault,
+        preview: preview(),
+        share: true,
+      });
+      expect(outcome.status === 'failed' && outcome.error).toMatchObject({ reason: 'unconfirmed' });
+      expect(outcome.status === 'failed' && nothingChanged(outcome.error)).toBe(false);
+      expect(storage.size).toBe(0);
+    });
   });
 });

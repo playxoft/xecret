@@ -23,10 +23,17 @@ import type { EnvironmentRef } from './env-keys';
 import {
   autoUpgradeEligible,
   fetchUpgradePreview,
+  nothingChanged,
   runEncryptionUpgrade,
   UpgradeRefusedError,
 } from './encryption-upgrade';
-import type { UpgradeOutcome, UpgradePreview, UpgradeStep } from './encryption-upgrade';
+import type {
+  UpgradeBlocker,
+  UpgradeDetails,
+  UpgradeOutcome,
+  UpgradePreview,
+  UpgradeStep,
+} from './encryption-upgrade';
 
 /**
  * What a `server`-mode environment shows about its encryption, and the way out
@@ -37,18 +44,22 @@ import type { UpgradeOutcome, UpgradePreview, UpgradeStep } from './encryption-u
  * is this encrypted under?" is asked; and above the environment's values, for
  * the people who can act on it, because that is the page they actually open.
  * The second is also where the **automatic upgrade** happens: an environment
- * with nothing in it — no secret, no deleted secret, no CI token — has nothing
- * to decide, so the first member who may upgrade it and opens it with an
- * unlocked vault upgrades it, without a dialog. That is what turns the empty
- * environments of the early sign-ups end-to-end encrypted as their owners next
- * look at them.
+ * with nothing in it — no secret, no deleted secret, no CI token — and nobody
+ * else who may read it has nothing to decide and nobody to lock out, so the
+ * member who may upgrade it upgrades it by opening it with an unlocked vault,
+ * without a dialog. That is what turns the empty environments of the early
+ * sign-ups end-to-end encrypted as their owners next look at them. Anywhere a
+ * teammate may read the environment, the dialog asks, and shares the key with
+ * them straight afterwards.
  *
  * ── Who sees what ──
  * Somebody who cannot manage the environment sees, on the settings card, the
  * one sentence that says what the server can read here, and nothing above the
  * values. Somebody who can sees the button — and, where the server says they
  * may not after all (no vault yet; CI tokens only an owner or admin may
- * revoke), why not.
+ * revoke; plaintext export disabled), why not. The server's answer comes from
+ * `GET …/encryption-upgrade`, which refuses nobody and records nothing, so
+ * asking it on every page view costs no audit noise and no rate limit.
  */
 export interface EncryptionUpgradePanelProps {
   target: EnvironmentRef;
@@ -92,7 +103,7 @@ export function EncryptionUpgradePanel({
   const [preview, setPreview] = useState<UpgradePreview | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [automatic, setAutomatic] = useState<'idle' | 'failed'>('idle');
+  const [automatic, setAutomatic] = useState<'idle' | 'failed' | 'unconfirmed'>('idle');
   const [attempt, setAttempt] = useState(0);
   const latestUpgraded = useRef(onUpgraded);
   useEffect(() => {
@@ -129,7 +140,7 @@ export function EncryptionUpgradePanel({
     vault !== null &&
     orgId !== null &&
     autoUpgradeEligible(preview, true) &&
-    automatic !== 'failed' &&
+    automatic === 'idle' &&
     !automaticFailures.has(key);
 
   useEffect(() => {
@@ -159,7 +170,7 @@ export function EncryptionUpgradePanel({
         return;
       }
       automaticFailures.add(key);
-      setAutomatic('failed');
+      setAutomatic(nothingChanged(outcome.error) ? 'failed' : 'unconfirmed');
     });
   }, [
     automaticRunning,
@@ -174,7 +185,12 @@ export function EncryptionUpgradePanel({
     toast,
   ]);
 
-  if (placement === 'banner' && (!canManage || previewFailed)) return null;
+  if (
+    placement === 'banner' &&
+    (!canManage || previewFailed || preview === null || preview.details === null)
+  ) {
+    return null;
+  }
 
   if (automaticRunning) {
     return (
@@ -188,11 +204,10 @@ export function EncryptionUpgradePanel({
   }
 
   const blockedReason =
-    preview === null || preview.mayUpgrade
+    preview === null || preview.canUpgrade
       ? null
-      : preview.blockedBy === 'no-vault'
-        ? 'Set up your vault first — the new key is sealed to it.'
-        : `It has ${pluralize(preview.keylessTokens.length, 'CI token')} that the upgrade revokes, and only an owner or an admin can revoke tokens.`;
+      : blockerSentence(preview.reasons, preview.details);
+  const details = preview?.details ?? null;
 
   return (
     <Alert
@@ -207,7 +222,13 @@ export function EncryptionUpgradePanel({
           : 'An owner or an admin of this environment can upgrade it to end-to-end encryption in place.'}
       </p>
 
-      {canManage && preview !== null ? (
+      {canManage && preview !== null && details === null && blockedReason !== null ? (
+        // The session thought this member could manage the environment; the
+        // server, which knows their grants and custom role, says otherwise.
+        <p className="text-fg-subtle mt-2 text-sm">{blockedReason}</p>
+      ) : null}
+
+      {canManage && preview !== null && details !== null ? (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <Button
             variant={placement === 'banner' ? 'primary' : 'secondary'}
@@ -218,7 +239,7 @@ export function EncryptionUpgradePanel({
               setAttempt((current) => current + 1);
               setDialogOpen(true);
             }}
-            disabled={!preview.mayUpgrade || vault === null || orgId === null}
+            disabled={!preview.canUpgrade || vault === null || orgId === null}
           >
             Upgrade to end-to-end encryption
           </Button>
@@ -228,17 +249,23 @@ export function EncryptionUpgradePanel({
             <span className="text-fg-subtle text-sm">
               The automatic upgrade did not finish. Nothing changed — upgrade it from here.
             </span>
+          ) : automatic === 'unconfirmed' ? (
+            <span className="text-fg-subtle text-sm">
+              The automatic upgrade was sent and its answer was lost. Reload the page to see whether
+              it landed before starting it again.
+            </span>
           ) : null}
         </div>
       ) : null}
 
-      {preview !== null && orgId !== null ? (
+      {preview !== null && details !== null && orgId !== null ? (
         <EncryptionUpgradeDialog
           target={target}
           orgId={orgId}
           environmentName={environmentName}
           isProduction={isProduction}
           preview={preview}
+          details={details}
           open={dialogOpen}
           onOpenChange={setDialogOpen}
           onUpgraded={() => {
@@ -249,6 +276,24 @@ export function EncryptionUpgradePanel({
       ) : null}
     </Alert>
   );
+}
+
+/** Why the button is disabled, in one sentence, from the server's stable reasons. */
+function blockerSentence(
+  reasons: readonly UpgradeBlocker[],
+  details: UpgradeDetails | null,
+): string {
+  if (reasons.includes('not-permitted') || reasons.includes('not-a-person')) {
+    return 'Upgrading it takes an admin of this environment.';
+  }
+  if (reasons.includes('no-vault')) return 'Set up your vault first — the new key is sealed to it.';
+  if (reasons.includes('export-policy')) {
+    return 'Plaintext export is disabled here, so upgrading it — which reads every value into your browser — takes an owner or admin of the organisation.';
+  }
+  if (reasons.includes('token-revoke')) {
+    return `It has ${pluralize(details?.keylessTokens.length ?? 0, 'CI token')} that the upgrade revokes, and only an owner or an admin can revoke tokens.`;
+  }
+  return 'It cannot be upgraded right now.';
 }
 
 const STEP_LABEL: Record<UpgradeStep, string> = {
@@ -266,6 +311,7 @@ interface EncryptionUpgradeDialogProps {
   environmentName: string;
   isProduction: boolean;
   preview: UpgradePreview;
+  details: UpgradeDetails;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onUpgraded: () => void;
@@ -283,6 +329,7 @@ function EncryptionUpgradeDialog({
   environmentName,
   isProduction,
   preview,
+  details,
   open,
   onOpenChange,
   onUpgraded,
@@ -332,8 +379,8 @@ function EncryptionUpgradeDialog({
     onUpgraded();
   }
 
-  const tokenCount = preview.keylessTokens.length;
-  const deletedCount = preview.deletedSecrets.length;
+  const tokenCount = details.keylessTokens.length;
+  const deletedCount = details.deletedSecrets.length;
 
   return (
     <Dialog
@@ -363,10 +410,10 @@ function EncryptionUpgradeDialog({
         <DialogBody className="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
           <ul className="text-fg flex list-disc flex-col gap-1.5 pl-5 text-sm">
             <li>
-              {pluralize(preview.liveSecretCount, 'secret')} —{' '}
-              {pluralize(preview.versionCount, 'version')} of history and{' '}
-              {pluralize(preview.noteCount, 'note')} — re-encrypted in this browser. Names, access,
-              policies and settings stay as they are.
+              {pluralize(details.liveSecretCount, 'secret')} —{' '}
+              {pluralize(details.versionCount, 'version')} of history and{' '}
+              {pluralize(details.noteCount, 'note')} — re-encrypted and checked in this browser.
+              Names, access, policies and settings stay as they are.
             </li>
             <li>
               Afterwards this browser shares the new key with everyone else who may read this
@@ -388,7 +435,7 @@ function EncryptionUpgradeDialog({
                 {tokenCount === 1 ? 'a new one' : 'new ones'} afterwards and update your CI.
               </p>
               <ul className="mt-2 flex flex-col gap-0.5">
-                {preview.keylessTokens.map((token) => (
+                {details.keylessTokens.map((token) => (
                   <li key={token.id} className="text-sm">
                     <span className="font-medium">{token.name}</span>{' '}
                     <code className="text-fg-subtle font-mono">{token.tokenPrefix}…</code>
@@ -408,7 +455,7 @@ function EncryptionUpgradeDialog({
                 cannot be re-encrypted, so the upgrade erases them for good, now.
               </p>
               <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
-                {preview.deletedSecrets.map((secret) => (
+                {details.deletedSecrets.map((secret) => (
                   <li key={secret.id} className="font-mono text-sm">
                     {secret.name}
                   </li>
@@ -444,14 +491,23 @@ function EncryptionUpgradeDialog({
           ) : null}
 
           {failure !== null ? (
-            <Alert tone="danger" title="The environment was not upgraded">
+            <Alert
+              tone="danger"
+              title={
+                nothingChanged(failure)
+                  ? 'The environment was not upgraded'
+                  : 'It is not known whether the upgrade landed'
+              }
+            >
               <p>
                 {failure instanceof UpgradeRefusedError ? failure.message : errorMessage(failure)}
               </p>
-              <p className="mt-1.5">
-                Nothing changed: the upgrade is written in one transaction, so it lands completely
-                or not at all.
-              </p>
+              {nothingChanged(failure) ? (
+                <p className="mt-1.5">
+                  Nothing changed: the upgrade is written in one transaction, so it lands completely
+                  or not at all.
+                </p>
+              ) : null}
               {isApiError(failure) && failure.requestId ? (
                 <p className="mt-1.5 text-sm">
                   Request id: <code className="font-mono select-all">{failure.requestId}</code>
@@ -476,7 +532,7 @@ function EncryptionUpgradeDialog({
             variant="primary"
             onClick={run}
             loading={running}
-            disabled={!preview.mayUpgrade || vault === null}
+            disabled={!preview.canUpgrade || vault === null}
           >
             Upgrade
           </Button>

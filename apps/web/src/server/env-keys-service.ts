@@ -697,6 +697,27 @@ export async function queueSharesForEntitledMembers(
 }
 
 /**
+ * How many principals other than `userId` may read this environment and would
+ * need its key — members by `can()`, and the service tokens that could be sealed
+ * to. The same computation a rotation is checked against.
+ *
+ * What decides whether an upgrade to end-to-end encryption may run without
+ * asking: an environment nobody else may read loses nobody's access when its
+ * only key is born in one browser, and one somebody else may read must go
+ * through the dialog, which shares the key straight afterwards.
+ */
+export async function countOtherEntitledPrincipals(
+  exec: Executor,
+  scope: EnvironmentScope,
+  userId: string,
+): Promise<number> {
+  const entitled = await entitledPrincipals(exec, scope);
+  return (
+    entitled.memberUserIds.filter((memberId) => memberId !== userId).length + entitled.tokens.length
+  );
+}
+
+/**
  * Who a client may seal this environment's key to, and who already holds it.
  *
  * ── The gap this closes ──

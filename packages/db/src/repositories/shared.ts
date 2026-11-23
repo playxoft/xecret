@@ -134,6 +134,23 @@ export function isConstraintViolation(error: unknown, code: string, constraint: 
   return false;
 }
 
+/**
+ * Whether a driver error is PostgreSQL abandoning a transaction to break a
+ * deadlock (`40P01`) or a serialisation failure (`40001`).
+ *
+ * Both mean the same thing to a caller: nothing this transaction wrote was
+ * committed, another transaction won, and running it again is correct. So they
+ * are answered as a retryable conflict rather than the 500 an unrecognised
+ * driver error becomes — which is what they used to be. Walks `cause` the way
+ * {@link isConstraintViolation} does, because drizzle wraps the driver's error.
+ */
+export function isTransactionRace(error: unknown): boolean {
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    if ('code' in current && (current.code === '40P01' || current.code === '40001')) return true;
+  }
+  return false;
+}
+
 export type RepositoryErrorCode =
   | 'conflict'
   | 'notFound'

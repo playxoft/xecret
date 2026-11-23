@@ -33,17 +33,23 @@ import {
 const UNEXPECTED_FIELD = 'The request contains a field this endpoint does not accept.';
 
 /**
- * The most secrets one upgrade may carry: the largest environment any plan
- * allows (`secretsPerEnvironment`, 25,000), so no environment is too big by
- * count. What actually binds is the body size — see `MAX_UPGRADE_BODY_BYTES`.
+ * The most versions one upgrade rewrites, and therefore the most secrets.
+ *
+ * The rewrite is set-based (ten statements for the full five thousand — see
+ * `reencryptVersionsInPlace`), but it is one transaction holding the
+ * environment's rows, and the material read that feeds it decrypts every
+ * version in one Worker request. Five thousand is many times the largest
+ * environment this deployment has ever held; one that exceeds it is refused,
+ * whole and with nothing changed, and is a conversation with support rather
+ * than a transaction that runs for a minute.
  */
-export const MAX_UPGRADE_SECRETS = 25_000;
+export const MAX_UPGRADE_VERSIONS = 5_000;
 
-/** The most versions one upgrade rewrites. Each is one UPDATE inside one transaction. */
-export const MAX_UPGRADE_VERSIONS = 50_000;
+/** Every secret carries at least one version, so this can never bind first. */
+export const MAX_UPGRADE_SECRETS = MAX_UPGRADE_VERSIONS;
 
 /** Deleted secrets and keyless tokens an upgrade names. Bounded like any list. */
-const MAX_UPGRADE_SIDE_EFFECTS = 25_000;
+const MAX_UPGRADE_SIDE_EFFECTS = 5_000;
 
 /**
  * The request ceiling for the upgrade, above the 1 MB every other route keeps.
@@ -127,12 +133,24 @@ export const encryptionUpgradeBody = z.strictObject(
 export type EncryptionUpgradeBody = z.infer<typeof encryptionUpgradeBody>;
 
 /**
- * `GET …/encryption-upgrade`: what an upgrade would do, and whether this caller
- * may do it. Counts and names — never a value, never a note.
+ * Why a caller cannot upgrade an environment, in stable words a client can
+ * branch on.
+ *
+ *  - `already-e2ee` — there is nothing to upgrade.
+ *  - `not-a-person` — a token; the key has to be made in a browser.
+ *  - `not-permitted` — not `admin` on the environment, or a custom role without
+ *    one of the secret actions an upgrade performs.
+ *  - `no-vault` — nothing to seal the new key to yet.
+ *  - `token-revoke` — CI tokens would be revoked, and that is an owner's or an
+ *    admin's act.
+ *  - `export-policy` — plaintext export is disabled here, which reserves the
+ *    upgrade's plaintext read for an owner or admin of the organisation.
  */
-export interface EncryptionUpgradePreview {
-  encryptionMode: 'server';
-  environmentId: string;
+export type UpgradeBlocker =
+  'already-e2ee' | 'not-a-person' | 'not-permitted' | 'no-vault' | 'token-revoke' | 'export-policy';
+
+/** What an upgrade would do. Counts and names — never a value, never a note. */
+export interface EncryptionUpgradeDetails {
   liveSecretCount: number;
   versionCount: number;
   noteCount: number;
@@ -141,17 +159,38 @@ export interface EncryptionUpgradePreview {
   /** Revoked by the upgrade: nothing can be sealed to a token with no key half. */
   keylessTokens: { id: string; name: string; tokenPrefix: string }[];
   /**
-   * Whether this caller may perform it: a person with a vault, `admin` on the
-   * environment, and — only when there are keyless tokens to revoke —
-   * `token.revoke`. The POST asks the same questions again.
+   * Members other than the caller, and sealable tokens, who may read the
+   * environment — everybody the new key has to be shared with afterwards. An
+   * upgrade runs without asking only when this is zero.
    */
-  mayUpgrade: boolean;
-  /** Why not, in one stable word, when `mayUpgrade` is false. */
-  blockedBy: 'no-vault' | 'token-revoke' | null;
+  otherEntitledCount: number;
+}
+
+/**
+ * `GET …/encryption-upgrade`: whether this caller can upgrade, why not, and —
+ * for a caller who holds the upgrade's permissions — what it would do.
+ *
+ * Always a 200 for a member of the environment, never a refusal: the dashboard
+ * asks it on every view of a `server`-mode environment, and "you cannot do
+ * this" is an answer, not an event worth auditing.
+ */
+export interface EncryptionUpgradePreview {
+  encryptionMode: 'server' | 'e2ee';
+  environmentId: string;
+  canUpgrade: boolean;
+  /** Empty when `canUpgrade`. */
+  reasons: UpgradeBlocker[];
+  /**
+   * `null` for a caller without the upgrade's permissions: the token names and
+   * deleted-secret names it carries are not theirs to read.
+   */
+  details: EncryptionUpgradeDetails | null;
 }
 
 /** `GET …/encryption-upgrade/material`: every value the browser re-encrypts. */
 export interface EncryptionUpgradeMaterial {
+  /** The first component of every AAD the browser builds — checked against its own. */
+  orgId: string;
   environmentId: string;
   secrets: {
     id: string;
