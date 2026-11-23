@@ -205,12 +205,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do you have SOC 2 or ISO 27001?',
         answer:
-          'No. xecret holds no compliance certification of any kind, and inventing one on a secrets product would be the worst thing we could ship. What exists instead is public: the source, the threat model, the licence and the self-hosting instructions.',
+          'Not today: xecret does not hold a SOC 2 or ISO 27001 certification, and we do not imply otherwise. What a security review can verify instead is public — the source, the encryption specification, the threat model and the security page — and a data processing agreement is available on request.',
       },
       {
         question: 'Is xecret production-ready?',
         answer:
-          'Yes — xecret is generally available. It has not had an external security review and holds no certification, so judge it by what is public instead: the source, the threat model and the trust model. As with any provider, keep a break-glass copy of credentials you cannot afford to lose access to.',
+          'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production locked down by default, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship, and Enterprise agreements add an SLA.',
       },
       {
         question: 'How do I report a vulnerability?',
@@ -246,7 +246,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What does xecret cost?',
         answer:
-          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 3 organisations, 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
+          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 3 organisations, 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always.',
       },
       {
         question: 'Do I need a card to try it?',
@@ -405,8 +405,8 @@ const CATEGORIES: readonly FaqCategory[] = [
         <Link href="/docs/self-hosting" className={INLINE_LINK}>
           self-hosting
         </Link>{' '}
-        has a page of its own — including the dependency list we would rather you read before you
-        start than discover halfway through.
+        has a page of its own, with every dependency listed up front so a deployment can be planned
+        end to end.
       </>
     ),
     items: [
@@ -477,7 +477,7 @@ export default async function FaqPage() {
       <PageHero
         eyebrow="Frequently asked"
         title="The questions you ask before you trust a secrets manager."
-        description={`${allQuestions.length} answers about how xecret works, what it costs, what it can see and what happens when you leave — including the several where the honest answer is no.`}
+        description={`${allQuestions.length} answers about how xecret works, what it costs, what it can see and what happens when you leave.`}
       >
         {/* Plain `#` anchors rather than a scroll-spy component. Six categories
             is exactly the length at which a reader wants to jump, and an anchor

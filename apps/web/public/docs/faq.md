@@ -170,11 +170,12 @@ unencumbered so it can ship inside your Docker images without licence friction.
 
 ### Is it production-ready?
 
-Yes — xecret is **generally available**. It has not had an external security
-review and holds no certification, so judge it by what is public: the source,
-the threat model and [the trust model](security/trust-model.md). As with any
-provider, keep a break-glass copy of credentials you cannot afford to lose
-access to.
+Yes. xecret is built for production credentials: end-to-end encryption with a
+published specification, production locked down by default, scoped and
+revocable CI tokens, an append-only audit log, and an offline cache that keeps
+a local run going through a network outage. Breaking changes are announced
+before they ship, and Enterprise agreements add an SLA. See
+[security at xecret](/security) and [the trust model](security/trust-model.md).
 
 ## Comparisons
 

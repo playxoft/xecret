@@ -361,12 +361,12 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What does xecret cost?',
     answer:
-      'No card is collected today, and each plan’s limits apply now. The free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
+      'No card is collected today, and each plan’s limits apply now. The free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always.',
     // The copy for a deployment that does not take payments (P12).
     whenPaymentsLive: {
       question: 'What does xecret cost?',
       answer:
-        'The free tier is $0 forever and never asks for a card: 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record. Self-hosting is free, always.',
+        'The free tier is $0 forever and never asks for a card: 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record. Self-hosting is free, always.',
     },
   },
 ];
@@ -543,9 +543,9 @@ export default async function FeaturesPage() {
         <SectionHeading
           align="center"
           headingId="comparison-heading"
-          eyebrow="The honest comparison"
+          eyebrow="Side by side"
           title="xecret against the .env file in your repository"
-          description="Seven axes, including the last one, where the file you already have is the better answer and we are not going to pretend otherwise."
+          description="Seven axes, from where a value lives to who can read it."
         />
 
         <Reveal className="mt-12">

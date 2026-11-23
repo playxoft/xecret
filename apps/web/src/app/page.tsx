@@ -101,8 +101,8 @@ const STEPS = [
 const FEATURES = [
   {
     Icon: KeyIcon,
-    title: 'A key per environment',
-    body: 'Development, staging and production never share a data key, and each key is generated on your device and shared only with the people you choose. Compromising one environment does not hand over the others.',
+    title: 'End-to-end encrypted',
+    body: 'Every environment has its own data key, generated on your device and shared only with the people and CI tokens you choose — never with us. Development, staging and production never share a key.',
   },
   {
     Icon: TerminalIcon,
@@ -216,7 +216,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What happens if xecret is down when I need to deploy?',
     answer:
-      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working. For a deploy, the honest answer for any hosted service is to hold a break-glass copy of your production credentials somewhere you control, and to treat any single provider — us included — as something that can fail.',
+      'xecret runs on Cloudflare’s global network, and the CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working even when the network does not. For deploys, keep a break-glass copy of your most critical credentials somewhere you control — good practice with any provider.',
   },
   {
     question: 'Is it really open source, or is the useful half proprietary?',
@@ -226,18 +226,18 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What does it cost?',
     answer:
-      'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. No card is collected today, and each plan’s limits apply now.',
+      'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free and unlimited. No card is collected today, and each plan’s limits apply now.',
     // The copy for a deployment that does not take payments (P12).
     whenPaymentsLive: {
       question: 'What does it cost?',
       answer:
-        'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free and unlimited. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record.',
+        'The free tier is free forever: one organisation, five projects, three members, three environments per project, and seven days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for three organisations, twenty-five projects, ten environments per project, unlimited members and thirty days of history. Team is $12 billed yearly, or $19 month to month, and adds ten organisations, a hundred projects, twenty-five environments per project, a hundred and eighty days of history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free and unlimited. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record.',
     },
   },
   {
     question: 'Is xecret ready for production?',
     answer:
-      'Yes — xecret is generally available. The encryption, the audit log, the CLI and self-hosting are all in use today. Two things to know before you move production credentials: there is no SLA below an Enterprise agreement, and there has been no external security audit yet, so the source and the threat model are public for you to judge instead. Keep a break-glass copy of anything you cannot afford to lose, as you would with any provider.',
+      'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production locked down by default, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship, and Enterprise agreements add an SLA.',
   },
 ];
 
@@ -294,7 +294,7 @@ export default async function LandingPage() {
           <div>
             <span className="border-line bg-surface/60 text-fg-muted inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium backdrop-blur">
               <ShieldCheckIcon className="size-3.5" />
-              Open source · Encrypted per environment · Audited
+              Open source · End-to-end encrypted · Audited
             </span>
 
             {/* Display type: the size is the whole hierarchy on this page —
@@ -308,9 +308,9 @@ export default async function LandingPage() {
               Stop shipping secrets in .env files.
             </h1>
             <p className="text-fg-muted mt-6 max-w-xl text-base leading-8 text-pretty sm:text-[1.125rem]">
-              xecret stores your environment variables once, encrypted per environment, and injects
-              them into whatever you are running — locally, in CI, in production. No file on disk,
-              no credentials in Slack, no &ldquo;works on my machine&rdquo;.
+              xecret stores your environment variables once, end-to-end encrypted, and injects them
+              into whatever you are running — locally, in CI, in production. No file on disk, no
+              credentials in Slack, no &ldquo;works on my machine&rdquo;.
             </p>
 
             <div className="mt-9 flex flex-wrap items-center gap-3">
@@ -636,6 +636,10 @@ export default async function LandingPage() {
               The audit log
               <ArrowRightIcon className="size-3.5" />
             </Link>
+            <Link href="/security" className={QUIET_LINK}>
+              Security at xecret
+              <ArrowRightIcon className="size-3.5" />
+            </Link>
           </div>
         </Reveal>
       </Section>
@@ -666,9 +670,9 @@ export default async function LandingPage() {
             <h3 className="text-fg text-base font-semibold">Run it yourself</h3>
             <p className="text-fg-muted mt-2 text-sm leading-6">
               Cloudflare Workers, a Neon or vanilla PostgreSQL database, and your own WorkOS account
-              for identity. The self-hosting guide states the real dependency list plainly —
-              including the parts that are friction — because an open-source secrets manager that
-              hides its operational cost is not being honest about the one thing it sells.
+              for identity. The self-hosting guide lists every dependency and every step, so you can
+              plan a deployment end to end before you start — with nothing held back from the build
+              you run.
             </p>
           </div>
         </RevealGroup>

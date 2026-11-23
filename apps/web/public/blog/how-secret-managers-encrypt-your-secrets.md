@@ -245,7 +245,7 @@ that replaces the `.env` file: values stored once per environment, injected by
 `xecret run`, with an append-only audit log of every read. It is model (b) —
 end-to-end encrypted, with keys held on your devices, so we cannot decrypt —
 and its limits are in our own documentation rather than buried in an FAQ.
-Generally available, AGPL-3.0 server, MIT CLI, byte-level crypto spec and threat
-model in the repository. If the questions above
+AGPL-3.0 server, MIT CLI, byte-level crypto spec and threat model in the
+repository. If the questions above
 lead you elsewhere, that is a good outcome; the
 [quickstart](/docs/quickstart) is here if they do not.

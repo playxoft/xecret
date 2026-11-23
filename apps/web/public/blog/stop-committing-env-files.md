@@ -219,8 +219,8 @@ This is the product pitch, kept in its own section so you can skip it. xecret
 is open-source secret management built around one command: you store
 environment variables once, per environment, and `xecret run` injects them into
 whatever you were going to run anyway — locally, in CI, in production. The
-server is AGPL-3.0 and self-hosting holds nothing back; the CLI is MIT. It is
-generally available, and the [pricing page](/pricing) sets out what
+server is AGPL-3.0 and self-hosting holds nothing back; the CLI is MIT. The
+[pricing page](/pricing) sets out what
 each plan includes and what, if anything, it costs on the day you read this. If
 it turns out not to be for you, the `.gitignore` block
 above is still worth ten minutes of your afternoon.

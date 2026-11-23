@@ -254,7 +254,7 @@ environment, and `xecret run` injects them into whatever your pipeline was going
 to run anyway. In CI that means a service token in your provider's secret store,
 no login step, no config file, no plaintext on the runner's disk, and one audit
 row per read. The token carries its own key, so the values are decrypted on the
-runner — our servers only ever hold ciphertext. It is generally available, and the server is AGPL-3.0 if you would
-rather run it yourself. If you take nothing else from this article, take the
+runner — our servers only ever hold ciphertext. The server is AGPL-3.0 if you
+would rather run it yourself. If you take nothing else from this article, take the
 SHA pins and the second token — both are free, and both are worth having before
 you need them.

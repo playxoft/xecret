@@ -236,6 +236,6 @@ is no file to commit and every read is audited — see
 own machine before they are sent, so we cannot read them — the
 [trust model](/docs/security/trust-model) says exactly what we can see instead,
 and where the guarantee stops.
-It is generally available; [the pricing page](/pricing) says what each plan includes and
+[The pricing page](/pricing) says what each plan includes and
 what, if anything, it costs on the day you read this, and
 [the feature set](/features) is public before you decide.
