@@ -70,7 +70,7 @@ import { takesPayments } from '@/server/billing/payments-live';
 
 const TITLE = 'About: open-source secret management from Playxoft';
 const DESCRIPTION =
-  'xecret is open-source secret management from Playxoft — an AGPL-3.0 server, an MIT CLI, and a trust model we state plainly. What is built, what is not.';
+  'xecret is open-source secret management from Playxoft — an AGPL-3.0 server, an MIT CLI, and end-to-end encryption you can verify. What ships today, and what is next.';
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -157,7 +157,7 @@ const PRINCIPLES = [
     icon: BoxIcon,
     title: 'Self-hosting is a path, not a punishment',
     body: 'The self-hosted server is the same server, with no feature held back and no licence key gating a build you compiled yourself. The guide states the real dependency list, including the parts that are friction.',
-    cost: 'Every self-hosted install is a team we never bill. We would rather have the install and the scrutiny that comes with it.',
+    cost: 'Every self-hosted install is a team we never bill. We want the install, and the scrutiny that comes with it.',
   },
   {
     icon: AlertTriangleIcon,
@@ -255,12 +255,12 @@ const MILESTONES = [
   {
     state: 'shipped',
     title: 'Browser-side .env import',
-    body: 'The file you already have is parsed in your tab rather than uploaded, so a pasted blob of production credentials never becomes a request body.',
+    body: 'Into an end-to-end encrypted environment, the file you already have is parsed and encrypted in your tab, so your production credentials never reach us in plaintext.',
   },
   {
     state: 'shipped',
-    title: 'A self-hosting guide that states the real cost',
-    body: 'Cloudflare Workers, a PostgreSQL database and your own WorkOS account for sign-in, written out with the parts that are friction left in. An open-source secrets manager that hides its operational cost is not being honest about the one thing it sells.',
+    title: 'A complete self-hosting guide',
+    body: 'Cloudflare Workers, a PostgreSQL database and your own WorkOS account for sign-in, with every dependency and every step written out, so a deployment can be planned end to end before it starts.',
   },
   {
     state: 'progress',
@@ -270,7 +270,7 @@ const MILESTONES = [
   {
     state: 'progress',
     title: 'Hardening, continuously',
-    body: 'Key rotation and the recovery ceremony rehearsed rather than merely documented, and the threat model kept level with the code instead of a release behind it. Being generally available does not end this work; it is what keeps the label honest.',
+    body: 'Key rotation and the recovery ceremony rehearsed rather than merely documented, and the threat model kept level with the code instead of a release behind it. Security work is never finished, so this column never empties.',
   },
   {
     state: 'next',
@@ -284,7 +284,7 @@ const MILESTONES = [
     // "Add-on, coming soon" in the one column that buys SAML per connection,
     // because there it is both unbuilt and separately charged. SCIM is included
     // with Enterprise, so it carries the plain chip everywhere it appears.
-    body: 'SAML single sign-on is named on the pricing page as a per-connection add-on from Team, and as included with Enterprise. SCIM provisioning is included with Enterprise and not sold below it. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
+    body: 'SAML single sign-on is named on the pricing page as a per-connection add-on from Team, and as included with Enterprise. SCIM provisioning is included with Enterprise and not sold below it. Both are on the roadmap, and the comparison table marks them that way in the row itself. Roles and per-environment access are in the product today.',
   },
   {
     state: 'next',
@@ -315,7 +315,7 @@ const STACK = [
   {
     role: 'Identity',
     name: 'WorkOS for identity',
-    body: 'Sign-in, password reset and email verification are solved problems with a long tail of abuse cases, and we would rather trust an implementation that has already met them all. WorkOS AuthKit checks who you are and sees your email address, your name and your sign-in events — never a secret — and xecret then issues its own session, which you can list and revoke. The cost is honest: a self-hosted install needs its own WorkOS account.',
+    body: 'Sign-in, password reset and email verification are solved problems with a long tail of abuse cases, so xecret relies on an implementation that has already met them all. WorkOS checks who you are and sees your email address, your name and your sign-in events — never a secret — and xecret then issues its own session, which you can list and revoke. A self-hosted install uses its own WorkOS account.',
   },
   {
     role: 'Client',
@@ -333,7 +333,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Who is behind xecret?',
     answer:
-      'Playxoft, a small software company. There is no funding announcement to point at and no customer logos to show you. What there is, is a public repository, two real licences, a written threat model and a self-hosting guide — all of which you can read before you trust any of it.',
+      'Playxoft Studios Private Limited, a software company registered in India. xecret is built in the open: the repository, the licences, the encryption specification and the threat model are all public, so you can verify how your secrets are protected before you store one.',
   },
   {
     question: 'Is xecret really open source, or is it open core?',
@@ -353,17 +353,17 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'How do you make money?',
     answer:
-      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. No card is collected today, and each plan’s limits apply now.',
+      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always. No card is collected today, and each plan’s limits apply now.',
     whenPaymentsLive: {
       question: 'How do you make money?',
       answer:
-        'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record.',
+        'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always. Paid plans are bought from an organisation’s billing page, through Dodo Payments, our merchant of record.',
     },
   },
   {
     question: 'Is xecret production-ready?',
     answer:
-      'Yes — xecret is generally available. Be clear about what that means: there is no uptime commitment below an Enterprise agreement, there has been no external security audit yet, and breaking changes are announced in advance wherever we reasonably can rather than never made. The source and the threat model are public so you can judge the rest yourself, and a break-glass copy of your most important credentials is good practice with any provider.',
+      'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production closed to developers by default on Team and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship wherever we reasonably can, and an Enterprise agreement can add an SLA.',
   },
 ];
 
@@ -411,7 +411,7 @@ export default async function AboutPage() {
         height="screen"
         eyebrow="About xecret"
         title="We built the secret manager we wanted to be able to audit."
-        description="xecret is open-source secret management from Playxoft, generally available today. The server is AGPL-3.0, the CLI is MIT, and the trust model is a document you can read before you trust a line of it."
+        description="xecret is open-source secret management from Playxoft. Your secrets are end-to-end encrypted, the server is AGPL-3.0, the CLI is MIT, and the security model is documented down to the byte."
       >
         {/* Two secondary actions and no primary, deliberately. This page's job
             is to be believed rather than to convert; the ask is at the foot,
@@ -528,11 +528,11 @@ export default async function AboutPage() {
                   >
                     {PUBLISHER.name}
                   </a>
-                  , a small software company, and it is built so that you never have to trust us
-                  with a value. Secrets are encrypted on your device and shared only with the
-                  teammates and tokens you choose; we store ciphertext we cannot open. The price is
-                  a master passphrase and a set of recovery codes that are yours to keep, because
-                  there is no copy on our side to fall back on.
+                  , and it is built so that you never have to trust anyone with a value — including
+                  us. Secrets are encrypted on your device and shared only with the teammates and
+                  tokens you choose; we store ciphertext we cannot open. The price is a master
+                  passphrase and a set of recovery codes that are yours to keep, because there is no
+                  copy on our side to fall back on.
                 </p>
               </div>
             </div>
@@ -638,9 +638,9 @@ export default async function AboutPage() {
         <SectionHeading
           align="center"
           headingId="status-heading"
-          eyebrow="Where we are"
-          title="Generally available, and here is exactly what that covers."
-          description="Shipped, in progress, next. Nothing on this board is dated, because a date we cannot support is worse than no date at all."
+          eyebrow="Roadmap"
+          title="What ships today, and what comes next."
+          description="Everything under Shipped is in the product now. Nothing on this board carries a date: work is announced when it ships."
         />
 
         <RevealGroup className="mt-12 grid gap-10 lg:grid-cols-4 lg:gap-8">
@@ -686,8 +686,8 @@ export default async function AboutPage() {
 
         <Reveal className="mx-auto mt-12 max-w-2xl">
           <p className="text-fg-muted text-center text-sm leading-7">
-            Generally available means a breaking change is announced before it ships wherever we
-            reasonably can, rather than sprung on you. What changed and why goes up on{' '}
+            Breaking changes are announced before they ship wherever we reasonably can. What changed
+            and why goes up on{' '}
             <Link href="/blog" className={QUIET_LINK}>
               the xecret blog
             </Link>{' '}

@@ -240,5 +240,5 @@ patterns, [the quickstart](/docs/quickstart) is five minutes, and the
 see. Values are end-to-end encrypted, so the short answer is that we cannot read
 them — although, as this article has spent its length explaining, a
 `NEXT_PUBLIC_` value stops being secret the moment it is built into a bundle.
-It is generally available; [the pricing page](/pricing) says what each plan includes and
+[The pricing page](/pricing) says what each plan includes and
 what, if anything, it costs on the day you read this.

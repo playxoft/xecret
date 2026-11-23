@@ -32,7 +32,7 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: availability and change, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-11-22';
+const UPDATED = '2026-11-23';
 /**
  * The day it was written: this version names the company and how to reach it,
  * and describes the end-to-end encryption already in the product — neither
@@ -40,7 +40,7 @@ const UPDATED = '2026-11-22';
  * change. The version before it — 3 November 2026, the plan limits — took
  * effect on its publication, and §Changes still says so.
  */
-const EFFECTIVE: string | null = '2026-11-22';
+const EFFECTIVE: string | null = '2026-11-23';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -229,7 +229,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       id: 'availability',
       heading: 'Availability and change',
       paragraphs: [
-        'xecret is generally available. This section is what that does, and does not, promise.',
+        'This section sets out what we promise about availability and change, and what we do not.',
         [
           <>
             <strong className="text-fg font-medium">No SLA</strong> unless an Enterprise agreement
@@ -424,16 +424,15 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
         <>
-          The version of 22 November 2026 is not a material change. It names the company you are
+          The version of 23 November 2026 is not a material change. It names the company you are
           agreeing with and how to reach it, and it names the law and the courts the version before
           it already pointed to without naming them: the law of India, where that company is
           established, and the courts at Kanchipuram, where its registered office is. It describes
-          xecret as the generally available service it now is, and adds two things we owe you: we
-          announce a breaking change, and the removal of a feature, before it happens wherever we
-          reasonably can. It describes the end-to-end encryption the product already uses, which
-          narrows what we are able to read rather than widening it. Nothing you owe us has changed,
-          and neither has your right to the protection of the law where you live, or to bring
-          proceedings there.
+          the service as it stands today, and adds two things we owe you: we announce a breaking
+          change, and the removal of a feature, before it happens wherever we reasonably can. It
+          describes the end-to-end encryption the product already uses, which narrows what we are
+          able to read rather than widening it. Nothing you owe us has changed, and neither has your
+          right to the protection of the law where you live, or to bring proceedings there.
         </>,
         <>
           The version of 3 November 2026 was a change made without that notice, and took effect on

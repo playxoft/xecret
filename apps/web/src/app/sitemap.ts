@@ -28,16 +28,17 @@ import { absoluteUrl } from '@/lib/site';
 
 /** Pages written as components rather than markdown. */
 const STATIC_PAGES = [
-  { path: '/', lastModified: '2026-08-16', changeFrequency: 'weekly', priority: 1 },
-  { path: '/features', lastModified: '2026-08-16', changeFrequency: 'weekly', priority: 0.9 },
-  { path: '/pricing', lastModified: '2026-08-16', changeFrequency: 'weekly', priority: 0.9 },
+  { path: '/', lastModified: '2026-11-23', changeFrequency: 'weekly', priority: 1 },
+  { path: '/features', lastModified: '2026-11-23', changeFrequency: 'weekly', priority: 0.9 },
+  { path: '/pricing', lastModified: '2026-11-23', changeFrequency: 'weekly', priority: 0.9 },
   { path: '/docs', lastModified: '2026-08-16', changeFrequency: 'weekly', priority: 0.9 },
   { path: '/blog', lastModified: '2026-08-16', changeFrequency: 'daily', priority: 0.8 },
-  { path: '/faq', lastModified: '2026-08-16', changeFrequency: 'monthly', priority: 0.8 },
-  { path: '/about', lastModified: '2026-08-16', changeFrequency: 'monthly', priority: 0.7 },
+  { path: '/faq', lastModified: '2026-11-23', changeFrequency: 'monthly', priority: 0.8 },
+  { path: '/about', lastModified: '2026-11-23', changeFrequency: 'monthly', priority: 0.7 },
+  { path: '/security', lastModified: '2026-11-23', changeFrequency: 'monthly', priority: 0.7 },
   { path: '/contact', lastModified: '2026-09-24', changeFrequency: 'yearly', priority: 0.6 },
-  { path: '/privacy', lastModified: '2026-08-16', changeFrequency: 'yearly', priority: 0.3 },
-  { path: '/terms', lastModified: '2026-11-03', changeFrequency: 'yearly', priority: 0.3 },
+  { path: '/privacy', lastModified: '2026-11-22', changeFrequency: 'yearly', priority: 0.3 },
+  { path: '/terms', lastModified: '2026-11-23', changeFrequency: 'yearly', priority: 0.3 },
 ] as const;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {

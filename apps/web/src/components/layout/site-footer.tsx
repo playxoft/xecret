@@ -50,7 +50,7 @@ const COMPANY = [
 const LEGAL = [
   { href: '/privacy', label: 'Privacy policy' },
   { href: '/terms', label: 'Terms of service' },
-  { href: '/docs/security/trust-model', label: 'Security' },
+  { href: '/security', label: 'Security' },
 ] as const;
 
 const LINK_CLASS = 'text-fg-muted hover:text-fg rounded-sm text-sm transition-colors';

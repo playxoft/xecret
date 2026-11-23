@@ -2149,7 +2149,7 @@ export default async function PricingPage() {
           // Counted, not stated. The prose said "nine" against a list of
           // thirteen, which is the kind of number that is wrong the first time
           // somebody adds a question and right again only by accident.
-          description={`The ${PRICING_FAQ.length} that decide whether a price is workable, answered including the several where the honest answer is that it is not built yet.`}
+          description={`The ${PRICING_FAQ.length} that decide whether a price is workable, answered in full, including what is on the roadmap.`}
         />
 
         <Faq items={faq} className="mx-auto mt-10 max-w-3xl" />

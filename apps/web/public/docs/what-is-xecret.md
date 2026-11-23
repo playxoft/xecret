@@ -87,10 +87,10 @@ environment names, who is a member, and the audit log of who read what. The
 details, and the limits of the guarantee, are in
 [what xecret can and cannot see](security/trust-model.md).
 
-> **Note** — xecret is generally available. There is no SLA below an
-> Enterprise agreement and there has been no external security audit yet;
-> [the trust model](security/trust-model.md) says exactly what the service can
-> and cannot see.
+> **Note** — For how xecret protects your data end to end — encryption, access
+> control, the audit log and vulnerability disclosure — see
+> [security at xecret](/security). [The trust model](security/trust-model.md)
+> says exactly what the service can and cannot see.
 
 ## What to read next
 
