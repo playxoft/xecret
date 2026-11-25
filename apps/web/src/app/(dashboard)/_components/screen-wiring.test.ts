@@ -157,6 +157,33 @@ describe('the environment switcher', () => {
   });
 });
 
+describe('the first personal override is set from the environment’s menu', () => {
+  // The card is drawn only once there is an override in it, so the way to the
+  // first one is the "Changes" menu, opening the dialog the card owns.
+  const screen = source('./environment-screen.tsx');
+
+  it('offered in every end-to-end encrypted environment', () => {
+    expect(screen).toMatch(/const offersOverride = keyFacts\?\.encryptionMode === 'e2ee';/);
+    expect(screen).toMatch(/\{canChangeInBulk \|\| offersOverride \? \(/);
+    expect(screen).toMatch(
+      /\{offersOverride \? \([\s\S]*?<DropdownMenuItem onSelect=\{\(\) => setOverrideFor\(''\)\}>[\s\S]*?Set a personal override…/,
+    );
+  });
+
+  it('opening the set dialog the card owns', () => {
+    const card = screen.slice(screen.indexOf('<OverridesCard'));
+    expect(attribute(card, 'setting')).toBe('overrideFor');
+    expect(attribute(card, 'onSettingChange')).toBe('setOverrideFor');
+    // And the dialog is mounted whether the card is drawn or not.
+    const component = source('../../../components/overrides/overrides-card.tsx');
+    const body = component.slice(component.indexOf('export function OverridesCard'));
+    expect(body.indexOf('{shown ? (')).toBeGreaterThan(-1);
+    expect(body.indexOf('<Dialog')).toBeGreaterThan(body.indexOf('</Card>'));
+    expect(body.indexOf('<ConfirmDialog')).toBeGreaterThan(body.indexOf('</Card>'));
+    expect(attribute(body, 'open')).toBe('setting !== null');
+  });
+});
+
 describe('the account menu offers the plans of the organisation on screen', () => {
   // The shell builds the link from the slug the switcher names — so "Upgrade
   // plan" can never open another tenant's plans — and hands it to the menu

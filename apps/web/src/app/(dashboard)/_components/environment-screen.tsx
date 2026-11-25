@@ -14,10 +14,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   HistoryIcon,
   LayersIcon,
   SettingsIcon,
+  UserIcon,
 } from '@/components/ui';
 import { PromoteDialog } from '@/components/changes/promote-dialog';
 import { RestorePointDialog } from '@/components/changes/restore-point-dialog';
@@ -155,10 +158,21 @@ export function EnvironmentScreen({
     next: readonly string[];
     closing: string;
   } | null>(null);
+  /**
+   * The personal-override dialog's name — `''` for a new one — or `null`.
+   *
+   * Held here because the "My overrides" card is drawn only once there is an
+   * override to show, so the first one is set from this screen's menu; the
+   * card's own buttons open the same dialog through the same state. Closed on a
+   * change of environment with the rest, so a value typed for staging can never
+   * be saved as production's.
+   */
+  const [overrideFor, setOverrideFor] = useState<string | null>(null);
   if (comparedFor !== envSlug) {
     setComparedFor(envSlug);
     if (compared.length > 0) setCompared([]);
     if (pendingCompared !== null) setPendingCompared(null);
+    if (overrideFor !== null) setOverrideFor(null);
   }
 
   const comparedSet = useMemo(() => new Set(compared), [compared]);
@@ -246,6 +260,14 @@ export function EnvironmentScreen({
    */
   const canChangeInBulk = material !== null && organization !== null;
 
+  /**
+   * Offered in every end-to-end encrypted environment — the only kind an
+   * override exists for. The plan, the vault and the key state are the
+   * dialog's to explain, so somebody who cannot set one yet finds out why
+   * rather than finding nothing.
+   */
+  const offersOverride = keyFacts?.encryptionMode === 'e2ee';
+
   /** A write this table did not make — see `externalWrites`. */
   function wroteElsewhere() {
     setExternalWrites((current) => current + 1);
@@ -291,10 +313,11 @@ export function EnvironmentScreen({
           }
           actions={
             <>
-              {canChangeInBulk ? (
+              {canChangeInBulk || offersOverride ? (
                 // Two acts on the whole environment, behind one control: both
                 // rewrite many secrets at once, both preview before they write,
-                // and neither is something a person reaches for every day.
+                // and neither is something a person reaches for every day. And
+                // one act on nobody's values but yours, set apart beneath them.
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="secondary" size="sm">
@@ -304,14 +327,32 @@ export function EnvironmentScreen({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent>
-                    <DropdownMenuItem onSelect={() => setPromoting(true)}>
-                      <LayersIcon className="size-4" />
-                      Promote from another environment…
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => setRestoringPoint(true)}>
-                      <HistoryIcon className="size-4" />
-                      Restore to a point in time…
-                    </DropdownMenuItem>
+                    {canChangeInBulk ? (
+                      <>
+                        <DropdownMenuItem onSelect={() => setPromoting(true)}>
+                          <LayersIcon className="size-4" />
+                          Promote from another environment…
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setRestoringPoint(true)}>
+                          <HistoryIcon className="size-4" />
+                          Restore to a point in time…
+                        </DropdownMenuItem>
+                      </>
+                    ) : null}
+                    {/* Where the first override is set, now that the card it
+                        used to be set from is drawn only once one exists.
+                        Labelled, because everything above it changes what the
+                        whole team reads and this changes what nobody else does. */}
+                    {offersOverride ? (
+                      <>
+                        {canChangeInBulk ? <DropdownMenuSeparator /> : null}
+                        <DropdownMenuLabel>Only for you</DropdownMenuLabel>
+                        <DropdownMenuItem onSelect={() => setOverrideFor('')}>
+                          <UserIcon className="size-4" />
+                          Set a personal override…
+                        </DropdownMenuItem>
+                      </>
+                    ) : null}
                   </DropdownMenuContent>
                 </DropdownMenu>
               ) : null}
@@ -485,7 +526,8 @@ export function EnvironmentScreen({
 
         {/* The person's own values for this environment (P19 §2), below the
           shared ones: they change what one machine runs and nothing anybody
-          else reads, so they come after the table everybody shares. */}
+          else reads, so they come after the table everybody shares. Drawn
+          only once there is one; the set dialog it owns is always mounted. */}
         <OverridesCard
           orgSlug={orgSlug}
           orgId={organization?.id ?? null}
@@ -493,6 +535,8 @@ export function EnvironmentScreen({
           envSlug={envSlug}
           environmentId={keyFacts?.environmentId ?? null}
           encryptionMode={keyFacts?.encryptionMode ?? null}
+          setting={overrideFor}
+          onSettingChange={setOverrideFor}
         />
 
         {material !== null &&
