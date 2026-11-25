@@ -533,7 +533,9 @@ async function notifyAdministrators(
             endpointHost,
             consecutiveFailures: failing.consecutiveFailures,
             failingSince: failing.failingSince,
-            settingsUrl: `${publicOrigin(services.env)}/app/${organization.slug}/settings`,
+            // The webhooks section, where the endpoint is switched back on and
+            // its delivery log read — not the settings' General page.
+            settingsUrl: `${publicOrigin(services.env)}/app/${organization.slug}/settings/webhooks`,
           }),
         );
       } catch (cause) {

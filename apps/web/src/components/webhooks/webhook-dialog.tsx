@@ -30,6 +30,7 @@ import {
   toggleEventType,
   validateWebhookForm,
   WEBHOOK_DESCRIPTION_MAX_LENGTH,
+  webhookFormChanged,
 } from './webhook-form';
 import type { WebhookFormErrors, WebhookFormField, WebhookFormValues } from './webhook-form';
 
@@ -68,7 +69,16 @@ export function WebhookDialog({ open, onOpenChange, ...props }: WebhookDialogPro
   );
 }
 
-function WebhookForm({
+/**
+ * The form inside `WebhookDialog`. Exported so a render test can draw it inside
+ * a bare `Dialog` — the dialog's content is portalled, and a server render has
+ * nowhere to portal to.
+ *
+ * Editing offers Save only once the form differs from the endpoint as saved
+ * (`webhookFormChanged`). A save closes the dialog, and the next opening seeds
+ * the form from the endpoint as it now is.
+ */
+export function WebhookForm({
   orgSlug,
   webhook: given,
   onOpenChange,
@@ -97,6 +107,7 @@ function WebhookForm({
 
   const eventsId = useId();
   const live = validateWebhookForm(values);
+  const changed = webhookFormChanged(webhook, values);
 
   function shown(field: WebhookFormField): string | null {
     return (tried ? live[field] : undefined) ?? serverErrors[field] ?? null;
@@ -119,7 +130,7 @@ function WebhookForm({
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (saving) return;
+    if (saving || !changed) return;
     setTried(true);
     if (hasErrors(live)) return;
 
@@ -276,7 +287,7 @@ function WebhookForm({
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" loading={saving}>
+        <Button type="submit" variant="primary" loading={saving} disabled={!changed}>
           {editing ? 'Save changes' : 'Add endpoint'}
         </Button>
       </DialogFooter>

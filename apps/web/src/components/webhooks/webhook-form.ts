@@ -200,6 +200,16 @@ export function patchBody(original: Webhook, values: WebhookFormValues): Webhook
   return Object.keys(patch).length === 0 ? null : patch;
 }
 
+/**
+ * Whether Save has anything to send: always for a new endpoint, which has
+ * nothing saved to equal, and for an edit only while `patchBody` would send
+ * something — the same comparison the request is built from, so the button and
+ * the body cannot disagree about what "changed" means.
+ */
+export function webhookFormChanged(original: Webhook | null, values: WebhookFormValues): boolean {
+  return original === null || patchBody(original, values) !== null;
+}
+
 /** Whether the organisation already holds every endpoint its plan allows. */
 export function atWebhookLimit(limit: WebhookListResponse['limit']): boolean {
   return limit.max !== null && limit.used >= limit.max;

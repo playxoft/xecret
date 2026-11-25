@@ -79,3 +79,64 @@ describe('the plans page', () => {
     });
   });
 });
+
+/**
+ * The settings sections' addresses. Under `settings` at both places it
+ * appears, so none of them can be shadowed: `settings` is reserved for
+ * organisations and projects alike.
+ */
+describe('the settings sections', () => {
+  it('put the organisation’s sections under its settings, General at the area itself', () => {
+    expect(appPath.orgSettings('acme')).toBe('/app/acme/settings');
+    expect(
+      [
+        appPath.orgRoles('acme'),
+        appPath.orgSingleSignOn('acme'),
+        appPath.orgPolicies('acme'),
+        appPath.orgWebhooks('acme'),
+        appPath.orgBilling('acme'),
+        appPath.orgPlans('acme'),
+        appPath.orgDanger('acme'),
+      ].map((path) => path.replace('/app/acme/settings/', '')),
+    ).toEqual(['roles', 'single-sign-on', 'policies', 'webhooks', 'billing', 'plans', 'danger']);
+  });
+
+  it('read every one of them as an organisation page, not a project', () => {
+    for (const path of [appPath.orgWebhooks('acme'), appPath.orgDanger('acme')]) {
+      expect(parseDashboardPath(path), path).toEqual({
+        orgSlug: 'acme',
+        projectSlug: null,
+        envSlug: null,
+        isAccountArea: false,
+      });
+    }
+  });
+
+  it('keep the account’s sections in the account area', () => {
+    for (const path of [
+      appPath.account(),
+      appPath.settingsAppearance(),
+      appPath.settingsSignIn(),
+      appPath.settingsVault(),
+      appPath.settingsUnlock(),
+      appPath.settingsDevices(),
+      appPath.settingsDanger(),
+    ]) {
+      expect(path.startsWith('/app/settings/'), path).toBe(true);
+      expect(parseDashboardPath(path).isAccountArea, path).toBe(true);
+    }
+  });
+
+  it('read an environment’s sections as that environment', () => {
+    expect(
+      parseDashboardPath(
+        `${appPath.environmentSettings('acme', 'payments-api', 'production')}/policy`,
+      ),
+    ).toEqual({
+      orgSlug: 'acme',
+      projectSlug: 'payments-api',
+      envSlug: 'production',
+      isAccountArea: false,
+    });
+  });
+});

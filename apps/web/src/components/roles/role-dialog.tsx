@@ -83,10 +83,81 @@ export function RoleDialog(props: RoleDialogProps) {
   );
 }
 
+/** What the form holds, as a save would send it to the roles route. */
+export interface RoleBody {
+  name: string;
+  baseRole: OrgRole;
+  allowedActions: readonly Action[];
+  accessCeiling: { nonProduction: AccessLevel; production: AccessLevel } | null;
+}
+
+/**
+ * The form's fields as the body a save sends: the name normalised, the actions
+ * held to what the base can do with the floor added, and the ceiling only when
+ * it is switched on.
+ */
+export function roleBody(draft: {
+  name: string;
+  baseRole: OrgRole;
+  actions: ReadonlySet<Action>;
+  capped: boolean;
+  ceiling: { nonProduction: AccessLevel; production: AccessLevel };
+}): RoleBody {
+  const available = new Set(actionsForBase(draft.baseRole));
+  return {
+    name: normalizeCustomRoleName(draft.name),
+    baseRole: draft.baseRole,
+    // The floor is kept by the engine whatever the list says; sending it
+    // makes the stored list say so too.
+    allowedActions: [
+      ...new Set([...CUSTOM_ROLE_FLOOR, ...[...draft.actions].filter((a) => available.has(a))]),
+    ],
+    accessCeiling: draft.capped ? draft.ceiling : null,
+  };
+}
+
+/**
+ * Whether a save would change the role, compared as the server stores it: the
+ * same name once normalised, the same base, the same actions in any order —
+ * the floor counted on both sides, since the engine keeps it either way — and
+ * the same ceiling or none.
+ *
+ * Only an edit can be unchanged. A new role has nothing saved to equal, so
+ * "Create role" is always offered and the name check says what is missing.
+ */
+export function roleFormChanged(role: CustomRole | null, body: RoleBody): boolean {
+  if (role === null) return true;
+
+  const stored = new Set([...CUSTOM_ROLE_FLOOR, ...role.allowedActions]);
+  const sameActions =
+    body.allowedActions.length === stored.size &&
+    body.allowedActions.every((action) => stored.has(action));
+  // An absent ceiling and a `null` one are the same "none".
+  const storedCeiling = role.accessCeiling ?? null;
+  const sameCeiling =
+    body.accessCeiling === null || storedCeiling === null
+      ? body.accessCeiling === storedCeiling
+      : body.accessCeiling.nonProduction === storedCeiling.nonProduction &&
+        body.accessCeiling.production === storedCeiling.production;
+
+  return !(
+    body.name === role.name &&
+    body.baseRole === role.baseRole &&
+    sameActions &&
+    sameCeiling
+  );
+}
+
 /**
  * The form inside `RoleDialog`. Exported so a render test can draw it inside a
  * bare `Dialog` — the dialog's content is portalled, and a server render has no
  * portal to draw into.
+ *
+ * Editing a role offers Save only once something differs from the role as
+ * saved (`roleFormChanged`): a save that changes nothing would still be
+ * measured against every holder and audited as an edit. A save that works
+ * closes the dialog, and the next opening seeds the form from the role as it
+ * now is, so there is no stale baseline to move.
  *
  * The base menu is `definableBaseRoles` exactly. Whoever sees Edit may define
  * on every base below owner — an owner or an admin who holds no custom role —
@@ -118,6 +189,8 @@ export function RoleForm({
   const [error, setError] = useState<unknown>(null);
 
   const available = new Set(actionsForBase(baseRole));
+  const body = roleBody({ name, baseRole, actions, capped, ceiling });
+  const changed = roleFormChanged(role, body);
 
   function changeBase(next: OrgRole) {
     const previous = new Set(actionsForBase(baseRole));
@@ -150,25 +223,14 @@ export function RoleForm({
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || !changed) return;
     // The rules the server holds a name to, said before the request is made.
-    const normalised = normalizeCustomRoleName(name);
+    const normalised = body.name;
     const problem = customRoleNameProblem(normalised);
     if (problem !== null) {
       setNameError(problem);
       return;
     }
-
-    const body = {
-      name: normalised,
-      baseRole,
-      // The floor is kept by the engine whatever the list says; sending it
-      // makes the stored list say so too.
-      allowedActions: [
-        ...new Set([...CUSTOM_ROLE_FLOOR, ...[...actions].filter((a) => available.has(a))]),
-      ],
-      accessCeiling: capped ? ceiling : null,
-    };
 
     setSubmitting(true);
     setError(null);
@@ -359,7 +421,7 @@ export function RoleForm({
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" loading={submitting}>
+        <Button type="submit" variant="primary" loading={submitting} disabled={!changed}>
           {role === null ? 'Create role' : 'Save changes'}
         </Button>
       </DialogFooter>

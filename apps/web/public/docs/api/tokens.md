@@ -27,7 +27,7 @@ work.
 What the dashboard uses. A `__Host-`prefixed cookie, plus a CSRF cookie whose
 value must be echoed in the `X-Xecret-Csrf` header on every mutation.
 
-You can see and revoke your active sessions under *Settings → Security*, and
+You can see and revoke your active sessions under *Settings → Signed-in devices*, and
 sign out everywhere at once.
 
 ### The vault lock
@@ -35,7 +35,7 @@ sign out everywhere at once.
 Signed in and unlocked are different things. Your secrets are decrypted in the
 browser with keys your vault holds, and the vault locks when the session has
 been idle for a while — an hour by default; 15 minutes, 4 hours, or until the
-tab closes if you choose under *Settings → Security*. However active you are, an
+tab closes if you choose under *Settings → Unlock & auto-lock*. However active you are, an
 unlock never lasts more than 8 hours. You can also lock it on demand, in this
 browser or in every signed-in session at once.
 

@@ -531,7 +531,9 @@ function UnlockForm({
     rememberNudge(storage, now);
     toast({
       title: 'Unlock with your fingerprint or face next time — set it up in seconds',
-      action: { label: 'Set it up', href: appPath.settingsSecurity() },
+      // Unlock & auto-lock, where the passkeys and the device PIN are set
+      // up — the section this nudge is about, not the vault's passphrase.
+      action: { label: 'Set it up', href: appPath.settingsUnlock() },
       // Until dismissed. Five seconds is long enough to notice a message and
       // too short to decide on one, and this is the only toast in the product
       // carrying a link somebody is meant to reach for.

@@ -113,11 +113,24 @@ const nextConfig: NextConfig = {
   // RFC 9116 puts the file at `/.well-known/security.txt`, served by
   // `app/.well-known/security.txt/route.ts`, and lets the top-level path
   // redirect there for older tooling — one body, at one URL.
+  //
+  // ── `/app/settings/security` ──
+  // The account settings' Security tab, before its cards became sections with
+  // addresses of their own (`settings-sections.ts`). It is in mail nobody can
+  // recall — the vault-reset emails sent until then point people there to
+  // recover the old vault — so it answers with the vault. Here rather than as a
+  // page that calls `redirect()`, because a page with nothing dynamic in it is
+  // prerendered, and a prerendered redirect is carried out by the client router,
+  // which drops the fragment: `…/security#devices` has to arrive at the vault
+  // still carrying `#devices` for the settings frame to send it on to Signed-in
+  // devices, and only a real HTTP redirect — whose fragment the browser keeps —
+  // does that. Temporary, so the address stays free for a page of its own.
   async redirects() {
     return [
       { source: '/forgot-password', destination: '/sign-in/forgot-password', permanent: true },
       { source: '/reset-password', destination: '/sign-in', permanent: true },
       { source: '/security.txt', destination: '/.well-known/security.txt', permanent: true },
+      { source: '/app/settings/security', destination: '/app/settings/vault', permanent: false },
     ];
   },
 

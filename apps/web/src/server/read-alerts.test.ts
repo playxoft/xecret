@@ -347,8 +347,8 @@ describe('a read from somewhere new', () => {
     expect(message!.text).toContain('api/production (production)');
     expect(message!.text).toContain(world.owner.email);
     expect(message!.text).toContain('203.0.113.5');
-    expect(message!.text).toContain(`${ORIGIN}/app/${world.slug}/api/production/settings`);
-    expect(message!.html).toContain(`${ORIGIN}/app/${world.slug}/api/production/settings`);
+    expect(message!.text).toContain(`${ORIGIN}/app/${world.slug}/api/production/settings/policy`);
+    expect(message!.html).toContain(`${ORIGIN}/app/${world.slug}/api/production/settings/policy`);
 
     const [sighting] = await sightingsOf(world.production);
     expect(sighting).toMatchObject({

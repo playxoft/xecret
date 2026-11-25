@@ -356,8 +356,12 @@ export function UpgradeScreen({
     billing !== null && billing.plan !== 'free' ? (STATUS_LABEL[billing.status] ?? null) : null;
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-8">
+    // A section of the organisation's settings, and the one given the frame's
+    // whole width (`wide` in `settings-sections.ts`): three plan columns and a
+    // comparison table do not fit a form's measure. The frame owns the `<h1>`.
+    <div className="flex flex-col gap-8">
       <PageHeader
+        as="h2"
         title={selling ? `Upgrade ${orgName}` : `Plans for ${orgName}`}
         description={
           selling

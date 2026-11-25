@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 
-import { AccountScreen } from '../../../_components/account-screen';
+import { ProfileSettings } from '../../../_components/account-screen';
 
-export const metadata: Metadata = { title: 'Account' };
+export const metadata: Metadata = { title: 'Profile' };
 
-export default function AccountPage() {
-  return <AccountScreen />;
+export default function ProfileSettingsPage() {
+  return <ProfileSettings />;
 }
