@@ -142,6 +142,23 @@ describe('the admin list', () => {
     ).toBe('last');
   });
 
+  it('does not count an admin who cannot get in — an unverified address — towards keeping somebody', async () => {
+    const live = await seedUser();
+    const unverified = await seedUser();
+    for (const user of [live, unverified]) {
+      await t.db.transaction((tx) =>
+        addPlatformAdmin(tx, { ...emailOf(user), by: { label: 'operator' } }),
+      );
+    }
+    await t.pg.query('update users set email_verified = false where id = $1', [unverified.id]);
+
+    expect(
+      await t.db.transaction((tx) =>
+        removePlatformAdmin(tx, { ...emailOf(live), by: { userId: live.id } }),
+      ),
+    ).toBe('last');
+  });
+
   it('records every change with somebody behind it, by the database itself', async () => {
     const user = await seedUser();
     await expect(

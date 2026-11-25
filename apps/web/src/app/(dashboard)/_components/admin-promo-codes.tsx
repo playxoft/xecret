@@ -675,16 +675,10 @@ function DiscountFields({
 
       <fieldset className="flex flex-col gap-2" disabled={disabled}>
         <legend className="text-fg mb-1.5 text-sm font-medium">Off</legend>
-        <Segmented
-          label="Kind of discount"
-          options={[
-            { value: 'percentage', label: 'A percentage' },
-            { value: 'flat', label: 'A fixed amount' },
-          ]}
-          value={form.discountType}
-          onChange={(discountType) => update({ discountType })}
-          className="self-start"
-        />
+        {/* A percentage only, for now: checkout picks its currency from the
+            buyer's country, so a fixed amount in one currency could take the
+            wrong amount off another (the server refuses one too). The form
+            keeps its fixed-amount branch below for when that is proven. */}
         <div className="flex flex-wrap items-center gap-2">
           <Input
             inputMode="decimal"

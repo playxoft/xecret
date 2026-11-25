@@ -115,12 +115,20 @@ export async function removePlatformAdmin(
     .limit(1);
   if (existing === undefined) return 'not-admin';
 
-  // Live admins only: a row whose account was soft-deleted cannot sign in,
-  // so it does not count towards "there is still somebody".
+  // Admins who can still get in only: a row whose account was soft-deleted,
+  // or whose address is unverified, is refused by `isAdmin` — so it does not
+  // count towards "there is still somebody".
   const [remaining] = await tx
     .select({ value: count() })
     .from(platformAdmins)
-    .innerJoin(users, and(eq(users.id, platformAdmins.userId), isNull(users.deletedAt)));
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, platformAdmins.userId),
+        isNull(users.deletedAt),
+        eq(users.emailVerified, true),
+      ),
+    );
   if ((remaining?.value ?? 0) <= 1) return 'last';
 
   await tx.delete(platformAdmins).where(eq(platformAdmins.userId, params.userId));

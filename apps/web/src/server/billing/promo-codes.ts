@@ -14,7 +14,7 @@ import { errors } from '../errors';
 import type { PromoCodePreviewPayload, PromoCodeState } from '../schemas/admin';
 import type { OrgScope } from '../tenancy';
 import { subscriptionResource } from './audit';
-import { billingSetup } from './config';
+import { billingSetup, CHECKOUT_OPEN_MS } from './config';
 import type { BillingConfig, PurchasablePlan } from './config';
 import { formatMinor } from './money';
 
@@ -224,9 +224,11 @@ export async function redeemGrantCode(
       note: `Promo code ${code.code}`,
       overDodo: false,
       onlyFromFree: true,
-      // A hosted checkout lives a day: one started since then could still be
-      // paid, and its payment would land on the grant and be filed nowhere.
-      checkoutsOpenSince: new Date(Date.now() - DAY_MS),
+      // A checkout started within the window the webhook still attaches its
+      // payment in (`CHECKOUT_OPEN_MS`) could still be paid — and its payment
+      // would land on the grant and be filed nowhere. One window for both, so
+      // the two can never disagree about when a checkout is over.
+      checkoutsOpenSince: new Date(Date.now() - CHECKOUT_OPEN_MS),
     });
     // Thrown, so the transaction — the redemption counted above included —
     // rolls back with it.
@@ -257,7 +259,9 @@ export async function redeemGrantCode(
         seatCount: outcome.seats.billed,
         previousSeatCount: outcome.previous.seats,
         reason:
-          `promo code ${code.code} redeemed: ${summarizePromoCode(code)}` +
+          // What it gave, never the code: every admin of the organisation reads
+          // this row, and a reusable code is as good as the plan it gives.
+          `promo code redeemed: ${summarizePromoCode(code)}` +
           (endsAt === null ? '' : `, until ${endsAt.toISOString()}`),
       }),
     ]);

@@ -361,16 +361,21 @@ function dodoAmount(discount: NonNullable<AdminPromoCodeCreateBody['discount']>)
     }
     return { amount, currency: null };
   }
-  if (discount.currency === null) {
-    throw errors.validation([
-      { field: 'discount.currency', message: 'Choose the currency the amount is in.' },
-    ]);
-  }
-  const amount = Math.round(discount.value * 10 ** fractionDigits(discount.currency));
-  if (amount < 1 || amount > 100_000_000) {
-    throw errors.validation([{ field: 'discount.value', message: 'That amount is out of range.' }]);
-  }
-  return { amount, currency: discount.currency };
+  // A fixed amount is refused for now. Checkout's currency is chosen by Dodo
+  // from the buyer's billing country (unknown to this server until a region
+  // lock pins it), and the code would name one currency: whether Dodo then
+  // takes the right amount off a checkout in another currency — or the same
+  // number in the wrong unit, a ¥1,000 code as $10 off — is unverified. A
+  // percentage is the same discount in every currency. The client and the
+  // schema still describe flat codes, for when this is proven on staging.
+  throw errors.validation([
+    {
+      field: 'discount.type',
+      message:
+        'Fixed-amount codes are not offered yet — checkout picks the currency from the buyer’s ' +
+        'country, so a fixed amount could take the wrong amount off. Use a percentage.',
+    },
+  ]);
 }
 
 /**

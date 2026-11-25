@@ -1385,24 +1385,19 @@ describe('creating promo codes', () => {
     });
   });
 
-  it('converts a fixed amount from major to minor units', async () => {
-    dodo.createDiscount.mockResolvedValue({ discountId: 'dsc_flat0001' });
+  it('refuses a fixed amount for now, before Dodo — the checkout’s currency is the buyer’s', async () => {
+    // A review found that a fixed amount names one currency while checkout
+    // prices in whichever the buyer's country gives: until that is proven on
+    // staging, a percentage is the only discount that means the same everywhere.
     const answer = await createCode(
       discountCodeBody(
         { type: 'flat', value: 5, currency: 'usd', cycles: 1 },
         { code: freshCode('M') },
       ),
     );
-    expect(answer.status).toBe(201);
-    expect(dodo.createDiscount.mock.calls[0]![0]).toMatchObject({
-      type: 'flat',
-      amount: 500,
-      currency: 'USD',
-    });
-    expect(answer.body['code']).toMatchObject({
-      summary: '$5.00 off Pro for the first billing period',
-      discount: { type: 'flat', value: 5, currency: 'USD' },
-    });
+    expect(answer.status).toBe(422);
+    expect(JSON.stringify(answer.body)).toContain('Fixed-amount codes are not offered yet');
+    expect(dodo.createDiscount).not.toHaveBeenCalled();
   });
 
   it('refuses a percentage with a currency, and a fixed amount without one, before Dodo', async () => {
@@ -1667,7 +1662,9 @@ describe('redeeming a free-plan code', () => {
       outcome: 'success',
       metadata: { plan: 'team', previousPlan: 'free' },
     });
-    expect(String(changes[0]!.metadata['reason'])).toContain(`promo code ${code.code} redeemed`);
+    expect(String(changes[0]!.metadata['reason'])).toContain('promo code redeemed: Team free');
+    // What it gave, never the code: every admin of the organisation reads this row.
+    expect(JSON.stringify(changes[0]!.metadata)).not.toContain(code.code);
     // Nothing about a free-plan code is Dodo's.
     for (const fn of Object.values(dodo)) expect(fn).not.toHaveBeenCalled();
   });
@@ -1818,7 +1815,10 @@ describe('checkout with a promo code', () => {
     expect(recorded.rows).toEqual([{ promo_code_id: code.id }]);
     expect(
       audit.find((record) => record.action === 'billing.checkout_started')?.metadata,
-    ).toMatchObject({ reason: `with promo code ${code.code}` });
+    ).toMatchObject({ reason: 'with a promo code' });
+    expect(
+      JSON.stringify(audit.find((record) => record.action === 'billing.checkout_started')),
+    ).not.toContain(code.code);
 
     // The admin page counts the checkouts a code started.
     caller = sessionOf(adminUser);

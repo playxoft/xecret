@@ -65,10 +65,10 @@ export const POST = authenticatedRoute<Params>(
         plan: selection.plan,
         billingInterval: selection.interval,
         seatCount: seats,
-        // The code, never what it takes off: the amount is Dodo's to state.
-        ...(promoCodeId !== null && selection.promoCode !== undefined
-          ? { reason: `with promo code ${selection.promoCode}` }
-          : {}),
+        // That a code was used — never the code itself (every admin of the
+        // organisation reads this row, and a reusable code is as good as the
+        // discount), nor what it takes off (the amount is Dodo's to state).
+        ...(promoCodeId !== null ? { reason: 'with a promo code' } : {}),
       }),
     );
     return json({ url });

@@ -788,7 +788,7 @@ secret reaching a log or an audit row.
   write the `platform_admins` table can make an admin, which is whoever can already write any
   plan. Promo codes: a free-plan code is spent in one transaction with the grant it
   gives, once per organisation and once per person, never past its limit, and never on an
-  organisation that still carries a Dodo subscription or has a checkout from the last day open; a discount code is
+  organisation that still carries a Dodo subscription or has a checkout from the last week open; a discount code is
   created at Dodo restricted to this deployment's own products (the account is shared), and
   Dodo's own code box is hidden on every checkout, so a code reaches one only after this server
   checked it is ours, live, for that plan and that person. Codes are guessable only as fast as

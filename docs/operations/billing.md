@@ -572,7 +572,7 @@ is the same form again, with a later date.
 | Kind | What the owner does | What happens | Card |
 | --- | --- | --- | --- |
 | Free plan (`grant`) | Enters it under "Have a code?" on the billing or plans page | The organisation gets the code's plan for its days (or for good), as a grant — nothing at Dodo | None, ever |
-| Discount (`discount`) | Enters it, then checks out | Checkout pre-applies a Dodo discount code — a percentage (up to 100%) or a fixed amount off Pro and/or Team, for N billing periods or every one | Collected by Dodo |
+| Discount (`discount`) | Enters it, then checks out | Checkout pre-applies a Dodo discount code — a percentage (up to 100%) off Pro and/or Team, for N billing periods or every one | Collected by Dodo |
 
 So "free, no card" is a free-plan code; "free, card on file" is a 100% discount for N periods
 (the card is charged when the discount runs out); anything else is a discount. Every code can be
@@ -580,7 +580,15 @@ limited to a list of addresses, a number of uses and an expiry date. A free-plan
 once per organisation and once per person; a discount's uses are counted by Dodo against the
 limit it was created with. A free-plan code is refused on an organisation that was subscribed
 before (it still carries the Dodo subscription it ended on, which a late payment must still find)
-and while a checkout started in the last day is open — grant those from the Organisations tab.
+and while a checkout started in the last week (`CHECKOUT_OPEN_MS`, the window the webhook still
+attaches a payment in) is unconsumed — grant those from the Organisations tab.
+
+**Fixed-amount codes are refused for now.** Checkout prices in the currency Dodo picks from the
+buyer's country, which this server does not know until a region lock pins it, and a fixed amount
+names one currency — so it could take the wrong amount off. The client and the schema still
+describe them (`currency_options`); turn them on only after a staging run proves Dodo converts
+them. Promo codes are never written into a customer's audit log — only that one was used, and what
+it gave.
 
 A discount code is created at Dodo by the page — **restricted to this deployment's own Pro/Team
 products**, because the Dodo account is shared with other products — and **Dodo's own code box
@@ -593,11 +601,10 @@ has the discount keeps it for the periods it was given, and grants already made 
 **Do not create discount codes in the Dodo dashboard** for xecret: with the code box hidden,
 nothing can apply them, and a code Dodo has but this server does not is a code nobody can audit.
 
-**Before relying on these in live mode, check on staging (test mode)**: a percentage code, a flat
-code in USD, and a 100% code — each through a real test checkout — to confirm Dodo charges what
-the code says, that the 100% code still asks for a card, and that the subscription activates the
-plan through the webhook as any other checkout does. Flat codes in particular: Dodo states the
-amount through `currency_options`, which has not been exercised against Dodo yet.
+**Before relying on these in live mode, check on staging (test mode)**: a percentage code and a
+100% code — each through a real test checkout — to confirm Dodo charges what the code says, that
+the 100% code still asks for a card, and that the subscription activates the plan through the
+webhook as any other checkout does.
 
 ### Usage
 
