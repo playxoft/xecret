@@ -208,7 +208,12 @@ interface DodoCheckoutRequest {
   metadata: Record<string, string>;
   billing_address?: { country: string };
   billing_currency?: string;
-  feature_flags: { allow_currency_selection: boolean; allow_customer_editing_country?: boolean };
+  feature_flags: {
+    allow_currency_selection: boolean;
+    allow_customer_editing_country?: boolean;
+    /** The checkout page's own code box. Shown by Dodo unless this says `false`. */
+    allow_discount_code: boolean;
+  };
 }
 
 /**
@@ -267,6 +272,11 @@ export class DodoClient implements BillingProvider {
         // buyer does not get to choose one.
         allow_currency_selection: false,
         ...(request.regionLock ? { allow_customer_editing_country: false } : {}),
+        // Dodo's own discount-code box stays hidden. Dodo shows it unless told
+        // otherwise, and the Dodo account is shared with other products: any
+        // code there that is not restricted to products — another product's
+        // public "LAUNCH50" — would otherwise apply to a xecret plan here.
+        allow_discount_code: false,
       },
     };
     const parsed = await this.call('POST', '/checkouts', dodoCheckoutSessionSchema, body);

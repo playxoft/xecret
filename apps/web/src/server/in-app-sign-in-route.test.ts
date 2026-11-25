@@ -1844,6 +1844,29 @@ describe('choosing a new password from the reset link', () => {
     expect(answer.cookies).toEqual([]);
   });
 
+  it('revokes every CLI token of the account too — a stolen session cannot leave one behind', async () => {
+    const existing = await seedUser();
+    const org = await seedOrg();
+    await addMember(org, existing.id);
+    // Minted from a session somebody else held, before the owner took the
+    // account back with a reset.
+    await t.pg.query(
+      `insert into cli_tokens (id, user_id, org_id, name, token_hash, token_prefix)
+       values ($1, $2, $3, 'their laptop', $4, 'xct_live_test')`,
+      [randomUUID(), existing.id, org, randomBytes(32)],
+    );
+    workos.resetPassword.mockResolvedValueOnce({ user: workosUser({ email: existing.email }) });
+
+    const answer = await confirmReset();
+
+    expect(answer.status).toBe(204);
+    const live = await t.pg.query<{ count: string }>(
+      `select count(*)::text as count from cli_tokens where user_id = $1 and revoked_at is null`,
+      [existing.id],
+    );
+    expect(live.rows[0]?.count).toBe('0');
+  });
+
   /** A live session for `userId`, as a sign-in long before this one would have left. */
   async function seedSession(userId: string): Promise<void> {
     await t.pg.query(

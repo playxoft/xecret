@@ -3,6 +3,7 @@ import {
   findUserByEmail,
   findUserByWorkosId,
   listOrganizationsForUser,
+  revokeAllCliTokensForUser,
   revokeAllUserSessions,
 } from '@xecret/db/repositories';
 import type { User } from '@xecret/db/repositories';
@@ -53,6 +54,12 @@ import { IdentityProviderUnavailableError } from './workos';
  *    unlinked row holding exactly that address (`accountForReset`). The reset
  *    has just proven the inbox, which is the proof the linker adopts such an
  *    account on.
+ *  - Every CLI token of that account, too. A token outlives the session that
+ *    approved it, so somebody who held a stolen session long enough to mint
+ *    one kept reading secrets after the reset that was meant to shut them
+ *    out — the account was taken back, and its machine credentials were not.
+ *    The person signs the CLI in again (`xecret login`). Service tokens are
+ *    the organisation's, not the person's, and are left alone.
  *  - The address's shared throttle pool: the person has just proven the inbox
  *    and chosen a password, and the sign-in that follows must not wait out a
  *    lockout somebody else ran up. (Clearing it gives an attacker nothing:
@@ -159,10 +166,12 @@ export async function afterPasswordReset(
     // never entered — has no sessions to end.
     if (user !== null) {
       const revoked = await revokeAllUserSessions(services.db, user.id);
+      const revokedCliTokens = await revokeAllCliTokensForUser(services.db, user.id);
       services.log
         .at('passwordReset')
-        .info('Ended every session of an account whose password was reset', {
+        .info('Ended every session and CLI token of an account whose password was reset', {
           revokedSessions: revoked,
+          revokedCliTokens,
         });
       const memberships = await listOrganizationsForUser(services.db, user.id);
       const primary = memberships[0];
