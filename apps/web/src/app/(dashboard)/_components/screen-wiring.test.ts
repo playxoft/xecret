@@ -116,6 +116,47 @@ describe('the project’s Manage menu edits the description in place', () => {
   });
 });
 
+describe('the environment switcher', () => {
+  const screen = source('./environment-screen.tsx');
+
+  // A strip of its own, under the heading — not one more control in the
+  // heading's actions, where the legend has no room.
+  it('sits under the heading, not among its actions', () => {
+    expect(attribute(screen, 'actions')).not.toContain('<EnvironmentSwitcher');
+    expect(screen.indexOf('<EnvironmentSwitcher')).toBeGreaterThan(screen.indexOf('<PageHeader'));
+  });
+
+  // Every way the switcher takes an environment off the page — the Compare
+  // menu, a legend ×, "Stop comparing", a chord — goes through the screen's
+  // guard, which hears from the table how many compared cells are unsaved.
+  it('takes compared environments off through the guard that knows about unsaved cells', () => {
+    const switcher = screen.slice(screen.indexOf('<EnvironmentSwitcher'));
+    expect(attribute(switcher, 'onCompare')).toBe('toggleCompared');
+    expect(attribute(switcher, 'onStopComparing')).toBe('() => changeCompared([])');
+    expect(screen).toMatch(/function toggleCompared\(slug: string\) \{\s*changeCompared\(/);
+    expect(screen).toMatch(
+      /if \(drops && unsavedCompared > 0\) \{[\s\S]*?setPendingCompared\(\{ next, closing \}\);\s*return;/,
+    );
+    // And confirming applies exactly the comparison that was asked about.
+    expect(screen).toMatch(/setCompared\(pendingCompared\.next\);\s*setPendingCompared\(null\);/);
+
+    const table = screen.slice(screen.indexOf('<SecretTable'));
+    expect(attribute(table, 'onComparedUnsavedChange')).toBe('setUnsavedCompared');
+    const tableSource = source('../../../components/secrets/secret-table.tsx');
+    expect(tableSource).toMatch(
+      /onComparedUnsavedChange\?\.\(comparedUnsaved\);\s*return \(\) => onComparedUnsavedChange\?\.\(0\);/,
+    );
+  });
+
+  // Comparing used to be a shift-click nobody could find. It is a menu now, and
+  // a shifted click on a capsule is the browser's again.
+  it('does not take over a modified click', () => {
+    const switcher = source('../../../components/projects/environment-switcher.tsx');
+    expect(switcher).not.toMatch(/shiftKey/);
+    expect(switcher).not.toMatch(/onClick: \(event: MouseEvent/);
+  });
+});
+
 describe('the account menu offers the plans of the organisation on screen', () => {
   // The shell builds the link from the slug the switcher names — so "Upgrade
   // plan" can never open another tenant's plans — and hands it to the menu
