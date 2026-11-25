@@ -19,6 +19,7 @@ import {
   graph,
 } from '@/components/marketing';
 import { AlertCircleIcon, BookIcon, GitHubIcon } from '@/components/ui/icons';
+import { disclosureCommitment, SECURITY_EMAIL } from '@/lib/security-contact';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 import { takesPayments } from '@/server/billing/payments-live';
 
@@ -154,7 +155,7 @@ const CATEGORIES: readonly FaqCategory[] = [
     lede: (
       <>
         The full reasoning — the key hierarchy, what each kind of compromise actually yields, and
-        the cases where you should pick a different product — is in{' '}
+        exactly where the guarantee stops — is in{' '}
         <Link href="/docs/security/trust-model" className={INLINE_LINK}>
           the trust model
         </Link>
@@ -165,32 +166,32 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Can xecret read my secrets?',
         answer:
-          'Yes, technically, and you should know that before you migrate rather than after. xecret uses server-side envelope encryption: every environment has its own data key, itself encrypted under a root key we hold, and values are decrypted inside a single request handler. Every one of those decryptions is written to an append-only audit log. This is the same model Doppler uses, and it is what makes team sharing, CI tokens and browser-side .env import work without a key-exchange ceremony.',
+          'No. Secret values and notes are encrypted on your device — in the browser or the CLI — before they are sent, under a key generated for each environment. That key is sealed to the public key of each member and service token you give access to, and never to us. We store ciphertext, so neither our staff, nor anyone who obtains our database, nor anyone who compels us to hand it over can read your values. Secret names, project and environment names and the audit log are not encrypted. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
       },
       {
         question: 'Is xecret zero-knowledge or end-to-end encrypted?',
         answer:
-          'No, and we do not use those words about xecret because they would not be true. If you need a provider that cannot read your secrets even in principle — because a regulator requires it, or because your threat model includes the provider being compelled — you need a zero-knowledge product, and you should choose one now. The trust model page makes the same argument at greater length.',
+          'Yes, for secret values and notes. Keys are generated on your device and only ever shared with the people and service tokens you give access to, and there is no escrow copy on our side. Names and metadata are deliberately not encrypted, so that listing and search stay fast. The web dashboard runs code we serve; if that matters to your threat model, the CLI is open source, signed, and can be built from source. The trust model sets out every edge of the claim.',
       },
       {
         question: 'What happens if your database is breached?',
         answer:
-          'The attacker gets ciphertext. No key material at any layer is stored in the database: the root key lives in a Cloudflare Secrets Store binding the database has no access to. Each ciphertext is also bound to its exact position in the key hierarchy, so a secret row copied from staging to production simply does not decrypt.',
+          'The attacker gets ciphertext and names. Every environment key is stored only sealed to its members’ public keys, and each member’s private key is stored only wrapped under a key derived from their passphrase with Argon2id, on their own device. To open anything, an attacker would have to guess a member’s passphrase at Argon2id’s deliberate cost per guess — which is why xecret asks for a strong one. Each ciphertext is also bound to its exact position, so a secret row copied from staging to production simply does not decrypt.',
       },
       {
-        question: 'What happens if your root key leaks?',
+        question: 'What happens if your servers are compromised?',
         answer:
-          'The root key together with a database dump exposes everything, and that is the one scenario this model does not defend against. It is why the two are kept in different systems with no path between them. If you self-host, custody of that key becomes yours — generate it, split it, and escrow the shares before the first real credential goes in.',
+          'Stored values stay sealed. Our servers never hold a key that opens an end-to-end encrypted value, so nothing on them — the database, the server’s own root key, or both together — yields one. The residual risk is the web dashboard: a compromised server could serve altered code to the people using it. A strict Content Security Policy narrows that, and the CLI never depends on code we serve.',
       },
       {
         question: 'How are encryption keys rotated?',
         answer:
-          'Every layer of the hierarchy — root, organisation, environment — is versioned, so any one of them can be rotated independently of the others. A key rotation is itself an audited event. Rotating an individual secret is just a write: the new version becomes current and the history stays readable.',
+          'An environment’s key is rotated from the dashboard: a new key is generated in your browser and sealed to everybody still entitled to it, and it is the step to take after removing a member. Changing your passphrase re-wraps a single key and re-encrypts nothing. A key rotation is itself an audited event. Rotating an individual secret is just a write: the new version becomes current and the history stays readable.',
       },
       {
         question: 'Is there an audit log?',
         answer:
-          'Yes, and every decryption is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
+          'Yes, and every value fetched is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
       },
       {
         question: 'Could one of my secret values end up in a log line?',
@@ -205,17 +206,16 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do you have SOC 2 or ISO 27001?',
         answer:
-          'No. xecret is pre-alpha and holds no compliance certification of any kind, and inventing one on a secrets product would be the worst thing we could ship. What exists instead is public: the source, the threat model, the licence and the self-hosting instructions.',
+          'No. xecret does not hold a SOC 2 or ISO 27001 certification, and we do not imply otherwise. What a security review can verify instead is public — the source, the encryption specification, the threat model and the security page — and you can ask us for a data processing agreement at support@playxoft.com.',
       },
       {
         question: 'Is xecret production-ready?',
         answer:
-          'Not yet. It is feature-complete for its first version, but it has not run against production infrastructure and has not had an external security review. Do not put credentials you cannot afford to rotate into it today.',
+          'Yes. xecret is built for production credentials: end-to-end encryption with a published specification, production closed to developers by default on Team and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an offline cache that keeps a local run going through a network outage. Breaking changes are announced before they ship wherever we reasonably can, and an Enterprise agreement can add an SLA.',
       },
       {
         question: 'How do I report a vulnerability?',
-        answer:
-          'Privately — open a security advisory on the GitHub repository, or email security@playxoft.com. Please do not open a public issue. You get an acknowledgement within 48 hours and an initial assessment within five working days, and we credit you in the advisory unless you would rather we did not.',
+        answer: `Privately — open a security advisory on the GitHub repository, or email ${SECURITY_EMAIL}. Please do not open a public issue. You get an acknowledgement ${disclosureCommitment('Acknowledgement')} and an initial assessment ${disclosureCommitment('Initial assessment')}, and we credit you in the advisory unless you would rather we did not.`,
       },
     ],
   },
@@ -230,8 +230,7 @@ const CATEGORIES: readonly FaqCategory[] = [
         <Link href="/pricing" className={INLINE_LINK}>
           the pricing page
         </Link>
-        , and they are what the plans will cost at 1.0. Nothing is charged while xecret is in
-        pre-alpha.
+        , and they are what the plans cost. No card is collected today.
       </>
     ),
     ledeWhenPaymentsLive: (
@@ -247,13 +246,13 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What does xecret cost?',
         answer:
-          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 3 organisations, 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
+          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 3 organisations, 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always.',
       },
       {
         question: 'Do I need a card to try it?',
         answer:
-          'No. While xecret is in pre-alpha no card is collected at all. Every organisation starts on Free, and each plan’s limits — Free’s included — apply now, as the pricing page states them. The prices are published now too, so that nobody is surprised at 1.0.',
-        // Pre-alpha copy until this deployment takes real payments (P12).
+          'No. No card is collected today. Every organisation starts on Free, and each plan’s limits — Free’s included — apply now, as the pricing page states them.',
+        // The copy for a deployment that does not take payments (P12).
         whenPaymentsLive: {
           question: 'Do I need a card to try it?',
           answer:
@@ -382,12 +381,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How do I remove somebody who leaves?',
         answer:
-          'Remove their membership. Their sessions and CLI tokens stop working straight away, and the offline cache does not soften that: the CLI treats a rejection as a decision and fails, rather than falling back to a cached copy on their laptop.',
+          'Remove their membership. Their sessions and CLI tokens stop working straight away, and the CLI treats that rejection as a decision rather than falling back to its offline cache. Then rotate the key of each environment they could read, from its key settings, so a copy of the old key opens nothing written afterwards.',
       },
       {
         question: 'What can a departing employee still see?',
         answer:
-          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they decrypted and when, and that list is what you rotate — which is the whole reason every decryption is recorded.',
+          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they read and when, and that list is what you rotate — which is the whole reason every value fetched is recorded.',
       },
     ],
   },
@@ -406,8 +405,8 @@ const CATEGORIES: readonly FaqCategory[] = [
         <Link href="/docs/self-hosting" className={INLINE_LINK}>
           self-hosting
         </Link>{' '}
-        has a page of its own — including the dependency list we would rather you read before you
-        start than discover halfway through.
+        has a page of its own, with every dependency listed up front so a deployment can be planned
+        end to end.
       </>
     ),
     items: [
@@ -478,7 +477,7 @@ export default async function FaqPage() {
       <PageHero
         eyebrow="Frequently asked"
         title="The questions you ask before you trust a secrets manager."
-        description={`${allQuestions.length} answers about how xecret works, what it costs, what it can see and what happens when you leave — including the several where the honest answer is no.`}
+        description={`${allQuestions.length} answers about how xecret works, what it costs, what it can see and what happens when you leave.`}
       >
         {/* Plain `#` anchors rather than a scroll-spy component. Six categories
             is exactly the length at which a reader wants to jump, and an anchor

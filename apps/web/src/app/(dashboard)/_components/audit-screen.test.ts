@@ -36,6 +36,7 @@ describe('the action filter (review round 1, L11)', () => {
       'environment.promoted',
       'environment.restored',
       'environment.policy_changed',
+      'environment.encryption_upgraded',
       'org.policy_changed',
       'override.set',
       'override.removed',
@@ -101,6 +102,48 @@ describe('describeEvent', () => {
         }),
       ),
     ).toBe('hooks.example.com · secret.updated, environment.promoted');
+  });
+
+  it('says what an upgrade to end-to-end encryption carried across, and what it could not', () => {
+    expect(
+      describeEvent(
+        event('environment.encryption_upgraded', {
+          projectSlug: 'api',
+          environmentSlug: 'legacy',
+          secretCount: 2,
+          versionCount: 4,
+          noteCount: 1,
+          purgedSecretCount: 1,
+          revokedTokenCount: 0,
+        }),
+      ),
+    ).toBe(
+      '2 secrets · api/legacy · 4 versions re-encrypted, 1 deleted secret erased, 0 CI tokens revoked',
+    );
+    expect(
+      describeEvent(
+        event('secret.purged', {
+          secretName: 'RETIRED',
+          projectSlug: 'api',
+          environmentSlug: 'legacy',
+          reason: 'encryption-upgrade',
+        }),
+      ),
+    ).toBe('RETIRED · api/legacy · encryption-upgrade');
+  });
+
+  it('says what the daily purge erased, and after how long', () => {
+    expect(
+      describeEvent(
+        event('secret.purged', {
+          secretName: 'STRIPE_KEY',
+          projectSlug: 'api',
+          environmentSlug: 'production',
+          reason: '30 days since deletion',
+        }),
+      ),
+    ).toBe('STRIPE_KEY · api/production · 30 days since deletion');
+    expect(AUDIT_FILTER_ACTIONS).toContain('secret.purged');
   });
 
   it('says how an owner got past their organisation’s single sign-on (review C3)', () => {

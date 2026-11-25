@@ -194,7 +194,7 @@ describe('the prices agree with the pricing page', () => {
   /**
    * The shared answer about the annual price quotes figures that live in the
    * pricing page's dollar sheet, which the module cannot import. Every version
-   * of it — pre-alpha, payments-live, and this page's — is held to the sheet.
+   * of it — no-payments, payments-live, and this page's — is held to the sheet.
    */
   it('quotes the dollar sheet in every answer about the annual price', () => {
     const entry = question('annual-price');
@@ -556,7 +556,7 @@ describe('the questions this page asks', () => {
       expect(item.answer).toBe(expected.answer);
       // Shown only where something is sold, so nothing here may say otherwise.
       expect(item.answer, item.id).not.toMatch(
-        /pre-alpha|nothing is billed|no plan is billed|neither is billed|no card/,
+        /(billed|taken|collected) today|nothing is billed|no plan is billed|neither is billed|no card/,
       );
     }
   });

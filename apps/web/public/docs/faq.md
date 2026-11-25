@@ -2,8 +2,8 @@
 title: Frequently asked questions
 navTitle: FAQ
 description: Short answers about pricing, security, offline use, team access, migrating away, self-hosting and how xecret compares to .env files and other tools.
-keywords: [xecret faq, secret manager questions, is it secure, offline, pricing, migrate away, doppler alternative]
-updated: 2026-10-12
+keywords: [xecret faq, secret manager questions, is it secure, end-to-end encrypted, offline, pricing, migrate away]
+updated: 2026-11-22
 schema: faq
 ---
 
@@ -38,21 +38,29 @@ PowerShell, `cmd.exe` and WSL all work. See [installing the CLI](install.md).
 
 ### Can xecret read my secrets?
 
-Yes, technically. xecret uses server-side envelope encryption: values are
-decrypted inside a single request handler, and every decryption is audited.
-This is the same model Doppler uses, and it is what makes team sharing, CI
-tokens and browser import work.
+No. Secret values and notes are end-to-end encrypted: your browser or the CLI
+encrypts them before they are sent, under keys that leave your devices only
+encrypted. We store ciphertext and hold nothing that opens it, and neither does
+anyone who steals our database or orders us to hand it over.
 
-If you need a provider that cannot read your secrets even in principle, you
-need a zero-knowledge product. The full reasoning, including when to choose
-something else, is in [what xecret can and cannot see](security/trust-model.md).
+We can see secret *names*, who read what and when, and your account details.
+The full list, and the limits of the guarantee, are in
+[what xecret can and cannot see](security/trust-model.md).
 
 ### What happens if your database is breached?
 
-The attacker gets ciphertext. No key material is stored in the database at any
-layer — the root key lives in a separate Cloudflare Secrets Store binding the
-database has no access to. A breach of *both* is the scenario the model does
-not defend against.
+The attacker gets ciphertext, and the names and metadata beside it. The keys
+that open your values were never on our servers to steal. What a stolen
+database does allow is guessing at a person's master passphrase offline, which
+Argon2id makes slow on purpose — so choose a strong one.
+
+### What if I forget my master passphrase?
+
+Use one of your five recovery codes, or a passkey. If you lose all of them, we
+cannot get your vault back — nobody holds a copy of your keys, us included.
+Teammates can share their environments with you again, and a reset keeps the
+old vault recoverable for seven days. See
+[resetting your vault](security/vault-archive.md).
 
 ### Are secrets ever written to my disk?
 
@@ -69,8 +77,8 @@ audited. See [teams, roles and access](guides/teams.md).
 
 ### Who can see that I read a secret?
 
-Owners and admins, in the [audit log](security/audit-log.md). Every decryption
-is recorded — including yours.
+Owners and admins, in the [audit log](security/audit-log.md). Every fetch of a
+value is recorded — yours included.
 
 ## Day to day
 
@@ -162,9 +170,13 @@ unencumbered so it can ship inside your Docker images without licence friction.
 
 ### Is it production-ready?
 
-Not yet. xecret is **pre-alpha**: feature-complete for its first version, but
-it has not run against production infrastructure and has not had its security
-pass. Do not store credentials you cannot afford to rotate.
+Yes. xecret is built for production credentials: end-to-end encryption with a
+published specification, production closed to developers by default on Team
+and Enterprise, scoped and revocable CI tokens, an append-only audit log, and an
+offline cache that keeps a local run going through a network outage. Breaking
+changes are announced before they ship wherever we reasonably can, and an
+Enterprise agreement can add an SLA. See [security at xecret](/security) and
+[the trust model](security/trust-model.md).
 
 ## Comparisons
 

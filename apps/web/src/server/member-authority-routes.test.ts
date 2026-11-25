@@ -95,6 +95,11 @@ const repositories = vi.hoisted(() => ({
   // is `plan-limits-routes.test.ts`'s, against a real database.
   lockCapacity: vi.fn(async () => undefined),
   countLiveServiceTokens: vi.fn(async () => 0),
+  // The mode re-read inside the minting transaction, so a keyless token cannot
+  // land in an environment upgraded mid-request — whatever mode the environment
+  // was resolved in, it still holds here. The race itself is
+  // `encryption-upgrade-routes.test.ts`'s, against a real database.
+  lockEnvironmentMode: vi.fn(),
 }));
 
 vi.mock('./context', () => context);
@@ -430,6 +435,12 @@ beforeEach(() => {
       slug === 'staging' ? staging : slug === 'production' ? production : undefined,
   );
   repositories.listEnvironments.mockResolvedValue([staging, production]);
+  // Both environments keep the mode they were resolved in.
+  repositories.lockEnvironmentMode.mockImplementation(
+    async (_db: unknown, _orgId: string, environmentId: string) =>
+      [staging, production].find((environment) => environment.id === environmentId)
+        ?.encryptionMode ?? null,
+  );
   repositories.listEnvironmentsForOrganization.mockResolvedValue([
     { ...staging, project: { id: PROJECT_ID, name: 'API', slug: 'api' } },
     { ...production, project: { id: PROJECT_ID, name: 'API', slug: 'api' } },

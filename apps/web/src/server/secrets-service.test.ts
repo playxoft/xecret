@@ -97,12 +97,17 @@ const repository = vi.hoisted(() => ({
   createSecret: vi.fn(),
   addSecretVersion: vi.fn(),
   updateSecretMetadata: vi.fn(),
+  // The mode a server-mode write re-reads inside its transaction (the upgrade
+  // to end-to-end encryption's lock order). Always `server` here; the race it
+  // closes is `encryption-upgrade-routes.test.ts`'s, against PostgreSQL.
+  lockEnvironmentMode: vi.fn(() => Promise.resolve('server')),
 }));
 
 vi.mock('@xecret/db/repositories', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@xecret/db/repositories')>();
   return {
     ...actual,
+    lockEnvironmentMode: repository.lockEnvironmentMode,
     loadEnvironmentKeyChain: repository.loadEnvironmentKeyChain,
     loadEnvironmentSecrets: repository.loadEnvironmentSecrets,
     createSecret: repository.createSecret,

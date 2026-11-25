@@ -3,7 +3,7 @@ title: Troubleshooting
 navTitle: Troubleshooting
 description: Every error message the CLI and API produce, what it actually means, and the fix — from "command not found" to "no such environment" in CI.
 keywords: [xecret error, command not found, not signed in, 401 xecret, no xecret.yaml, ci token not accepted, debugging]
-updated: 2026-08-16
+updated: 2026-11-22
 ---
 
 Find your message. If it is not here, `xecret version` and the `requestId` from
@@ -231,8 +231,10 @@ that produced it.
 
 ### `session_locked`
 
-Your session is signed in but PIN-locked. Enter the PIN. This is the dashboard
-only; bearer tokens are not PIN-gated.
+Your session is signed in but its vault is locked — it was idle for longer
+than your auto-lock allows, or somebody locked it. Unlock it with your master
+passphrase, a passkey, or this browser's device PIN. This is the dashboard only;
+CLI and service tokens are not subject to the lock.
 
 ### `409` when deleting your account
 

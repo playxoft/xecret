@@ -93,31 +93,34 @@ Production's.
    secret, and the redirect URI, belong with the client id.
 9. Confirm the scheduled jobs (P23, P12, P19). They run from the Worker's own
    Cron Triggers, declared in `apps/web/wrangler.toml`
-   (`[env.production.triggers]`,
-   `crons = ["17 * * * *", "*/5 * * * *", "41 3 * * *"]`): hourly the
-   retained-vault purge, the sign-in-confirmation prune and then the billing
-   job; every five minutes the webhook delivery sweep; nightly the billing
-   reconciler.
+   (`[env.production.triggers]`, `crons = ["17 10 * * *", "17 22 * * *"]`):
+   every run the retained-vault purge, the prunes, the webhook delivery sweep
+   and read-alert digests, then the billing job; the 10:17 run then also the
+   deleted-data purge and the billing reconciler. Twice a day on purpose, so Neon's free-plan compute can
+   scale to zero (`src/server/scheduled.ts` says why) — **never restore a
+   `*/5` or other sub-hourly trigger** to "fix" a delay: it keeps the database
+   awake around the clock and spends the month's compute in two weeks.
    - Cloudflare dashboard → Workers & Pages → `xecret-production` → Settings →
-     Triggers lists **all three** Cron Triggers. The deploy output also prints
-     the schedules it set. No hourly trigger means retained vaults are never
-     purged — the seven-day promise breaks silently — and seat-sync retries,
-     overage reports and dated reminders never run; no five-minute trigger
-     means queued webhook deliveries beyond the inline first attempts never
-     go out.
+     Triggers lists **both** Cron Triggers and nothing else. The deploy output
+     also prints the schedules it set. No trigger means retained vaults are
+     never purged — the seven-day promise breaks silently — and seat-sync
+     retries, overage reports, dated reminders and queued webhook deliveries
+     beyond the inline first attempts never go out; no `17 10` trigger also
+     means no card-expiry reminders, no 30-day deleted-data purge and no
+     reconciler.
    - The internal routes must **not** answer the internet:
      ```sh
-     for job in vault-purge prune billing-hourly notifications billing-daily; do
+     for job in vault-purge prune billing-hourly notifications deleted-data-purge billing-daily; do
        curl -s -o /dev/null -w "$job %{http_code}\n" -X POST "https://xecret.playxoft.com/api/internal/scheduled/$job"
      done
      ```
      prints `404` for each. Anything else — a `200` above all — is a deployment
      that lets anybody run them, and is rolled back.
-   - After the next `:17` past the hour, the Worker's logs show the scheduled
+   - After the next 10:17 or 22:17 UTC, the Worker's logs show the scheduled
      run: `POST /api/internal/scheduled/vault-purge`, then `…/prune`, then
-     `…/billing-hourly`, each answered `200`, made in-process by the Cron
-     Trigger rather than from outside. Any five-minute mark shows
-     `…/notifications` the same way.
+     `…/notifications`, then `…/billing-hourly` (and at 10:17
+     `…/deleted-data-purge`, then `…/billing-daily` last), each answered `200`, made in-process by the Cron Trigger rather
+     than from outside.
 10. If payments are on (P12): the Dodo webhook endpoint
     `https://xecret.playxoft.com/api/billing/webhook` is registered in the Dodo
     mode `DODO_ENVIRONMENT` names, and its delivery log shows recent attempts

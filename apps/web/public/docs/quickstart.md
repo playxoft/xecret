@@ -3,7 +3,7 @@ title: Quickstart
 navTitle: Quickstart
 description: From sign-up to running your app with injected secrets in about five minutes, including your first CI job.
 keywords: [xecret quickstart, get started, xecret run, install xecret cli, import env file]
-updated: 2026-08-16
+updated: 2026-11-22
 ---
 
 Five steps, about five minutes. Everything here also works against a
@@ -97,8 +97,8 @@ What happens under the hood:
 
 1. The CLI resolves which project and environment you mean (flags, then
    `.xecret.yaml`).
-2. It asks the server for that environment; the server decrypts the values and
-   returns them over TLS.
+2. It fetches that environment's values, still encrypted, and decrypts them on
+   your machine. The server never holds the key.
 3. The CLI starts your command with those values in its environment,
    forwards signals such as `Ctrl-C`, and exits with your command's exit code.
 

@@ -204,7 +204,7 @@ function pricingDescription(currency: CurrencyId, paymentsLive: boolean): string
     `(${team.monthly.price} monthly), Enterprise by contract, and self-hosted free forever. ` +
     (paymentsLive
       ? 'Service tokens and CI never cost anything, and a declined card never stops a build.'
-      : 'Service tokens and CI never cost anything, and no card is taken in pre-alpha.')
+      : 'Service tokens and CI never cost anything, and no card is taken today.')
   );
 }
 
@@ -927,8 +927,8 @@ const ADDONS = [
 const INCLUDED = [
   {
     icon: LockIcon,
-    title: 'Per-environment encryption',
-    body: 'Every environment gets its own data key the moment it is created, encrypted under a root key we hold. Nothing about that changes with the plan you are on — and we say plainly what it does and does not protect you from.',
+    title: 'End-to-end encryption',
+    body: 'Every environment gets its own data key the moment it is created, generated on your device and shared only with the people and tokens you choose. We never hold it, on any plan — and we say plainly what that does and does not protect you from.',
     link: { href: '/docs/security/trust-model', label: 'What xecret can and cannot see' },
   },
   {
@@ -1991,7 +1991,7 @@ export default async function PricingPage() {
                     which is the same pair the plan cards use.{' '}
                     {paymentsLive
                       ? 'Paid plans are bought from an organisation’s billing page.'
-                      : 'During pre-alpha nothing is billed, and each plan’s limits and features apply as the table shows them.'}
+                      : 'Today nothing is billed, and each plan’s limits and features apply as the table shows them.'}
                   </caption>
                   <thead className="bg-canvas-inset">
                     <tr className="border-line border-b">
@@ -2149,7 +2149,7 @@ export default async function PricingPage() {
           // Counted, not stated. The prose said "nine" against a list of
           // thirteen, which is the kind of number that is wrong the first time
           // somebody adds a question and right again only by accident.
-          description={`The ${PRICING_FAQ.length} that decide whether a price is workable, answered including the several where the honest answer is that it is not built yet.`}
+          description={`The ${PRICING_FAQ.length} that decide whether a price is workable, answered in full, including what is on the roadmap.`}
         />
 
         <Faq items={faq} className="mx-auto mt-10 max-w-3xl" />

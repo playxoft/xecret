@@ -5,7 +5,7 @@ import { publicRoute } from '@/server/route';
 import { isScheduledRequest } from '@/server/scheduled';
 
 /**
- * The hourly pruning, reachable only from the Worker's own Cron Trigger
+ * The scheduled pruning, reachable only from the Worker's own Cron Trigger
  * (`worker.ts`, `server/scheduled.ts`), after the vault purge:
  *
  *  - **Webhook deliveries** finished — succeeded or abandoned — more than

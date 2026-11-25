@@ -72,7 +72,7 @@ import { endpointHostOf } from './schemas/webhooks';
  * statement for the whole batch, and its id is the `webhook-id` header on every
  * attempt. The first attempts are made inline, up to
  * {@link WEBHOOK_INLINE_ATTEMPTS} per call; the rest wait, due now, for the
- * five-minute sweep (`sweepWebhookDeliveries`), which is also what retries a
+ * scheduled sweep (`sweepWebhookDeliveries`), which is also what retries a
  * failure at `nextAttemptAt` and takes back a claim whose sender died. A
  * receiver can therefore see a delivery twice, and the documentation says to do
  * the work once per `webhook-id`.
@@ -111,8 +111,8 @@ export const WEBHOOK_INLINE_ATTEMPTS = 10;
 /**
  * No new inline attempt is started after this long. `waitUntil` work is cut off
  * about thirty seconds after the response, and a delivery claimed but never
- * finished waits five minutes for the sweep to take it back; one never claimed
- * is sent by the very next run.
+ * finished waits for the stale-claim rule and a sweep to take it back; one never
+ * claimed is sent by the very next run.
  */
 export const WEBHOOK_INLINE_BUDGET_MS = 20_000;
 

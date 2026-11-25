@@ -224,6 +224,19 @@ export interface InitializeEnvironmentKeysParams {
   createdBy: string;
   /** The creator's own grant. An environment key nobody holds is unusable. */
   grant: EnvKeyGrantSeed;
+  /**
+   * The id the `env_data_keys` row takes, when the caller has to know it in
+   * advance. Omitted, one is minted here — the ordinary path.
+   *
+   * Supplied by the upgrade of a `server`-mode environment (ADR 0009, Phase 5),
+   * and not as a convenience: that request carries every value of the
+   * environment re-encrypted in the browser, each one naming the key it was
+   * sealed against, and the server checks every one of them against this id
+   * before it stores anything. No AAD binds the id — a grant binds the key's
+   * *version* — so a client-chosen id costs nothing but a primary-key
+   * collision, which is refused like any other.
+   */
+  dataKeyId?: string | undefined;
 }
 
 /**
@@ -248,7 +261,7 @@ export async function initializeEnvironmentKeys(
   params: InitializeEnvironmentKeysParams,
 ): Promise<EnvDataKeyRecord> {
   const now = new Date();
-  const dataKeyId = uuidv7();
+  const dataKeyId = params.dataKeyId ?? uuidv7();
 
   try {
     return await exec.transaction(async (tx) => {
@@ -1501,7 +1514,12 @@ function asKeyConflict(cause: unknown): unknown {
 
   if (
     isUniqueViolation(cause, 'env_data_keys_active_unique') ||
-    isUniqueViolation(cause, 'env_data_keys_environment_version_unique')
+    isUniqueViolation(cause, 'env_data_keys_environment_version_unique') ||
+    // A caller-chosen id (`InitializeEnvironmentKeysParams.dataKeyId`) that is
+    // already taken. Only a broken or hostile client produces one, and the
+    // answer it gets is the same "re-read and try again" as every other race
+    // on this table rather than an unexplained 500.
+    isUniqueViolation(cause, 'env_data_keys_pkey')
   ) {
     return new RepositoryError(
       'conflict',

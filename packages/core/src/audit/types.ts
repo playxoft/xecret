@@ -229,14 +229,24 @@ export type AuditAction =
    * An organisation was soft-deleted, taking every project, environment and
    * secret inside it out of reach in one act.
    *
-   * The row it points at survives the deletion — that is what a soft delete is
-   * for here — so this record, and every record filed against the organisation
-   * before it, stays readable by an operator afterwards. Nobody in the product
+   * The row it points at survives the deletion for thirty days — that is what
+   * a soft delete is for here — and then `org.purged` erases it. This record,
+   * and every record filed against the organisation before it, stays readable
+   * by an operator throughout and afterwards. Nobody in the product
    * can read them: the audit route resolves through `organizations` with a
    * `deleted_at is null` filter, so the organisation stops answering the moment
    * this event is written.
    */
   | 'org.deleted'
+  /**
+   * An organisation deleted thirty days earlier was erased by the nightly
+   * deleted-data purge: its projects, environments, secrets and keys, its
+   * members, invitations and tokens, and its billing rows. The audit records
+   * filed against it are not touched — the log has no foreign keys — so this
+   * one is the last of them, readable by an operator. `environmentCount` and
+   * `secretCount` say how much went. Recorded with a `system` actor.
+   */
+  | 'org.purged'
   /**
    * The organisation turned single sign-on on: xecret created the WorkOS
    * Organization its identity-provider connections will hang off, and linked
@@ -269,9 +279,35 @@ export type AuditAction =
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'
+  /**
+   * A project deleted thirty days earlier was erased by the nightly
+   * deleted-data purge: its environments, their secrets and every version of
+   * them, and the keys they were encrypted under. `environmentCount` and
+   * `secretCount` say how much went. Recorded with a `system` actor.
+   */
+  | 'project.purged'
   | 'environment.created'
   | 'environment.updated'
   | 'environment.deleted'
+  /**
+   * An environment deleted thirty days earlier was erased by the nightly
+   * deleted-data purge, with its secrets and its keys. `secretCount` says how
+   * many secrets went. Recorded with a `system` actor.
+   */
+  | 'environment.purged'
+  /**
+   * A `server`-mode environment was upgraded to end-to-end encryption in place
+   * (ADR 0009, Phase 5): every value, every version and every note re-encrypted
+   * in a member's browser under a key generated there, and the server-held
+   * `env_keys` row deleted, so the server can no longer open anything in it.
+   *
+   * Counts only — `secretCount`, `versionCount`, `noteCount`, and what could not
+   * cross: `purgedSecretCount` deleted secrets erased early and
+   * `revokedTokenCount` keyless CI tokens revoked (each of those also has its
+   * own `secret.purged` or `token.revoked` record, reason `encryption-upgrade`).
+   * One record per environment, ever: the mode moves one way.
+   */
+  | 'environment.encryption_upgraded'
   /**
    * An environment's parent was set, changed or cleared (P19 §1): what its
    * view inherits from now differs. `parentEnvironmentSlug` names the new
@@ -356,6 +392,13 @@ export type AuditAction =
   | 'secret.created'
   | 'secret.updated'
   | 'secret.deleted'
+  /**
+   * A deleted secret was erased, with every version of its value, by the
+   * nightly deleted-data purge — thirty days after `secret.deleted`, or at the
+   * end of the organisation's point-in-time restore window if that is longer.
+   * Recorded with a `system` actor; `reason` says which period ended.
+   */
+  | 'secret.purged'
   | 'secret.rotated'
   | 'secret.read'
   | 'secret.revealed'
@@ -794,6 +837,18 @@ export interface AuditMetadata {
    */
   partCount?: number;
   environmentCount?: number;
+  /**
+   * What an upgrade to end-to-end encryption carried across
+   * (`environment.encryption_upgraded`): how many secret versions and notes were
+   * re-encrypted, how many soft-deleted secrets were erased because they could
+   * not be, and how many keyless CI tokens were revoked because nothing could be
+   * sealed to them. Counts, never names — the per-secret and per-token records
+   * beside it carry those.
+   */
+  versionCount?: number;
+  noteCount?: number;
+  purgedSecretCount?: number;
+  revokedTokenCount?: number;
   /** How many recovery codes a regeneration issued. A count, never a code. */
   recoveryCodeCount?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */

@@ -13,18 +13,26 @@ being honest about the one thing it sells.
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare; the Neon serverless HTTP driver is the fallback without Hyperdrive. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the Root KEK, bound to the Worker. | Yes |
 | **A WorkOS account** | Identity only — xecret's own sign-in page checks passwords and emailed codes through WorkOS's User Management API, and Google and enterprise SSO sign-in go through WorkOS redirects; AuthKit's hosted page is linked from no sign-in page, and serves re-authentication and a support escape hatch (see below). xecret checks each result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
-| **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | PIN-reset links, invitation emails, and the escape archive emailed before every vault reset (P23). | **Yes, for a production deployment** (`XECRET_ENV=production`): without one, every vault reset is refused with a 503 — a vault is never reset without its archive being emailed first — and `check:deploy production` fails. Elsewhere optional: invitations return a shareable link instead, PIN reset answers 200 with `sent: false` and a reason, and a vault resets only when the person ticks "Reset without the emailed archive". |
+| **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | Invitation emails, and the escape archive emailed before every vault reset (P23). | **Yes, for a production deployment** (`XECRET_ENV=production`): without one, every vault reset is refused with a 503 — a vault is never reset without its archive being emailed first — and `check:deploy production` fails. Elsewhere optional: invitations return a shareable link instead, and a vault resets only when the person ticks "Reset without the emailed archive". |
 | **Phase.dev** (or any secret source for deploy time) | Where *your* copy of the Root KEK lives between deploys. The Worker never calls it at runtime. | Your choice — any process that can populate deploy-time env vars works. |
 | **Dodo Payments** | Taking payment for plans — xecret's hosted service charges through it. | **No.** Leave every `DODO_*` variable unset and payments are switched off: plans are whatever `npm run plan:set` writes (every capability is yours to grant), the billing screen says the installation takes no payments, and nothing else changes. Every organisation starts on Free, **and Free's limits are enforced** — 5 projects, 3 members, 250 secrets per environment and the rest; give an organisation the room you want with `npm run plan:set` — a plan, or one limit raised with `--limit-override projects=2000`. Set *some* of them and the deployment refuses billing with a 503 until all are set — see [billing](operations/billing.md). |
 
 ## Before anything else: the root key
 
-The Root KEK encrypts every organisation's keys, which encrypt every
-environment's keys, which encrypt every secret. **If you lose it, every secret
-is permanently unrecoverable — there is no support ticket that fixes this.**
+End-to-end encrypted secret values do not depend on it: they are encrypted by
+your users' browsers and CLIs under keys only those users hold
+([ADR 0009](adr/0009-zero-knowledge-encryption.md)), and the deployment cannot
+open them with or without the Root KEK.
 
-1. Generate it, split it, and escrow the shares **before** the first real
-   secret is stored:
+The Root KEK wraps every organisation's key, which protects what the server
+itself must be able to open: the deployment's operational secrets (webhook
+signing secrets) and any environment still on server-side envelope encryption
+(`encryption_mode = 'server'`, created before end-to-end encryption shipped — a
+new deployment has none). **If you lose it, those are permanently
+unrecoverable — there is no support ticket that fixes this.** End-to-end
+encrypted values survive.
+
+1. Generate it, split it, and escrow the shares **before** you go live:
 
    ```bash
    npm run keygen        # generates the KEK + 2-of-3 Shamir shares
@@ -84,8 +92,7 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
    `XECRET_PUBLIC_URL` is read twice. `next build` writes it into the canonical
    URL of every prerendered page, the `sitemap.xml`, the `Host` line in
    `robots.txt` and the JSON-LD `@id`; the Worker compares the `Origin` header
-   on every mutation against it, builds invitation and PIN-reset links on top of
-   it, and derives the sign-in redirect URI from it. Left as shipped, your
+   on every mutation against it, builds invitation links on top of it, and derives the sign-in redirect URI from it. Left as shipped, your
    deployment names our site as the canonical version of your pages, rejects your
    own dashboard's writes as cross-site, emails your colleagues invitation links
    to a server you do not control, and sends AuthKit a redirect URI your WorkOS
@@ -355,8 +362,10 @@ today, so a second provider needs its own.
 
 ## What you are operating
 
-- **Backups:** the database holds only ciphertext; a backup without the Root
-  KEK escrow is a paperweight. Test restore of *both* — the drill in
+- **Backups:** the database holds only ciphertext. Restored on its own it brings
+  back every end-to-end encrypted value, for your users' keys to open; webhook
+  secrets and any server-mode environment also need the Root KEK from escrow.
+  Test restore of *both* — the drill in
   [key recovery](security/key-recovery.md) exists to be run, quarterly.
 - **Migrations:** generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
@@ -417,9 +426,13 @@ today, so a second provider needs its own.
 
 ## The trust model you are accepting
 
-Server-side envelope encryption: your deployment *can* decrypt the secrets it
-stores — that is what makes team sharing, CI tokens and browser import work.
-Self-hosting moves the trust from us to your own Cloudflare account, database
-and key custody. Read [ADR 0001](adr/0001-trust-model.md) and the
+Secret values and notes are end-to-end encrypted: your deployment stores
+ciphertext and cannot decrypt it, any more than ours can. What moves to you is
+everything else — secret names and other metadata, the audit log, availability,
+custody of the Root KEK, and the dashboard's JavaScript, which your users'
+browsers trust you to serve unaltered. Read
+[ADR 0009](adr/0009-zero-knowledge-encryption.md) (its trade-offs are the
+residual risks), the published
+[trust model](../apps/web/public/docs/security/trust-model.md) and the
 [threat model](security/threat-model.md) before you accept other people's
 production credentials into a deployment you operate.

@@ -1009,7 +1009,8 @@ export async function updateOrganization(
  * through `organizations` with a `deleted_at is null` filter, so projects,
  * environments and secrets become unreachable without touching their rows —
  * they remain what the audit log points at. The wrapped keys remain too, and
- * remain wrapped; nothing here needs, or touches, key material.
+ * remain wrapped; nothing here needs, or touches, key material. Thirty days
+ * later the deleted-data purge erases all of it (`deleted-data.ts`).
  *
  * Idempotent, and deliberately without a last-owner style guard: the caller
  * decides whether an organisation may die (account deletion deletes the ones

@@ -28,7 +28,7 @@ export async function GET(): Promise<Response> {
   const lines: string[] = [
     '# xecret',
     '',
-    `> ${SITE_TAGLINE}. Store environment variables once, encrypted per environment, and inject them into any process — locally, in CI, in production — without writing a .env file to disk.`,
+    `> ${SITE_TAGLINE}. Store environment variables once, end-to-end encrypted — values are encrypted on your device and the service cannot read them (an environment created before end-to-end encryption became the default stays server-encrypted until its values are moved) — and inject them into any process, locally, in CI or in production, without writing a .env file to disk. Security overview: ${absoluteUrl('/security')}.`,
     '',
     'Every page below is published twice: as HTML at the path shown, and as the markdown it was written in at the same path with `.md` appended. The links here point at the markdown.',
     '',
@@ -63,6 +63,7 @@ export async function GET(): Promise<Response> {
     `- [Pricing](${absoluteUrl('/pricing')}): plans, limits and what each tier includes.`,
     `- [FAQ](${absoluteUrl('/faq')}): the questions asked before signing up.`,
     `- [About](${absoluteUrl('/about')}): why this exists and what it commits to.`,
+    `- [Security](${absoluteUrl('/security')}): encryption, access control, audit, infrastructure, compliance and how to report a vulnerability.`,
     `- [Privacy policy](${absoluteUrl('/privacy')}) and [Terms](${absoluteUrl('/terms')}).`,
     '',
   );

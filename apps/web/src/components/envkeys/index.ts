@@ -26,6 +26,30 @@ export { EnvKeyUnavailableState, NeedsRotationBanner } from './env-key-notice';
 
 export { EnvironmentKeyCard } from './environment-key-card';
 
+export { EncryptionUpgradePanel } from './encryption-upgrade-panel';
+export type { EncryptionUpgradePanelProps } from './encryption-upgrade-panel';
+export {
+  autoUpgradeEligible,
+  buildUpgradeBody,
+  fetchUpgradePreview,
+  notNormalisedSecrets,
+  runEncryptionUpgrade,
+  upgradeMaterialPath,
+  upgradePath,
+  UpgradeRefusedError,
+} from './encryption-upgrade';
+export type {
+  UpgradeBody,
+  UpgradeMaterial,
+  UpgradeOutcome,
+  UpgradePreview,
+  UpgradeResult,
+  UpgradeStep,
+} from './encryption-upgrade';
+
+export { shareWithMissingRecipients } from './share';
+export type { ShareOutcome } from './share';
+
 export {
   createEnvironmentKeys,
   decodeRecipientKey,

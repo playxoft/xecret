@@ -78,7 +78,7 @@ import type { UsageReport } from './usage';
  *
  * Nothing here ever touches the data path. Only steps 1–3 change a row, and
  * each only what its own date already decided; every other difference between
- * our rows and Dodo's is the nightly reconciler's to *report* (`reconcile.ts`),
+ * our rows and Dodo's is the daily reconciler's to *report* (`reconcile.ts`),
  * never to fix. Steps 1–3 never touch an operator's grant either — a paid row
  * following a subscription id with no product recorded (`operatorManaged`) is
  * left out of their lists, and the reconciler reports it once.
@@ -110,8 +110,12 @@ export const ACTIVATION_ALERT_AFTER_MS = 24 * 60 * 60 * 1000;
 /** Stranded checkouts asked about per run, at one Dodo call each. */
 const ACTIVATION_CHECKS_PER_RUN = 500;
 
-/** The UTC hour the card-expiry check runs in — once a day, one Dodo call per paying customer. */
-export const CARD_CHECK_HOUR_UTC = 9;
+/**
+ * The UTC hour the card-expiry check runs in — once a day, one Dodo call per
+ * paying customer. The hour of the daily run (`DAILY_CRON` in
+ * `server/scheduled.ts`): a schedule with no run in it sends no card reminder.
+ */
+export const CARD_CHECK_HOUR_UTC = 10;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

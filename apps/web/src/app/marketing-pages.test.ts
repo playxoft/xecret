@@ -4,10 +4,18 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+import { DELETED_DATA_RETENTION_DAYS } from '@xecret/db/repositories';
 import { PROJECT_VIEW_STORAGE_KEY } from '@/components/projects/project-listing';
 import { DEVICE_PIN_WRAP_KEY } from '@/components/vault/device-pin';
 import { VAULT_SESSION_MIRROR_KEY } from '@/components/vault/session-mirror';
 import { UNLOCK_NUDGE_KEY } from '@/components/vault/unlock-nudge';
+import {
+  DISCLOSURE_COMMITMENTS,
+  SECURITY_ADVISORY_URL,
+  SECURITY_EMAIL,
+  SECURITY_POLICY_URL,
+} from '@/lib/security-contact';
+import { REPO_URL } from '@/lib/site';
 import { SIDEBAR_STORAGE_KEY, THEME_STORAGE_KEY } from '@/lib/theme';
 
 /**
@@ -43,6 +51,7 @@ const PAGES = [
   'features',
   'about',
   'privacy',
+  'security',
   '.', // the home page, `src/app/page.tsx`
 ] as const;
 
@@ -393,6 +402,68 @@ describe('audit retention agrees with the engine everywhere it is stated', () =>
     expect(ALL).not.toMatch(/12 months of (audit )?history/i);
     expect(ALL).not.toMatch(/twelve months on Team/i);
     expect(ALL).not.toMatch(/(3|three) years of (audit )?history/i);
+  });
+});
+
+describe('the legal pages state what the code does, about whom', () => {
+  // The daily purge erases deleted data after `DELETED_DATA_RETENTION_DAYS`,
+  // and `/privacy` publishes the number. A purge shortened in code and not on
+  // the page — or the other way round — is a privacy policy that is wrong
+  // about the one thing a deletion request turns on.
+  it('privacy states the period the deleted-data purge keeps deleted data for', () => {
+    const privacy = (SOURCES.get('privacy') ?? '').replace(/\s+/g, ' ');
+    expect(privacy).toContain(`kept for ${DELETED_DATA_RETENTION_DAYS} days after deletion`);
+  });
+
+  // Both documents name the contracting company; one with a mistyped CIN or
+  // an old address beside one without is two companies as far as a reader can
+  // tell. The register is the source; these strings are copied from it.
+  it.each(['privacy', 'terms', 'security'] as const)(
+    '%s names the company by its registered details',
+    (page) => {
+      const text = (SOURCES.get(page) ?? '').replace(/\s+/g, ' ');
+      expect(text).toContain('Playxoft Studios Private Limited');
+      expect(text).toContain('U58203TN2025PTC178070');
+      expect(text).toContain('19B/1, Ananthapettai Street, Kanchipuram, Tamil Nadu 631501, India');
+      expect(text).toContain('support@playxoft.com');
+    },
+  );
+});
+
+describe('the security page and security.txt say what SECURITY.md says', () => {
+  // Three surfaces publish how to report a vulnerability: the policy in the
+  // repository, `/security`, and `/.well-known/security.txt`. The last two read
+  // `lib/security-contact.ts`; this pins that module to the policy, so a
+  // changed mailbox or a shortened response time cannot leave the site
+  // promising what the policy no longer does.
+  const POLICY = readFileSync(
+    join(import.meta.dirname, '..', '..', '..', '..', 'SECURITY.md'),
+    'utf8',
+  );
+
+  it('names the same two private channels', () => {
+    expect(POLICY).toContain(SECURITY_EMAIL);
+    expect(POLICY).toContain(SECURITY_ADVISORY_URL);
+    expect(SECURITY_POLICY_URL).toBe(`${REPO_URL}/blob/main/SECURITY.md`);
+  });
+
+  it.each(DISCLOSURE_COMMITMENTS)('commits to "$label: $value" as the policy does', (row) => {
+    // A whole row of the policy's table, so a value cannot be matched out of
+    // some other sentence that happens to contain it.
+    const rows = POLICY.split('\n').map((line) => line.trim());
+    expect(rows).toContain(`| ${row.label} | ${row.value} |`);
+  });
+
+  it('states the period the deleted-data purge keeps deleted data for', () => {
+    const security = (PROSE.get('security') ?? '').replace(/\s+/g, ' ');
+    expect(security).toContain(`erased for good after ${DELETED_DATA_RETENTION_DAYS} days`);
+  });
+
+  it('says plainly that xecret holds no certification it could be asked for', () => {
+    // The one sentence a questionnaire is looking for. Removing it would not
+    // make the page untrue, but it would make the page evasive.
+    const security = (PROSE.get('security') ?? '').replace(/\s+/g, ' ');
+    expect(security).toContain('does not hold SOC 2 or ISO 27001 certification');
   });
 });
 

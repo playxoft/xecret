@@ -108,10 +108,16 @@ const nextConfig: NextConfig = {
   // `/sign-in?mode=resetPassword&oobCode=…`. That is harmless: the pages read
   // only their own parameters, and the code belongs to a Firebase project
   // nothing here talks to any more.
+  //
+  // ── `/security.txt` ──
+  // RFC 9116 puts the file at `/.well-known/security.txt`, served by
+  // `app/.well-known/security.txt/route.ts`, and lets the top-level path
+  // redirect there for older tooling — one body, at one URL.
   async redirects() {
     return [
       { source: '/forgot-password', destination: '/sign-in/forgot-password', permanent: true },
       { source: '/reset-password', destination: '/sign-in', permanent: true },
+      { source: '/security.txt', destination: '/.well-known/security.txt', permanent: true },
     ];
   },
 

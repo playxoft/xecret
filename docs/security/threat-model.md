@@ -12,7 +12,7 @@ introduced. An unreviewed threat model is worse than none, because it creates fa
 | Asset | Sensitivity | Impact if lost |
 |---|---|---|
 | Customer secret plaintext | **Critical** | Customer production systems compromised. Existential for xecret. |
-| Root KEK | **Critical** | Every customer's secrets decryptable. Also: if *lost* rather than stolen, all data permanently unrecoverable. |
+| Root KEK | **Critical** | Webhook signing secrets and every server-mode environment decryptable — but no end-to-end encrypted value (ADR 0009). Also: if *lost* rather than stolen, those are permanently unrecoverable. |
 | Org / Env keys (wrapped) | High | Useless without the Root KEK, but narrow the attack. |
 | Session & CLI tokens | High | Account takeover at the privilege of the token. |
 | Service tokens (CI) | High | Read access to one project+environment. |
@@ -321,13 +321,17 @@ token schema is already designed for it.
 | **Goal** | Read secrets from the database directly |
 | **Impact** | **Low for secrets**, Medium for metadata · **Likelihood** | Low |
 
-**Mitigations:** **this is the attack envelope encryption exists to defeat.** The database
-holds only ciphertext and wrapped keys; the Root KEK is never present in any column, backup,
-or replica. Session and API tokens are stored as SHA-256 hashes, so a dump yields no usable
-credentials. The application database role has no DDL rights.
+**Mitigations:** under ADR 0009, secret values and notes are end-to-end encrypted: the
+database holds ciphertext, wrapped user keys and sealed grants, none of which the server can
+open, so a dump yields no end-to-end encrypted value even together with the Root KEK. For the
+remaining server-mode environments, envelope encryption still applies and the Root KEK is never
+present in any column, backup, or replica. Session and API tokens are stored as SHA-256 hashes,
+so a dump yields no usable credentials. The application database role has no DDL rights.
 
-**Residual risk:** Low for secret values. Metadata — org names, user emails, secret *names*,
-audit history — is exposed and is genuinely sensitive intelligence. Accepted and documented.
+**Residual risk:** Low for secret values. A dump is an offline Argon2id oracle against every
+user's master passphrase — which is why ADR 0009 refuses to lower the parameters. Metadata —
+org names, user emails, secret *names*, audit history — is exposed and is genuinely sensitive
+intelligence. Accepted and documented.
 
 ---
 
@@ -338,19 +342,25 @@ audit history — is exposed and is genuinely sensitive intelligence. Accepted a
 | **Goal** | Execute code inside the trust boundary |
 | **Impact** | **Critical** · **Likelihood** | Low |
 
-This is the worst realistic case: code running in the Worker holds the Root KEK in memory and
-can decrypt anything.
+This is the worst realistic case. Code running in the Worker holds the Root KEK in memory and
+can decrypt anything the server can — webhook signing secrets and server-mode environments.
+Under ADR 0009 it cannot open an end-to-end encrypted value: it holds ciphertext and public
+keys, and nothing that opens them. What it can do instead is act against the clients — serve a
+poisoned dashboard bundle to a targeted user, substitute a member's public key, insert an
+unverified grant, serve stale data, or report an environment as server-mode to a client at first
+contact (ADR 0009 trade-offs 9, 2, 3, 5 and 8).
 
 **Mitigations:** minimal dependency count, reviewed before addition · `npm audit` and
 Dependabot in CI · lockfiles committed; CI installs with `npm ci` · Root KEK imported as a
 **non-extractable `CryptoKey`**, so it cannot be trivially serialised out · no `eval`, no
 dynamic `import()` of user input · CSP · Cloudflare's V8 isolate provides a strong sandbox ·
-all decryption is audited, so mass decryption is visible.
+every read is audited, so mass reading is visible · clients pin public keys and encryption
+modes they have seen · the CLI is a verifiable client (Go, MIT, cosign-signed, buildable from
+source) that never runs code the Worker serves.
 
-**Residual risk:** **Medium — and the highest residual risk in the system.** Envelope
-encryption does not defend against an attacker inside the boundary. Only ADR 0001's rejected
-E2E model would, at costs documented there. Detection (audit anomaly alerting) is the
-practical answer.
+**Residual risk:** **Medium — and still the highest residual risk in the system**, now through
+the code the Worker serves to browsers rather than through decryption. ADR 0009 trade-off 9
+states it; the CLI is the answer for a customer who cannot accept it.
 
 ---
 
@@ -378,15 +388,19 @@ with required review.
 | **Goal** | Read customer secrets |
 | **Impact** | Critical · **Likelihood** | Low |
 
-**Honest statement:** under ADR 0001, an operator with production access **can** decrypt
-customer secrets. No technical control in v1 fully prevents this.
+**Honest statement:** under ADR 0001, an operator with production access could decrypt
+customer secrets. Under ADR 0009 they **cannot** decrypt an end-to-end encrypted value: no key on
+our side opens one, and compelled disclosure has nothing to disclose. They can still read
+server-mode environments not yet moved, and everything T7 lists — above all, serving a poisoned
+dashboard bundle to a targeted user.
 
 **Mitigations:** Root KEK access is restricted in Phase.dev and Cloudflare with per-person
 accounts and their own audit trails · production access requires MFA · this limitation is
 stated plainly in `SECURITY.md` and the privacy documentation rather than obscured.
 
-**Residual risk:** **High, and inherent to the trust model.** Customers who cannot accept it
-need a zero-knowledge product. Saying so honestly is the only acceptable position.
+**Residual risk:** Low through the data path; **Medium through the code we serve**, as T7.
+Stated plainly in `SECURITY.md` and the published trust model, with the CLI named as the
+verifiable client.
 
 ---
 
@@ -400,8 +414,9 @@ need a zero-knowledge product. Saying so honestly is the only acceptable positio
 Phase.dev account deleted, locked, or lost; Cloudflare account closed; the one person who
 knew the ceremony leaves.
 
-**Consequence:** **every customer's secrets become permanently unrecoverable.** A database
-backup does not help — ciphertext without the key is noise.
+**Consequence:** **webhook signing secrets and every server-mode environment become permanently
+unrecoverable.** A database backup does not help — ciphertext without the key is noise.
+End-to-end encrypted values are unaffected: they never depended on the Root KEK.
 
 **Mitigations:** 2-of-3 Shamir escrow stored offline in physically separate locations ·
 documented, rehearsed restore procedure · quarterly drill assuming Phase.dev is gone · more
@@ -978,3 +993,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-20 | — | P19 (paid secret features): T15 added (written as T14, renumbered in review round 1 because P12 holds T14) — references held to `can()` at write and read, the declaration checked against the decrypted text, overrides made unforgeable by the server (symmetric under the owner's own key, replacing a sealed box), promotion and restore as ordinary audited writes, webhook payload allowlist and endpoint rules, client-enforced policies stated as guard rails, the read-alert throttle |
 | 2026-10-21 | — | P12, review round 3: T14 — an operator's grant over an old subscription's id (a paid row with no product) is left out of the hourly sweeps, which had ended a cancelling or held one to Free, and reported by the reconciler once; `plan:set` refuses, without `--over-dodo`, a Free row waiting on a paid checkout's subscription instead of detaching it as ended; the stranded-checkout sweep ends a wait by the snapshot decision's own reading of ended (a cancellation past its period included) and filters the Dodo mode in its query; alerts the hourly job would repeat are raised once (migration 0027). The trial's early end by payment rests on a staging check that is now a hard gate before live mode |
 | 2026-10-21 | — | P19, review round 2 (F1): T15 restated — `is_production` flipped on an environment that already holds a crossing link bypassed M3 entirely; turning it on now asks about an existing parent or template reference into one that is not production, and turning it off now asks about every still-production environment, in this project or another, that depends on it; a confirmed flip files `environment.link_crosses_protection` the same as a confirmed new link |
+| 2026-11-22 | — | ADR 0009 reflected in the asset table, T6, T7, T9 and T10: the Root KEK opens only webhook signing secrets and server-mode environments; a dump is an offline Argon2id oracle against passphrases; a Worker or an insider can no longer decrypt end-to-end encrypted values, and their remaining reach is the client code served and the unverified-key trade-offs |

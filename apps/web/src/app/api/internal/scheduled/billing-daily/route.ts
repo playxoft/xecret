@@ -4,7 +4,7 @@ import { publicRoute } from '@/server/route';
 import { isScheduledRequest } from '@/server/scheduled';
 
 /**
- * The nightly billing reconciler (P12), reachable only from the Worker's own
+ * The daily billing reconciler (P12), reachable only from the Worker's own
  * Cron Trigger (`worker.ts`, `server/scheduled.ts`); every request from the
  * internet gets a bare 404.
  *

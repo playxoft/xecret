@@ -3,7 +3,7 @@ title: Self-hosting xecret
 navTitle: Self-hosting
 description: Run xecret yourself — the honest dependency list, the root-key ceremony, a step-by-step deployment, and what you are signing up to operate.
 keywords: [self host secret manager, cloudflare workers deployment, open source secrets manager, agpl, neon postgres, root key]
-updated: 2026-10-14
+updated: 2026-11-22
 ---
 
 xecret is AGPL-3.0 and designed to be run by people other than us. This page is
@@ -19,7 +19,7 @@ about the one thing it sells.
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the root key, bound to the Worker. | Yes |
 | **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise single sign-on (though single sign-on connections cannot be set up from xecret yet). xecret checks the result once, server to server, and issues its own sessions. | Yes, and **this is real friction**. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. An identity-provider interface exists so another provider can be contributed. |
-| **A mail provider** | PIN-reset links, invitation emails, and the archive emailed before every vault reset. | **Yes, in production** — a production deployment without one resets no vault, because a vault is never reset without its archive being emailed first; the reset screen says so. Elsewhere optional: invitations return a shareable link instead, PIN reset answers `sent: false` with a reason, and a vault resets only when the person ticks "Reset without the emailed archive". |
+| **A mail provider** | Invitation emails, and the archive emailed before every vault reset. | **Yes, in production** — a production deployment without one resets no vault, because a vault is never reset without its archive being emailed first; the reset screen says so. Elsewhere optional: invitations return a shareable link instead, and a vault resets only when the person ticks "Reset without the emailed archive". |
 | **A deploy-time secret source** | Where *your* copy of the root key lives between deploys. The Worker never calls it at runtime. | Your choice — anything that can populate environment variables at deploy time. |
 
 If that list looks like a lot for a tool that injects environment variables:
@@ -27,13 +27,21 @@ it is, and it is stated up front for that reason.
 
 ## Before anything else: the root key
 
-The root key encrypts every organisation's key, which encrypts every
-environment's key, which encrypts every secret.
+Secret values never depend on it. They are end-to-end encrypted by your users'
+browsers and CLIs, under keys only those users hold, and your deployment can no
+more read them than ours can.
 
-> **Important** — If you lose the root key, every secret is permanently
-> unrecoverable. There is no support ticket, no recovery mode and no vendor
-> that can help, including us. Do this step before storing the first real
-> credential, not after.
+The root key protects what the server itself must be able to open: each
+organisation's key, and under it the deployment's own operational secrets —
+webhook signing secrets, for instance — plus any environment on the older
+server-side encryption. A new deployment creates none of those; every
+environment it makes is end-to-end encrypted.
+
+> **Important** — If you lose the root key, what it protects is permanently
+> unrecoverable: every webhook needs a new signing secret, and any server-side
+> encrypted environment is gone. End-to-end encrypted values are unaffected.
+> There is no support ticket, no recovery mode and no vendor that can help,
+> including us. Do this step before you go live, not after.
 
 1. **Generate and split it.**
 
@@ -220,8 +228,8 @@ top-level `[vars]` the same way.
 - **At runtime, by the Worker.** It is what the `Origin` header on every
   mutation is compared against — deliberately, rather than the request's own
   `Host`, so that an attacker who can reach the Worker cannot choose the value
-  the check uses. It is also the base of the links in invitation and PIN-reset
-  emails, and of the sign-in redirect URI. Left as shipped, mutations from your
+  the check uses. It is also the base of the links in invitation emails, and of
+  the sign-in redirect URI. Left as shipped, mutations from your
   own dashboard are rejected as cross-site, the invitation you send a colleague
   points at a server you do not control, and AuthKit is asked to send people
   back to a callback your WorkOS environment does not list.
@@ -314,8 +322,10 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
 
 ## What you are now operating
 
-- **Backups.** The database holds only ciphertext; a backup without the root
-  key escrow is a paperweight. Test restore of **both**.
+- **Backups.** The database holds only ciphertext. Restored on its own, it
+  brings back every end-to-end encrypted value, for your users' keys to open;
+  webhook secrets and any server-side encrypted environment also need the root
+  key from escrow. Test restore of **both**.
 - **Migrations.** Generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
 - **The audit log.** Append-only and partitioned by quarter, with the child
@@ -404,12 +414,13 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
 
 ## The trust model you are accepting
 
-Self-hosting does not change the encryption model — it changes who you are
-trusting. Your deployment *can* decrypt the secrets it stores; that is what
-makes team sharing, CI tokens and browser import work.
+Self-hosting does not change the encryption model. Your deployment cannot
+decrypt the secret values it stores, any more than ours can: they are encrypted
+and decrypted on your users' devices.
 
-What moves is the trust: from us to your own Cloudflare account, your own
-database, and your own key custody. Read
+What moves to you is everything else — the secret names and other metadata, the
+audit log, availability, the root key's custody, and the dashboard's
+JavaScript, which your users' browsers now trust you to serve unaltered. Read
 [what xecret can and cannot see](security/trust-model.md) before you accept
 other people's production credentials into a deployment you operate.
 

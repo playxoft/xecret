@@ -49,7 +49,7 @@ These are decided. Do not re-open them without an ADR.
 | # | Decision | Choice |
 |---|---|---|
 | D1 | Product name | **xecret** — CLI binary `xecret` |
-| D2 | Trust model | **Doppler-style**: server-side envelope encryption. The server *can* decrypt. Documented honestly. E2E is a v2 option, not v1. |
+| D2 | Trust model | **End-to-end encryption**: secret values and notes are encrypted on the client, and the server cannot decrypt them ([ADR 0009](adr/0009-zero-knowledge-encryption.md)). Was server-side envelope encryption, where the server could decrypt, until ADR 0009 superseded [ADR 0001](adr/0001-trust-model.md). |
 | D3 | Hosting | Cloudflare Workers, **Paid plan** |
 | D4 | Web framework | Next.js 16.3 (App Router) via `@opennextjs/cloudflare` |
 | D5 | Database | Neon PostgreSQL |
