@@ -75,6 +75,47 @@ describe('a rename reaches the breadcrumb trail', () => {
   });
 });
 
+describe('the project’s Manage menu edits the description in place', () => {
+  // The open menu renders into a portal, which static markup never draws, so
+  // the placement is read off the source: directly under Rename, in the same
+  // group — no separator between them — and above Delete.
+  it('directly below Rename project, in its group', () => {
+    const text = source('../../../components/projects/project-actions.tsx');
+    const menu = text.slice(
+      text.indexOf('<DropdownMenuContent'),
+      text.indexOf('</DropdownMenuContent>'),
+    );
+
+    const rename = menu.indexOf('Rename project…');
+    const description = menu.indexOf('Edit description…');
+    const remove = menu.indexOf('Delete project…');
+    expect(rename).toBeGreaterThan(-1);
+    expect(description).toBeGreaterThan(rename);
+    expect(remove).toBeGreaterThan(description);
+
+    const between = menu.slice(rename, description + 'Edit description…'.length);
+    expect(between).not.toContain('DropdownMenuSeparator');
+    // Gated on its own flag, and opening its own dialog.
+    expect(between).toMatch(
+      /\{canEditDescription \? \(\s*<DropdownMenuItem onSelect=\{\(\) => setEditingDescription\(true\)\}>\s*Edit description…/,
+    );
+  });
+
+  it('through a dialog that tells the screen, so the heading re-reads', () => {
+    const text = source('../../../components/projects/project-actions.tsx');
+    const dialog = text.slice(text.indexOf('<EditDescriptionDialog'));
+    expect(attribute(dialog, 'open')).toBe('editingDescription');
+    expect(attribute(dialog, 'onSaved')).toBe('onChanged');
+  });
+
+  // The heading is where the description is read; the project screen hands it
+  // whatever the project says, so a saved description shows on reload.
+  it('shown under the project’s heading', () => {
+    const screen = source('./project-screen.tsx');
+    expect(attribute(screen, 'description')).toBe('project.data?.project.description ?? undefined');
+  });
+});
+
 describe('the account menu offers the plans of the organisation on screen', () => {
   // The shell builds the link from the slug the switcher names — so "Upgrade
   // plan" can never open another tenant's plans — and hands it to the menu

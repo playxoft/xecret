@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-import { api } from '@/lib/api';
+import { api, isApiError } from '@/lib/api';
 import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
 import { canAdminister } from '@/app/(dashboard)/_components/session';
 import type { SessionOrganization } from '@/app/(dashboard)/_components/session';
@@ -50,8 +50,32 @@ export interface ProjectActionsProps {
   onChanged: () => void;
 }
 
-const NAME_MAX_LENGTH = 100;
-const DESCRIPTION_MAX_LENGTH = 500;
+/**
+ * The server's bounds on a project's name and description
+ * (`NAME_MAX_LENGTH` / `DESCRIPTION_MAX_LENGTH` in `server/schemas/resources.ts`).
+ *
+ * Written again rather than imported, because that module is the server's: it
+ * pulls zod, the plan table and the repository constants into whatever imports
+ * it, and a client bundle has no business carrying them for two numbers. The
+ * test beside this file pins each to the server's, so the textarea cannot
+ * stop short of what the API accepts, or let somebody type past it and learn
+ * so only from a refusal.
+ */
+export const NAME_MAX_LENGTH = 100;
+export const DESCRIPTION_MAX_LENGTH = 500;
+
+/**
+ * What a description field sends: the text trimmed, or `null` for none.
+ *
+ * `null` rather than `''`, because the column is nullable and the schema
+ * accepts `null` as "clear it" — an empty string would be stored as a
+ * description of nothing, and every screen that asks "has this project got a
+ * description?" would have to know that `''` also means no.
+ */
+export function descriptionToSend(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
 
 /**
  * Which of the menu's items to draw for the viewer — each hidden where it
@@ -76,12 +100,18 @@ const DESCRIPTION_MAX_LENGTH = 500;
  * a viewer, or a custom role without one, could never complete it; a
  * per-environment refusal — production, typically — is the dialog's to report.
  * And it needs an environment to import into.
+ *
+ * Rename and Edit description are one permission seen twice: both are
+ * `PATCH …/projects/{slug}`, which authorises `project.update` and nothing
+ * else, so the two flags are read off the same decision and can never be
+ * offered apart.
  */
 export function projectMenuItems(
   organization: SessionOrganization,
   environments: readonly Environment[],
 ) {
   const { capabilities } = organization.authority;
+  const canUpdate = canAdminister(organization, 'project.update');
   return {
     canManageMembers: canAdminister(organization, 'member.update'),
     canInvite: canAdminister(organization, 'member.invite'),
@@ -90,17 +120,24 @@ export function projectMenuItems(
       capabilities.includes('secret.read') &&
       capabilities.includes('secret.create') &&
       capabilities.includes('secret.update'),
-    canRename: canAdminister(organization, 'project.update'),
+    canRename: canUpdate,
+    canEditDescription: canUpdate,
     canDelete: canAdminister(organization, 'project.delete'),
   };
 }
 
 /**
- * Members, archive import, rename and delete, for a project.
+ * Members, archive import, rename, description and delete, for a project.
  *
  * There is no `/app/{org}/{project}/settings` route — a project has two editable
  * fields and a delete, which is a menu, not a page. All of it lives here so the
  * overview screen stays a description of the project rather than a form.
+ *
+ * The description has an item of its own as well as a field in Rename. Looking
+ * for "where do I change what this project says about itself?" nobody reads
+ * "Rename project" as the answer, so the field sat one dialog away from every
+ * person who wanted it. Rename keeps it too: somebody renaming a project is the
+ * person most likely to notice the sentence under the name is now wrong.
  *
  * The two member items are first and separated from the rest, because
  * they are what somebody opens on purpose rather than what they reach while
@@ -137,13 +174,19 @@ export function ProjectActions({
   const [managingMembers, setManagingMembers] = useState(false);
   const [importing, setImporting] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const { canManageMembers, canInvite, canImportArchive, canRename, canDelete } = projectMenuItems(
-    organization,
-    environments,
-  );
-  const hasItems = canManageMembers || canInvite || canImportArchive || canRename || canDelete;
+  const {
+    canManageMembers,
+    canInvite,
+    canImportArchive,
+    canRename,
+    canEditDescription,
+    canDelete,
+  } = projectMenuItems(organization, environments);
+  const editsInPlace = canImportArchive || canRename || canEditDescription;
+  const hasItems = canManageMembers || canInvite || editsInPlace || canDelete;
   // An import already open outlives the flags that offered it — see the
   // dialog's mount below — so it holds this component up even with no menu.
   if (!hasItems && !importing) return null;
@@ -194,9 +237,11 @@ export function ProjectActions({
                 </Link>
               </DropdownMenuItem>
             ) : null}
-            {/* Import archive and Rename share a group: both act on the project
-                in place, neither is about who can reach it. */}
-            {canImportArchive || canRename ? (
+            {/* Import archive, Rename and Edit description share a group: all
+                three act on the project in place, none is about who can reach
+                it. The description sits directly under Rename, beside the
+                other half of what the project says about itself. */}
+            {editsInPlace ? (
               <>
                 {canManageMembers || canInvite ? <DropdownMenuSeparator /> : null}
                 {canImportArchive ? (
@@ -209,13 +254,16 @@ export function ProjectActions({
                     Rename project…
                   </DropdownMenuItem>
                 ) : null}
+                {canEditDescription ? (
+                  <DropdownMenuItem onSelect={() => setEditingDescription(true)}>
+                    Edit description…
+                  </DropdownMenuItem>
+                ) : null}
               </>
             ) : null}
             {canDelete ? (
               <>
-                {canManageMembers || canInvite || canImportArchive || canRename ? (
-                  <DropdownMenuSeparator />
-                ) : null}
+                {canManageMembers || canInvite || editsInPlace ? <DropdownMenuSeparator /> : null}
                 <DropdownMenuItem destructive onSelect={() => setDeleting(true)}>
                   Delete project…
                 </DropdownMenuItem>
@@ -257,6 +305,14 @@ export function ProjectActions({
         project={project}
         open={renaming}
         onOpenChange={setRenaming}
+        onSaved={onChanged}
+      />
+
+      <EditDescriptionDialog
+        orgSlug={orgSlug}
+        project={project}
+        open={editingDescription}
+        onOpenChange={setEditingDescription}
         onSaved={onChanged}
       />
 
@@ -340,21 +396,25 @@ function RenameProjectDialog({
   );
 }
 
-function RenameProjectForm({
-  orgSlug,
-  project,
-  onOpenChange,
-  onSaved,
-}: {
+export interface ProjectFormProps {
   orgSlug: string;
   project: Project;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
-}) {
+}
+
+/**
+ * The name and the description, together.
+ *
+ * Exported for its test, which renders it inside a bare `Dialog` root: the
+ * dialog's own content goes through a portal, which static markup never draws.
+ */
+export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: ProjectFormProps) {
   const { toast } = useToast();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? '');
   const [submitting, setSubmitting] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(event: React.FormEvent) {
@@ -363,24 +423,31 @@ function RenameProjectForm({
 
     const trimmed = name.trim();
     if (trimmed.length === 0) {
-      setError('Enter a project name.');
+      setFieldErrors({ name: 'Enter a project name.' });
       return;
     }
 
     setSubmitting(true);
+    setFieldErrors({});
     setError(null);
 
     try {
       await api.patch(apiPath.project(orgSlug, project.slug), {
         name: trimmed,
-        // `null` clears the description; an empty string would store one.
-        description: description.trim().length === 0 ? null : description.trim(),
+        description: descriptionToSend(description),
       });
       toast({ variant: 'success', title: 'Project updated' });
       onOpenChange(false);
       onSaved();
     } catch (cause) {
       setSubmitting(false);
+      // A refusal the schema pinned to a field is shown on that field, where
+      // it reads as being about what was typed there rather than as a fault.
+      const fields = isApiError(cause) ? cause.fieldErrors() : {};
+      if (fields['name'] !== undefined || fields['description'] !== undefined) {
+        setFieldErrors(fields);
+        return;
+      }
       setError(cause instanceof Error ? cause.message : 'Could not update the project.');
     }
   }
@@ -397,24 +464,27 @@ function RenameProjectForm({
       </DialogHeader>
 
       <DialogBody className="flex flex-col gap-4">
-        <Field label="Name">
+        <Field label="Name" error={fieldErrors['name']}>
           <Input
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              setName(event.target.value);
+              setFieldErrors({});
+            }}
             maxLength={NAME_MAX_LENGTH}
             autoComplete="off"
             autoFocus
           />
         </Field>
 
-        <Field label="Description" optional>
-          <Textarea
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            maxLength={DESCRIPTION_MAX_LENGTH}
-            rows={3}
-          />
-        </Field>
+        <DescriptionField
+          value={description}
+          onChange={(value) => {
+            setDescription(value);
+            setFieldErrors({});
+          }}
+          error={fieldErrors['description']}
+        />
 
         {error ? <Alert tone="danger">{error}</Alert> : null}
       </DialogBody>
@@ -428,5 +498,163 @@ function RenameProjectForm({
         </Button>
       </DialogFooter>
     </form>
+  );
+}
+
+function EditDescriptionDialog({
+  orgSlug,
+  project,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  orgSlug: string;
+  project: Project;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        {/* One component down, for the reason the rename dialog gives. */}
+        <EditDescriptionForm
+          orgSlug={orgSlug}
+          project={project}
+          onOpenChange={onOpenChange}
+          onSaved={onSaved}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The description on its own.
+ *
+ * ── Why it sends only the description ──
+ * The name is not in this form, so it is not in the request either. Sending
+ * the name the dialog was opened with would be a second, silent rename: a
+ * colleague who renamed the project while this was open would have their
+ * change reverted by somebody who only meant to fix a sentence. `PATCH` takes
+ * any subset of the fields for exactly this reason.
+ *
+ * ── Why Save waits for a change ──
+ * An unchanged description would still write the row, and `updated_at` is what
+ * "last modified" reads. Saving nothing should not make a project look edited.
+ *
+ * Exported for its test; see `RenameProjectForm`.
+ */
+export function EditDescriptionForm({ orgSlug, project, onOpenChange, onSaved }: ProjectFormProps) {
+  const { toast } = useToast();
+  const [description, setDescription] = useState(project.description ?? '');
+  const [submitting, setSubmitting] = useState(false);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const next = descriptionToSend(description);
+  const unchanged = next === descriptionToSend(project.description ?? '');
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (submitting || unchanged) return;
+
+    setSubmitting(true);
+    setFieldError(null);
+    setError(null);
+
+    try {
+      await api.patch(apiPath.project(orgSlug, project.slug), { description: next });
+      toast({
+        variant: 'success',
+        title: next === null ? 'Description removed' : 'Description saved',
+      });
+      onOpenChange(false);
+      onSaved();
+    } catch (cause) {
+      setSubmitting(false);
+      const problem = isApiError(cause) ? cause.fieldErrors()['description'] : undefined;
+      if (problem !== undefined) {
+        setFieldError(problem);
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : 'Could not save the description.');
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} noValidate>
+      <DialogHeader>
+        <DialogTitle>Edit description</DialogTitle>
+        <DialogDescription>
+          Shown under the name of <span className="text-fg font-medium">{project.name}</span> on its
+          page and in the organisation’s list of projects.
+        </DialogDescription>
+      </DialogHeader>
+
+      <DialogBody className="flex flex-col gap-4">
+        <DescriptionField
+          value={description}
+          onChange={(value) => {
+            setDescription(value);
+            setFieldError(null);
+          }}
+          error={fieldError}
+          autoFocus
+        />
+
+        {error ? <Alert tone="danger">{error}</Alert> : null}
+      </DialogBody>
+
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
+          Cancel
+        </Button>
+        {/* Says what pressing it will do: an emptied box removes the
+            description, and a button still reading "Save" over an empty box
+            leaves somebody unsure whether nothing or everything is about to go. */}
+        <Button type="submit" variant="primary" loading={submitting} disabled={unchanged}>
+          {next === null && !unchanged ? 'Remove description' : 'Save description'}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+/**
+ * The description textarea, as both dialogs draw it — so the limit, the count
+ * and the way to clear it read the same in each.
+ *
+ * The count is of what the box holds, which is what `maxLength` stops at. The
+ * server trims before it measures, so a box the textarea let somebody fill is
+ * never one the API refuses for length.
+ */
+function DescriptionField({
+  value,
+  onChange,
+  error,
+  autoFocus = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  error?: string | null | undefined;
+  autoFocus?: boolean;
+}) {
+  return (
+    <Field
+      label="Description"
+      optional
+      error={error}
+      hint={`${value.length} of ${DESCRIPTION_MAX_LENGTH} characters. Leave it empty to remove the description.`}
+    >
+      <Textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="What this project is, so the next person does not have to guess."
+        maxLength={DESCRIPTION_MAX_LENGTH}
+        rows={4}
+        autoFocus={autoFocus}
+      />
+    </Field>
   );
 }
