@@ -46,6 +46,13 @@ export type BillingReminder =
        * day's dunning email.
        */
       declinedUpgrade?: { trialEndsAt: Date };
+      /**
+       * The trial's own first charge, at its end, with nothing paid before it
+       * — no card, or a declined one (`trialEndedUnpaid`). Its hold ends to
+       * Free in two days, not fourteen (`TRIAL_HOLD_LIMIT_MS` in `jobs.ts`), so
+       * the email says two days.
+       */
+      trialEnded?: true;
     }
   | { kind: 'card_expiring'; expiresAfter: Date; renewsAt: Date | null }
   | {
@@ -66,7 +73,13 @@ export type BillingReminder =
     }
   | { kind: 'usage_80' | 'usage_100'; used: number; included: number }
   | { kind: 'invoice_available' }
-  | { kind: 'plan_ended_unpaid'; plan: string; days: number };
+  | {
+      kind: 'plan_ended_unpaid';
+      plan: string;
+      days: number;
+      /** The hold began when a trial ended with nothing paid (`trialEndedUnpaid`). */
+      afterTrial?: true;
+    };
 
 /** Every kind the database accepts has a template — the type and the CHECK agree. */
 const KINDS: Readonly<Record<BillingReminderKind, true>> = {
@@ -106,10 +119,11 @@ function compose(reminder: BillingReminder, organization: string): Composed {
             'the first billing period.',
           // What actually happens, in order: Dodo puts a subscription whose
           // first charge fails on hold; the plan keeps working while it is;
-          // and after fourteen days on hold the hourly job moves the
-          // organisation to Free (`jobs.ts`, HOLD_LIMIT_MS).
+          // and — nothing ever having been paid — after two days on hold the
+          // hourly job moves the organisation to Free (`jobs.ts`,
+          // TRIAL_HOLD_LIMIT_MS; a paying subscription's hold is fourteen).
           'If there is no card on file, or the charge does not go through, the subscription is ' +
-            'put on hold: the plan keeps working for 14 days while you add a card from the ' +
+            'put on hold: the plan keeps working for 2 days while you add a card from the ' +
             'billing page, and after that the organisation moves to Free. Nothing is deleted ' +
             'either way.',
           BUILDS_UNAFFECTED,
@@ -133,6 +147,21 @@ function compose(reminder: BillingReminder, organization: string): Composed {
               'anything else, we will email you about it separately.',
           ],
           action: 'Open billing',
+        };
+      }
+      if (!reminder.firstPayment && reminder.trialEnded === true) {
+        return {
+          subject: `A payment for ${organization} didn't go through`,
+          lines: [
+            `The ${planName(reminder.plan)} trial for ${organization} has ended, and its first ` +
+              'payment did not go through — there is no card on file, or the card was declined.',
+            BUILDS_UNAFFECTED,
+            // TRIAL_HOLD_LIMIT_MS in `jobs.ts`.
+            'The plan keeps working for 2 days while you add a card from the billing page — ' +
+              '"Manage billing" opens the customer portal. After that the organisation moves to ' +
+              'Free; nothing is deleted.',
+          ],
+          action: 'Add a card',
         };
       }
       return reminder.firstPayment
@@ -164,9 +193,14 @@ function compose(reminder: BillingReminder, organization: string): Composed {
       return {
         subject: `${organization} has moved to the Free plan`,
         lines: [
-          `${organization}'s ${planName(reminder.plan)} subscription has been on hold for ` +
-            `${count(reminder.days)} days without a successful payment, so the organisation is ` +
-            'now on Free. Nothing was deleted: every secret is still there and still readable.',
+          reminder.afterTrial === true
+            ? `${organization}'s ${planName(reminder.plan)} trial ended without a payment, and ` +
+              `its subscription has been on hold for ${count(reminder.days)} ` +
+              `${reminder.days === 1 ? 'day' : 'days'} since, so the organisation is now on ` +
+              'Free. Nothing was deleted: every secret is still there and still readable.'
+            : `${organization}'s ${planName(reminder.plan)} subscription has been on hold for ` +
+              `${count(reminder.days)} days without a successful payment, so the organisation is ` +
+              'now on Free. Nothing was deleted: every secret is still there and still readable.',
           BUILDS_UNAFFECTED,
           `To return to ${planName(reminder.plan)}, update the card from the billing page — ` +
             '"Manage billing" opens the customer portal — or choose a plan again.',

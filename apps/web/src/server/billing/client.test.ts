@@ -113,6 +113,28 @@ describe('createCheckoutSession', () => {
     // The organisation's own customer is attached; no new one is asked for.
     expect(sentBody(fetcher)).not.toHaveProperty('always_create_new_customer');
   });
+
+  it('asks Dodo for no trial when one was already had, and leaves the product’s own otherwise', async () => {
+    const request = {
+      productId: 'pdt_team_m',
+      quantity: 3,
+      customer: { email: 'owner@example.com', name: 'Owner' },
+      returnUrl: 'https://x/r',
+      orgId: 'org-uuid',
+      nonce: 'nonce-0123456789abcdef',
+      regionLock: null,
+    };
+    const again = stub(ok({ session_id: 'cks_1', checkout_url: 'https://checkout.dodo/cks_1' }));
+    await new DodoClient(BASE, KEY, again).createCheckoutSession({
+      ...request,
+      withoutTrial: true,
+    });
+    expect(sentBody(again)).toMatchObject({ subscription_data: { trial_period_days: 0 } });
+
+    const first = stub(ok({ session_id: 'cks_2', checkout_url: 'https://checkout.dodo/cks_2' }));
+    await new DodoClient(BASE, KEY, first).createCheckoutSession(request);
+    expect(sentBody(first)).not.toHaveProperty('subscription_data');
+  });
 });
 
 describe('changePlan and previewPlanChange', () => {
@@ -133,6 +155,19 @@ describe('changePlan and previewPlanChange', () => {
       effective_at: 'immediately',
       on_payment_failure: 'apply_change',
     });
+  });
+
+  it('replaces a scheduled change only when told to', async () => {
+    const fetcher = stub(new Response(null, { status: 200 }));
+    await new DodoClient(BASE, KEY, fetcher).changePlan('sub_123', {
+      productId: 'pdt_team_y',
+      quantity: 9,
+      proration: 'prorated_immediately_keep_cycle',
+      effectiveAt: 'immediately',
+      onPaymentFailure: 'apply_change',
+      cancelScheduledChange: true,
+    });
+    expect(sentBody(fetcher)).toMatchObject({ cancel_scheduled_change_plan: true });
   });
 
   it('reads the immediate charge of a preview', async () => {

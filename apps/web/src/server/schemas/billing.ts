@@ -72,6 +72,12 @@ export interface BillingStatusPayload {
   renewsAt: string | null;
   cancelAtPeriodEnd: boolean;
   trialEndsAt: string | null;
+  /**
+   * While the subscription is on hold: when it ends and the organisation moves
+   * to Free, and whether the hold is a trial's that ended with nothing paid —
+   * two days then, fourteen otherwise. `null` when it is not on hold.
+   */
+  hold: { endsAt: string; afterTrial: boolean } | null;
   /** The next renewal's charge before tax, formatted, or `null` when not known. */
   renewalAmount: string | null;
   /** While it holds, the country and currency checkout is pinned to (pricing-plan §4). */

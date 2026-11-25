@@ -23,6 +23,7 @@ import {
   recordCheckout,
   releaseBillingRequest,
   seatedMemberCount,
+  trialAlreadyUsed,
 } from '@xecret/db/repositories';
 import type { SubscriptionRecord } from '@xecret/db/repositories';
 import type { Principal } from '../actor';
@@ -39,6 +40,7 @@ import type { PlanChange, PlanChangePreview } from './client';
 import { billingSetup, productFor } from './config';
 import type { BillingConfig, PurchasablePlan } from './config';
 import { subscriptionResource } from './audit';
+import { holdDeadline } from './jobs';
 import { formatMinor, OVERAGE_RATE_TEXT } from './money';
 
 /**
@@ -301,6 +303,9 @@ export async function billingStatus(
 
   const lockHolds = row.regionLockedUntil !== null && row.regionLockedUntil > now;
   const enabled = setup.state === 'enabled';
+  // When the hourly job ends a hold — two days after a trial that ended with
+  // nothing paid, fourteen otherwise — so the banner names the real date.
+  const hold = holdDeadline(row);
   const live = hasLiveSubscription(row);
   const ours = setup.state === 'enabled' && sameMode(row, setup.config);
 
@@ -321,6 +326,7 @@ export async function billingStatus(
     renewsAt: row.currentPeriodEnd?.toISOString() ?? null,
     cancelAtPeriodEnd: row.cancelAtPeriodEnd,
     trialEndsAt: row.trialEndsAt?.toISOString() ?? null,
+    hold: hold === null ? null : { endsAt: hold.endsAt.toISOString(), afterTrial: hold.afterTrial },
     // In Dodo's own currency for the figure: the region lock can keep another
     // in `currency` while Dodo bills in the one it reported.
     renewalAmount: formatMinor(row.renewalAmountMinor, row.dodoCurrency ?? row.currency),
@@ -370,6 +376,15 @@ export const USAGE_WARN_AT = WARN_AT;
  *
  * A repeat of the same request (the same `idempotencyKey`) is answered with
  * the first one's checkout instead of a second one; `replayed` says so.
+ *
+ * ── A free trial is had once ──
+ * Team's Dodo product starts a fourteen-day trial, and every checkout by email
+ * creates a new Dodo customer (`CheckoutRequest.customer`), so Dodo's own
+ * per-customer trial-misuse check never sees a second one. An organisation
+ * that has had a trial, or a checkout by an account that started one for any
+ * organisation (`billing_trials`, written when the trial's snapshot is
+ * applied), asks Dodo for none (`withoutTrial`): the first period is charged
+ * at checkout. `withoutTrial` in the answer says so, for the audit record.
  */
 export async function startCheckout(
   services: ServiceContext,
@@ -377,7 +392,7 @@ export async function startCheckout(
   principal: Extract<Principal, { kind: 'user' }>,
   selection: { plan: PurchasablePlan; interval: BillingInterval },
   idempotencyKey: string | null = null,
-): Promise<{ url: string; seats: number; replayed: boolean }> {
+): Promise<{ url: string; seats: number; withoutTrial: boolean; replayed: boolean }> {
   const config = requireBillingConfig(services);
   const orgId = scope.organization.id;
 
@@ -410,6 +425,11 @@ export async function startCheckout(
         row.billingCountry !== null &&
         row.currency !== null;
       const nonce = checkoutNonce();
+      const withoutTrial = await trialAlreadyUsed(services.db, {
+        orgId,
+        userId: principal.user.id,
+        mode: config.mode,
+      });
 
       let session: { sessionId: string; url: string };
       try {
@@ -428,6 +448,7 @@ export async function startCheckout(
           orgId,
           nonce,
           regionLock: lockHolds ? { country: row.billingCountry!, currency: row.currency! } : null,
+          ...(withoutTrial ? { withoutTrial: true as const } : {}),
         });
       } catch (cause) {
         throw providerFailure(services, cause, 'creating a checkout', 'checkout');
@@ -447,10 +468,16 @@ export async function startCheckout(
         createdBy: principal.user.id,
         nonce,
       });
-      return { url: session.url, seats };
+      return { url: session.url, seats, withoutTrial };
     },
   );
-  return { url: result.url, seats: result.seats, replayed };
+  return {
+    url: result.url,
+    seats: result.seats,
+    // A replay of a key stored before this answer carried it: as it was then.
+    withoutTrial: result.withoutTrial === true,
+    replayed,
+  };
 }
 
 /* ── plan change ───────────────────────────────────────────────────────────── */

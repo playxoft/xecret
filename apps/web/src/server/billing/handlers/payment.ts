@@ -13,6 +13,7 @@ import type { DodoMode } from '../config';
 import type { HandlerOutcome } from '../effects';
 import type { DodoDispute, DodoLicenseKey, DodoPayment, DodoRefund } from '../payloads';
 import { paymentFailedOccasion } from '../reminders';
+import { trialEndedUnpaid } from '../snapshot';
 
 /**
  * How long after an owner asks for an upgrade a declined payment is read as
@@ -110,6 +111,10 @@ export async function applyPaymentEvent(
         orgId,
         since: new Date(input.now.getTime() - UPGRADE_CHARGE_WINDOW_MS),
       }));
+    // The trial's own first charge, at its end, with nothing paid before it:
+    // the hold it leads to ends in days, not weeks (`trialEndedUnpaid`), and
+    // the email says so. Shares the day's dunning slot with the snapshot's.
+    const trialEnded = !firstPayment && !declinedUpgrade && trialEndedUnpaid(row, input.now);
     outcome.audit.push(
       audit.success('billing.payment_failed', resource, {
         billingEvent: input.eventType,
@@ -125,6 +130,7 @@ export async function applyPaymentEvent(
         plan,
         firstPayment,
         ...(declinedUpgrade ? { declinedUpgrade: { trialEndsAt: row.trialEndsAt! } } : {}),
+        ...(trialEnded ? { trialEnded: true as const } : {}),
       },
     });
     return outcome;

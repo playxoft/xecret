@@ -37,6 +37,9 @@ const APPEND_ONLY = new Set([
   // issued, are records — never edited into something else.
   'billing_checkouts',
   'billing_license_keys',
+  // Migration 0036: a subscription that started on a free trial is a record —
+  // editing or deleting one would hand its organisation or account another.
+  'billing_trials',
 ]);
 
 /**

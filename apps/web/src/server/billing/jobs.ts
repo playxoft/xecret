@@ -11,6 +11,7 @@ import {
   listLapsedTrials,
   listLongHolds,
   listProviderSubscriptions,
+  listUnpaidTrialHolds,
   lockSubscription,
   operatorManaged,
   pruneBillingRequests,
@@ -35,6 +36,7 @@ import type { SnapshotOutcome } from './handlers/subscription';
 import type { DodoSubscription } from './payloads';
 import { sendBillingReminder } from './reminders';
 import { syncSeats } from './seats';
+import { TRIAL_END_HOLD_MARGIN_MS, TRIAL_OVER_MARGIN_MS, trialEndedUnpaid } from './snapshot';
 import { flushUsageToDodo } from './usage';
 import type { UsageReport } from './usage';
 
@@ -53,11 +55,13 @@ import type { UsageReport } from './usage';
  *     If a later Dodo event says the subscription lives on after all, the
  *     webhook re-applies it.
  *  2. **Long holds.** A subscription on hold for {@link HOLD_LIMIT_MS} — a
- *     card that never paid, a trial that ended with no card — ends here, to
- *     Free, with an alert for a human and an email to the owners. Without it,
- *     a subscription Dodo keeps on hold would keep its plan for ever. Nothing
- *     is deleted, and the subscription itself is left to Dodo: if it is paid
- *     after all, its `active` snapshot gives the plan back.
+ *     renewal the card no longer pays — ends here, to Free, with an alert for
+ *     a human and an email to the owners; one whose trial ended with nothing
+ *     ever paid (no card, or a declined first charge: `trialEndedUnpaid`)
+ *     ends after {@link TRIAL_HOLD_LIMIT_MS}. Without it, a subscription Dodo
+ *     keeps on hold would keep its plan for ever. Nothing is deleted, and the
+ *     subscription itself is left to Dodo: if it is paid after all, its
+ *     `active` snapshot gives the plan back.
  *  3. **Stale trials.** A row still `trialing` hours after its trial ended has
  *     missed whatever Dodo sent at the conversion. Dodo is asked what the
  *     subscription is now, and that snapshot is applied as a webhook's would
@@ -82,6 +86,34 @@ export const CANCELLATION_GRACE_MS = 2 * 60 * 60 * 1000;
 
 /** How long a subscription may stay on hold before it is ended here. */
 export const HOLD_LIMIT_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long a subscription whose trial ended with nothing ever paid may stay on
+ * hold (`trialEndedUnpaid`). Fourteen days of a plan on hold after a trial
+ * that took no card was a second free trial — a month of Team for a checkout
+ * and no card, repeatable — and members invited meanwhile keep their seats on
+ * Free. Two days is time to add a card after the trial emails (three days and
+ * one day before its end) said it was coming; a paying customer whose renewal
+ * fails keeps the fourteen. The emails say two days (`mail.ts`).
+ */
+export const TRIAL_HOLD_LIMIT_MS = 2 * 24 * 60 * 60 * 1000;
+
+/**
+ * When the hourly job ends a held subscription, and whether it is a trial's
+ * hold — `null` for a row not on hold. The billing screen shows the same date.
+ */
+export function holdDeadline(
+  row: Pick<SubscriptionRecord, 'status' | 'onHoldSince' | 'trialEndsAt' | 'currentPeriodEnd'>,
+): { endsAt: Date; afterTrial: boolean } | null {
+  if (row.status !== 'on_hold' || row.onHoldSince === null) return null;
+  const afterTrial = trialEndedUnpaid(row, row.onHoldSince);
+  return {
+    endsAt: new Date(
+      row.onHoldSince.getTime() + (afterTrial ? TRIAL_HOLD_LIMIT_MS : HOLD_LIMIT_MS),
+    ),
+    afterTrial,
+  };
+}
 
 /** How long after a trial's end a row still `trialing` is asked about. */
 export const TRIAL_GRACE_MS = 2 * 60 * 60 * 1000;
@@ -247,23 +279,36 @@ async function endLapsedCancellations(services: ServiceContext, now: Date): Prom
   return ended;
 }
 
-/** Step 2. */
+/**
+ * Step 2. Two lists, because two limits: holds past the ordinary fourteen
+ * days, and trial holds past their two (`listUnpaidTrialHolds`, whose rows a
+ * fourteen-day list would only reach twelve days late). Each row is decided
+ * again under its lock, by `holdDeadline`.
+ */
 async function endLongHolds(services: ServiceContext, now: Date): Promise<number> {
-  const cutoff = new Date(now.getTime() - HOLD_LIMIT_MS);
+  const candidates = new Map<string, SubscriptionRecord>();
+  for (const row of [
+    ...(await listLongHolds(services.db, {
+      since: new Date(now.getTime() - HOLD_LIMIT_MS),
+      limit: 100,
+    })),
+    ...(await listUnpaidTrialHolds(services.db, {
+      since: new Date(now.getTime() - TRIAL_HOLD_LIMIT_MS),
+      limit: 100,
+      cycleMarginMs: TRIAL_OVER_MARGIN_MS,
+      endMarginMs: TRIAL_END_HOLD_MARGIN_MS,
+    })),
+  ]) {
+    candidates.set(row.orgId, row);
+  }
+
   let ended = 0;
-  for (const candidate of await listLongHolds(services.db, { since: cutoff, limit: 100 })) {
+  for (const candidate of candidates.values()) {
     const endedRow = await services.db.transaction(async (tx) => {
       const row = await lockSubscription(tx, candidate.orgId);
-      if (
-        row === null ||
-        row.plan === 'free' ||
-        operatorManaged(row) ||
-        row.status !== 'on_hold' ||
-        row.onHoldSince === null ||
-        row.onHoldSince > cutoff
-      ) {
-        return null;
-      }
+      if (row === null || row.plan === 'free' || operatorManaged(row)) return null;
+      const deadline = holdDeadline(row);
+      if (deadline === null || deadline.endsAt > now) return null;
       await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
         billed: 1,
         enforced: FREE_SEAT_LIMIT,
@@ -279,29 +324,41 @@ async function endLongHolds(services: ServiceContext, now: Date): Promise<number
             previousSubscriptionStatus: row.status,
             seatCount: 1,
             previousSeatCount: row.seats,
-            reason: 'subscription on hold for 14 days without a payment',
+            reason: deadline.afterTrial
+              ? 'trial ended without a payment, and on hold for 2 days'
+              : 'subscription on hold for 14 days without a payment',
           },
         ),
       ]);
-      return row;
+      return { row, afterTrial: deadline.afterTrial };
     });
     if (endedRow === null) continue;
     ended += 1;
-    const days = Math.floor((now.getTime() - endedRow.onHoldSince!.getTime()) / DAY_MS);
+    const { row: held, afterTrial } = endedRow;
+    const days = Math.floor((now.getTime() - held.onHoldSince!.getTime()) / DAY_MS);
     await runBillingEffects(services, [
       {
         kind: 'alert',
         message:
-          `A subscription was on hold for ${days} days and has been ended here: the organisation ` +
-          'is on Free. Dodo still has the subscription — cancel it there, or leave it if the ' +
-          'customer is about to pay (its next active event gives the plan back)',
-        fields: { orgId: endedRow.orgId, previousPlan: endedRow.plan },
+          (afterTrial
+            ? `A trial ended without a payment and its subscription was on hold for ${days} ` +
+              'days; it has been ended here: the organisation is on Free. '
+            : `A subscription was on hold for ${days} days and has been ended here: the ` +
+              'organisation is on Free. ') +
+          'Dodo still has the subscription — cancel it there, or leave it if the customer is ' +
+          'about to pay (its next active event gives the plan back)',
+        fields: { orgId: held.orgId, previousPlan: held.plan },
       },
       {
         kind: 'mail',
-        orgId: endedRow.orgId,
-        occasion: `${endedRow.dodoSubscriptionId ?? 'none'}:${endedRow.onHoldSince!.toISOString()}`,
-        reminder: { kind: 'plan_ended_unpaid', plan: endedRow.plan, days },
+        orgId: held.orgId,
+        occasion: `${held.dodoSubscriptionId ?? 'none'}:${held.onHoldSince!.toISOString()}`,
+        reminder: {
+          kind: 'plan_ended_unpaid',
+          plan: held.plan,
+          days,
+          ...(afterTrial ? { afterTrial: true as const } : {}),
+        },
       },
     ]);
   }

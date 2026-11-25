@@ -1769,6 +1769,185 @@ describe('another product’s events, on the Dodo account this one shares', () =
   });
 });
 
+/* ── the security review of 2026-11-25 ───────────────────────────────────── */
+
+describe('a seat push waiting for a scheduled plan change', () => {
+  /**
+   * Team monthly, three billed; two more joined while a downgrade was
+   * scheduled for a date far off, and their push was put off until then.
+   */
+  async function waitingForAChange() {
+    const team = await activeTeam();
+    const scheduledFor = new Date(Date.now() + 300 * DAY);
+    for (let index = 0; index < 2; index += 1) {
+      await t.pg.query(
+        `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'developer')`,
+        [randomUUID(), team.orgId, await seedUser()],
+      );
+    }
+    await t.pg.query(
+      `update org_subscriptions set dodo_scheduled_change_at = $2 where org_id = $1`,
+      [team.orgId, scheduledFor],
+    );
+    await t.pg.query(
+      `insert into billing_seat_syncs (org_id, last_error, not_before)
+       values ($1, 'scheduled_change', $2)
+       on conflict (org_id) do update set last_error = excluded.last_error, not_before = excluded.not_before`,
+      [team.orgId, new Date(scheduledFor.getTime() + 3_600_000)],
+    );
+    dodo.changePlan.mockClear();
+    return team;
+  }
+
+  async function debtOf(orgId: string) {
+    const result = await t.pg.query(`select 1 from billing_seat_syncs where org_id = $1`, [orgId]);
+    return result.rows.length;
+  }
+
+  it('is pushed at once when a snapshot says the change was withdrawn — not at the old date', async () => {
+    const { orgId, subscriptionId, customerId } = await waitingForAChange();
+
+    // Withdrawn in the customer portal: Dodo's next snapshot has none.
+    await deliver({
+      type: 'subscription.updated',
+      data: subscriptionData({ subscriptionId, customerId, orgId }),
+    });
+
+    expect((await rowOf(orgId)).dodoScheduledChangeAt).toBeNull();
+    expect(dodo.changePlan).toHaveBeenCalledWith(
+      subscriptionId,
+      expect.objectContaining({ productId: PRODUCTS.teamMonthly, quantity: 5 }),
+    );
+    expect((await rowOf(orgId)).seats).toBe(5);
+    expect(await debtOf(orgId)).toBe(0);
+  });
+
+  it('is pushed straight after the change lands, at the membership’s count — not the quantity the change carried', async () => {
+    const { orgId, subscriptionId, customerId } = await waitingForAChange();
+
+    // The downgrade to Pro lands; Dodo renews at the three the request carried.
+    await deliver({
+      type: 'subscription.plan_changed',
+      data: subscriptionData({
+        subscriptionId,
+        customerId,
+        orgId,
+        product: PRODUCTS.proMonthly,
+        quantity: 3,
+      }),
+    });
+
+    expect(dodo.changePlan).toHaveBeenCalledWith(
+      subscriptionId,
+      expect.objectContaining({ productId: PRODUCTS.proMonthly, quantity: 5 }),
+    );
+    expect(await rowOf(orgId)).toMatchObject({ plan: 'pro', seats: 5 });
+  });
+
+  it('owes the push from the snapshot’s own commit — the debt is due even if the push after it never runs', async () => {
+    const { orgId, subscriptionId, customerId } = await waitingForAChange();
+    const { applySubscriptionSnapshot } = await import('./handlers/subscription');
+    const { billingSetup } = await import('./config');
+    const { systemAudit } = await import('./audit');
+    const { dodoSubscriptionSchema } = await import('./payloads');
+    const setup = billingSetup(env as never);
+    if (setup.state !== 'enabled') throw new Error('fixture');
+    const now = new Date();
+
+    // The handler alone, inside its transaction: no effect has run yet — as
+    // if the isolate were gone before `waitUntil` could push.
+    const outcome = await t.db.transaction((tx) =>
+      applySubscriptionSnapshot(tx, {
+        orgId,
+        eventType: 'subscription.updated',
+        eventAt: now,
+        now,
+        snapshot: dodoSubscriptionSchema.parse(
+          subscriptionData({ subscriptionId, customerId, orgId }),
+        ),
+        config: setup.config,
+        audit: systemAudit(
+          { meta: { ipAddress: null, userAgent: null, requestId: 'r' } } as never,
+          orgId,
+          'Dodo webhook',
+        ),
+        webhookId: null,
+        checkout: null,
+      }),
+    );
+
+    expect(outcome.effects).toContainEqual({ kind: 'seat-sync', orgId });
+    const debt = await t.pg.query<{ not_before: Date | null }>(
+      `select not_before from billing_seat_syncs where org_id = $1`,
+      [orgId],
+    );
+    // Due now, for the hourly job — not at the withdrawn change's date.
+    expect(debt.rows[0]!.not_before).toBeNull();
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+  });
+
+  it('makes no push when the snapshot leaves the scheduled change where it was', async () => {
+    const { orgId, subscriptionId, customerId } = await waitingForAChange();
+    const scheduledFor = (await rowOf(orgId)).dodoScheduledChangeAt!;
+    await deliver({
+      type: 'subscription.updated',
+      data: {
+        ...subscriptionData({ subscriptionId, customerId, orgId }),
+        scheduled_change: { effective_at: scheduledFor.toISOString() },
+      },
+    });
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+    expect(await debtOf(orgId)).toBe(1);
+  });
+});
+
+describe('a free trial is recorded once, with who started it', () => {
+  it('records the organisation and the account whose checkout started it — once', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const subscriptionId = `sub_${uniq()}`;
+    const customerId = `cus_${uniq()}`;
+    const created = new Date(Date.now() - 60_000);
+    const trial = subscriptionData({
+      subscriptionId,
+      customerId,
+      orgId,
+      trialDays: 14,
+      createdAt: created,
+      periodStart: created,
+      periodEnd: new Date(created.getTime() + 14 * DAY),
+    });
+
+    await deliver({ type: 'subscription.active', data: trial, at: new Date(Date.now() - 30_000) });
+    await deliver({ type: 'subscription.updated', data: trial });
+
+    const recorded = await t.pg.query<{
+      org_id: string;
+      user_id: string | null;
+      dodo_mode: string;
+      trial_ends_at: Date;
+    }>(
+      `select org_id, user_id, dodo_mode, trial_ends_at from billing_trials where subscription_id = $1`,
+      [subscriptionId],
+    );
+    expect(recorded.rows).toEqual([
+      {
+        org_id: orgId,
+        user_id: ownerId,
+        dodo_mode: 'test_mode',
+        trial_ends_at: new Date(created.getTime() + 14 * DAY),
+      },
+    ]);
+  });
+
+  it('records nothing for a subscription that started without one', async () => {
+    const { subscriptionId } = await activeTeam();
+    const recorded = await t.pg.query(`select 1 from billing_trials where subscription_id = $1`, [
+      subscriptionId,
+    ]);
+    expect(recorded.rows).toHaveLength(0);
+  });
+});
+
 /* ── redaction ────────────────────────────────────────────────────────────── */
 
 describe('what never reaches a log line or an audit row', () => {

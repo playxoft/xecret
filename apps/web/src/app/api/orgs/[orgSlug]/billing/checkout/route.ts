@@ -49,7 +49,7 @@ export const POST = authenticatedRoute<Params>(
     authorizeBilling(scope, { audit: orgAudit, record }, ['billing.checkout_started']);
 
     const selection = await parseJsonBody(request, billingSelectionSchema);
-    const { url, seats, replayed } = await startCheckout(
+    const { url, seats, withoutTrial, replayed } = await startCheckout(
       services,
       scope,
       user,
@@ -63,6 +63,8 @@ export const POST = authenticatedRoute<Params>(
         plan: selection.plan,
         billingInterval: selection.interval,
         seatCount: seats,
+        // A free trial is had once, per organisation and per account.
+        ...(withoutTrial ? { reason: 'no free trial: one was already had' } : {}),
       }),
     );
     return json({ url });

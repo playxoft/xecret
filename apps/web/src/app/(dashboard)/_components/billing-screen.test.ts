@@ -60,6 +60,7 @@ function subscribed(interval: 'monthly' | 'yearly' = 'yearly'): BillingStatusPay
     renewsAt: '2027-11-01T00:00:00.000Z',
     cancelAtPeriodEnd: false,
     trialEndsAt: null,
+    hold: null,
     renewalAmount: '$240.00',
     regionLock: null,
     usage: {
@@ -142,5 +143,27 @@ describe('BillingScreen’s change form', () => {
 
     expect(html).toContain('Service tokens and CI never take a seat.');
     expect(html).not.toContain('never cost anything');
+  });
+});
+
+describe('BillingScreen’s hold banner', () => {
+  it('names the date a trial that ended unpaid moves to Free — never the fourteen days of a paying hold', () => {
+    resource.billing = {
+      ...subscribed('monthly'),
+      status: 'on_hold',
+      hold: { endsAt: '2026-11-27T10:00:00.000Z', afterTrial: true },
+    };
+    const trial = render();
+    expect(trial).toContain('The trial has ended and its first payment did not go through');
+    expect(trial).not.toContain('14 days');
+
+    resource.billing = {
+      ...subscribed('monthly'),
+      status: 'on_hold',
+      hold: { endsAt: '2026-12-09T10:00:00.000Z', afterTrial: false },
+    };
+    const renewal = render();
+    expect(renewal).toContain('Your card was declined.');
+    expect(renewal).toContain('14 days on hold');
   });
 });

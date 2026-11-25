@@ -13,6 +13,7 @@ import {
   billingReminders,
   billingRequests,
   billingSeatSyncs,
+  billingTrials,
   orgSubscriptions,
   orgUsageCounters,
 } from '../schema/billing';
@@ -27,7 +28,7 @@ import type { Executor, Transaction } from './shared';
 import type { SubscriptionPatch, SubscriptionRecord } from './subscriptions';
 
 /**
- * The payment side of `org_subscriptions`, and the four ledgers beside it (P12).
+ * The payment side of `org_subscriptions`, and the ledgers beside it (P12).
  *
  * ── The rule this file shares with `subscriptions.ts` ──
  * Nothing here reads the payment provider, and nothing here is on the
@@ -496,6 +497,44 @@ export async function listLongHolds(
 }
 
 /**
+ * Provider subscriptions on hold since before `since` **because their trial
+ * ended with nothing paid** — a trial with no card, or whose first charge was
+ * declined. The hourly job ends these sooner than other holds: a customer who
+ * has never paid is not a paying customer whose card lapsed.
+ *
+ * "Nothing paid" is read from the row as the snapshot wrote it (`readTrial` in
+ * `apps/web/src/server/billing/snapshot.ts`): while Dodo's current cycle is
+ * still the trial, its next charge is the trial's end — within `cycleMarginMs`
+ * — because only a payment moves it a period on. And the hold began at the
+ * trial's end, within `endMarginMs` — a hold that began mid-trial (a declined
+ * seat charge, say) keeps the ordinary limit. The caller passes both margins,
+ * so the rule has one statement there (`trialEndedUnpaid`), and this is only
+ * its query.
+ */
+export async function listUnpaidTrialHolds(
+  exec: Executor,
+  options: { since: Date; limit: number; cycleMarginMs: number; endMarginMs: number },
+): Promise<SubscriptionRecord[]> {
+  const ms = (value: number) => sql`(${value}::double precision * interval '1 millisecond')`;
+  return exec
+    .select()
+    .from(orgSubscriptions)
+    .where(
+      and(
+        eq(orgSubscriptions.status, 'on_hold'),
+        billedByASnapshot(),
+        isNotNull(orgSubscriptions.trialEndsAt),
+        isNotNull(orgSubscriptions.currentPeriodEnd),
+        sql`${orgSubscriptions.currentPeriodEnd} <= ${orgSubscriptions.trialEndsAt} + ${ms(options.cycleMarginMs)}`,
+        sql`${orgSubscriptions.onHoldSince} >= ${orgSubscriptions.trialEndsAt} - ${ms(options.endMarginMs)}`,
+        lte(orgSubscriptions.onHoldSince, options.since),
+      ),
+    )
+    .orderBy(asc(orgSubscriptions.onHoldSince))
+    .limit(options.limit);
+}
+
+/**
  * Provider subscriptions still marked `trialing` although their trial ended
  * before `endedBefore` — a status no webhook moved on. The hourly job asks
  * Dodo what they became; so only rows of its own Dodo `mode` (or of none
@@ -702,6 +741,72 @@ export async function consumeCheckout(
   return spent.length > 0;
 }
 
+/* ── free trials ───────────────────────────────────────────────────────────── */
+
+/**
+ * Records that a subscription started on a free trial — once per subscription,
+ * whatever number of its snapshots say so. Answers whether this call wrote it.
+ *
+ * The account is the one whose checkout started the subscription: the
+ * checkout this organisation spent on it (`billing_checkouts.created_by`),
+ * looked up in the same statement, so a snapshot attaching the subscription
+ * in this transaction — which spends its checkout first — records who it was.
+ * A subscription attached by hand has no checkout: the organisation alone is
+ * recorded.
+ */
+export async function recordTrial(
+  exec: Executor,
+  trial: {
+    subscriptionId: string;
+    orgId: string;
+    mode: 'test_mode' | 'live_mode';
+    trialEndsAt: Date | null;
+  },
+): Promise<boolean> {
+  const startedBy = sql<string | null>`(
+    select ${billingCheckouts.createdBy} from ${billingCheckouts}
+     where ${billingCheckouts.subscriptionId} = ${trial.subscriptionId}
+       and ${billingCheckouts.orgId} = ${trial.orgId}
+     order by ${billingCheckouts.createdAt} desc
+     limit 1)`;
+  const inserted = await exec
+    .insert(billingTrials)
+    .values({
+      subscriptionId: trial.subscriptionId,
+      orgId: trial.orgId,
+      userId: startedBy,
+      dodoMode: trial.mode,
+      trialEndsAt: trial.trialEndsAt,
+    })
+    .onConflictDoNothing({ target: billingTrials.subscriptionId })
+    .returning({ subscriptionId: billingTrials.subscriptionId });
+  return inserted.length > 0;
+}
+
+/**
+ * Whether a free trial was already had — by this organisation, or by this
+ * account for any organisation — in this Dodo mode: what a checkout asks
+ * before it lets Dodo start another. An address belongs to one account for
+ * good (`users.email` is unique across deleted accounts too), so the account
+ * is the person.
+ */
+export async function trialAlreadyUsed(
+  exec: Executor,
+  query: { orgId: string; userId: string; mode: 'test_mode' | 'live_mode' },
+): Promise<boolean> {
+  const [row] = await exec
+    .select({ subscriptionId: billingTrials.subscriptionId })
+    .from(billingTrials)
+    .where(
+      and(
+        eq(billingTrials.dodoMode, query.mode),
+        or(eq(billingTrials.orgId, query.orgId), eq(billingTrials.userId, query.userId)),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 /* ── seat-sync debts ───────────────────────────────────────────────────────── */
 
 export type SeatSyncRecord = typeof billingSeatSyncs.$inferSelect;
@@ -800,8 +905,9 @@ export async function seatSyncGeneration(exec: Executor, orgId: string): Promise
 
 /**
  * Pays a debt — only if no membership change has bumped it since the push
- * counted under `generation`. Answers whether it was paid; `false` means a
- * change landed mid-push, and the pusher must count again.
+ * counted under `generation`, and no scheduled plan change is still owed back
+ * to Dodo ({@link oweReschedule}). Answers whether it was paid; `false` means
+ * a change landed mid-push, and the pusher must count again.
  */
 export async function completeSeatSync(
   exec: Executor,
@@ -810,9 +916,53 @@ export async function completeSeatSync(
 ): Promise<boolean> {
   const paid = await exec
     .delete(billingSeatSyncs)
-    .where(and(eq(billingSeatSyncs.orgId, orgId), eq(billingSeatSyncs.generation, generation)))
+    .where(
+      and(
+        eq(billingSeatSyncs.orgId, orgId),
+        eq(billingSeatSyncs.generation, generation),
+        isNull(billingSeatSyncs.rescheduleProductId),
+      ),
+    )
     .returning({ orgId: billingSeatSyncs.orgId });
   return paid.length > 0;
+}
+
+/** The organisation's seat debt, if it has one. */
+export async function findSeatSync(exec: Executor, orgId: string): Promise<SeatSyncRecord | null> {
+  const [row] = await exec
+    .select()
+    .from(billingSeatSyncs)
+    .where(eq(billingSeatSyncs.orgId, orgId))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Records, on the debt, the plan change Dodo had scheduled that a seat push is
+ * about to replace (`cancel_scheduled_change_plan`) — **before** the push, so
+ * an isolate lost between the push and the re-scheduling leaves the change
+ * owed rather than forgotten. The debt is not paid while it is owed.
+ */
+export async function oweReschedule(
+  exec: Executor,
+  orgId: string,
+  change: { productId: string; at: Date },
+): Promise<void> {
+  await exec
+    .insert(billingSeatSyncs)
+    .values({ orgId, rescheduleProductId: change.productId, rescheduleAt: change.at })
+    .onConflictDoUpdate({
+      target: billingSeatSyncs.orgId,
+      set: { rescheduleProductId: change.productId, rescheduleAt: change.at },
+    });
+}
+
+/** The owed re-scheduling is settled — made again, or standing down to one Dodo already has. */
+export async function settleReschedule(exec: Executor, orgId: string): Promise<void> {
+  await exec
+    .update(billingSeatSyncs)
+    .set({ rescheduleProductId: null, rescheduleAt: null })
+    .where(eq(billingSeatSyncs.orgId, orgId));
 }
 
 /** Forgets any debt: the organisation is not billed for seats, so nothing is owed. */
@@ -864,6 +1014,13 @@ export async function failSeatSync(
     .returning({ attempts: billingSeatSyncs.attempts });
   return row?.attempts ?? 1;
 }
+
+/**
+ * The `last_error` of a debt put off for a plan change Dodo has scheduled
+ * ({@link deferSeatSync}) — what the reconciler tells a waiting debt from one
+ * being retried by.
+ */
+export const SEAT_SYNC_SCHEDULED_CHANGE = 'scheduled_change';
 
 /**
  * Puts a debt off until `until` without counting a failure — a push that

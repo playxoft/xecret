@@ -121,6 +121,22 @@ export interface CheckoutRequest {
    * buyer enters — never by a currency the browser asked for.
    */
   regionLock: { country: string; currency: string } | null;
+  /**
+   * The organisation, or the account checking out, has had a free trial
+   * already (`billing_trials`): Dodo is told to start this subscription with
+   * none (`subscription_data.trial_period_days: 0`). Absent, the product's own
+   * trial applies — Team's fourteen days.
+   *
+   * Ours, not Dodo's, because Dodo's "Prevent Trial Misuse" is per customer
+   * ("a product the customer already trialed starts without a trial"), and
+   * every checkout by email makes a new customer (`always_create_new_customer`,
+   * above): Dodo would never see the second trial. That a zero here really
+   * starts the subscription with no trial — the first period charged at
+   * checkout — is Dodo behaviour to confirm on staging
+   * (docs/operations/billing.md §3, "A second trial").
+   * https://docs.dodopayments.com/developer-resources/checkout-session
+   */
+  withoutTrial?: true;
 }
 
 export interface PlanChange {
@@ -163,6 +179,21 @@ export interface PlanChange {
    * not a reason for the bill to disagree with the membership.
    */
   onPaymentFailure: 'prevent_change' | 'apply_change';
+  /**
+   * Replace the plan change Dodo has scheduled with this one
+   * (`cancel_scheduled_change_plan`). Dodo's docs: "The scheduled change is
+   * cancelled by the transaction that applies this change. A change that
+   * never applies leaves the schedule in place." Without it Dodo answers 409
+   * while a change is scheduled.
+   *
+   * Sent only by a seat **increase** pushed over a scheduled downgrade
+   * (`seats.ts`): the seats are billed now instead of when the downgrade lands
+   * — up to a year later on a yearly plan — and the downgrade is made again
+   * straight afterwards, at the new seat count. Never by an owner's plan
+   * change: replacing a change the owner scheduled is not theirs to do by
+   * accident.
+   */
+  cancelScheduledChange?: true;
 }
 
 /** What a plan change would charge now, in the subscription's currency. */
@@ -209,13 +240,20 @@ interface DodoCheckoutRequest {
   billing_address?: { country: string };
   billing_currency?: string;
   feature_flags: { allow_currency_selection: boolean; allow_customer_editing_country?: boolean };
+  /**
+   * "Number of days for the trial period before the first charge. Must be
+   * between 0 and 10000 days." Overrides the product's trial for every
+   * subscription in the cart; sent only as 0, for a trial already had
+   * (`CheckoutRequest.withoutTrial`).
+   */
+  subscription_data?: { trial_period_days: number };
 }
 
 /**
  * `POST /subscriptions/{id}/change-plan` (and `…/preview`), as far as this
  * server sends it. Without `cancel_scheduled_change_plan`, Dodo answers 409
- * while another change is scheduled for the period end — which is what a seat
- * push must wait for rather than override (`seats.ts`).
+ * while another change is scheduled for the period end; a seat increase sends
+ * it and then makes the scheduled change again (`seats.ts`).
  * https://docs.dodopayments.com/api-reference/subscriptions/change-plan
  */
 interface DodoChangePlanRequest {
@@ -227,6 +265,12 @@ interface DodoChangePlanRequest {
   effective_at: PlanChange['effectiveAt'];
   /** `prevent_change` keeps the current plan until payment succeeds; `apply_change` is Dodo's default. */
   on_payment_failure: PlanChange['onPaymentFailure'];
+  /**
+   * "Replace a scheduled plan change with this one. The scheduled change is
+   * cancelled by the transaction that applies this change." A pending (unpaid
+   * payment-link) change still answers 409 whatever this says.
+   */
+  cancel_scheduled_change_plan?: boolean;
 }
 
 export class DodoClient implements BillingProvider {
@@ -268,6 +312,8 @@ export class DodoClient implements BillingProvider {
         allow_currency_selection: false,
         ...(request.regionLock ? { allow_customer_editing_country: false } : {}),
       },
+      // A trial already had: none this time. Absent, the product's own applies.
+      ...(request.withoutTrial ? { subscription_data: { trial_period_days: 0 } } : {}),
     };
     const parsed = await this.call('POST', '/checkouts', dodoCheckoutSessionSchema, body);
     return { sessionId: parsed.session_id, url: parsed.checkout_url };
@@ -401,6 +447,7 @@ function planChangeBody(change: PlanChange): DodoChangePlanRequest {
     proration_billing_mode: change.proration,
     effective_at: change.effectiveAt,
     on_payment_failure: change.onPaymentFailure,
+    ...(change.cancelScheduledChange ? { cancel_scheduled_change_plan: true } : {}),
   };
 }
 

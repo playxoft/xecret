@@ -28,6 +28,7 @@ import {
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
   findOrgIdByInvoicedPayment,
+  findSeatSync,
   listAwaitingActivation,
   listDueSeatSyncs,
   listEndedCancellations,
@@ -37,21 +38,26 @@ import {
   listOwnerRecipients,
   listProviderSubscriptions,
   listSeatSyncs,
+  listUnpaidTrialHolds,
   liveOrganizationExists,
   lockSubscription,
   markMeteredUnitsSent,
   operatorBillingEdit,
   operatorManaged,
+  oweReschedule,
   pruneBillingRequests,
   queueSeatSync,
   raiseCurrentUsageAllowance,
   recordCheckout,
   recordLicenseKey,
+  recordTrial,
   releaseBillingRequest,
   releaseSeatSync,
   reminderSentSince,
   seatedMemberCount,
   seatSyncGeneration,
+  settleReschedule,
+  trialAlreadyUsed,
   upgradeRequestedSince,
   writeSubscriptionState,
 } from './billing';
@@ -696,6 +702,162 @@ describe('the seat-sync debt', () => {
 
     await removeMember(t.db, { orgId: billed.orgId, memberId: member.id }, null);
     expect(await debtOf(billed.orgId)).not.toBeNull();
+  });
+});
+
+describe('migration 0036: a scheduled change owed back after a seat push', () => {
+  it('is not paid while a replaced change is owed, and is once it is settled', async () => {
+    const { orgId } = await seedOrg({ plan: 'team' });
+    await queueSeatSync(t.db, orgId);
+    const generation = (await claimSeatSync(t.db, orgId, 60_000))!;
+    const due = new Date(Date.now() + 300 * DAY);
+    await oweReschedule(t.db, orgId, { productId: 'pdt_team_m', at: due });
+
+    // A membership change, a backoff or a deferral never forgets it.
+    await queueSeatSync(t.db, orgId);
+    await failSeatSync(t.db, orgId, 'upstream_5xx');
+    await deferSeatSync(t.db, orgId, due, 'scheduled_change');
+    expect(await findSeatSync(t.db, orgId)).toMatchObject({
+      rescheduleProductId: 'pdt_team_m',
+      rescheduleAt: due,
+    });
+
+    const now = (await seatSyncGeneration(t.db, orgId))!;
+    expect(now).toBeGreaterThan(generation);
+    expect(await completeSeatSync(t.db, orgId, now)).toBe(false);
+    await settleReschedule(t.db, orgId);
+    expect(await completeSeatSync(t.db, orgId, now)).toBe(true);
+    expect(await findSeatSync(t.db, orgId)).toBeNull();
+  });
+
+  it('refuses an owed product id that is not one', async () => {
+    const { orgId } = await seedOrg({ plan: 'team' });
+    await expect(
+      t.pg.query(`insert into billing_seat_syncs (org_id, reschedule_product_id) values ($1, '')`, [
+        orgId,
+      ]),
+    ).rejects.toThrow(/billing_seat_syncs_reschedule_product_check/);
+  });
+});
+
+describe('migration 0036: a free trial is had once', () => {
+  it('records a trial with the account whose checkout started it — once', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const subscriptionId = `sub_${uniq()}`;
+    await recordCheckout(t.db, {
+      sessionId: `cks_${uniq()}`,
+      orgId,
+      plan: 'team',
+      billingInterval: 'monthly',
+      quantity: 3,
+      createdBy: ownerId,
+      nonce: `nonce${uniq()}`,
+    });
+    await t.pg.query(
+      `update billing_checkouts set subscription_id = $2, consumed_at = now() where org_id = $1`,
+      [orgId, subscriptionId],
+    );
+    const trial = { subscriptionId, orgId, mode: 'test_mode' as const, trialEndsAt: new Date() };
+
+    expect(await recordTrial(t.db, trial)).toBe(true);
+    expect(await recordTrial(t.db, trial)).toBe(false);
+    const rows = await t.pg.query<{ org_id: string; user_id: string | null }>(
+      `select org_id, user_id from billing_trials where subscription_id = $1`,
+      [subscriptionId],
+    );
+    expect(rows.rows).toEqual([{ org_id: orgId, user_id: ownerId }]);
+  });
+
+  it('says a trial was had — by the organisation, or by the account anywhere — in this Dodo mode only', async () => {
+    const trialed = await seedOrg();
+    const other = await seedOrg();
+    const stranger = await seedOrg();
+    await t.pg.query(
+      `insert into billing_trials (subscription_id, org_id, user_id, dodo_mode) values ($1, $2, $3, 'test_mode')`,
+      [`sub_${uniq()}`, trialed.orgId, trialed.ownerId],
+    );
+
+    const ask = (orgId: string, userId: string, mode: 'test_mode' | 'live_mode' = 'test_mode') =>
+      trialAlreadyUsed(t.db, { orgId, userId, mode });
+    expect(await ask(trialed.orgId, stranger.ownerId)).toBe(true);
+    expect(await ask(other.orgId, trialed.ownerId)).toBe(true);
+    expect(await ask(stranger.orgId, stranger.ownerId)).toBe(false);
+    expect(await ask(trialed.orgId, trialed.ownerId, 'live_mode')).toBe(false);
+  });
+
+  it('outlives the organisation’s purge: the account that trialed it is still known', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const subscriptionId = `sub_${uniq()}`;
+    await recordTrial(t.db, { subscriptionId, orgId, mode: 'test_mode', trialEndsAt: null });
+    await t.pg.query(`update billing_trials set user_id = $2 where subscription_id = $1`, [
+      subscriptionId,
+      ownerId,
+    ]);
+    await t.pg.query(`delete from organizations where id = $1`, [orgId]);
+
+    const elsewhere = await seedOrg();
+    expect(
+      await trialAlreadyUsed(t.db, { orgId: elsewhere.orgId, userId: ownerId, mode: 'test_mode' }),
+    ).toBe(true);
+  });
+
+  it('refuses a Dodo mode that is not one', async () => {
+    await expect(
+      t.pg.query(`insert into billing_trials (subscription_id, dodo_mode) values ($1, 'sandbox')`, [
+        `sub_${uniq()}`,
+      ]),
+    ).rejects.toThrow(/billing_trials_dodo_mode_check/);
+  });
+});
+
+describe('listUnpaidTrialHolds', () => {
+  const margins = { cycleMarginMs: DAY, endMarginMs: 60 * 60 * 1000 };
+
+  it('finds a hold that began when a trial ended with nothing paid — not a paying hold, nor one begun mid-trial', async () => {
+    const now = Date.now();
+    const trialEnd = new Date(now - 3 * DAY);
+    const unpaid = await seedOrg({
+      plan: 'team',
+      status: 'on_hold',
+      dodoSubscription: `sub_${uniq()}`,
+      trialEndsAt: trialEnd,
+      periodEnd: trialEnd,
+      onHoldSince: new Date(trialEnd.getTime() + 60_000),
+    });
+    const paying = await seedOrg({
+      plan: 'team',
+      status: 'on_hold',
+      dodoSubscription: `sub_${uniq()}`,
+      trialEndsAt: new Date(now - 40 * DAY),
+      periodEnd: new Date(now + 20 * DAY),
+      onHoldSince: new Date(now - 3 * DAY),
+    });
+    const midTrial = await seedOrg({
+      plan: 'team',
+      status: 'on_hold',
+      dodoSubscription: `sub_${uniq()}`,
+      trialEndsAt: new Date(now + DAY),
+      periodEnd: new Date(now + DAY),
+      onHoldSince: new Date(now - 3 * DAY),
+    });
+
+    const listed = (
+      await listUnpaidTrialHolds(t.db, { since: new Date(now - 2 * DAY), limit: 1000, ...margins })
+    ).map((row) => row.orgId);
+    expect(listed).toContain(unpaid.orgId);
+    expect(listed).not.toContain(paying.orgId);
+    expect(listed).not.toContain(midTrial.orgId);
+
+    // Not before its two days.
+    expect(
+      (
+        await listUnpaidTrialHolds(t.db, {
+          since: new Date(now - 4 * DAY),
+          limit: 1000,
+          ...margins,
+        })
+      ).map((row) => row.orgId),
+    ).not.toContain(unpaid.orgId);
   });
 });
 

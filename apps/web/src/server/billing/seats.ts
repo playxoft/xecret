@@ -7,11 +7,15 @@ import {
   deferSeatSync,
   ensureSeatSync,
   failSeatSync,
+  findSeatSync,
   findSubscription,
+  oweReschedule,
   releaseSeatSync,
   SEAT_SYNC_MAX_ATTEMPTS,
+  SEAT_SYNC_SCHEDULED_CHANGE,
   seatSyncGeneration,
   seatedMemberCount,
+  settleReschedule,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
 import type { Executor, SubscriptionRecord } from '@xecret/db/repositories';
@@ -21,8 +25,9 @@ import { errors } from '../errors';
 import { describeError } from '../logging';
 import { billingProvider, DODO_TIMEOUT_MS, DodoApiError } from './client';
 import type { BillingProvider } from './client';
-import { billingSetup } from './config';
-import type { DodoMode } from './config';
+import type { DodoSubscription } from './payloads';
+import { billingSetup, catalogEntryFor } from './config';
+import type { BillingConfig, DodoMode } from './config';
 import { subscriptionResource, systemAudit } from './audit';
 import { sendBillingReminder } from './reminders';
 
@@ -62,14 +67,40 @@ import { sendBillingReminder } from './reminders';
  * A downgrade waits for the end of the period (`effective_at:
  * next_billing_date`), and Dodo then refuses any other plan change — a seat
  * push included — with a 409 until it lands, unless the request replaces the
- * scheduled change (`cancel_scheduled_change_plan`), which would silently undo
- * the owner's downgrade. So while one is scheduled
- * (`dodo_scheduled_change_at`, from the subscription's `scheduled_change`) the
- * push is not attempted: the debt is put off until an hour after the change
- * takes effect, and the hourly job pushes the count as it is then. Dodo is
- * asked first whether the change is still scheduled — an owner can withdraw
- * it in the portal — and a change gone at Dodo is forgotten and the push
- * made; a 409 for one our row never heard of waits for the date Dodo gives.
+ * scheduled change (`cancel_scheduled_change_plan`). Dodo is asked first
+ * whether the change is still scheduled — an owner can withdraw it in the
+ * portal — and a change gone at Dodo is forgotten and the push made.
+ *
+ * **A seat increase is billed now, over the scheduled change.** Waiting for
+ * it was the hole a security review found (2026-11-25): on a yearly plan the
+ * downgrade lands up to a year after it is asked for, so an owner could ask
+ * for one the day after renewal, invite a hundred people, and pay for none of
+ * them until the renewal — and Dodo renews at the quantity the change request
+ * carried, not the membership's. So an increase is pushed at once with
+ * `cancel_scheduled_change_plan`, which Dodo documents as cancelling the
+ * scheduled change "by the transaction that applies this change", and the
+ * same change is then asked for again — the product Dodo's `scheduled_change`
+ * names, at the new seat count, for the next billing date — so the owner's
+ * downgrade still lands when they chose. Two calls, so the second is owed on
+ * the debt (`reschedule_product_id`) **before** the first is made: an isolate
+ * lost between them leaves it for the hourly job, and the debt is not paid
+ * until it is settled — made again, or standing down to a change Dodo already
+ * has (somebody scheduled another meanwhile; the first call never applied).
+ * One made again too late — its date passed — is raised for a human, never
+ * left as a silent renewal on the plan the owner moved away from.
+ *
+ * Waited for instead, as before — the debt put off until an hour after the
+ * change takes effect, and the hourly job pushing the count as it is then: a
+ * seat **decrease** (the customer pays for the seat until the change lands,
+ * then is credited — replacing an owner's change for a credit is not worth
+ * the risk), a change due within a day, one whose product Dodo did not name
+ * or this deployment does not sell, and a 409 the replacing push still gets
+ * (a pending, unpaid payment-link change). A snapshot that clears or moves the
+ * scheduled change makes the debt due at once (`handlers/subscription.ts`),
+ * so a withdrawn or landed change is pushed straight away; and the reconciler
+ * raises a waiting increase past a short grace (`reconcile.ts`). A Dodo that
+ * cannot be asked about an increase is a failure, retried with backoff — never
+ * a reason to wait out the period.
  * https://docs.dodopayments.com/api-reference/subscriptions/change-plan
  *
  * ── A push Dodo refuses as no change ──
@@ -105,6 +136,14 @@ export const SEAT_PUSH_LEASE_MS = MAX_PUSHES * (DODO_TIMEOUT_MS + 5_000) + 15_00
 
 /** How long after a scheduled plan change takes effect the push waits for Dodo's own event. */
 export const SCHEDULED_CHANGE_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * How far off a scheduled change must be for a seat increase to be billed
+ * over it rather than wait for it. Within a day the change is about to land —
+ * the push after it bills from then, and replacing a change Dodo may already
+ * be applying is a race not worth a day's seats.
+ */
+export const REPLACE_SCHEDULED_CHANGE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export type SeatSyncOutcome =
   /** Payments are off on this deployment. */
@@ -198,6 +237,17 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
         await seatedMemberCount(services.db, orgId),
       );
       if (seats.billed === row.seats) {
+        // In step with Dodo. A scheduled change an earlier push replaced is
+        // made again before the debt can be paid.
+        const debt = await findSeatSync(services.db, orgId);
+        if (debt !== null && debt.rescheduleProductId !== null) {
+          const remade = await remakeScheduledChange(services, provider, setup.config, row, {
+            productId: debt.rescheduleProductId,
+            at: debt.rescheduleAt,
+          });
+          if (remade === 'failed') return 'failed';
+          continue; // settled: count again, and pay the debt on the next pass
+        }
         if (await completeSeatSync(services.db, orgId, generation)) return outcome;
         // A change landed since the count: count again under its generation.
         generation = (await seatSyncGeneration(services.db, orgId)) ?? generation;
@@ -208,36 +258,61 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
       pushes += 1;
 
       const now = new Date();
+      const increase = seats.billed > row.seats;
+      /** The scheduled change this push replaces, when it is an increase billed over one. */
+      let replacing: { productId: string; at: Date } | null = null;
       if (row.dodoScheduledChangeAt !== null && row.dodoScheduledChangeAt > now) {
         // Our row says a change is scheduled. Dodo is asked whether it still
         // is: an owner can withdraw a scheduled downgrade in the portal, and a
         // push put off for a change that no longer exists would wait out a
         // whole period for nothing.
         const scheduled = await scheduledChangeAtDodo(provider, row.dodoSubscriptionId);
-        if (scheduled !== null) {
-          const until = scheduled === 'unknown' ? row.dodoScheduledChangeAt : scheduled;
+        if (scheduled.kind === 'unknown' && increase) {
+          // Unbilled seats are not waited on blind: retried with backoff, and
+          // given up on — raised — like any push Dodo cannot take.
+          await recordFailure(services, orgId, scheduled.cause, {
+            seats: seats.billed,
+            previous: row.seats,
+          });
+          return 'failed';
+        }
+        if (scheduled.kind === 'none') {
+          // Gone at Dodo: forgotten here too, and the push goes now.
+          await recordScheduledChange(services, orgId, null);
+          log.info(
+            'The plan change our row had scheduled is no longer at Dodo; pushing seats now',
+            {
+              orgId,
+            },
+          );
+        } else {
+          const until = scheduled.kind === 'scheduled' ? scheduled.at : row.dodoScheduledChangeAt;
           if (until.getTime() !== row.dodoScheduledChangeAt.getTime()) {
             await recordScheduledChange(services, orgId, until);
           }
-          await deferSeatSync(
-            services.db,
-            orgId,
-            new Date(until.getTime() + SCHEDULED_CHANGE_GRACE_MS),
-            'scheduled_change',
-          );
-          log.info('A seat change waits for the plan change Dodo has scheduled', {
-            orgId,
-            seatCount: seats.billed,
-          });
-          return 'deferred';
+          replacing =
+            increase && scheduled.kind === 'scheduled'
+              ? replaceable(scheduled, setup.config, now)
+              : null;
+          if (replacing === null) {
+            await deferSeatSync(
+              services.db,
+              orgId,
+              new Date(until.getTime() + SCHEDULED_CHANGE_GRACE_MS),
+              SEAT_SYNC_SCHEDULED_CHANGE,
+            );
+            log.info('A seat change waits for the plan change Dodo has scheduled', {
+              orgId,
+              seatCount: seats.billed,
+            });
+            return 'deferred';
+          }
         }
-        // Gone at Dodo: forgotten here too, and the push goes now.
-        await recordScheduledChange(services, orgId, null);
-        log.info('The plan change our row had scheduled is no longer at Dodo; pushing seats now', {
-          orgId,
-        });
       }
 
+      // Owed before the push that cancels it, never after: see the comment at
+      // the top, "A seat increase is billed now".
+      if (replacing !== null) await oweReschedule(services.db, orgId, replacing);
       try {
         await provider.changePlan(row.dodoSubscriptionId, {
           productId: row.dodoProductId,
@@ -245,21 +320,46 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
           proration: 'prorated_immediately_keep_cycle',
           effectiveAt: 'immediately',
           onPaymentFailure: 'apply_change',
+          ...(replacing !== null ? { cancelScheduledChange: true as const } : {}),
         });
       } catch (cause) {
+        // An answer from Dodo applied nothing, so the change it would have
+        // replaced still stands and nothing is owed back. No answer may have
+        // applied it: the owed change stays, and the next pass asks Dodo
+        // which — a change still scheduled there stands it down.
+        if (replacing !== null && !mayHaveApplied(cause)) {
+          await settleReschedule(services.db, orgId);
+        }
         if (cause instanceof DodoApiError && cause.category === 'conflict') {
-          // Dodo has a plan change scheduled that our row has not heard of
-          // yet: it waits for that change's date, when Dodo can say it.
-          const scheduled = await scheduledChangeAtDodo(provider, row.dodoSubscriptionId);
-          if (scheduled instanceof Date) await recordScheduledChange(services, orgId, scheduled);
-          await deferSeatSync(
-            services.db,
-            orgId,
-            new Date(
-              (scheduled instanceof Date ? scheduled : now).getTime() + SCHEDULED_CHANGE_GRACE_MS,
-            ),
-            'scheduled_change',
-          );
+          if (replacing === null) {
+            // Dodo has a plan change scheduled that our row has not heard of
+            // yet. An increase that can be billed over it is pushed again on
+            // the next pass, replacing it; anything else waits for its date.
+            const scheduled = await scheduledChangeAtDodo(provider, row.dodoSubscriptionId);
+            if (scheduled.kind === 'scheduled') {
+              await recordScheduledChange(services, orgId, scheduled.at);
+              if (increase && replaceable(scheduled, setup.config, now) !== null) continue;
+            }
+            await deferSeatSync(
+              services.db,
+              orgId,
+              new Date(
+                (scheduled.kind === 'scheduled' ? scheduled.at : now).getTime() +
+                  SCHEDULED_CHANGE_GRACE_MS,
+              ),
+              SEAT_SYNC_SCHEDULED_CHANGE,
+            );
+          } else {
+            // Refused even as a replacement: a pending change — a plan change
+            // waiting for its payment link — which replacing does not reach.
+            // It waits for the scheduled change, as a decrease does.
+            await deferSeatSync(
+              services.db,
+              orgId,
+              new Date(replacing.at.getTime() + SCHEDULED_CHANGE_GRACE_MS),
+              SEAT_SYNC_SCHEDULED_CHANGE,
+            );
+          }
           log.info('Dodo refused a seat push while a plan change is scheduled; it waits', {
             orgId,
           });
@@ -299,13 +399,20 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
           systemAudit(services, orgId, 'seat sync').success(
             'billing.seats_synced',
             subscriptionResource(orgId),
-            { seatCount: seats.billed, previousSeatCount: row.seats },
+            {
+              seatCount: seats.billed,
+              previousSeatCount: row.seats,
+              ...(replacing !== null
+                ? { reason: 'billed now over a scheduled plan change, which is made again' }
+                : {}),
+            },
           ),
         ]);
       });
       log.info(`Pushed the seat count to Dodo: ${row.seats} → ${seats.billed}`, {
         orgId,
         seatCount: seats.billed,
+        ...(replacing !== null ? { replacedScheduledChange: true } : {}),
       });
       pushed = {
         from: pushed?.from ?? row.seats,
@@ -326,23 +433,233 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
   }
 }
 
-/**
- * When the plan change Dodo has scheduled for the subscription takes effect —
- * `null` when it has none, `'unknown'` when Dodo could not be asked (a caller
- * then keeps what it believed).
- */
+/** What Dodo says of the plan change it has scheduled for a subscription. */
+type ScheduledAtDodo =
+  | { kind: 'none' }
+  /** When it takes effect, and the product it moves to — `null` if Dodo did not name one. */
+  | { kind: 'scheduled'; at: Date; productId: string | null }
+  /** Dodo could not be asked, or answered a date that is not one. */
+  | { kind: 'unknown'; cause: unknown };
+
+/** The plan change Dodo has scheduled for the subscription, as {@link ScheduledAtDodo}. */
 async function scheduledChangeAtDodo(
   provider: BillingProvider,
   subscriptionId: string,
-): Promise<Date | null | 'unknown'> {
+): Promise<ScheduledAtDodo> {
   try {
-    const subscription = await provider.getSubscription(subscriptionId);
-    const at = subscription.scheduled_change?.effective_at;
-    if (at === null || at === undefined) return null;
-    const date = new Date(at);
-    return Number.isNaN(date.getTime()) ? 'unknown' : date;
-  } catch {
-    return 'unknown';
+    return scheduledChangeOf(await provider.getSubscription(subscriptionId));
+  } catch (cause) {
+    return { kind: 'unknown', cause };
+  }
+}
+
+function scheduledChangeOf(
+  subscription: Pick<DodoSubscription, 'scheduled_change'>,
+): ScheduledAtDodo {
+  const change = subscription.scheduled_change;
+  if (change === null || change === undefined) return { kind: 'none' };
+  const at = new Date(change.effective_at);
+  if (Number.isNaN(at.getTime())) {
+    return { kind: 'unknown', cause: new DodoApiError('malformed', null) };
+  }
+  return { kind: 'scheduled', at, productId: change.product_id ?? null };
+}
+
+/**
+ * The scheduled change a seat increase may be billed over — and later make
+ * again — or `null` when it must wait for it instead: one due within
+ * {@link REPLACE_SCHEDULED_CHANGE_AFTER_MS}, or one whose product Dodo did not
+ * name or this deployment does not sell (it could not be made again as it was).
+ */
+function replaceable(
+  scheduled: { at: Date; productId: string | null },
+  config: BillingConfig,
+  now: Date,
+): { productId: string; at: Date } | null {
+  if (scheduled.productId === null) return null;
+  if (catalogEntryFor(config, scheduled.productId) === null) return null;
+  if (scheduled.at.getTime() - now.getTime() <= REPLACE_SCHEDULED_CHANGE_AFTER_MS) return null;
+  return { productId: scheduled.productId, at: scheduled.at };
+}
+
+/**
+ * Whether a failed call to Dodo may still have been carried out: no answer in
+ * time, a broken connection, a gateway timing out in front of it, or a failure
+ * that is not Dodo's answer at all. Any other failure is Dodo saying no.
+ */
+function mayHaveApplied(cause: unknown): boolean {
+  if (!(cause instanceof DodoApiError)) return true;
+  return cause.category === 'timeout' || cause.category === 'network' || cause.status === 504;
+}
+
+/**
+ * Makes again the scheduled plan change an earlier seat push replaced, at the
+ * seat count as it is now — the second of the two calls ("A seat increase is
+ * billed now", at the top). Dodo is asked first what it has:
+ *
+ *  - **A change scheduled already** — the push that would have replaced the
+ *    old one never applied, or somebody scheduled another since. It stands;
+ *    the owed one stands down.
+ *  - **The owed change's date has passed** — it landed (Dodo is on its
+ *    product: nothing to do), or it was replaced and never made again in time,
+ *    and the subscription renewed on the plan the owner moved away from. That
+ *    is raised for a human, once; there is no date left to make it for.
+ *  - Otherwise it is asked for, exactly as the billing screen asked for it
+ *    (`prorated_immediately`, `next_billing_date`, `prevent_change`), and a
+ *    409 there is a change scheduled first by somebody else, which stands.
+ *
+ * A failure to ask or to make it is a failure of the debt — backoff, and
+ * given up on, raised, at the cap.
+ */
+async function remakeScheduledChange(
+  services: SeatServices,
+  provider: BillingProvider,
+  config: BillingConfig,
+  row: SubscriptionRecord & { dodoSubscriptionId: string },
+  /** The owed change, as the debt records it (`reschedule_product_id`, `reschedule_at`). */
+  owed: { productId: string; at: Date | null },
+): Promise<'settled' | 'failed'> {
+  const log = services.log.at('syncSeats');
+  const orgId = row.orgId;
+  const { productId } = owed;
+  const due = owed.at ?? row.currentPeriodEnd;
+  const now = new Date();
+
+  let atDodo: Awaited<ReturnType<BillingProvider['getSubscription']>>;
+  try {
+    atDodo = await provider.getSubscription(row.dodoSubscriptionId);
+  } catch (cause) {
+    await recordRescheduleFailure(services, orgId, cause, { productId, due });
+    return 'failed';
+  }
+
+  const standing = scheduledChangeOf(atDodo);
+  if (standing.kind !== 'none') {
+    await settleReschedule(services.db, orgId);
+    if (standing.kind === 'scheduled') await recordScheduledChange(services, orgId, standing.at);
+    log.info('Dodo already has a plan change scheduled; the one owed back stands down', { orgId });
+    return 'settled';
+  }
+
+  if (due === null || due.getTime() <= now.getTime()) {
+    await settleReschedule(services.db, orgId);
+    if (atDodo.product_id !== productId) {
+      log.error(
+        'A plan change the owner had scheduled was replaced when new seats were billed, and ' +
+          'could not be made again before its date: the subscription renewed on its current ' +
+          'plan, not the one the owner chose. Talk to the owner, and change or refund it in Dodo ' +
+          '(docs/operations/billing.md, "Seat-sync debts")',
+        { orgId },
+      );
+    }
+    return 'settled';
+  }
+
+  const entry = catalogEntryFor(config, productId);
+  if (entry === null) {
+    // Sold when it was replaced, and no longer: it cannot be made as it was.
+    await settleReschedule(services.db, orgId);
+    log.error(
+      'A plan change the owner had scheduled was replaced when new seats were billed, and its ' +
+        'product is no longer one this deployment sells, so it was not made again. Unless ' +
+        'somebody schedules it in Dodo before the renewal, the subscription renews on its ' +
+        'current plan (docs/operations/billing.md, "Seat-sync debts")',
+      { orgId },
+    );
+    return 'settled';
+  }
+
+  const quantity = providerSeats(entry.plan, await seatedMemberCount(services.db, orgId)).billed;
+  try {
+    await provider.changePlan(row.dodoSubscriptionId, {
+      productId,
+      quantity,
+      proration: 'prorated_immediately',
+      effectiveAt: 'next_billing_date',
+      onPaymentFailure: 'prevent_change',
+    });
+  } catch (cause) {
+    if (cause instanceof DodoApiError && cause.category === 'conflict') {
+      await settleReschedule(services.db, orgId);
+      log.info('A plan change was scheduled at Dodo first; the one owed back stands down', {
+        orgId,
+      });
+      return 'settled';
+    }
+    await recordRescheduleFailure(services, orgId, cause, { productId, due });
+    return 'failed';
+  }
+
+  await services.db.transaction(async (tx) => {
+    await settleReschedule(tx, orgId);
+    await writeSubscriptionState(tx, orgId, { dodoScheduledChangeAt: due });
+    await appendAuditEvents(tx, [
+      systemAudit(services, orgId, 'seat sync').success(
+        'billing.plan_change_requested',
+        subscriptionResource(orgId),
+        {
+          plan: entry.plan,
+          billingInterval: entry.interval,
+          seatCount: quantity,
+          reason: 'scheduled plan change made again after new seats were billed',
+        },
+      ),
+    ]);
+  });
+  log.info('Made the scheduled plan change again, at the new seat count', {
+    orgId,
+    seatCount: quantity,
+  });
+  return 'settled';
+}
+
+/**
+ * A failed attempt to make a replaced change again: the debt's backoff, and —
+ * at the cap — the alert. A refusal Dodo means (a 4xx that is not a conflict)
+ * is raised at once instead: asking again cannot change its answer, and the
+ * owner's downgrade is missing at Dodo for as long as nobody knows.
+ */
+async function recordRescheduleFailure(
+  services: SeatServices,
+  orgId: string,
+  cause: unknown,
+  owed: { productId: string; due: Date | null },
+): Promise<void> {
+  const log = services.log.at('syncSeats');
+  const category = cause instanceof DodoApiError ? cause.category : 'unexpected';
+  const attempts = await failSeatSync(services.db, orgId, `reschedule_${category}`);
+  await appendAuditEvents(services.db, [
+    systemAudit(services, orgId, 'seat sync').error(
+      'billing.plan_change_requested',
+      subscriptionResource(orgId),
+      'upstreamUnavailable',
+    ),
+  ]);
+  log.warn(
+    'Could not make a scheduled plan change again after billing new seats; the hourly job will ' +
+      'retry it',
+    {
+      orgId,
+      category,
+      attempts,
+      ...(cause instanceof DodoApiError ? {} : { error: describeError(cause) }),
+    },
+  );
+  const refused = cause instanceof DodoApiError && !cause.retryable && !mayHaveApplied(cause);
+  if (
+    (refused || attempts >= SEAT_SYNC_MAX_ATTEMPTS) &&
+    (await deadLetterSeatSync(services.db, orgId))
+  ) {
+    log.error(
+      'A plan change the owner had scheduled was replaced when new seats were billed, and ' +
+        (refused
+          ? 'Dodo refused to schedule it again'
+          : `has failed ${attempts} times to be made again`) +
+        `; it is no longer retried. Unless it is scheduled in Dodo by hand before ` +
+        `${owed.due?.toISOString() ?? 'the renewal'}, the subscription renews on its current ` +
+        'plan, not the one the owner chose (docs/operations/billing.md, "Seat-sync debts")',
+      { orgId, lastError: category },
+    );
   }
 }
 

@@ -5,6 +5,7 @@ import {
   createFreeSubscription,
   lockSubscription,
   queueSeatSync,
+  recordTrial,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
 import { catalogEntryFor } from '../config';
@@ -12,7 +13,7 @@ import type { BillingConfig } from '../config';
 import { subscriptionResource } from '../audit';
 import type { HandlerOutcome } from '../effects';
 import type { DodoSubscription } from '../payloads';
-import { decideSnapshot } from '../snapshot';
+import { decideSnapshot, trialEndedUnpaid } from '../snapshot';
 import type { IgnoreReason } from '../snapshot';
 import { paymentFailedOccasion } from '../reminders';
 
@@ -183,7 +184,33 @@ export async function applySubscriptionSnapshot(
   // quantity may be out of date — so the debt is written with it, as a
   // membership change writes its own. The push after the commit pays it; an
   // isolate gone before that push leaves it for the hourly job.
-  if (decision.activated) await queueSeatSync(tx, orgId);
+  //
+  // So is a seat count after Dodo's scheduled plan change cleared or moved: a
+  // downgrade that landed (Dodo renewed at the quantity its request carried,
+  // not the membership's), one withdrawn in the portal, or one made again
+  // after a seat push. A push put off until the old date would otherwise wait
+  // for it — up to a year for a yearly plan's downgrade withdrawn the day
+  // after it was asked for. The debt is due at once, and the push after the
+  // commit asks Dodo again; nothing is pushed when the count already matches.
+  const scheduleMoved =
+    !decision.activated &&
+    !decision.ended &&
+    (row.dodoScheduledChangeAt?.getTime() ?? null) !==
+      (decision.patch.dodoScheduledChangeAt?.getTime() ?? null);
+  if (decision.activated || scheduleMoved) await queueSeatSync(tx, orgId);
+
+  // A subscription that started on a free trial is recorded, with the account
+  // whose checkout started it: that organisation, and that account, are not
+  // given another (`startCheckout`). Every snapshot of it asks; the first
+  // writes it.
+  if (!decision.ended && decision.patch.trialEndsAt !== null) {
+    await recordTrial(tx, {
+      subscriptionId: snapshot.subscription_id,
+      orgId,
+      mode: input.config.mode,
+      trialEndsAt: decision.patch.trialEndsAt,
+    });
+  }
 
   const { change } = decision;
   if (change.material) {
@@ -222,22 +249,29 @@ export async function applySubscriptionSnapshot(
   }
 
   // A payment going wrong: the owners hear about it at once (and then at most
-  // once a UTC day — see `paymentFailedOccasion`).
+  // once a UTC day — see `paymentFailedOccasion`). A trial that ended with
+  // nothing paid gets its own wording: its hold ends in days, not weeks
+  // (`trialEndedUnpaid`, `jobs.ts`).
   const failing = (status: string) => status === 'past_due' || status === 'on_hold';
   if (failing(change.status) && !failing(change.previousStatus)) {
     outcome.effects.push({
       kind: 'mail',
       orgId,
       occasion: paymentFailedOccasion(input.now),
-      reminder: { kind: 'payment_failed', plan: change.plan, firstPayment: false },
+      reminder: {
+        kind: 'payment_failed',
+        plan: change.plan,
+        firstPayment: false,
+        ...(trialEndedUnpaid(decision.patch, input.now) ? { trialEnded: true as const } : {}),
+      },
     });
   }
 
   // The checkout's quantity was counted when the owner clicked; people may have
   // joined or left before the payment landed. The seat sync pushes the count
   // as it is now, does nothing when it already matches, and is what tells the
-  // owners when the bill moves.
-  if (decision.activated) outcome.effects.push({ kind: 'seat-sync', orgId });
+  // owners when the bill moves. The same after a scheduled change moved.
+  if (decision.activated || scheduleMoved) outcome.effects.push({ kind: 'seat-sync', orgId });
 
   if (decision.ended && row.addonSaml) {
     outcome.effects.push({

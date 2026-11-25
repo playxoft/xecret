@@ -110,6 +110,7 @@ const FREE: BillingStatusPayload = {
   renewsAt: null,
   cancelAtPeriodEnd: false,
   trialEndsAt: null,
+  hold: null,
   renewalAmount: null,
   regionLock: null,
   usage: {

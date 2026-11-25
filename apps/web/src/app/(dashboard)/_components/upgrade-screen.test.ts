@@ -66,6 +66,7 @@ function billing(over: Partial<BillingStatusPayload> = {}): BillingStatusPayload
     renewsAt: null,
     cancelAtPeriodEnd: false,
     trialEndsAt: null,
+    hold: null,
     renewalAmount: null,
     regionLock: null,
     usage: {
