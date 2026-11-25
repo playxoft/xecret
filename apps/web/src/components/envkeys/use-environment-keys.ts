@@ -54,8 +54,8 @@ export function useEnvironmentKeys(
   const [state, setState] = useState<EnvironmentKeyState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
 
-  const { orgSlug, projectSlug, envSlug, orgId } = target;
-  const path = keysPath({ orgSlug, projectSlug, envSlug });
+  const { orgSlug, projectId, envSlug, orgId } = target;
+  const path = keysPath({ orgSlug, projectId, envSlug });
 
   // Compared during render rather than in an effect: an effect runs after paint,
   // so a table rendered against the previous environment's key would be on
@@ -73,12 +73,12 @@ export function useEnvironmentKeys(
     (async () => {
       try {
         const keys = await fetchEnvironmentKeys(
-          { orgSlug, projectSlug, envSlug },
+          { orgSlug, projectId, envSlug },
           { signal: controller.signal },
         );
         if (controller.signal.aborted) return;
 
-        const context = { orgSlug, orgId: orgId ?? '', projectSlug, envSlug };
+        const context = { orgSlug, orgId: orgId ?? '', projectId, envSlug };
 
         // ── The mode is checked before it is believed ──
         // `encryptionMode` decides whether the editor above sends ciphertext or
@@ -89,7 +89,7 @@ export function useEnvironmentKeys(
         // `pins.ts`. Recorded here too, on the read path, because a browser that
         // only pinned on its first *write* would be unprotected on exactly the
         // page load where the downgrade is offered.
-        const pinKey = modePinKey({ orgSlug, projectSlug, envSlug });
+        const pinKey = modePinKey({ orgSlug, projectId, envSlug });
         if (!modeIsAllowed(readModePins(), pinKey, keys.encryptionMode).allowed) {
           setState({ status: 'unavailable', keys, reason: 'downgraded' });
           return;
@@ -131,7 +131,7 @@ export function useEnvironmentKeys(
     })();
 
     return () => controller.abort();
-  }, [orgSlug, projectSlug, envSlug, orgId, vault, attempt]);
+  }, [orgSlug, projectId, envSlug, orgId, vault, attempt]);
 
   const reload = useCallback(() => setAttempt((current) => current + 1), []);
 

@@ -25,7 +25,7 @@ import type { EnvironmentDetail } from './types';
 
 export interface EnvironmentSettingsFormProps {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   environment: EnvironmentDetail;
   /**
    * Whether the viewer holds `environment.update` — renaming, reordering and
@@ -52,7 +52,7 @@ const SORT_ORDER_MAX = 10_000;
  */
 export function EnvironmentSettingsForm({
   orgSlug,
-  projectSlug,
+  projectId,
   environment,
   canManage,
   canDelete,
@@ -76,7 +76,7 @@ export function EnvironmentSettingsForm({
    */
   const [crossing, setCrossing] = useState<{ next: boolean; warning: string } | null>(null);
 
-  const path = apiPath.environment(orgSlug, projectSlug, environment.slug);
+  const path = apiPath.environment(orgSlug, projectId, environment.slug);
 
   async function saveDetails(event: React.FormEvent) {
     event.preventDefault();
@@ -143,7 +143,7 @@ export function EnvironmentSettingsForm({
     // keeps the client's rule identical to the server's.
     await api.delete(path, environment.isProduction ? { confirm: environment.slug } : undefined);
     toast({ variant: 'success', title: `Deleted ${environment.name}` });
-    router.push(appPath.project(orgSlug, projectSlug));
+    router.push(appPath.project(orgSlug, projectId));
   }
 
   return (

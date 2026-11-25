@@ -92,7 +92,7 @@ const production = (archive: OpenedArchive) =>
 const ready = (environmentId: string): TargetState => ({
   status: 'ready',
   environmentId,
-  io: serverSecretIo({ orgSlug: 'acme', orgId: 'o', projectSlug: 'api', envSlug: 'x' }),
+  io: serverSecretIo({ orgSlug: 'acme', orgId: 'o', projectId: 'api', envSlug: 'x' }),
 });
 
 describe('the default mapping', () => {
@@ -173,7 +173,7 @@ describe('importing into an end-to-end-encrypted environment', () => {
       {
         orgSlug: 'acme',
         orgId: '0192f0a1-0000-7000-8000-0000000000e3',
-        projectSlug: 'api',
+        projectId: 'api',
         envSlug: 'production',
       },
       material,
@@ -220,7 +220,7 @@ describe('importing into an end-to-end-encrypted environment', () => {
     const io = serverSecretIo({
       orgSlug: 'acme',
       orgId: 'o',
-      projectSlug: 'api',
+      projectId: 'api',
       envSlug: 'legacy',
     });
 
@@ -234,7 +234,7 @@ describe('importing into an end-to-end-encrypted environment', () => {
 });
 
 describe('a target environment', () => {
-  const context = { orgSlug: 'acme', orgId: 'o', projectSlug: 'api', envSlug: 'production' };
+  const context = { orgSlug: 'acme', orgId: 'o', projectId: 'api', envSlug: 'production' };
   const keysAnswer = (encryptionMode: 'e2ee' | 'server', myGrant: unknown = null) => ({
     keys: {
       encryptionMode,
@@ -356,7 +356,7 @@ describe('the dialog', () => {
         onOpenChange: () => {},
         orgSlug: 'acme',
         orgId: 'o',
-        projectSlug: 'api',
+        projectId: 'api',
         environments: [],
         onImported: () => {},
       }),
@@ -375,7 +375,7 @@ describe('the dialog', () => {
         onOpenChange: () => {},
         orgSlug: 'acme',
         orgId: 'o',
-        projectSlug: 'api',
+        projectId: 'api',
         environments: [],
         onImported: () => {},
       }),

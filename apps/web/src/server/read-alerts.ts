@@ -251,9 +251,13 @@ async function sendDigest(
   const origin = publicOrigin(services.env);
   const settingsUrls = new Map<string, string>();
   for (const sighting of owed) {
+    // Keyed by the slugs the mail prints, and linking by the project's id: the
+    // dashboard's canonical address for it. A slug link would still arrive, by
+    // way of the redirect old addresses get, but a digest is read once and the
+    // click should not cost a second load.
     settingsUrls.set(
       `${sighting.projectSlug}/${sighting.environmentSlug}`,
-      `${origin}/app/${organization.slug}/${sighting.projectSlug}/${sighting.environmentSlug}/settings`,
+      `${origin}/app/${organization.slug}/${sighting.projectId}/${sighting.environmentSlug}/settings`,
     );
   }
   const sightings = owed.map(toMailSighting);

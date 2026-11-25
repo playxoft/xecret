@@ -58,7 +58,7 @@ import { useVaultKeys } from '@/components/vault';
 export interface PromoteDialogProps {
   orgSlug: string;
   orgId: string;
-  projectSlug: string;
+  projectId: string;
   /** The environment being promoted *into* — the one whose page this is. */
   target: Pick<Environment, 'slug' | 'name' | 'isProduction' | 'encryptionMode'>;
   /** Every environment of the project, from which a source is chosen. */
@@ -127,7 +127,7 @@ type Phase =
 function PromoteBody({
   orgSlug,
   orgId,
-  projectSlug,
+  projectId,
   target,
   environments,
   onOpenChange,
@@ -169,13 +169,13 @@ function PromoteBody({
       // Sequential: two audited pulls, each its own `secret.read` record, and
       // the second is pointless if the first is refused.
       const read = await readSnapshot({
-        ref: { orgSlug, projectSlug, envSlug: source.slug },
+        ref: { orgSlug, projectId, envSlug: source.slug },
         orgId,
         vault,
         label: source.name,
       });
       const here = await readSnapshot({
-        ref: { orgSlug, projectSlug, envSlug: target.slug },
+        ref: { orgSlug, projectId, envSlug: target.slug },
         orgId,
         vault,
         label: target.name,

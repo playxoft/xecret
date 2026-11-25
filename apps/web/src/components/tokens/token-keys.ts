@@ -10,6 +10,7 @@ import {
 import { api } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
+  carryModePinsForward,
   fetchEnvironmentKeys,
   submitGrants,
   modeIsAllowed,
@@ -76,6 +77,9 @@ export class TokenKeyUnavailableError extends Error {
 
 export interface MintServiceTokenParams {
   orgSlug: string;
+  /** Where the environment's key state is read from, and its mode pin filed. */
+  projectId: string;
+  /** What the token is scoped to, as the create endpoint names it. */
   projectSlug: string;
   environmentSlug: string;
   name: string;
@@ -124,9 +128,12 @@ export async function mintServiceToken(
     ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
   };
 
+  // Addressed by the project's id, like every environment screen: the mode pin
+  // this checks is filed under the address, and one environment filed under two
+  // spellings would be two pins that never meet.
   const target = {
     orgSlug: params.orgSlug,
-    projectSlug: params.projectSlug,
+    projectId: params.projectId,
     envSlug: params.environmentSlug,
   };
 
@@ -142,7 +149,10 @@ export async function mintServiceToken(
   // And the same continuity rule the dashboard applies. Minting is exactly the
   // moment a downgrade pays off: a keyless token is a credential that reads an
   // environment through the server, which is what a server that wanted the
-  // values would ask for.
+  // values would ask for. The tokens page may be the first this browser has
+  // opened since project addresses moved to ids, so a pin it filed under the
+  // project's slug is carried across first — this holds both.
+  carryModePinsForward(params.orgSlug, { id: params.projectId, slug: params.projectSlug });
   const pinKey = modePinKey(target);
   if (!modeIsAllowed(readModePins(), pinKey, keys.encryptionMode).allowed) {
     throw new TokenKeyUnavailableError(

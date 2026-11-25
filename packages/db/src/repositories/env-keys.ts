@@ -1144,13 +1144,16 @@ export async function listMemberSealingKeys(
 /**
  * One invitation-sealed grant, with everything the invitee needs to open it.
  *
- * `edkVersion` and `environmentId` are the AAD components (spec §4.2); the two
- * slugs are how the client addresses the route it re-uploads to. All four are
- * carried because the invitee holds no other view of this organisation at the
- * moment they run this — they have just joined.
+ * `edkVersion` and `environmentId` are the AAD components (spec §4.2); the
+ * project's id and the environment's slug are how the client addresses the
+ * route it re-uploads to, which is the address the dashboard uses everywhere
+ * else. The project's slug travels too, for anything that names the project to
+ * a person. All of it is carried because the invitee holds no other view of
+ * this organisation at the moment they run this — they have just joined.
  */
 export interface InvitationGrantRecord {
   environmentId: string;
+  projectId: string;
   projectSlug: string;
   environmentSlug: string;
   envDataKeyId: string;
@@ -1200,6 +1203,7 @@ export async function readInvitationGrants(
   const rows = await exec
     .select({
       environmentId: envDataKeys.environmentId,
+      projectId: projects.id,
       projectSlug: projects.slug,
       environmentSlug: environments.slug,
       envDataKeyId: envDataKeys.id,
@@ -1265,6 +1269,7 @@ export async function listClaimableInvitationGrants(
       orgSlug: organizations.slug,
       orgName: organizations.name,
       environmentId: envDataKeys.environmentId,
+      projectId: projects.id,
       projectSlug: projects.slug,
       environmentSlug: environments.slug,
       envDataKeyId: envDataKeys.id,
@@ -1305,6 +1310,7 @@ export async function listClaimableInvitationGrants(
     }
     record.grants.push({
       environmentId: row.environmentId,
+      projectId: row.projectId,
       projectSlug: row.projectSlug,
       environmentSlug: row.environmentSlug,
       envDataKeyId: row.envDataKeyId,

@@ -579,6 +579,11 @@ export interface OrganizationPayload {
 }
 
 export interface ProjectPayload {
+  /**
+   * The project's UUIDv7, and the name its dashboard address uses — see
+   * `toOrganization` below for why publishing it is safe.
+   */
+  id: string;
   name: string;
   slug: string;
   description: string | null;
@@ -649,10 +654,21 @@ export function toEnvironments(environments: readonly EnvironmentRecord[]): Envi
 
 /**
  * The organisation id is published because `/api/auth/me` already returns it,
- * and the dashboard's organisation switcher keys on it. Project and environment
- * ids are not: their slug is the public identifier, and an id that is never
- * returned cannot be pasted into a hand-built URL that skips a level of the
- * tenancy chain.
+ * and the dashboard's organisation switcher keys on it.
+ *
+ * A project's id is published too, because the dashboard names a project by it:
+ * `/app/{org}/{projectId}/…`, so that an address never spells out what a
+ * project is called and stays the same for as long as the project exists. What
+ * made ids unpublished before — an id handed out is one somebody can paste into
+ * a URL that skips a level of the tenancy chain — is answered by where the id
+ * is accepted rather than by withholding it. There is no route keyed by a bare project id: it is
+ * read only as the project segment *under* its organisation, and
+ * `resolveProject` looks it up with the organisation's id in the `WHERE` clause
+ * (`findProjectById`), so another tenant's id is the same `not_found` as a slug
+ * that does not exist.
+ *
+ * Environment ids stay unpublished on these payloads. The environment segment
+ * is still its slug, so nothing a client builds needs one.
  */
 export function toOrganization(
   organization: Organization,
@@ -670,6 +686,7 @@ export function toOrganization(
 
 export function toProject(project: ProjectRecord): ProjectPayload {
   return {
+    id: project.id,
     name: project.name,
     slug: project.slug,
     description: project.description,

@@ -188,6 +188,7 @@ export interface OwedSighting {
   id: string;
   environmentId: string;
   environmentSlug: string;
+  projectId: string;
   projectSlug: string;
   isProduction: boolean;
   principalKind: SightingPrincipalKind;
@@ -214,6 +215,7 @@ export async function takeOwedSightings(
         id: environmentReadSightings.id,
         environmentId: environmentReadSightings.environmentId,
         environmentSlug: environments.slug,
+        projectId: projects.id,
         projectSlug: projects.slug,
         isProduction: environments.isProduction,
         principalKind: environmentReadSightings.principalKind,

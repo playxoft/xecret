@@ -23,6 +23,7 @@ import type { ApiError } from './errors';
 
 const repositories = vi.hoisted(() => ({
   findOrganizationBySlugWithEntitlements: vi.fn(),
+  findProjectById: vi.fn(),
   findProjectBySlug: vi.fn(),
   findEnvironmentBySlug: vi.fn(),
   loadAuthorizationContext: vi.fn(),
@@ -30,7 +31,7 @@ const repositories = vi.hoisted(() => ({
 
 // Partial: `entitlementsFromRow` is a pure mapper with no IO, so the real one
 // is what these tests should exercise — stubbing it would hide a row shape that
-// stopped resolving. Only the four query functions above are replaced.
+// stopped resolving. Only the five query functions above are replaced.
 vi.mock('@xecret/db/repositories', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@xecret/db/repositories')>()),
   ...repositories,
@@ -150,6 +151,12 @@ beforeEach(() => {
     entitlements: null,
   });
   repositories.findProjectBySlug.mockResolvedValue(project);
+  // Org-scoped, as the real query is: the row comes back only for its own
+  // organisation's id.
+  repositories.findProjectById.mockImplementation(
+    async (_db: unknown, orgId: string, id: string) =>
+      orgId === project.orgId && id === project.id ? project : undefined,
+  );
   repositories.findEnvironmentBySlug.mockResolvedValue(environment);
   repositories.loadAuthorizationContext.mockResolvedValue(membership());
 });
@@ -358,6 +365,89 @@ describe('project and environment resolution', () => {
       PROJECT_ID,
       'production',
     );
+  });
+});
+
+/**
+ * The project segment takes the project's id as well as its slug: the dashboard
+ * names a project by id, the CLI by slug. The id must be no shortcut past the
+ * organisation — another tenant's id is the same 404 as a slug that does not
+ * exist.
+ */
+describe('a project named by its id', () => {
+  it('resolves by id, inside the resolved organisation, and never asks for a slug', async () => {
+    const scope = await resolveProject(
+      await resolveOrg(userPrincipal, 'playxoft', services),
+      PROJECT_ID,
+      services,
+    );
+
+    expect(scope.project.id).toBe(PROJECT_ID);
+    expect(repositories.findProjectById).toHaveBeenCalledWith(services.db, ORG_ID, PROJECT_ID);
+    expect(repositories.findProjectBySlug).not.toHaveBeenCalled();
+  });
+
+  it('still resolves a slug by slug, so the CLI is unchanged', async () => {
+    await resolveProject(
+      await resolveOrg(userPrincipal, 'playxoft', services),
+      'default',
+      services,
+    );
+
+    expect(repositories.findProjectBySlug).toHaveBeenCalledWith(services.db, ORG_ID, 'default');
+    expect(repositories.findProjectById).not.toHaveBeenCalled();
+  });
+
+  it('answers another organisation’s project id exactly as it answers an unknown slug', async () => {
+    // A member of a second organisation, naming the first one's project by id
+    // under their own organisation's path — the IDOR this layer exists for.
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: { id: OTHER_ORG_ID, name: 'Zebra', slug: 'zebra' },
+      entitlements: null,
+    });
+    repositories.loadAuthorizationContext.mockResolvedValue({
+      ...membership(),
+      orgId: OTHER_ORG_ID,
+    });
+    const scope = await resolveOrg(userPrincipal, 'zebra', services);
+
+    await expectNotFound(resolveProject(scope, PROJECT_ID, services));
+    expect(repositories.findProjectById).toHaveBeenCalledWith(
+      services.db,
+      OTHER_ORG_ID,
+      PROJECT_ID,
+    );
+
+    repositories.findProjectBySlug.mockResolvedValue(undefined);
+    await expectNotFound(resolveProject(scope, 'default', services));
+  });
+
+  it('never retries a missing id as a slug, so a segment means one thing', async () => {
+    const scope = await resolveOrg(userPrincipal, 'playxoft', services);
+
+    await expectNotFound(resolveProject(scope, OTHER_PROJECT_ID, services));
+    expect(repositories.findProjectBySlug).not.toHaveBeenCalled();
+  });
+
+  it('reads only the canonical spelling as an id', async () => {
+    // Uppercase is not an id the system ever issues, so it is a slug lookup —
+    // and no slug is shaped like that either, so it finds nothing.
+    repositories.findProjectBySlug.mockResolvedValue(undefined);
+    const scope = await resolveOrg(userPrincipal, 'playxoft', services);
+
+    await expectNotFound(resolveProject(scope, PROJECT_ID.toUpperCase(), services));
+    expect(repositories.findProjectById).not.toHaveBeenCalled();
+  });
+
+  it('holds a service token to its pinned project whichever spelling names another', async () => {
+    const scope = await resolveOrg(
+      servicePrincipal({ projectId: OTHER_PROJECT_ID }),
+      'playxoft',
+      services,
+    );
+
+    await expectNotFound(resolveProject(scope, PROJECT_ID, services));
+    await expectNotFound(resolveProject(scope, 'default', services));
   });
 });
 

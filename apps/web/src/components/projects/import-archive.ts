@@ -90,7 +90,7 @@ export type TargetState =
 export async function ioForEnvironment(context: {
   orgSlug: string;
   orgId: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }): Promise<TargetState> {
   let keys: Awaited<ReturnType<typeof fetchEnvironmentKeys>>;
@@ -135,7 +135,7 @@ export async function ioForEnvironment(context: {
  */
 async function nobodyHoldsKey(context: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }): Promise<boolean> {
   try {

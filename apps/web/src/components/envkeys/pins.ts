@@ -212,13 +212,24 @@ function defaultStorage(): Storage | null {
  * migration this whole branch exists to perform, and it takes capability away
  * from the server rather than granting it.
  *
- * ── Why the slug path is the key, and not `environmentId` ──
- * The id arrives in the same response as the mode, so a server willing to lie
- * about one would file its lie under a fresh id and miss the pin entirely. The
- * slug path is what *this browser* put in the URL. It is renameable, and a
- * rename loses the pin — which reads as first contact and permits the answer,
- * over-permitting in a rare and deliberate case rather than under-permitting on
- * every page load.
+ * ── Why the address is the key, and not `environmentId` ──
+ * The environment's id arrives in the same response as the mode, so a server
+ * willing to lie about one would file its lie under a fresh id and miss the pin
+ * entirely. The address is what *this browser* put in the URL — the
+ * organisation's slug, the project's id and the environment's slug, exactly as
+ * the dashboard names a project page. The project is filed by id because that
+ * is what the URL holds; it arrived in an earlier response (the listing the
+ * link came from) than the mode does, which is the property the rule needs. An
+ * environment slug is renameable, and a rename loses the pin — which reads as
+ * first contact and permits the answer, over-permitting in a rare and
+ * deliberate case rather than under-permitting on every page load.
+ *
+ * ── Pins filed before projects were named by id ──
+ * The book used to file the project by slug, because that was what the URL
+ * held. Those pins are not thrown away: wherever the dashboard holds a project
+ * with both its id and its slug, {@link carryModePinsForward} copies them across
+ * to the id, so an environment this browser has seen encrypted stays pinned
+ * through the change of address.
  */
 
 /** Separate from the key book: a different record shape, kept in a different key. */
@@ -233,13 +244,66 @@ export interface ModePin {
 
 export type ModePinStore = Readonly<Record<string, ModePin>>;
 
-/** How a mode pin is filed. The slug path, never an id the server chose. */
+/**
+ * How a mode pin is filed: the address the URL names the environment by —
+ * never an id that arrived with the mode.
+ */
 export function modePinKey(target: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }): string {
-  return `mode:${target.orgSlug}/${target.projectSlug}/${target.envSlug}`;
+  return `mode:${target.orgSlug}/${target.projectId}/${target.envSlug}`;
+}
+
+/**
+ * Copies the mode pins one project's environments were given under its slug —
+ * the key before project addresses named the id — to the same environments
+ * under its id. Called wherever the dashboard holds both before a pin is read:
+ * the project trail the shell reads on every project page, the redirect an old
+ * address takes, and a service-token mint, which may happen on the tokens page
+ * before any project page has been opened.
+ *
+ * One window is left, and it is narrow: a cold load straight onto an
+ * environment page by its new address can read the key state before the trail
+ * has landed, and that first read finds no pin under the id. The trail's copy
+ * lands moments later, so every load after it is pinned as before.
+ *
+ * ── Why it can only ever make the book stricter ──
+ * The id and the slug both come from the server, so a server that lied about
+ * one could steer where a pin is copied. That buys it nothing, because a copy
+ * never weakens anything: an entry is written only where the id has none, or
+ * has `server` while the slug says `e2ee` — the one upgrade the book itself
+ * permits. Nothing is removed, so the old entries stay as they were. The worst a
+ * wrong id achieves is pinning `e2ee` against an address that should not have
+ * it, which refuses a `server` answer there: the loud failure, not the quiet
+ * one.
+ *
+ * One read and at most one write, however many environments the project has.
+ */
+export function carryModePinsForward(
+  orgSlug: string,
+  project: { id: string; slug: string },
+  storage: Storage | null = defaultStorage(),
+): void {
+  if (project.id === project.slug) return;
+
+  const pins = readModePins(storage);
+  const legacyPrefix = `mode:${orgSlug}/${project.slug}/`;
+  const prefix = `mode:${orgSlug}/${project.id}/`;
+
+  const carried: Record<string, ModePin> = {};
+  for (const [key, pin] of Object.entries(pins)) {
+    if (!key.startsWith(legacyPrefix)) continue;
+    const forward = `${prefix}${key.slice(legacyPrefix.length)}`;
+    const current = pins[forward];
+    if (current === undefined || (current.mode === 'server' && pin.mode === 'e2ee')) {
+      carried[forward] = pin;
+    }
+  }
+
+  if (Object.keys(carried).length === 0) return;
+  writeRecord(MODE_STORAGE_KEY, { ...pins, ...carried }, storage);
 }
 
 /** Reads the mode book. Every failure is an empty book — see {@link readPins}. */

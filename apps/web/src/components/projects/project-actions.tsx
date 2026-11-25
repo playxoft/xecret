@@ -246,7 +246,7 @@ export function ProjectActions({
           onOpenChange={setImporting}
           orgSlug={orgSlug}
           orgId={organization.id}
-          projectSlug={project.slug}
+          projectId={project.id}
           environments={environments}
           onImported={onChanged}
         />

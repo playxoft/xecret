@@ -347,8 +347,12 @@ describe('a read from somewhere new', () => {
     expect(message!.text).toContain('api/production (production)');
     expect(message!.text).toContain(world.owner.email);
     expect(message!.text).toContain('203.0.113.5');
-    expect(message!.text).toContain(`${ORIGIN}/app/${world.slug}/api/production/settings`);
-    expect(message!.html).toContain(`${ORIGIN}/app/${world.slug}/api/production/settings`);
+    // Linked by the project's id, the dashboard's canonical address, while the
+    // text names it by slug.
+    const settings = `${ORIGIN}/app/${world.slug}/${world.projectId}/production/settings`;
+    expect(message!.text).toContain(settings);
+    expect(message!.html).toContain(settings);
+    expect(message!.text).not.toContain(`${ORIGIN}/app/${world.slug}/api/`);
 
     const [sighting] = await sightingsOf(world.production);
     expect(sighting).toMatchObject({

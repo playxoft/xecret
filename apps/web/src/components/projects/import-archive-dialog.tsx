@@ -113,7 +113,7 @@ export interface ImportArchiveDialogProps {
   onOpenChange: (open: boolean) => void;
   orgSlug: string;
   orgId: string;
-  projectSlug: string;
+  projectId: string;
   environments: readonly ProjectEnvironment[];
   /** Called after a real (not previewed) import wrote anything. */
   onImported: () => void;
@@ -245,7 +245,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
         state: await ioForEnvironment({
           orgSlug: props.orgSlug,
           orgId: props.orgId,
-          projectSlug: props.projectSlug,
+          projectId: props.projectId,
           envSlug: environment.slug,
         }),
       });
@@ -280,7 +280,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
         const io = await ioForEnvironment({
           orgSlug: props.orgSlug,
           orgId: props.orgId,
-          projectSlug: props.projectSlug,
+          projectId: props.projectId,
           envSlug: target,
         });
         if (io.status !== 'ready') {

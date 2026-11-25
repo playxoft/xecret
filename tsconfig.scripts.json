@@ -30,6 +30,7 @@
     "scripts/contact-smoke.ts",
     "scripts/smoke-test.ts",
     "scripts/migrate-users-to-workos.ts",
+    "scripts/check-uuid-shaped-slugs.ts",
     "apps/web/src/cloudflare-env.d.ts"
   ]
 }

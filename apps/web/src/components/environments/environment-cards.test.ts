@@ -107,7 +107,7 @@ describe('InheritanceCard', () => {
     const html = render(
       createElement(InheritanceCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment({ encryptionMode: 'server' }),
         canManage: true,
         onChanged: () => {},
@@ -122,7 +122,7 @@ describe('InheritanceCard', () => {
     const html = render(
       createElement(InheritanceCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment({ parent: 'staging' }),
         canManage: true,
         onChanged: () => {},
@@ -140,7 +140,7 @@ describe('InheritanceCard', () => {
     const html = render(
       createElement(InheritanceCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment({ parent: 'staging' }),
         canManage: false,
         onChanged: () => {},
@@ -163,7 +163,7 @@ describe('EnvironmentPolicyCard', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment({ readAlerts: false, readAlertsActive: false }),
         canManage: true,
         onChanged: () => {},
@@ -186,7 +186,7 @@ describe('EnvironmentPolicyCard', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment({ plaintextExport: 'disabled' }),
         canManage: true,
         onChanged: () => {},
@@ -205,7 +205,7 @@ describe('EnvironmentPolicyCard', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment({ isProduction: false, readAlertsActive: false }),
         canManage: true,
         onChanged: () => {},
@@ -236,7 +236,7 @@ describe('EnvironmentPolicyCard', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment(),
         canManage: true,
         onChanged: () => {},
@@ -254,7 +254,7 @@ describe('EnvironmentPolicyCard', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         environment: environment(),
         canManage: false,
         onChanged: () => {},

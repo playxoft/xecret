@@ -50,21 +50,21 @@ const PAGE_SIZE = 200;
 
 export function EnvironmentScreen({
   orgSlug,
-  projectSlug,
+  projectId,
   envSlug,
 }: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }) {
   // One request answers two questions: what this environment is, and what its
   // siblings are for the switcher. Asking `…/environments/{envSlug}` instead
   // would give a secret count this screen can already see, and would still need
   // a second call to populate the switcher.
-  const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectSlug));
+  const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectId));
   const environment = project.data?.environments.find((entry) => entry.slug === envSlug);
 
-  const secrets = useSecretList(orgSlug, projectSlug, envSlug);
+  const secrets = useSecretList(orgSlug, projectId, envSlug);
 
   const organization = useOrganization(orgSlug);
 
@@ -79,7 +79,7 @@ export function EnvironmentScreen({
   const keys = useEnvironmentKeys({
     orgSlug,
     orgId: organization?.id ?? null,
-    projectSlug,
+    projectId,
     envSlug,
   });
 
@@ -225,7 +225,7 @@ export function EnvironmentScreen({
               <EnvironmentBadge isProduction={isProduction} />
               {parentSlug !== null ? (
                 <Link
-                  href={appPath.environment(orgSlug, projectSlug, parentSlug)}
+                  href={appPath.environment(orgSlug, projectId, parentSlug)}
                   title={`${environment?.name ?? envSlug} inherits every value it does not set itself from ${parentEnvironment?.name ?? parentSlug}. xecret run resolves the chain; this page lists only this environment's own values.`}
                   className="rounded-full"
                 >
@@ -281,7 +281,7 @@ export function EnvironmentScreen({
                 <EnvironmentSwitcher
                   environments={project.data.environments}
                   currentSlug={envSlug}
-                  href={(slug) => appPath.environment(orgSlug, projectSlug, slug)}
+                  href={(slug) => appPath.environment(orgSlug, projectId, slug)}
                   onCompare={toggleCompared}
                   comparing={comparedSet}
                 />
@@ -293,7 +293,7 @@ export function EnvironmentScreen({
                 heading is about. */}
               <Button variant="ghost" size="icon" asChild>
                 <Link
-                  href={appPath.environmentSettings(orgSlug, projectSlug, envSlug)}
+                  href={appPath.environmentSettings(orgSlug, projectId, envSlug)}
                   aria-label={`Settings for ${environment?.name ?? envSlug}`}
                 >
                   <SettingsIcon className="size-4" />
@@ -312,7 +312,7 @@ export function EnvironmentScreen({
 
         {material !== null && pendingCount > 0 ? (
           <PendingSharesBanner
-            target={{ orgSlug, projectSlug, envSlug }}
+            target={{ orgSlug, projectId, envSlug }}
             material={material}
             pendingCount={pendingCount}
             onShared={keys.reload}
@@ -326,7 +326,7 @@ export function EnvironmentScreen({
           switches to the end-to-end encrypted IO and the notes it now opens. */}
         {keys.state.status === 'server' ? (
           <EncryptionUpgradePanel
-            target={{ orgSlug, projectSlug, envSlug }}
+            target={{ orgSlug, projectId, envSlug }}
             orgId={organization?.id ?? null}
             environmentName={environment?.name ?? envSlug}
             isProduction={isProduction}
@@ -357,7 +357,7 @@ export function EnvironmentScreen({
           <SecretTable
             orgSlug={orgSlug}
             orgId={organization?.id ?? ''}
-            projectSlug={projectSlug}
+            projectId={projectId}
             envSlug={envSlug}
             isProduction={isProduction}
             io={io}
@@ -381,7 +381,7 @@ export function EnvironmentScreen({
 
         <ImportDialog
           orgSlug={orgSlug}
-          projectSlug={projectSlug}
+          projectId={projectId}
           envSlug={envSlug}
           isProduction={isProduction}
           io={io}
@@ -395,7 +395,8 @@ export function EnvironmentScreen({
 
         <ExportDialog
           orgSlug={orgSlug}
-          projectSlug={projectSlug}
+          projectId={projectId}
+          projectSlug={project.data?.project.slug ?? null}
           envSlug={envSlug}
           isProduction={isProduction}
           io={io}
@@ -416,7 +417,7 @@ export function EnvironmentScreen({
         <OverridesCard
           orgSlug={orgSlug}
           orgId={organization?.id ?? null}
-          projectSlug={projectSlug}
+          projectId={projectId}
           envSlug={envSlug}
           environmentId={keyFacts?.environmentId ?? null}
           encryptionMode={keyFacts?.encryptionMode ?? null}
@@ -429,7 +430,7 @@ export function EnvironmentScreen({
           <PromoteDialog
             orgSlug={orgSlug}
             orgId={organization.id}
-            projectSlug={projectSlug}
+            projectId={projectId}
             target={environment}
             environments={project.data.environments}
             open={promoting}
@@ -442,7 +443,7 @@ export function EnvironmentScreen({
           <RestorePointDialog
             orgSlug={orgSlug}
             orgId={organization.id}
-            projectSlug={projectSlug}
+            projectId={projectId}
             envSlug={envSlug}
             environmentName={environment?.name ?? envSlug}
             isProduction={isProduction}
@@ -455,7 +456,7 @@ export function EnvironmentScreen({
 
         {material !== null ? (
           <RotationDialog
-            target={{ orgSlug, projectSlug, envSlug }}
+            target={{ orgSlug, projectId, envSlug }}
             material={material}
             environmentName={environment?.name ?? envSlug}
             isProduction={isProduction}
@@ -510,7 +511,7 @@ interface SecretList {
  * The state's shape, and what a failed re-read does to rows already on screen,
  * live in `_lib/secret-listing.ts`.
  */
-function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): SecretList {
+function useSecretList(orgSlug: string, projectId: string, envSlug: string): SecretList {
   const [state, setState] = useState<SecretListState>({
     path: null,
     items: null,
@@ -521,7 +522,7 @@ function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): S
   const [loadingMore, setLoadingMore] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
-  const path = apiPath.secrets(orgSlug, projectSlug, envSlug);
+  const path = apiPath.secrets(orgSlug, projectId, envSlug);
 
   useEffect(() => {
     const controller = new AbortController();

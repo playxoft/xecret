@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-import { uuidv7 } from '@xecret/core/ids';
+import { isUuid, uuidv7 } from '@xecret/core/ids';
 import { zeroize } from '@xecret/core/crypto/client';
 import {
   DEFAULT_ENVIRONMENTS,
@@ -45,12 +45,12 @@ const DESCRIPTION_MAX_LENGTH = 500;
 /**
  * Validates a slug against the same rules the server applies.
  *
- * `slugSchema` lives in `@xecret/core/validation` and this reproduces its three
+ * `slugSchema` lives in `@xecret/core/validation` and this reproduces its
  * clauses rather than importing it, because a zod `safeParse` returns an issue
  * list written for a developer and this needs one sentence written for the
- * person typing. The rules themselves — pattern, ceiling, reserved list — come
- * from that module, so there is still only one definition of what a valid slug
- * is; only the wording differs.
+ * person typing. The rules themselves — pattern, ceiling, UUID shape, reserved
+ * list — come from those modules, so there is still only one definition of what
+ * a valid slug is; only the wording differs.
  */
 function validateSlug(slug: string): string | null {
   if (slug.length === 0) {
@@ -62,6 +62,11 @@ function validateSlug(slug: string): string | null {
   if (!SLUG_PATTERN.test(slug)) {
     return 'Use lowercase letters, digits and single hyphens.';
   }
+  // A project's address takes its id or its slug in the same segment, and a
+  // UUID-shaped slug would be read as an id — see `checkSlug`.
+  if (isUuid(slug)) {
+    return 'A slug cannot be shaped like a UUID: that shape is how an id is written.';
+  }
   if (isReservedSlug(slug)) {
     return 'That slug is reserved. Choose a different one.';
   }
@@ -72,10 +77,11 @@ function validateSlug(slug: string): string | null {
  * Creates a project and its three default environments.
  *
  * ── Why the slug is a field and not a detail ──
- * A project slug is permanent. It goes into every URL, into `.xecret.yaml`, and
+ * A project slug is permanent. It goes into `--project`, into `.xecret.yaml`, and
  * into the CI configuration of everyone who consumes the project, so the API
  * refuses to change it later — a rename would break every consumer that is not
- * redeployed in the same instant. Something a user cannot undo should not be
+ * redeployed in the same instant. (The dashboard's own addresses name a project
+ * by its id, so they no longer depend on it.) Something a user cannot undo should not be
  * decided for them behind a disclosure triangle, so it is shown, derived live
  * from the name, and editable until they touch it.
  *
@@ -245,7 +251,7 @@ function CreateProjectForm({
       });
 
       onOpenChange(false);
-      router.push(appPath.project(orgSlug, created.project.slug));
+      router.push(appPath.project(orgSlug, created.project.id));
     } catch (cause) {
       setBusy(false);
       if (isApiError(cause)) {
@@ -305,7 +311,7 @@ function CreateProjectForm({
         <Field
           label="Slug"
           error={errors['slug'] ?? slugProblem}
-          hint="Permanent. It appears in URLs, in .xecret.yaml and in CI configuration, so it cannot be changed later."
+          hint="Permanent. It is what --project takes, what .xecret.yaml records and what CI configuration names, so it cannot be changed later."
         >
           <Input
             value={effectiveSlug}

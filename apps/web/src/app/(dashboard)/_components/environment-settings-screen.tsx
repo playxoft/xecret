@@ -14,11 +14,11 @@ import { canAdminister, useOrganization, useSession } from './session';
 
 export function EnvironmentSettingsScreen({
   orgSlug,
-  projectSlug,
+  projectId,
   envSlug,
 }: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }) {
   const organization = useOrganization(orgSlug);
@@ -27,7 +27,7 @@ export function EnvironmentSettingsScreen({
   // endpoint returns — the delete confirmation says how much is about to become
   // unreachable, and "some secrets" is not an answer anybody can act on.
   const environment = useApiResource<EnvironmentResponse>(
-    apiPath.environment(orgSlug, projectSlug, envSlug),
+    apiPath.environment(orgSlug, projectId, envSlug),
   );
 
   const canManage = canAdminister(organization, 'environment.update');
@@ -58,7 +58,7 @@ export function EnvironmentSettingsScreen({
         <>
           <EnvironmentSettingsForm
             orgSlug={orgSlug}
-            projectSlug={projectSlug}
+            projectId={projectId}
             environment={environment.data.environment}
             canManage={canManage}
             canDelete={canAdminister(organization, 'environment.delete')}
@@ -76,7 +76,7 @@ export function EnvironmentSettingsScreen({
               which is a second request this page should not block on. */}
           <EnvironmentKeyCard
             orgSlug={orgSlug}
-            projectSlug={projectSlug}
+            projectId={projectId}
             envSlug={envSlug}
             environmentName={environment.data.environment.name}
             isProduction={environment.data.environment.isProduction}
@@ -90,7 +90,7 @@ export function EnvironmentSettingsScreen({
               header badge and the form above stay in step. */}
           <InheritanceCard
             orgSlug={orgSlug}
-            projectSlug={projectSlug}
+            projectId={projectId}
             environment={environment.data.environment}
             canManage={canManage}
             onChanged={() => void environment.reload()}
@@ -98,7 +98,7 @@ export function EnvironmentSettingsScreen({
 
           <EnvironmentPolicyCard
             orgSlug={orgSlug}
-            projectSlug={projectSlug}
+            projectId={projectId}
             environment={environment.data.environment}
             canManage={canManage}
             onChanged={() => void environment.reload()}

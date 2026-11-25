@@ -118,11 +118,14 @@ export interface GrantBody {
  * One invitation-sealed grant, as acceptance hands it over.
  *
  * Served exactly once, by `POST /api/invitations/accept`, and deleted as it
- * goes — see the note on that route. The two slugs travel with it because the
- * invitee has no other view of the organisation at that moment.
+ * goes — see the note on that route. Where it belongs travels with it because
+ * the invitee has no other view of the organisation at that moment: the
+ * project's id and the environment's slug address the route it is re-sealed to,
+ * and the project's slug names it to a person.
  */
 export interface InviteKeyGrant {
   environmentId: string;
+  projectId: string;
   projectSlug: string;
   environmentSlug: string;
   envDataKeyId: string;

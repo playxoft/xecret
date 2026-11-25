@@ -115,7 +115,7 @@ function snapshotUnavailableMessage(reason: EnvKeyUnavailable | 'server-mode', n
 
 /** Every row of an environment's listing, for the types the bundle does not carry. */
 async function listTypes(ref: EnvironmentRef): Promise<Map<string, string>> {
-  const path = apiPath.secrets(ref.orgSlug, ref.projectSlug, ref.envSlug);
+  const path = apiPath.secrets(ref.orgSlug, ref.projectId, ref.envSlug);
   const types = new Map<string, string>();
   let cursor: string | null = null;
   for (let page = 0; page < MAX_LISTING_PAGES; page += 1) {
@@ -186,7 +186,7 @@ export async function readSnapshot(params: {
 }): Promise<EnvironmentSnapshot> {
   const { ref, orgId, vault, label } = params;
   const bundle = await api.get<Partial<ClientEnvironmentBundle>>(
-    withQuery(apiPath.pull(ref.orgSlug, ref.projectSlug, ref.envSlug), {
+    withQuery(apiPath.pull(ref.orgSlug, ref.projectId, ref.envSlug), {
       ...OWN_VALUES_QUERY,
       // A `server`-mode environment answers the flat JSON document for this,
       // rather than a `.env` file this client cannot parse — and is refused
@@ -467,7 +467,7 @@ export async function buildPromotionBody(params: {
 /** Sends a promotion — the preview with `dryRun: true`, then the apply. */
 export function postPromotion(target: EnvironmentRef, body: PromotionBody) {
   return api.post<PromotionResponse>(
-    apiPath.promote(target.orgSlug, target.projectSlug, target.envSlug),
+    apiPath.promote(target.orgSlug, target.projectId, target.envSlug),
     body,
   );
 }
