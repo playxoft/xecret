@@ -200,20 +200,6 @@ describe('the first personal override is set from the environment’s menu', () 
   });
 });
 
-describe('the account menu offers the plans of the organisation on screen', () => {
-  // The shell builds the link from the slug the switcher names — so "Upgrade
-  // plan" can never open another tenant's plans — and hands it to the menu
-  // only when there is one. Deleting either line leaves both components
-  // working and the item gone, or pointing at `/app//settings/plans`.
-  it('built from the switcher’s slug, and only when there is one', () => {
-    const shell = source('../../../components/layout/app-shell.tsx');
-    expect(shell).toMatch(
-      /const upgradeHref = currentOrgSlug === '' \? undefined : appPath\.orgPlans\(currentOrgSlug\);/,
-    );
-    expect(shell.slice(shell.indexOf('<UserMenu'))).toContain('{ upgradeHref }');
-  });
-});
-
 describe('the account menu offers the admin page to xecret’s staff only', () => {
   // The session's `admin` decides whether the item is drawn; the shell hands
   // the link to the menu only then. Either line deleted leaves both components
@@ -319,6 +305,20 @@ describe('every sign-out leaves in the same order', () => {
     expect(text).toMatch(
       /beginSignInRedirect\(\);[\s\S]*?try \{\s*destination = await endSession\(\);\s*beginLeavingPage\(\);\s*\} finally \{[\s\S]*?releaseVaultKeys\(\);/,
     );
+  });
+});
+
+describe('`/app?to=plans` opens the organisation’s plans', () => {
+  // Where the pricing page sends a visitor who already has an account: their
+  // organisation's plans page, with its checkout — or, in several, a choice of
+  // which one to upgrade.
+  it('the page reads the intent, and the screen opens the plans with it', () => {
+    const page = source('../app/page.tsx');
+    expect(page).toMatch(/intent=\{to === 'plans' \? 'plans' : null\}/);
+    const screen = source('./organizations-screen.tsx');
+    expect(screen).toMatch(/const open = intent === 'plans' \? appPath\.orgPlans : appPath\.org;/);
+    expect(screen).toContain('router.replace(open(only.slug))');
+    expect(screen).toContain('href={open(organization.slug)}');
   });
 });
 

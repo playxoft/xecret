@@ -4,13 +4,13 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 /**
- * The account menu's "Upgrade plan" item.
+ * The account menu's "Upgrade" item.
  *
  * Radix renders a closed menu's content nowhere — and a server render has no
  * way to open it — so the menu primitives are replaced with plain elements and
  * the items are rendered as the open menu would list them. What is pinned is
- * the menu's own decision: the item appears exactly when the shell hands it an
- * organisation's plans page, and links there.
+ * the menu's own decision: the item is always there, and opens the public
+ * pricing page in a new tab.
  */
 
 vi.mock('./theme-provider', () => ({
@@ -44,28 +44,24 @@ const { UserMenu } = await import('./user-menu');
 const USER = { name: 'Ada Lovelace', email: 'ada@example.com' };
 
 describe('UserMenu', () => {
-  it('offers the organisation’s plans when the shell names them', () => {
-    const html = renderToStaticMarkup(
-      createElement(UserMenu, {
-        user: USER,
-        accountHref: '/app/settings/account',
-        upgradeHref: '/app/acme/settings/plans',
-      }),
-    );
-
-    expect(html).toContain('Upgrade plan');
-    expect(html).toContain('href="/app/acme/settings/plans"');
-    // Beside the account item, above the theme — near the top, where it is seen.
-    expect(html.indexOf('Account settings')).toBeLessThan(html.indexOf('Upgrade plan'));
-    expect(html.indexOf('Upgrade plan')).toBeLessThan(html.indexOf('Theme'));
-  });
-
-  it('offers nothing to upgrade without an organisation', () => {
+  it('offers Upgrade, opening the pricing page in a new tab', () => {
     const html = renderToStaticMarkup(
       createElement(UserMenu, { user: USER, accountHref: '/app/settings/account' }),
     );
 
-    expect(html).not.toContain('Upgrade plan');
+    expect(html).toContain('>Upgrade<');
+    expect(html).toContain('<a href="/pricing" target="_blank" rel="noopener noreferrer">');
+    // Said to a screen reader too: a new tab is a surprise unless announced.
+    expect(html).toContain('opens the pricing page in a new tab');
+    // Beside the account item, above the theme — near the top, where it is seen.
+    expect(html.indexOf('Account settings')).toBeLessThan(html.indexOf('>Upgrade<'));
+    expect(html.indexOf('>Upgrade<')).toBeLessThan(html.indexOf('Theme'));
+  });
+
+  it('offers it with no organisation on screen too — it needs none', () => {
+    const html = renderToStaticMarkup(createElement(UserMenu, { user: USER }));
+
+    expect(html).toContain('href="/pricing"');
     expect(html).not.toContain('/settings/plans');
   });
 });
@@ -76,14 +72,13 @@ describe('UserMenu’s "Admin" item', () => {
       createElement(UserMenu, {
         user: USER,
         accountHref: '/app/settings/account',
-        upgradeHref: '/app/acme/settings/plans',
         adminHref: '/app/admin',
       }),
     );
 
     expect(html).toContain('>Admin<');
     expect(html).toContain('href="/app/admin"');
-    expect(html.indexOf('Upgrade plan')).toBeLessThan(html.indexOf('>Admin<'));
+    expect(html.indexOf('>Upgrade<')).toBeLessThan(html.indexOf('>Admin<'));
     expect(html.indexOf('>Admin<')).toBeLessThan(html.indexOf('Theme'));
   });
 

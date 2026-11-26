@@ -22,16 +22,19 @@ import { useSession } from './session';
  * and it uses the session the shell has already fetched rather than asking
  * `/api/orgs` for the same answer a second time.
  */
-export function OrganizationsScreen() {
+export function OrganizationsScreen({ intent = null }: { intent?: 'plans' | null } = {}) {
   const router = useRouter();
+  // Where an organisation is opened to: its projects, or — for a visitor the
+  // pricing page sent to upgrade — its plans, where an owner is offered checkout.
+  const open = intent === 'plans' ? appPath.orgPlans : appPath.org;
   // The dialog itself is the shell's — see `SessionValue.createOrganization`.
   // This screen only needs the button.
   const { organizations, createOrganization } = useSession();
   const only = organizations.length === 1 ? organizations[0] : undefined;
 
   useEffect(() => {
-    if (only) router.replace(appPath.org(only.slug));
-  }, [only, router]);
+    if (only) router.replace(open(only.slug));
+  }, [only, open, router]);
 
   if (only) {
     // Announced politely rather than left blank: the redirect is one tick away,
@@ -47,7 +50,9 @@ export function OrganizationsScreen() {
     <div className="mx-auto w-full max-w-2xl">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div className="min-w-0">
-          <h1 className="text-fg text-xl font-semibold tracking-tight">Choose an organisation</h1>
+          <h1 className="text-fg text-xl font-semibold tracking-tight">
+            {intent === 'plans' ? 'Choose the organisation to upgrade' : 'Choose an organisation'}
+          </h1>
           <p className="text-fg-muted mt-1.5 text-sm leading-6">
             You are a member of {organizations.length} organisations. Your role differs between
             them.
@@ -63,7 +68,7 @@ export function OrganizationsScreen() {
         {organizations.map((organization) => (
           <li key={organization.slug}>
             <Link
-              href={appPath.org(organization.slug)}
+              href={open(organization.slug)}
               className="border-line bg-surface hover:border-line-strong hover:bg-surface-hover flex items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors"
             >
               <span
