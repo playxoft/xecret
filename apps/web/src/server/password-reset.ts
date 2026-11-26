@@ -2,9 +2,10 @@ import { IdentityVerificationError } from '@xecret/core/auth';
 import {
   findUserByEmail,
   findUserByWorkosId,
+  consumeAllCliAuthCodesForUser,
   listOrganizationsForUser,
-  revokeAllCliTokensForUser,
   revokeAllUserSessions,
+  revokeCliTokensOfUser,
 } from '@xecret/db/repositories';
 import type { User } from '@xecret/db/repositories';
 import type { ServiceContext } from './context';
@@ -54,12 +55,14 @@ import { IdentityProviderUnavailableError } from './workos';
  *    unlinked row holding exactly that address (`accountForReset`). The reset
  *    has just proven the inbox, which is the proof the linker adopts such an
  *    account on.
- *  - Every CLI token of that account, too. A token outlives the session that
- *    approved it, so somebody who held a stolen session long enough to mint
- *    one kept reading secrets after the reset that was meant to shut them
- *    out — the account was taken back, and its machine credentials were not.
- *    The person signs the CLI in again (`xecret login`). Service tokens are
- *    the organisation's, not the person's, and are left alone.
+ *  - Every CLI token of that account, too, and every CLI approval not yet
+ *    exchanged for one. A token outlives the session that approved it, and so
+ *    does an approval code, so somebody who held a stolen session long enough
+ *    to approve a device kept reading secrets after the reset that was meant
+ *    to shut them out — or held the code back and minted the token after it.
+ *    Each token is audited as `token.revoked` in its own organisation. The
+ *    person signs the CLI in again (`xecret login`). Service tokens are the
+ *    organisation's, not the person's, and are left alone.
  *  - The address's shared throttle pool: the person has just proven the inbox
  *    and chosen a password, and the sign-in that follows must not wait out a
  *    lockout somebody else ran up. (Clearing it gives an attacker nothing:
@@ -159,19 +162,33 @@ export async function afterPasswordReset(
   services: ServiceContext,
   reset: { workosUserId: string; email: string },
 ): Promise<void> {
-  // The sessions first: they are the part that takes an account back.
+  // The account first: everything below is about one.
+  let user: User | null;
   try {
-    const user = await accountForReset(services, reset);
-    // A WorkOS user with no xecret account yet — one made by a code that was
-    // never entered — has no sessions to end.
-    if (user !== null) {
+    user = await accountForReset(services, reset);
+  } catch (cause) {
+    services.log
+      .at('passwordReset')
+      .error(
+        'A password was reset, but its xecret account could not be found — its sessions and ' +
+          'CLI tokens last until they expire or are signed out',
+        { error: describeError(cause) },
+      );
+    user = null;
+  }
+
+  // A WorkOS user with no xecret account yet — one made by a code that was
+  // never entered — has no sessions, tokens or approvals to end.
+  if (user !== null) {
+    // Each step on its own, so one that fails neither hides another's
+    // success behind a wrong log line nor stops the next from being tried.
+    // The sessions first: they are the part that takes an account back.
+    try {
       const revoked = await revokeAllUserSessions(services.db, user.id);
-      const revokedCliTokens = await revokeAllCliTokensForUser(services.db, user.id);
       services.log
         .at('passwordReset')
-        .info('Ended every session and CLI token of an account whose password was reset', {
+        .info('Ended every session of an account whose password was reset', {
           revokedSessions: revoked,
-          revokedCliTokens,
         });
       const memberships = await listOrganizationsForUser(services.db, user.id);
       const primary = memberships[0];
@@ -184,15 +201,58 @@ export async function afterPasswordReset(
           ),
         ]);
       }
+    } catch (cause) {
+      services.log
+        .at('passwordReset')
+        .error(
+          'A password was reset, but the account’s sessions could not be ended — they last ' +
+            'until they expire or are signed out',
+          { error: describeError(cause) },
+        );
     }
-  } catch (cause) {
-    services.log
-      .at('passwordReset')
-      .error(
-        'A password was reset, but the account’s sessions could not be ended — they last ' +
-          'until they expire or are signed out',
-        { error: describeError(cause) },
-      );
+
+    // Then the machines: every CLI token, and every approval not yet
+    // exchanged for one — a code outlives the session that approved it, so
+    // one held back would otherwise mint a fresh token after this reset. In
+    // one transaction, so the two cannot be left half done. Each token is
+    // recorded as revoked in the organisation it belonged to, where an admin
+    // looking for why a device stopped working will look.
+    try {
+      const account = user;
+      const { tokens, codes } = await services.db.transaction(async (tx) => ({
+        tokens: await revokeCliTokensOfUser(tx, account.id),
+        codes: await consumeAllCliAuthCodesForUser(tx, account.id),
+      }));
+      services.log
+        .at('passwordReset')
+        .info(
+          'Revoked every CLI token and pending CLI approval of an account whose password was reset',
+          {
+            revokedCliTokens: tokens.length,
+            consumedCliApprovals: codes,
+          },
+        );
+      if (tokens.length > 0) {
+        await writeEvents(
+          services,
+          tokens.map((token) =>
+            auditFor(token.orgId, account, services).success(
+              'token.revoked',
+              { type: 'token', id: token.id },
+              { deviceName: token.name, reason: 'password-reset' },
+            ),
+          ),
+        );
+      }
+    } catch (cause) {
+      services.log
+        .at('passwordReset')
+        .error(
+          'A password was reset, but the account’s CLI tokens could not be revoked — they keep ' +
+            'working until they expire or are revoked from the tokens page',
+          { error: describeError(cause) },
+        );
+    }
   }
 
   try {

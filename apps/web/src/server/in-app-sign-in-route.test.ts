@@ -1844,27 +1844,67 @@ describe('choosing a new password from the reset link', () => {
     expect(answer.cookies).toEqual([]);
   });
 
-  it('revokes every CLI token of the account too — a stolen session cannot leave one behind', async () => {
+  it('revokes every CLI token and pending CLI approval of the account — and nobody else’s', async () => {
     const existing = await seedUser();
+    const bystander = await seedUser();
     const org = await seedOrg();
     await addMember(org, existing.id);
+    await addMember(org, bystander.id);
     // Minted from a session somebody else held, before the owner took the
-    // account back with a reset.
+    // account back with a reset — and an approval they held back, to exchange
+    // for a fresh token once the reset had ended every session.
+    const tokenId = randomUUID();
     await t.pg.query(
       `insert into cli_tokens (id, user_id, org_id, name, token_hash, token_prefix)
        values ($1, $2, $3, 'their laptop', $4, 'xct_live_test')`,
+      [tokenId, existing.id, org, randomBytes(32)],
+    );
+    await t.pg.query(
+      `insert into cli_auth_codes (id, user_id, org_id, device_name, token_hash, code_challenge, expires_at)
+       values ($1, $2, $3, 'held back', $4, 'challenge', now() + interval '10 minutes')`,
       [randomUUID(), existing.id, org, randomBytes(32)],
     );
+    // Somebody else's, in the same organisation: untouched.
+    await t.pg.query(
+      `insert into cli_tokens (id, user_id, org_id, name, token_hash, token_prefix)
+       values ($1, $2, $3, 'a colleague''s laptop', $4, 'xct_live_test')`,
+      [randomUUID(), bystander.id, org, randomBytes(32)],
+    );
     workos.resetPassword.mockResolvedValueOnce({ user: workosUser({ email: existing.email }) });
+    audit = [];
 
     const answer = await confirmReset();
 
     expect(answer.status).toBe(204);
-    const live = await t.pg.query<{ count: string }>(
-      `select count(*)::text as count from cli_tokens where user_id = $1 and revoked_at is null`,
-      [existing.id],
+    const count = async (query: string, id: string) =>
+      (await t.pg.query<{ count: string }>(query, [id])).rows[0]?.count;
+    expect(
+      await count(
+        `select count(*)::text as count from cli_tokens where user_id = $1 and revoked_at is null`,
+        existing.id,
+      ),
+    ).toBe('0');
+    expect(
+      await count(
+        `select count(*)::text as count from cli_auth_codes where user_id = $1 and consumed_at is null`,
+        existing.id,
+      ),
+    ).toBe('0');
+    expect(
+      await count(
+        `select count(*)::text as count from cli_tokens where user_id = $1 and revoked_at is null`,
+        bystander.id,
+      ),
+    ).toBe('1');
+    // Recorded in the organisation the token belonged to.
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        action: 'token.revoked',
+        orgId: org,
+        resourceId: tokenId,
+        metadata: expect.objectContaining({ reason: 'password-reset' }),
+      }),
     );
-    expect(live.rows[0]?.count).toBe('0');
   });
 
   /** A live session for `userId`, as a sign-in long before this one would have left. */
