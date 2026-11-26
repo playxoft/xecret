@@ -85,12 +85,21 @@ export interface SecretTableProps {
    */
   environments: readonly EnvironmentTarget[];
   /**
-   * The environments shift-clicked in the switcher, shown beside this one's
-   * values. Empty is the normal case and costs nothing.
+   * The environments chosen in the switcher's Compare menu, shown beside this
+   * one's values. Empty is the normal case and costs nothing.
    */
   comparedEnvironments: readonly EnvironmentTarget[];
   /** Drops every compared environment — the "stop comparing" button. */
   onStopComparing: () => void;
+  /**
+   * Told how many compared cells hold unsaved work, whenever that changes, and
+   * `0` when the table goes.
+   *
+   * The switcher above the table can close a compared environment too, and
+   * those cells are this table's: without the count it would take a typed,
+   * unsaved credential down with them and never know there was one to ask about.
+   */
+  onComparedUnsavedChange?: ((count: number) => void) | undefined;
   secrets: readonly SecretSummary[];
   /**
    * Bumped by every write to this environment that happens outside this
@@ -165,6 +174,7 @@ export function SecretTable({
   environments,
   comparedEnvironments,
   onStopComparing,
+  onComparedUnsavedChange,
   externalWrites,
   secrets,
   onLoadMore,
@@ -244,6 +254,17 @@ export function SecretTable({
       return next;
     });
   }, []);
+
+  // Reported after the commit rather than from inside the updater above, which
+  // React may run twice and must stay pure. The cleanup reports `0`, so a table
+  // that unmounts — an error state, an environment switch — leaves no stale
+  // count behind for the switcher to ask about.
+  const comparedUnsaved = comparedDirty.size;
+  useEffect(() => {
+    onComparedUnsavedChange?.(comparedUnsaved);
+    return () => onComparedUnsavedChange?.(0);
+  }, [comparedUnsaved, onComparedUnsavedChange]);
+
   // Which environment's history: a compared row's version chip opens the
   // history of *that* environment, not of the one the page is about.
   const [history, setHistory] = useState<{

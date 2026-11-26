@@ -76,6 +76,7 @@ describe('the plans page', () => {
       projectId: null,
       envSlug: null,
       isAccountArea: false,
+      isAdminArea: false,
     });
   });
 });
@@ -103,12 +104,14 @@ describe('a project address', () => {
       projectId: PROJECT_ID,
       envSlug: null,
       isAccountArea: false,
+      isAdminArea: false,
     });
     expect(parseDashboardPath(`/app/acme/${PROJECT_ID}/production/settings`)).toEqual({
       orgSlug: 'acme',
       projectId: PROJECT_ID,
       envSlug: 'production',
       isAccountArea: false,
+      isAdminArea: false,
     });
   });
 
@@ -176,10 +179,45 @@ describe('the address an old project link is replaced with', () => {
       '/app/acme/members',
       '/app/acme/settings/billing',
       '/app/settings/account',
+      '/app/admin',
       '/invite/abc',
       '//app/acme/payments-api',
     ]) {
       expect(canonicalProjectAddress(at(pathname), PROJECT_ID), pathname).toBeNull();
     }
+  });
+});
+
+/**
+ * The admin page sits where an organisation slug would. `admin` is reserved,
+ * so no organisation shadows it — and the shell must not read it as one, or
+ * every sidebar link would point into `/app/admin/…`.
+ */
+describe('the admin page', () => {
+  it('is at /app/admin', () => {
+    expect(appPath.admin()).toBe('/app/admin');
+  });
+
+  it('is read as no organisation at all', () => {
+    expect(parseDashboardPath(appPath.admin())).toEqual({
+      orgSlug: null,
+      projectId: null,
+      envSlug: null,
+      isAccountArea: false,
+      isAdminArea: true,
+    });
+  });
+
+  it('keys its API by organisation id, and encodes it', () => {
+    expect(apiPath.adminGrant('org 1')).toBe('/api/admin/organizations/org%201/grant');
+    expect(apiPath.adminGrantEnd('org-1')).toBe('/api/admin/organizations/org-1/grant/end');
+    expect(apiPath.adminPromoCodeRevoke('code-1')).toBe('/api/admin/promo-codes/code-1/revoke');
+    expect(apiPath.adminAdmins()).toBe('/api/admin/admins');
+    expect(apiPath.adminRemoveAdmin('user 1')).toBe('/api/admin/admins/user%201/remove');
+  });
+
+  it('leaves an owner’s promo code beside the rest of billing', () => {
+    expect(apiPath.billingPromoCode('acme')).toBe('/api/orgs/acme/billing/promo-code');
+    expect(apiPath.billingPromoCodeRedeem('acme')).toBe('/api/orgs/acme/billing/promo-code/redeem');
   });
 });

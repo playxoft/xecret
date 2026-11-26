@@ -8,7 +8,7 @@ import { isUuid } from '@xecret/core/ids';
 import { isApiError, SIGN_IN_PATH } from '@/lib/api';
 import { carryModePinsForward } from '@/components/envkeys';
 import { lockVault, VaultProvider } from '@/components/vault';
-import { AppShell, Wordmark } from '@/components/layout';
+import { AppShell, SignOutButton, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
 import { CreateOrganizationDialog } from '@/components/organizations';
 import type { ProjectResponse } from '@/components/projects/types';
@@ -186,13 +186,15 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     }
 
     return (
-      <ChromeFrame>
+      <ChromeFrame signOut>
         <ErrorState subject="your account" error={session.error} onRetry={reloadSession} />
       </ChromeFrame>
     );
   }
 
   const { user, organizations, vault } = session.data;
+  // Absent from an answer that predates the field, and absent means no.
+  const admin = session.data.admin === true;
 
   // ── The lock, before anything else the shell would render ──
   //
@@ -234,7 +236,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     // would be left on a page whose only way forward is to be invited by
     // somebody else.
     return (
-      <ChromeFrame>
+      <ChromeFrame signOut>
         <EmptyState
           icon={<UsersIcon />}
           title="You are not a member of any organisation"
@@ -288,6 +290,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         refresh: reloadSession,
         refreshTrail,
         createOrganization: openCreateOrganization,
+        admin,
       }}
     >
       {/* `key`, so that signing in as somebody else in the same tab remounts
@@ -303,6 +306,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           onCreateOrganization={openCreateOrganization}
           user={{ name: user.displayName ?? user.email, email: user.email }}
           accountHref={appPath.account()}
+          // Only for xecret's own staff. Drawn from the session's answer, which
+          // is a courtesy: the page and its API answer everybody else 404.
+          {...(admin ? { adminHref: appPath.admin() } : {})}
           onLock={lock}
           breadcrumbs={buildBreadcrumbs(location, {
             org: currentOrg?.name ?? null,
@@ -401,9 +407,10 @@ export function buildBreadcrumbs(
   location: DashboardLocation,
   names: TrailNames,
 ): readonly BreadcrumbItem[] {
-  const { orgSlug, projectId, envSlug, isAccountArea } = location;
+  const { orgSlug, projectId, envSlug, isAccountArea, isAdminArea } = location;
 
   if (isAccountArea) return [{ label: 'Account' }];
+  if (isAdminArea) return [{ label: 'Admin' }];
   if (orgSlug === null) return [{ label: 'Organisations' }];
 
   const crumbs: BreadcrumbItem[] = [{ label: names.org ?? orgSlug, href: appPath.org(orgSlug) }];
@@ -448,12 +455,21 @@ function ChromeSkeleton() {
   );
 }
 
-/** A bare frame for the two states where there is no session to build a shell from. */
-function ChromeFrame({ children }: { children: ReactNode }) {
+/**
+ * A bare frame for the states where there is no shell to build: the account
+ * could not be loaded, it has no organisation left, or its session has ended.
+ *
+ * `signOut` puts a Sign out button in its top bar — for the first two, which
+ * would otherwise be pages with no way out: the account menu that holds the
+ * real one needs the session they could not load, or an organisation to sit
+ * beside. Not for the third, which is already on its way to the sign-in page.
+ */
+function ChromeFrame({ children, signOut = false }: { children: ReactNode; signOut?: boolean }) {
   return (
     <div className="bg-canvas flex min-h-dvh flex-col">
-      <header className="border-line flex h-[var(--topbar-height)] shrink-0 items-center border-b px-4 sm:px-6">
+      <header className="border-line flex h-[var(--topbar-height)] shrink-0 items-center justify-between gap-4 border-b px-4 sm:px-6">
         <Wordmark />
+        {signOut ? <SignOutButton /> : null}
       </header>
       <main className="mx-auto w-full max-w-xl px-4 py-12 sm:px-6">{children}</main>
     </div>

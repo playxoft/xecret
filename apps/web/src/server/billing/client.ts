@@ -3,6 +3,7 @@ import { scrubText } from '../logging';
 import type { BillingConfig } from './config';
 import {
   dodoCheckoutSessionSchema,
+  dodoDiscountSchema,
   dodoPaymentMethodsSchema,
   dodoPlanPreviewSchema,
   dodoPortalSessionSchema,
@@ -121,6 +122,33 @@ export interface CheckoutRequest {
    * buyer enters — never by a currency the browser asked for.
    */
   regionLock: { country: string; currency: string } | null;
+  /**
+   * A discount code xecret issued and the server already checked (migration
+   * 0035), or `null`. Pre-applied; the buyer cannot remove it.
+   */
+  discountCode: string | null;
+}
+
+/**
+ * A discount code xecret's admin page asks Dodo to create (migration 0035).
+ * Always restricted to products of this deployment's catalogue: the Dodo
+ * account is shared with other products, and a code of ours must never take
+ * anything off one of theirs.
+ */
+export interface DiscountRequest {
+  code: string;
+  /** Shown in Dodo's dashboard only. */
+  name: string;
+  type: 'percentage' | 'flat';
+  /** Basis points for `percentage`; the currency's minor unit for `flat`. */
+  amount: number;
+  /** ISO-4217, for `flat`. */
+  currency: string | null;
+  /** Billing cycles it lasts; `null` for every renewal. */
+  cycles: number | null;
+  productIds: readonly string[];
+  usageLimit: number | null;
+  expiresAt: Date | null;
 }
 
 export interface PlanChange {
@@ -182,6 +210,16 @@ export interface BillingProvider {
   ingestUsage(events: readonly UsageEvent[]): Promise<void>;
   /** The expiry of the customer's saved cards, keyed by payment method id. */
   cardExpiries(customerId: string): Promise<Map<string, { month: number; year: number }>>;
+  /** Creates a discount code; answers its id. */
+  createDiscount(request: DiscountRequest): Promise<{ discountId: string }>;
+  /** Deletes a discount code, so nothing can redeem it any more. */
+  deleteDiscount(discountId: string): Promise<void>;
+  /**
+   * The id of the discount this server created under `code` — only when its
+   * metadata says it is ours: the account is shared, and another product's
+   * code of the same name must never be touched. `null` when there is none.
+   */
+  findOwnDiscount(code: string): Promise<string | null>;
 }
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
@@ -193,6 +231,8 @@ type Fetch = (input: string, init: RequestInit) => Promise<Response>;
  */
 export const ORG_METADATA_KEY = 'xecret_org_id';
 export const CHECKOUT_NONCE_METADATA_KEY = 'xecret_checkout';
+/** On a discount this server created: its code, so `findOwnDiscount` can tell it from another product's. */
+export const DISCOUNT_METADATA_KEY = 'xecret_promo_code';
 
 /**
  * `POST /checkouts`, as far as this server sends it.
@@ -208,7 +248,38 @@ interface DodoCheckoutRequest {
   metadata: Record<string, string>;
   billing_address?: { country: string };
   billing_currency?: string;
-  feature_flags: { allow_currency_selection: boolean; allow_customer_editing_country?: boolean };
+  /** Pre-applied codes, in order; the buyer cannot change them while the box is hidden. */
+  discount_codes?: string[];
+  feature_flags: {
+    allow_currency_selection: boolean;
+    allow_customer_editing_country?: boolean;
+    /** The checkout page's own code box. Shown by Dodo unless this says `false`. */
+    allow_discount_code: boolean;
+  };
+}
+
+/**
+ * `POST /discounts`, as far as this server sends it.
+ * https://docs.dodopayments.com/api-reference/discounts/create-discount
+ */
+interface DodoDiscountRequest {
+  code: string;
+  name: string;
+  type: 'percentage' | 'flat';
+  /** "The discount amount in basis points" — for a flat code, its amount in the default currency. */
+  amount: number;
+  currency_options?: {
+    currency: string;
+    is_default: boolean;
+    max_amount_possible: number;
+    minimum_subtotal: number;
+  }[];
+  restricted_to: string[];
+  subscription_cycles?: number;
+  usage_limit?: number;
+  expires_at?: string;
+  customer_eligibility: 'any';
+  metadata: Record<string, string>;
 }
 
 /**
@@ -262,11 +333,18 @@ export class DodoClient implements BillingProvider {
             billing_currency: request.regionLock.currency,
           }
         : {}),
+      ...(request.discountCode !== null ? { discount_codes: [request.discountCode] } : {}),
       feature_flags: {
         // The PPP guardrail: the currency follows the billing country, and the
         // buyer does not get to choose one.
         allow_currency_selection: false,
         ...(request.regionLock ? { allow_customer_editing_country: false } : {}),
+        // Dodo's own code box stays hidden, always. The Dodo account is shared
+        // with other products, so a code typed there could be anybody's — and
+        // a code of ours typed there would skip every check this server makes
+        // (who it is for, when it expires, whether it was revoked). A code is
+        // applied only by being sent above, after `discountForCheckout`.
+        allow_discount_code: false,
       },
     };
     const parsed = await this.call('POST', '/checkouts', dodoCheckoutSessionSchema, body);
@@ -343,8 +421,72 @@ export class DodoClient implements BillingProvider {
     return expiries;
   }
 
+  async createDiscount(request: DiscountRequest): Promise<{ discountId: string }> {
+    if (request.productIds.length === 0) {
+      // Dodo reads an empty restriction as "every product" — on an account
+      // shared with other products, the one shape a code of ours must never be.
+      throw new Error('A discount must be restricted to at least one product');
+    }
+    const body: DodoDiscountRequest = {
+      code: request.code,
+      name: request.name,
+      type: request.type,
+      amount: request.amount,
+      ...(request.type === 'flat' && request.currency !== null
+        ? {
+            currency_options: [
+              {
+                currency: request.currency,
+                is_default: true,
+                max_amount_possible: request.amount,
+                minimum_subtotal: 0,
+              },
+            ],
+          }
+        : {}),
+      restricted_to: [...request.productIds],
+      ...(request.cycles !== null ? { subscription_cycles: request.cycles } : {}),
+      ...(request.usageLimit !== null ? { usage_limit: request.usageLimit } : {}),
+      ...(request.expiresAt !== null ? { expires_at: request.expiresAt.toISOString() } : {}),
+      // Who may use it is this server's check (`allowed_emails`), made before
+      // the code is ever sent: a checkout creates a new Dodo customer per
+      // organisation, so Dodo's own per-customer list could not name them.
+      customer_eligibility: 'any',
+      metadata: { [DISCOUNT_METADATA_KEY]: request.code },
+    };
+    const parsed = await this.call('POST', '/discounts', dodoDiscountSchema, body);
+    if (parsed.code.toUpperCase() !== request.code) {
+      // Dodo stored a different code from the one asked for. The code on our
+      // row is what owners type and what checkout sends, so a mismatch would
+      // make it apply nothing — deleted again here, where its id is known, so
+      // nothing is left at Dodo that this server has no row for, and refused.
+      await this.deleteDiscount(parsed.discount_id).catch(() => undefined);
+      throw new DodoApiError('malformed', null, 'code_mismatch');
+    }
+    return { discountId: parsed.discount_id };
+  }
+
+  async findOwnDiscount(code: string): Promise<string | null> {
+    let parsed: z.infer<typeof dodoDiscountSchema>;
+    try {
+      parsed = await this.call(
+        'GET',
+        `/discounts/code/${encodeURIComponent(code)}`,
+        dodoDiscountSchema,
+      );
+    } catch (cause) {
+      if (cause instanceof DodoApiError && cause.category === 'not_found') return null;
+      throw cause;
+    }
+    return parsed.metadata?.[DISCOUNT_METADATA_KEY] === code ? parsed.discount_id : null;
+  }
+
+  async deleteDiscount(discountId: string): Promise<void> {
+    await this.call('DELETE', `/discounts/${encodeURIComponent(discountId)}`, null);
+  }
+
   private async call<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     schema: z.ZodMiniType<T> | null,
     body?: unknown,
