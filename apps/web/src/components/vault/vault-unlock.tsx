@@ -1103,8 +1103,8 @@ export function ResetResult({
 
       <p className="text-fg-muted text-sm leading-6">
         Until <span className="text-fg">{until}</span> you can recover your old vault from Settings
-        → Security with its passphrase or a recovery code. Nothing in xecret can delete it before
-        then; after that, it is deleted for good.
+        → Vault with its passphrase or a recovery code. Nothing in xecret can delete it before then;
+        after that, it is deleted for good.
       </p>
 
       <Button variant="primary" onClick={onContinue}>
@@ -1589,7 +1589,7 @@ function AllCodesLost({
           {preflightFacts}
           <p>
             <span className="text-fg">We also keep your old vault for seven days.</span> If you find
-            your passphrase or a code in that time, you can recover it from Settings → Security.
+            your passphrase or a code in that time, you can recover it from Settings → Vault.
             Nothing in xecret can delete it before then; after that, it is deleted for good.
           </p>
           <p>Your teammates and your organisation’s data are unaffected.</p>

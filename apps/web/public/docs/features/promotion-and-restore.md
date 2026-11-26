@@ -12,7 +12,8 @@ value, and the server writes the lot in **one transaction** — all of it, or no
 
 ## Promotion
 
-*Environment → Promote from…* on the environment you are promoting **into**.
+*Environment → Changes → Promote from another environment* on the environment you
+are promoting **into**.
 Pick the source, and the dashboard shows the difference between the two:
 
 | Status | Means |
@@ -49,7 +50,7 @@ so every secret's own history shows it.
 
 ## Point-in-time restore
 
-*Environment settings → Restore to a point in time*. Pick a moment, and the
+*Environment → Changes → Restore to a point in time*. Pick a moment, and the
 preview — which always comes first — lists what restoring to it would do:
 
 | Action | Means |

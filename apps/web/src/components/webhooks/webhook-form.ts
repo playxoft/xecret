@@ -181,6 +181,18 @@ export function createBody(values: WebhookFormValues): WebhookCreateBody {
  * A description emptied out is sent as `null`, which clears it; one that was
  * never set and is still empty is not sent at all. Events are compared as sets,
  * so ticking and unticking back is no change.
+ *
+ * ── Only the events this build knows are compared ──
+ * An endpoint can be subscribed to a type this build does not know — one
+ * retired since, or one a newer server added during a deploy. The form cannot
+ * offer it (`formFromWebhook`), so it cannot have been unticked, and counting it
+ * made every edit of such an endpoint look like an events change: Save was
+ * offered on a form nobody had touched, and saving only a new description sent
+ * the known events alone, which the server stores whole — dropping the unknown
+ * subscription behind the editor's back. Left out of the comparison, an edit
+ * that leaves the events alone sends none and the server keeps every one. An
+ * edit that does change them still sends the known ones only: the route's
+ * schema refuses a type it does not know, so there is no way to carry one.
  */
 export function patchBody(original: Webhook, values: WebhookFormValues): WebhookPatchBody | null {
   const patch: WebhookPatchBody = {};
@@ -193,7 +205,7 @@ export function patchBody(original: Webhook, values: WebhookFormValues): Webhook
   if (description !== stored) patch.description = description.length === 0 ? null : description;
 
   const next = WEBHOOK_EVENT_TYPES.filter((type) => values.eventTypes.includes(type));
-  const before = new Set(original.eventTypes);
+  const before = new Set(original.eventTypes.filter(isWebhookEventType));
   const sameEvents = next.length === before.size && next.every((type) => before.has(type));
   if (!sameEvents) patch.eventTypes = next;
 

@@ -359,7 +359,12 @@ export function UpgradeScreen({
     // A section of the organisation's settings, and the one given the frame's
     // whole width (`wide` in `settings-sections.ts`): three plan columns and a
     // comparison table do not fit a form's measure. The frame owns the `<h1>`.
-    <div className="flex flex-col gap-8">
+    //
+    // A container, so the plan columns are laid out by the width this page is
+    // actually given rather than by the viewport's: beside the settings nav, a
+    // laptop-sized viewport leaves the page well short of what `lg` used to
+    // promise, and three columns squeezed into it were 15rem each.
+    <div className="@container flex flex-col gap-8">
       <PageHeader
         as="h2"
         title={selling ? `Upgrade ${orgName}` : `Plans for ${orgName}`}
@@ -431,7 +436,10 @@ export function UpgradeScreen({
           ) : null}
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-3">
+        {/* Three columns from 56rem of page — 18rem each at the least, room
+            for a price and its button on one line — and one above another
+            below that, as on a phone. */}
+        <div className="grid gap-4 @4xl:grid-cols-3">
           {PLAN_OFFERS.map((offer) => (
             <PlanCard
               key={offer.id}

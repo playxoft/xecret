@@ -117,6 +117,19 @@ beforeEach(() => {
   answers(billing());
 });
 
+describe('UpgradeScreen, laid out by the width it is given', () => {
+  // Beside the settings nav, the page is narrower than the viewport says: a
+  // viewport breakpoint drew three 15rem plan columns on a laptop. The page is
+  // its own container, and the columns ask it.
+  it('puts the plans in three columns only when the page itself has room for them', () => {
+    const html = render('owner');
+
+    expect(html).toMatch(/^<div class="@container /);
+    expect(html).toContain('class="grid gap-4 @4xl:grid-cols-3"');
+    expect(html).not.toContain('lg:grid-cols-3');
+  });
+});
+
 describe('UpgradeScreen, for an owner', () => {
   it('reads the plan and offers a checkout for each paid plan from Free', () => {
     const html = render('owner');

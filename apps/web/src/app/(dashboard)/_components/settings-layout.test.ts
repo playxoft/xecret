@@ -220,4 +220,35 @@ describe('the settings frame', () => {
   it('gives the plans the column’s whole width', () => {
     expect(column(frame(groups, appPath.orgPlans('acme')))).not.toContain('max-w-2xl');
   });
+
+  /** The classes of the frame itself, the outermost element. */
+  function outer(html: string): string[] {
+    return (/^<div class="([^"]*)"/.exec(html)?.[1] ?? '').split(' ');
+  }
+
+  it('is the same width on every section, so the nav never moves sideways under the pointer', () => {
+    const widths = [ORG_SETTINGS, appPath.orgBilling('acme'), appPath.orgPlans('acme')].map(
+      (pathname) => outer(frame(groups, pathname)).filter((name) => name.startsWith('max-w-')),
+    );
+    expect(widths).toEqual([['max-w-6xl'], ['max-w-6xl'], ['max-w-6xl']]);
+  });
+
+  /**
+   * The arithmetic the frame's width rests on, done on the classes it renders:
+   * at its widest, the frame less the nav column and the gap beside it must
+   * hold the plans' comparison table whole. The table is `min-w-[52rem]` in
+   * `upgrade-screen.tsx`, and scrolls inside its own box below that.
+   */
+  it('leaves a wide section room for the plans’ 52rem comparison table beside the nav', () => {
+    const html = frame(groups, appPath.orgPlans('acme'));
+    const rem = (scale: string) => Number(scale) / 4;
+    const MAX_WIDTH_REM: Record<string, number> = { '5xl': 64, '6xl': 72, '7xl': 80 };
+
+    const frameWidth = MAX_WIDTH_REM[/max-w-(\w+)/.exec(outer(html).join(' '))?.[1] ?? ''];
+    const navWidth = rem(/<nav [^>]*class="[^"]*xl:w-(\d+)/.exec(html)?.[1] ?? 'NaN');
+    const gap = rem(/xl:flex-row[^"]*xl:gap-(\d+)/.exec(html)?.[1] ?? 'NaN');
+
+    expect(frameWidth).toBeDefined();
+    expect((frameWidth ?? 0) - navWidth - gap).toBeGreaterThanOrEqual(52);
+  });
 });

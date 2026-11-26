@@ -333,7 +333,7 @@ an RFC 3339 timestamp. The server clamps any range to 90 days and reports the
 window it actually scanned. Only owners and admins hold `audit.read`; a 403
 there is the policy working, not a bug.
 
-Service tokens are **created in the dashboard only** (*Settings → Tokens*), for
+Service tokens are **created in the dashboard only** (the organisation's *Tokens* page), for
 the same reason a token cannot mint a token. Projects and environments are
 created in the dashboard too, because their encryption keys are generated in
 the browser.

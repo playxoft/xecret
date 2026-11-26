@@ -24,10 +24,19 @@ import type { SettingsSectionGroup } from './settings-sections';
  * ── Two measures, one frame ──
  * A section is a column of fields, and a form stretched across a 27-inch
  * display is a worse form, so a section is held to the 42rem every settings
- * screen has always had. The frame around it is wider, to make room for the
- * nav beside it, and is the same width on every section: the nav does not move
- * sideways when you switch from one to the next. The plans are the exception
- * (`wide`), and take the column's full width for their three columns.
+ * screen has always had. The plans are the exception (`wide`): three plan
+ * columns and a comparison table that is 52rem before it scrolls, laid out
+ * for a page of their own. They take the whole column.
+ *
+ * The frame is sized for the wide section rather than for the forms — 72rem,
+ * less the nav's 13 and the gap's 2.5, leaves 56.5rem, which holds the table
+ * whole — and it is that width on every section. Widening it only for the
+ * plans was the other way to get there, and it moved the nav: the frame is
+ * centred, so a wider one starts further left, and the list somebody had just
+ * clicked in jumped sideways under their pointer. A form beside a fixed nav,
+ * with room to spare on its right on a very wide display, is the cheaper of
+ * the two. `settings-layout.test.ts` does the arithmetic, so a wider nav or a
+ * narrower frame that would squeeze the table again fails there.
  *
  * ── The nav beside the content, or above it ──
  * Beside it from `xl`, the first breakpoint with room for the nav next to a
@@ -60,7 +69,7 @@ export function SettingsLayout({
   useLegacyAnchors(groups, pathname);
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       {header}
 
       <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:gap-10">
