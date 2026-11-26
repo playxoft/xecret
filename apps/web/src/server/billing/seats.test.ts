@@ -14,6 +14,7 @@ import type { Bindings } from '../bindings';
 import { createLogger } from '../logging';
 import type { LogEntry } from '../logging';
 import type { MailMessage } from '../mail';
+import type { PlanChange } from './client';
 
 /**
  * Seat sync: the membership changes, the bill follows — after the commit,
@@ -154,6 +155,26 @@ async function auditActions(
   }>(`select action, outcome, metadata from audit_logs where org_id = $1 order by id`, [orgId]);
   return result.rows;
 }
+
+/** Dodo's subscription, as far as the seat sync reads it. */
+const atDodo = (over: {
+  quantity?: number;
+  product?: string;
+  scheduledAt?: Date | null;
+  scheduledProduct?: string;
+}) => ({
+  subscription_id: 'sub',
+  status: 'active',
+  product_id: over.product ?? 'pdt_team_m',
+  quantity: over.quantity ?? 3,
+  scheduled_change:
+    over.scheduledAt === undefined || over.scheduledAt === null
+      ? null
+      : {
+          effective_at: over.scheduledAt.toISOString(),
+          ...(over.scheduledProduct ? { product_id: over.scheduledProduct } : {}),
+        },
+});
 
 describe('syncSeats', () => {
   it('pushes a new member to Dodo — the difference charged now — and records it', async () => {
@@ -333,18 +354,6 @@ describe('the seat debt and the push, round 1', () => {
     expect((await listSeatSyncs(t.db, 1000)).some((debt) => debt.orgId === orgId)).toBe(false);
   });
 
-  /** Dodo's subscription, as far as the seat sync reads it. */
-  const atDodo = (over: { quantity?: number; product?: string; scheduledAt?: Date | null }) => ({
-    subscription_id: 'sub',
-    status: 'active',
-    product_id: over.product ?? 'pdt_team_m',
-    quantity: over.quantity ?? 3,
-    scheduled_change:
-      over.scheduledAt === undefined || over.scheduledAt === null
-        ? null
-        : { effective_at: over.scheduledAt.toISOString() },
-  });
-
   it('waits for a plan change Dodo has scheduled instead of colliding with it', async () => {
     const effective = new Date(Date.now() + 10 * 86_400_000);
     const orgId = await billedOrg(3, 4, { dodo_scheduled_change_at: effective });
@@ -469,6 +478,455 @@ describe('the seat debt and the push, round 1', () => {
     const orgId = await billedOrg(3, 4, { dodo_mode: 'live_mode' });
     expect(await syncSeats(services(), orgId)).toBe('not-billed');
     expect(dodo.changePlan).not.toHaveBeenCalled();
+  });
+});
+
+describe('seats added while a plan change is scheduled (security review, 2026-11-25)', () => {
+  const DAY = 86_400_000;
+  type Change = PlanChange;
+  interface Scheduled {
+    at: Date;
+    product: string;
+    quantity: number;
+  }
+
+  /**
+   * Dodo, as its change-plan docs describe a scheduled change: any other
+   * change-plan is refused 409 while one is scheduled, unless it carries
+   * `cancel_scheduled_change_plan` — then "the scheduled change is cancelled by
+   * the transaction that applies this change" — and a `next_billing_date`
+   * change schedules one. `nextCharge` is the subscription's next billing date.
+   */
+  function dodoWith(
+    own: { product: string; quantity: number; nextCharge: Date },
+    scheduled: Scheduled | null,
+  ) {
+    const state = { ...own, scheduled };
+    dodo.getSubscription.mockImplementation(async (id: string) => ({
+      subscription_id: id,
+      status: 'active',
+      product_id: state.product,
+      quantity: state.quantity,
+      next_billing_date: state.nextCharge.toISOString(),
+      scheduled_change:
+        state.scheduled === null
+          ? null
+          : {
+              effective_at: state.scheduled.at.toISOString(),
+              product_id: state.scheduled.product,
+              quantity: state.scheduled.quantity,
+            },
+    }));
+    dodo.changePlan.mockImplementation(async (_id: string, change: Change) => {
+      if (change.effectiveAt === 'next_billing_date') {
+        if (state.scheduled !== null) throw new DodoApiError('conflict', 409);
+        state.scheduled = {
+          at: state.nextCharge,
+          product: change.productId,
+          quantity: change.quantity,
+        };
+        return;
+      }
+      if (state.scheduled !== null && change.cancelScheduledChange !== true) {
+        throw new DodoApiError('conflict', 409);
+      }
+      state.scheduled = null;
+      state.product = change.productId;
+      state.quantity = change.quantity;
+    });
+    return state;
+  }
+
+  /** Team yearly, renewed yesterday, a move to monthly asked for at the renewal: `billed` seats. */
+  async function downgradeScheduled(billed: number, members: number, renewal: Date) {
+    const orgId = await billedOrg(billed, members, {
+      billing_interval: 'yearly',
+      dodo_product_id: 'pdt_team_y',
+      current_period_end: renewal,
+      dodo_scheduled_change_at: renewal,
+    });
+    const state = dodoWith(
+      { product: 'pdt_team_y', quantity: billed, nextCharge: renewal },
+      { at: renewal, product: 'pdt_team_m', quantity: billed },
+    );
+    return { orgId, state };
+  }
+
+  /** A change owed back, as a push that applied leaves it — or, unconfirmed, one Dodo never answered. */
+  async function owed(
+    orgId: string,
+    change: {
+      product: string;
+      at: Date;
+      from?: string;
+      fromSeats?: number;
+      toSeats?: number;
+      confirmed?: boolean;
+    },
+  ) {
+    await t.pg.query(
+      `insert into billing_seat_syncs
+         (org_id, reschedule_product_id, reschedule_at, reschedule_from_product_id,
+          reschedule_from_seats, reschedule_to_seats, reschedule_confirmed_at)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict (org_id) do update set
+         reschedule_product_id = excluded.reschedule_product_id,
+         reschedule_at = excluded.reschedule_at,
+         reschedule_from_product_id = excluded.reschedule_from_product_id,
+         reschedule_from_seats = excluded.reschedule_from_seats,
+         reschedule_to_seats = excluded.reschedule_to_seats,
+         reschedule_confirmed_at = excluded.reschedule_confirmed_at`,
+      [
+        orgId,
+        change.product,
+        change.at,
+        change.from ?? 'pdt_team_y',
+        change.fromSeats ?? 3,
+        change.toSeats ?? 5,
+        change.confirmed === false ? null : new Date(),
+      ],
+    );
+  }
+
+  const debtOf = async (orgId: string) =>
+    (await listSeatSyncs(t.db, 1000)).find((debt) => debt.orgId === orgId);
+  const quantities = () => dodo.changePlan.mock.calls.map((call) => (call[1] as Change).quantity);
+  const errorsMatching = (pattern: RegExp) =>
+    lines.filter((line) => line.level === 'error' && pattern.test(line.message));
+
+  it('bills an increase now, over the scheduled downgrade, and makes the downgrade again at the new count', async () => {
+    const renewal = new Date(Date.now() + 364 * DAY);
+    const { orgId, state } = await downgradeScheduled(3, 7, renewal);
+
+    expect(await syncSeats(services(), orgId)).toBe('synced');
+
+    expect(dodo.changePlan.mock.calls.map((call) => call[1])).toEqual([
+      {
+        productId: 'pdt_team_y',
+        quantity: 7,
+        proration: 'prorated_immediately_keep_cycle',
+        effectiveAt: 'immediately',
+        onPaymentFailure: 'apply_change',
+        cancelScheduledChange: true,
+      },
+      // Exactly what the billing screen asked for, at the membership's count.
+      {
+        productId: 'pdt_team_m',
+        quantity: 7,
+        proration: 'prorated_immediately',
+        effectiveAt: 'next_billing_date',
+        onPaymentFailure: 'prevent_change',
+      },
+    ]);
+    // Billed for seven now; the owner's move to monthly still lands at the
+    // renewal — and renews at seven, not the three it was asked for at.
+    expect(state).toMatchObject({
+      product: 'pdt_team_y',
+      quantity: 7,
+      scheduled: { product: 'pdt_team_m', quantity: 7 },
+    });
+    expect(await findSubscription(t.db, orgId)).toMatchObject({
+      seats: 7,
+      dodoScheduledChangeAt: renewal,
+    });
+    expect(await debtOf(orgId)).toBeUndefined();
+    expect(await auditActions(orgId)).toEqual([
+      {
+        action: 'billing.seats_synced',
+        outcome: 'success',
+        metadata: {
+          seatCount: 7,
+          previousSeatCount: 3,
+          reason: 'billed now over a scheduled plan change, which is made again',
+        },
+      },
+      {
+        action: 'billing.plan_change_requested',
+        outcome: 'success',
+        metadata: {
+          plan: 'team',
+          billingInterval: 'monthly',
+          seatCount: 7,
+          reason: 'scheduled plan change made again after new seats were billed',
+        },
+      },
+    ]);
+  });
+
+  it('owes the downgrade back from before the push — a failure between the two calls leaves it for the hourly job', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const { orgId, state } = await downgradeScheduled(3, 5, renewal);
+    const dodoAsDescribed = dodo.changePlan.getMockImplementation()!;
+    dodo.changePlan.mockImplementation(async (id: string, change: Change) => {
+      if (change.effectiveAt === 'next_billing_date') throw new DodoApiError('upstream_5xx', 503);
+      return dodoAsDescribed(id, change);
+    });
+
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    // The seats are billed; the downgrade is gone at Dodo and owed on the debt,
+    // with what it was owed against — and known to have been replaced.
+    expect(state).toMatchObject({ quantity: 5, scheduled: null });
+    expect(await debtOf(orgId)).toMatchObject({
+      rescheduleProductId: 'pdt_team_m',
+      rescheduleAt: renewal,
+      rescheduleFromProductId: 'pdt_team_y',
+      rescheduleFromSeats: 3,
+      rescheduleToSeats: 5,
+      rescheduleConfirmedAt: expect.any(Date),
+      attempts: 1,
+      lastError: 'reschedule_upstream_5xx',
+    });
+
+    // The hourly job, once Dodo is back: the downgrade is made again, and only
+    // then is the debt paid.
+    dodo.changePlan.mockImplementation(dodoAsDescribed);
+    dodo.changePlan.mockClear();
+    expect(await syncSeats(services(), orgId)).toBe('in-sync');
+    expect(dodo.changePlan.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({ productId: 'pdt_team_m', quantity: 5 }),
+    ]);
+    expect(state.scheduled).toMatchObject({ product: 'pdt_team_m', quantity: 5 });
+    expect(await debtOf(orgId)).toBeUndefined();
+  });
+
+  it('keeps the downgrade owed when the replacing push gets a 5xx — it may have applied — and makes it again once Dodo shows it did', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const { orgId, state } = await downgradeScheduled(3, 5, renewal);
+    const dodoAsDescribed = dodo.changePlan.getMockImplementation()!;
+    // Dodo applies the push — the downgrade cancelled, five seats billed — and
+    // its gateway answers 502.
+    dodo.changePlan.mockImplementationOnce(async (id: string, change: Change) => {
+      await dodoAsDescribed(id, change);
+      throw new DodoApiError('upstream_5xx', 502);
+    });
+
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    expect(state).toMatchObject({ quantity: 5, scheduled: null });
+    expect(await debtOf(orgId)).toMatchObject({
+      rescheduleProductId: 'pdt_team_m',
+      rescheduleConfirmedAt: null,
+    });
+
+    // Dodo's snapshot of it lands: five seats, no scheduled change.
+    await t.pg.query(
+      `update org_subscriptions set seats = 5, dodo_scheduled_change_at = null where org_id = $1`,
+      [orgId],
+    );
+    dodo.changePlan.mockClear();
+    const mailEnv = {
+      ...BILLING_ENV,
+      ZEPTOMAIL_TOKEN: 'token',
+      ZEPTOMAIL_FROM_ADDRESS: 'no-reply@example.com',
+    };
+    expect(await syncSeats(services(mailEnv), orgId)).toBe('synced');
+    // Settled by Dodo's count first — it applied — and the downgrade made again.
+    expect(dodo.changePlan.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({
+        productId: 'pdt_team_m',
+        quantity: 5,
+        effectiveAt: 'next_billing_date',
+      }),
+    ]);
+    expect(state.scheduled).toMatchObject({ product: 'pdt_team_m', quantity: 5 });
+    expect(await debtOf(orgId)).toBeUndefined();
+    // Recorded as the success it was, as any push is: the failure the first
+    // run filed, then this one — and the owners told the bill moved, from the
+    // three Dodo billed before.
+    expect(
+      (await auditActions(orgId))
+        .filter((record) => record.action === 'billing.seats_synced')
+        .map((record) => [
+          record.outcome,
+          record.metadata['seatCount'],
+          record.metadata['previousSeatCount'],
+        ]),
+    ).toEqual([
+      ['error', 5, 3],
+      ['success', 5, 3],
+    ]);
+    expect(mail.sent.map((message) => message.subject)).toEqual(['Acme is now billed for 5 seats']);
+  });
+
+  it('never makes again a downgrade withdrawn after a push that did not apply', async () => {
+    // The replacing push timed out without applying; the owner then withdrew
+    // the downgrade in the portal. Dodo bills the three from before and has no
+    // scheduled change.
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const { orgId, state } = await downgradeScheduled(3, 5, renewal);
+    const dodoAsDescribed = dodo.changePlan.getMockImplementation()!;
+    dodo.changePlan.mockRejectedValueOnce(new DodoApiError('timeout', null));
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    expect(state).toMatchObject({ quantity: 3, scheduled: { product: 'pdt_team_m' } });
+    expect((await debtOf(orgId))?.rescheduleConfirmedAt).toBeNull();
+    state.scheduled = null; // withdrawn in the portal
+
+    dodo.changePlan.mockImplementation(dodoAsDescribed);
+    dodo.changePlan.mockClear();
+    expect(await syncSeats(services(), orgId)).toBe('synced');
+    // The seats are pushed — plainly, nothing to replace — and nothing is
+    // scheduled again.
+    expect(dodo.changePlan.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({ quantity: 5, effectiveAt: 'immediately' }),
+    ]);
+    expect(dodo.changePlan.mock.calls[0]![1]).not.toHaveProperty('cancelScheduledChange');
+    expect(state).toMatchObject({ quantity: 5, scheduled: null });
+    expect(await debtOf(orgId)).toBeUndefined();
+  });
+
+  it('stands down, raised, when the subscription changed plan or cycle since the change was owed — an upgrade', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    // The push applied and the re-scheduling failed; then the owner moved to
+    // Pro yearly — another product — and the next charge restarted a year on.
+    const upgraded = await billedOrg(5, 5, {
+      billing_interval: 'yearly',
+      dodo_product_id: 'pdt_team_y',
+      current_period_end: renewal,
+    });
+    await owed(upgraded, { product: 'pdt_team_m', at: renewal });
+    dodoWith(
+      { product: 'pdt_pro_y', quantity: 5, nextCharge: new Date(Date.now() + 365 * DAY) },
+      null,
+    );
+    expect(await syncSeats(services(), upgraded)).toBe('in-sync');
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+
+    // The same product, but a cycle restarted: monthly to yearly on Team.
+    const restarted = await billedOrg(5, 5, {
+      billing_interval: 'yearly',
+      dodo_product_id: 'pdt_team_y',
+      current_period_end: renewal,
+    });
+    await owed(restarted, { product: 'pdt_team_m', at: renewal });
+    dodoWith(
+      { product: 'pdt_team_y', quantity: 5, nextCharge: new Date(renewal.getTime() + 40 * DAY) },
+      null,
+    );
+    expect(await syncSeats(services(), restarted)).toBe('in-sync');
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+
+    expect(errorsMatching(/changed plan or billing cycle since/)).toHaveLength(2);
+    expect(await debtOf(upgraded)).toBeUndefined();
+    expect(await debtOf(restarted)).toBeUndefined();
+  });
+
+  it('raises a re-scheduling Dodo refuses outright at once — asking again cannot change its answer', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const { orgId } = await downgradeScheduled(3, 5, renewal);
+    const dodoAsDescribed = dodo.changePlan.getMockImplementation()!;
+    dodo.changePlan.mockImplementation(async (id: string, change: Change) => {
+      if (change.effectiveAt === 'next_billing_date') throw new DodoApiError('invalid', 422);
+      return dodoAsDescribed(id, change);
+    });
+
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    expect(errorsMatching(/Dodo refused to schedule it again/)).toHaveLength(1);
+    expect((await debtOf(orgId))?.deadLetteredAt).not.toBeNull();
+  });
+
+  it('stands the owed downgrade down when Dodo already has a change scheduled — never two', async () => {
+    // The owner chose again since: the change at Dodo is the one that stands.
+    const renewal = new Date(Date.now() + 200 * DAY);
+    const orgId = await billedOrg(5, 5, {
+      billing_interval: 'yearly',
+      dodo_product_id: 'pdt_team_y',
+      current_period_end: renewal,
+    });
+    await owed(orgId, { product: 'pdt_team_m', at: renewal });
+    dodoWith(
+      { product: 'pdt_team_y', quantity: 5, nextCharge: renewal },
+      { at: renewal, product: 'pdt_pro_y', quantity: 5 },
+    );
+
+    expect(await syncSeats(services(), orgId)).toBe('in-sync');
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+    expect(await debtOf(orgId)).toBeUndefined();
+  });
+
+  it('stands down to a change somebody scheduled first (409), and raises one whose date has passed', async () => {
+    const renewal = new Date(Date.now() + 200 * DAY);
+    const raced = await billedOrg(5, 5, { current_period_end: renewal });
+    await owed(raced, { product: 'pdt_pro_m', at: renewal, from: 'pdt_team_m' });
+    dodo.getSubscription.mockResolvedValue({
+      ...atDodo({ quantity: 5 }),
+      next_billing_date: renewal.toISOString(),
+    });
+    dodo.changePlan.mockRejectedValue(new DodoApiError('conflict', 409));
+    expect(await syncSeats(services(), raced)).toBe('in-sync');
+    expect(dodo.changePlan).toHaveBeenCalledTimes(1);
+    expect(await debtOf(raced)).toBeUndefined();
+
+    // Owed, and never made again before its date: the subscription renewed
+    // on the plan the owner moved away from. A human is told.
+    const late = await billedOrg(5, 5);
+    await owed(late, { product: 'pdt_pro_m', at: new Date(Date.now() - DAY), from: 'pdt_team_m' });
+    dodo.changePlan.mockClear();
+    expect(await syncSeats(services(), late)).toBe('in-sync');
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+    expect(errorsMatching(/could not be made again before its date/)).toHaveLength(1);
+  });
+
+  it('bills an increase over a change our row had not heard of — the 409 names it, and it is replaced', async () => {
+    const renewal = new Date(Date.now() + 100 * DAY);
+    const orgId = await billedOrg(3, 4, {
+      billing_interval: 'yearly',
+      dodo_product_id: 'pdt_team_y',
+      current_period_end: renewal,
+    });
+    const state = dodoWith(
+      { product: 'pdt_team_y', quantity: 3, nextCharge: renewal },
+      { at: renewal, product: 'pdt_pro_y', quantity: 3 },
+    );
+
+    expect(await syncSeats(services(), orgId)).toBe('synced');
+    expect(
+      dodo.changePlan.mock.calls.map((call) => (call[1] as Change).cancelScheduledChange),
+    ).toEqual([undefined, true, undefined]);
+    expect(quantities()).toEqual([4, 4, 4]);
+    expect(state).toMatchObject({ quantity: 4, scheduled: { product: 'pdt_pro_y', quantity: 4 } });
+  });
+
+  it('still waits for the change with a decrease, a change due within a day, or one whose product Dodo did not name', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const fewer = await downgradeScheduled(6, 4, renewal);
+    expect(await syncSeats(services(), fewer.orgId)).toBe('deferred');
+
+    const soon = new Date(Date.now() + 6 * 3_600_000);
+    const landing = await downgradeScheduled(3, 5, soon);
+    expect(await syncSeats(services(), landing.orgId)).toBe('deferred');
+
+    const unnamed = await billedOrg(3, 5, { dodo_scheduled_change_at: renewal });
+    dodo.getSubscription.mockResolvedValue(atDodo({ scheduledAt: renewal }));
+    expect(await syncSeats(services(), unnamed)).toBe('deferred');
+
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+    for (const orgId of [fewer.orgId, landing.orgId, unnamed]) {
+      expect(await debtOf(orgId)).toMatchObject({
+        lastError: 'scheduled_change',
+        attempts: 0,
+        rescheduleProductId: null,
+      });
+    }
+  });
+
+  it('retries an increase Dodo cannot be asked about, with backoff — never puts it off for the period', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const orgId = await billedOrg(3, 5, { dodo_scheduled_change_at: renewal });
+    dodo.getSubscription.mockRejectedValue(new DodoApiError('upstream_5xx', 503));
+
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    const debt = (await debtOf(orgId))!;
+    expect(debt).toMatchObject({ attempts: 1, lastError: 'upstream_5xx' });
+    expect(debt.notBefore!.getTime()).toBeLessThan(Date.now() + DAY);
+  });
+
+  it('owes nothing back when Dodo refuses the replacing push (4xx) — the scheduled change still stands', async () => {
+    const renewal = new Date(Date.now() + 300 * DAY);
+    const { orgId, state } = await downgradeScheduled(3, 5, renewal);
+    dodo.changePlan.mockRejectedValue(new DodoApiError('invalid', 422, 'BAD'));
+
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    expect(state.scheduled).toMatchObject({ product: 'pdt_team_m', quantity: 3 });
+    expect(await debtOf(orgId)).toMatchObject({ rescheduleProductId: null, attempts: 1 });
   });
 });
 

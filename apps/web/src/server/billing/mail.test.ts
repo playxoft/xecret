@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FETCHES_PER_METERED_UNIT } from '@xecret/core/entitlements';
 import { BILLING_REMINDER_KINDS } from '@xecret/db/schema';
+import { HOLD_LIMIT_MS, TRIAL_HOLD_LIMIT_MS } from './jobs';
 import { billingMail, BUILDS_UNAFFECTED, REMINDER_KINDS } from './mail';
 import type { BillingReminder } from './mail';
 import { formatMinor, OVERAGE_RATE_TEXT } from './money';
@@ -61,10 +62,12 @@ describe('billingMail', () => {
       EXAMPLES.payment_failed,
       { ...EXAMPLES.payment_failed, firstPayment: true },
       { ...EXAMPLES.payment_failed, declinedUpgrade: { trialEndsAt: new Date('2026-11-19') } },
+      { ...EXAMPLES.payment_failed, trialEnded: true as const },
       EXAMPLES.card_expiring,
       EXAMPLES.trial_ending_3d,
       EXAMPLES.trial_ending_1d,
       EXAMPLES.plan_ended_unpaid,
+      { ...EXAMPLES.plan_ended_unpaid, days: 2, afterTrial: true as const },
     ]) {
       const mail = billingMail(reminder, CONTEXT);
       expect(mail.text, reminder.kind).toContain(BUILDS_UNAFFECTED);
@@ -149,13 +152,37 @@ describe('billingMail', () => {
     expect(mail.text).not.toMatch(/on hold|try again over the next few days|moves to Free/);
   });
 
-  it('says what a trial’s end does — the card is charged, and an unpaid one holds for 14 days', () => {
+  it('says what a trial’s end does — the card is charged, and an unpaid one holds for 2 days', () => {
     const mail = billingMail(EXAMPLES.trial_ending_3d, CONTEXT);
     expect(mail.text).toContain('the card on file is charged for the first billing period');
     expect(mail.text).toContain('put on hold');
-    expect(mail.text).toContain('14 days');
+    // The hourly job's own limit for a trial that ended with nothing paid —
+    // never the fourteen days a paying customer's hold keeps.
+    expect(mail.text).toContain(`for ${TRIAL_HOLD_LIMIT_MS / 86_400_000} days`);
+    expect(mail.text).not.toContain('14 days');
     // Not the old promise that it simply moves to Free when the trial ends.
     expect(mail.text).not.toMatch(/If the trial ends without one, the organisation moves to Free/);
+  });
+
+  it('tells a trial that ended unpaid it has two days — and a paying customer’s hold still fourteen', () => {
+    const trial = billingMail({ ...EXAMPLES.payment_failed, trialEnded: true }, CONTEXT);
+    expect(trial.subject).toBe("A payment for Acme <script> didn't go through");
+    expect(trial.text).toContain('trial for Acme <script> has ended');
+    expect(trial.text).toContain(`for ${TRIAL_HOLD_LIMIT_MS / 86_400_000} days`);
+    expect(trial.text).not.toMatch(/14 days|try again over the next few days/);
+
+    const dunning = billingMail(EXAMPLES.payment_failed, CONTEXT);
+    expect(dunning.text).toContain(`${HOLD_LIMIT_MS / 86_400_000} days on hold`);
+
+    const ended = billingMail(
+      { kind: 'plan_ended_unpaid', plan: 'team', days: 2, afterTrial: true },
+      CONTEXT,
+    );
+    expect(ended.text).toContain('Team trial ended without a payment');
+    expect(ended.text).toContain('on hold for 2 days since');
+    expect(billingMail(EXAMPLES.plan_ended_unpaid, CONTEXT).text).toContain(
+      'subscription has been on hold for 14 days without a successful payment',
+    );
   });
 
   it('says how a seat change is billed as Dodo bills it: the rest of the period, and credit kept', () => {

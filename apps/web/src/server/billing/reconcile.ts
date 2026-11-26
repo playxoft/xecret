@@ -6,9 +6,10 @@ import {
   listProviderSubscriptions,
   listSeatSyncs,
   operatorManaged,
+  SEAT_SYNC_SCHEDULED_CHANGE,
   seatedMemberCount,
 } from '@xecret/db/repositories';
-import type { SubscriptionRecord } from '@xecret/db/repositories';
+import type { SeatSyncRecord, SubscriptionRecord } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
 import { describeError } from '../logging';
 import { subscriptionResource, systemAudit } from './audit';
@@ -40,6 +41,17 @@ import { readTrial } from './snapshot';
  * up on is reported), and a period end within a day of Dodo's (renewals land
  * minutes apart from the date they name).
  *
+ * **A debt waiting for a scheduled plan change is not "being retried".** The
+ * seat sync bills an increase over a scheduled change at once (`seats.ts`),
+ * and waits only where it cannot — the change due within a day, or one whose
+ * product Dodo did not name. An increase still waiting after
+ * {@link DEFERRED_INCREASE_GRACE_MS} is people using seats nobody is billed
+ * for until the change lands: reported as `seats` drift, with its own line
+ * saying so. Before 2026-11-25 every debt not given up on hid the seats, and
+ * an increase put off for a yearly plan's downgrade was invisible for a year.
+ * A waiting *decrease* is the customer paying for a seat until the change
+ * lands, then credited: expected, and not reported.
+ *
  * Rows recorded under the other Dodo mode are not compared: this deployment's
  * key cannot see them, and they would all read as missing. Nor is an
  * operator's grant written over an old subscription's id (a paid row with the
@@ -50,6 +62,35 @@ import { readTrial } from './snapshot';
 const PERIOD_END_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 /** Subscriptions compared per run; at one Dodo call each. */
 const MAX_PER_RUN = 2_000;
+
+/**
+ * How long a seat debt may wait for a scheduled plan change before an
+ * unbilled increase behind it is reported. Short: the push that waits is the
+ * exception (`seats.ts`), and every day it waits is seats given away.
+ */
+export const DEFERRED_INCREASE_GRACE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * What the organisation's seat debt says about a seat difference:
+ *
+ *  - `none`: no debt, or one given up on — the difference is drift.
+ *  - `pending`: a debt being retried — the hourly job is already pushing it.
+ *  - `waiting`: a debt put off past {@link DEFERRED_INCREASE_GRACE_MS} for a
+ *    plan change Dodo has scheduled — an increase behind it is drift; a
+ *    decrease is expected.
+ */
+export type SeatDebtState = 'none' | 'pending' | 'waiting';
+
+/** The state of one debt, by `now`. Exported for tests. */
+export function seatDebtState(debt: SeatSyncRecord | undefined, now: Date): SeatDebtState {
+  if (debt === undefined || debt.deadLetteredAt !== null) return 'none';
+  const waiting =
+    debt.lastError === SEAT_SYNC_SCHEDULED_CHANGE &&
+    debt.notBefore !== null &&
+    debt.notBefore > now &&
+    now.getTime() - debt.queuedAt.getTime() > DEFERRED_INCREASE_GRACE_MS;
+  return waiting ? 'waiting' : 'pending';
+}
 
 export interface ReconcileReport {
   checked: number;
@@ -62,7 +103,7 @@ export function driftBetween(
   row: SubscriptionRecord,
   dodo: DodoSubscription,
   config: BillingConfig,
-  seatSyncPending: boolean,
+  seatDebt: SeatDebtState,
   /** Members holding a seat now — what the bill should follow. */
   seatedMembers: number,
 ): BillingDriftField[] {
@@ -90,7 +131,11 @@ export function driftBetween(
 
   // What the membership says Dodo should bill, on the plan Dodo has.
   const owed = providerSeats(entry?.plan ?? resolvePlanId(row.plan), seatedMembers).billed;
-  if (!seatSyncPending && (dodo.quantity !== owed || dodo.quantity !== row.seats)) {
+  if (
+    seatDebt === 'none'
+      ? dodo.quantity !== owed || dodo.quantity !== row.seats
+      : seatDebt === 'waiting' && owed > dodo.quantity
+  ) {
     drift.push('seats');
   }
 
@@ -149,11 +194,11 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
   const log = services.log.at('reconcileSubscriptions');
 
   // Debts still being retried explain a seat difference; one given up on
-  // explains nothing, and is reported like any other.
-  const pending = new Set(
-    (await listSeatSyncs(services.db, 10_000))
-      .filter((debt) => debt.deadLetteredAt === null)
-      .map((debt) => debt.orgId),
+  // explains nothing, and is reported like any other — and one waiting for a
+  // scheduled change explains a decrease, never an increase.
+  const now = new Date();
+  const debts = new Map(
+    (await listSeatSyncs(services.db, 10_000)).map((debt) => [debt.orgId, debt] as const),
   );
 
   let after: string | undefined;
@@ -172,10 +217,20 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
       report.checked += 1;
 
       let drift: BillingDriftField[];
+      const seatDebt = seatDebtState(debts.get(row.orgId), now);
+      /** An increase waiting for a scheduled change: what Dodo bills, and what is seated. */
+      let unbilled: { billed: number; owed: number } | null = null;
       try {
         const dodo = await provider.getSubscription(row.dodoSubscriptionId);
         const seated = await seatedMemberCount(services.db, row.orgId);
-        drift = driftBetween(row, dodo, config, pending.has(row.orgId), seated);
+        drift = driftBetween(row, dodo, config, seatDebt, seated);
+        if (seatDebt === 'waiting' && drift.includes('seats')) {
+          const entry = catalogEntryFor(config, dodo.product_id);
+          unbilled = {
+            billed: dodo.quantity,
+            owed: providerSeats(entry?.plan ?? resolvePlanId(row.plan), seated).billed,
+          };
+        }
       } catch (cause) {
         if (cause instanceof DodoApiError && cause.category === 'not_found') {
           drift = ['missing'];
@@ -206,6 +261,20 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
           'changing either side (docs/operations/billing.md, "Drift")',
         { orgId: row.orgId, driftFields: drift },
       );
+      if (unbilled !== null) {
+        log.error(
+          'Seats added while a plan change is scheduled are not billed yet: Dodo bills ' +
+            `${unbilled.billed}, the membership holds ${unbilled.owed}, and the seat push is ` +
+            'waiting for the scheduled change to land. Check the scheduled change in Dodo ' +
+            '(docs/operations/billing.md, "Seat-sync debts")',
+          {
+            orgId: row.orgId,
+            billedSeats: unbilled.billed,
+            owedSeats: unbilled.owed,
+            scheduledChangeAt: row.dodoScheduledChangeAt?.toISOString() ?? null,
+          },
+        );
+      }
     }
     if (page.length < 100) break;
   }

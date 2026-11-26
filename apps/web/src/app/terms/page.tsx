@@ -32,15 +32,18 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: availability and change, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-11-23';
+const UPDATED = '2026-11-26';
 /**
- * The day it was written: this version names the company and how to reach it,
- * and describes the end-to-end encryption already in the product — neither
- * takes anything from you, which is why §Changes says it is not a material
- * change. The version before it — 3 November 2026, the plan limits — took
- * effect on its publication, and §Changes still says so.
+ * The day it was written: this version says how free trials work from now on —
+ * one per organisation and per account, and a trial that ends unpaid returns
+ * the organisation to Free after 2 days on hold rather than 14. No subscription
+ * was in a trial or on hold when it was written, so it changes no arrangement
+ * anybody has, which is why §Changes says it is not a material change. Ship it
+ * the day it is deployed: if the build carrying it goes out later, move both
+ * dates to that day. The versions before it — 23 November (the company, the
+ * encryption) and 3 November 2026 (the plan limits) — are in §Changes too.
  */
-const EFFECTIVE: string | null = '2026-11-23';
+const EFFECTIVE: string | null = '2026-11-26';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -97,7 +100,7 @@ function billingClauses(paymentsLive: boolean) {
       ? 'Paid plans are bought from an organisation’s billing page, by one of its owners, at the checkout of Dodo Payments. Dodo is the merchant of record: it takes the payment, charges the tax your country requires and issues the invoice, and its own terms apply to the purchase. The prices below are the published ones; the checkout shows the price in your currency before you pay.'
       : 'No card is collected and nothing is charged on this service today. The limits of each plan below have applied since the version of 3 November 2026 was published, and the prices below are the ones a paid plan is billed at once billing starts.',
     billing: paymentsLive
-      ? 'Paid plans are billed in advance, per member, for the term the owner chooses — monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges — it is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
+      ? 'Paid plans are billed in advance, per member, for the term the owner chooses — monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges — it is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. Each organisation, and each person’s account, has one free trial: a later subscription, for that organisation or by that person for any organisation, starts with a paid period. A trial that ends without a payment — no card, or a first charge that is declined — puts the subscription on hold with the plan still working for 2 days, after which the organisation returns to Free. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
       : 'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
     refunds: paymentsLive
       ? 'Refunds: your statutory rights apply in full. Beyond those, we do not refund part-months, and credit left by a member who leaves or a plan change is applied to the organisation’s next charges rather than paid back. A refund we agree to is made by Dodo Payments, to the card that paid.'
@@ -311,7 +314,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           Cancelling stops the next renewal, and the organisation returns to Free at the end of the
           period you have paid for.
           {paymentsLive
-            ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way.'
+            ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way — or after 2 days, when the hold follows a free trial that ended without any payment.'
             : ''}{' '}
           The limits above have applied since the version of 3 November 2026 was published. Once an
           organisation is at one, the next project, environment, secret, service token, CLI device,
@@ -423,16 +426,39 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       paragraphs: [
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
+        // The sentence the legal-date guard reads stays on both versions of the
+        // page — this version takes effect the day it was written whether or
+        // not payments are taken — and only what it says about trials follows
+        // the clauses it describes, which render only once payments are live.
         <>
-          The version of 23 November 2026 is not a material change. It names the company you are
-          agreeing with and how to reach it, and it names the law and the courts the version before
-          it already pointed to without naming them: the law of India, where that company is
-          established, and the courts at Kanchipuram, where its registered office is. It describes
-          the service as it stands today, and adds two things we owe you: we announce a breaking
-          change, and the removal of a feature, before it happens wherever we reasonably can. It
-          describes the end-to-end encryption the product already uses, which narrows what we are
-          able to read rather than widening it. Nothing you owe us has changed, and neither has your
-          right to the protection of the law where you live, or to bring proceedings there.
+          The version of 26 November 2026 is not a material change.{' '}
+          {paymentsLive ? (
+            <>
+              It says how free trials work from now on: one per organisation and one per
+              person&rsquo;s account, and a trial that ends without any payment returns the
+              organisation to Free after 2 days on hold rather than 14. When it was published no
+              subscription was in a trial or on hold, so it changes no arrangement anybody already
+              has; a trial started after it is started under it. Nothing you have paid for, and
+              nothing a paying subscription gets, has changed &mdash; a subscription that has paid
+              still has 14 days on hold before it ends.
+            </>
+          ) : (
+            <>
+              It changes nothing this page says while no payment is taken: it adds how free trials
+              will work once payments are taken, which this page states from that day.
+            </>
+          )}
+        </>,
+        <>
+          The version of 23 November 2026 was not a material change either. It named the company you
+          are agreeing with and how to reach it, and the law and the courts the version before it
+          already pointed to without naming them: the law of India, where that company is
+          established, and the courts at Kanchipuram, where its registered office is. It described
+          the service as it stood, and added two things we owe you: we announce a breaking change,
+          and the removal of a feature, before it happens wherever we reasonably can. It described
+          the end-to-end encryption the product already used, which narrows what we are able to read
+          rather than widening it. Nothing you owed us changed, and neither did your right to the
+          protection of the law where you live, or to bring proceedings there.
         </>,
         <>
           The version of 3 November 2026 was a change made without that notice, and took effect on

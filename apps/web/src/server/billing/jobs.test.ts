@@ -38,9 +38,12 @@ const {
   CANCELLATION_GRACE_MS,
   CARD_CHECK_HOUR_UTC,
   HOLD_LIMIT_MS,
+  holdDeadline,
   TRIAL_GRACE_MS,
+  TRIAL_HOLD_LIMIT_MS,
 } = await import('./jobs');
-const { reconcileSubscriptions, driftBetween } = await import('./reconcile');
+const { reconcileSubscriptions, driftBetween, seatDebtState, DEFERRED_INCREASE_GRACE_MS } =
+  await import('./reconcile');
 const { DodoApiError } = await import('./client');
 const { billingSetup } = await import('./config');
 const {
@@ -411,6 +414,78 @@ describe('runHourlyBillingJob, round 1', () => {
     expect(subjects().filter((subject) => /Free plan/.test(subject))).toEqual([]);
   });
 
+  it('ends a trial that ended with nothing paid after two days on hold — with the trial’s own wording', async () => {
+    // Team's trial ended two and a half days ago with no card: Dodo put it on
+    // hold at the conversion, its next charge still the trial's end.
+    const trialEnd = new Date(NOW.getTime() - 2.5 * DAY);
+    const unpaid = await seedOrg({
+      status: 'on_hold',
+      trial_ends_at: trialEnd,
+      current_period_start: new Date(trialEnd.getTime() - 14 * DAY),
+      current_period_end: trialEnd,
+      on_hold_since: new Date(trialEnd.getTime() + 5 * 60_000),
+    });
+    // The same, a day into its hold: not yet.
+    const yesterday = new Date(NOW.getTime() - DAY);
+    const fresh = await seedOrg({
+      status: 'on_hold',
+      trial_ends_at: yesterday,
+      current_period_start: new Date(yesterday.getTime() - 14 * DAY),
+      current_period_end: yesterday,
+      on_hold_since: new Date(yesterday.getTime() + 60_000),
+    });
+
+    await runHourlyBillingJob(services(), NOW);
+
+    expect(TRIAL_HOLD_LIMIT_MS).toBe(2 * DAY);
+    expect(await findSubscription(t.db, unpaid)).toMatchObject({ plan: 'free', seats: 1 });
+    expect((await findSubscription(t.db, fresh))?.plan).toBe('team');
+    const audit = await t.pg.query<{ metadata: Record<string, unknown> }>(
+      `select metadata from audit_logs where org_id = $1 and action = 'plan.changed'`,
+      [unpaid],
+    );
+    expect(audit.rows[0]!.metadata).toMatchObject({
+      plan: 'free',
+      reason: 'trial ended without a payment, and on hold for 2 days',
+    });
+    expect(
+      lines.some(
+        (line) => line.level === 'error' && /A trial ended without a payment/.test(line.message),
+      ),
+    ).toBe(true);
+    const ended = mail.sent.find((message) => /moved to the Free plan/.test(message.subject))!;
+    expect(ended.text).toContain('Team trial ended without a payment');
+  });
+
+  it('keeps fourteen days for a paying customer’s hold — after a paid trial, or begun mid-trial', async () => {
+    // Paid since its trial a month and a half ago; this renewal's card failed.
+    const trialEnd = new Date(NOW.getTime() - 45 * DAY);
+    const paying = await seedOrg({
+      status: 'on_hold',
+      trial_ends_at: trialEnd,
+      current_period_start: new Date(NOW.getTime() - 15 * DAY),
+      current_period_end: new Date(NOW.getTime() + 15 * DAY),
+      on_hold_since: new Date(NOW.getTime() - 5 * DAY),
+    });
+    // Held during the trial — a declined seat charge — days before it ends.
+    const ends = new Date(NOW.getTime() + 2 * DAY);
+    const midTrial = await seedOrg({
+      status: 'on_hold',
+      trial_ends_at: ends,
+      current_period_start: new Date(ends.getTime() - 14 * DAY),
+      current_period_end: ends,
+      on_hold_since: new Date(NOW.getTime() - 5 * DAY),
+    });
+
+    await runHourlyBillingJob(services(), NOW);
+
+    expect((await findSubscription(t.db, paying))?.plan).toBe('team');
+    expect((await findSubscription(t.db, midTrial))?.plan).toBe('team');
+    expect(holdDeadline((await findSubscription(t.db, paying))!)?.endsAt.getTime()).toBe(
+      NOW.getTime() - 5 * DAY + HOLD_LIMIT_MS,
+    );
+  });
+
   it('asks Dodo what a trial became when no webhook moved it on', async () => {
     const orgId = await seedOrg({
       status: 'trialing',
@@ -716,20 +791,20 @@ describe('the nightly reconciler', () => {
   it('names each field that disagrees', async () => {
     const orgId = await seedOrg({});
     const row = (await findSubscription(t.db, orgId))!;
-    expect(driftBetween(row, snapshotFor(), config, false, 3)).toEqual([]);
+    expect(driftBetween(row, snapshotFor(), config, 'none', 3)).toEqual([]);
     expect(
       driftBetween(
         row,
         snapshotFor({ quantity: 7, status: 'on_hold', product_id: 'pdt_pro_m' }),
         config,
-        false,
+        'none',
         3,
       ),
     ).toEqual(['product', 'plan', 'status', 'seats']);
     // A queued seat push explains a seat difference.
-    expect(driftBetween(row, snapshotFor({ quantity: 7 }), config, true, 3)).toEqual([]);
+    expect(driftBetween(row, snapshotFor({ quantity: 7 }), config, 'pending', 3)).toEqual([]);
     expect(
-      driftBetween(row, snapshotFor({ cancel_at_next_billing_date: true }), config, false, 3),
+      driftBetween(row, snapshotFor({ cancel_at_next_billing_date: true }), config, 'none', 3),
     ).toEqual(['cancelAtPeriodEnd']);
   });
 
@@ -779,18 +854,18 @@ describe('the nightly reconciler', () => {
         current_period_end: bookedEnd,
       }),
     ))!;
-    expect(driftBetween(trialing, unchanged, config, false, 3)).toEqual([]);
+    expect(driftBetween(trialing, unchanged, config, 'none', 3)).toEqual([]);
 
     // The row as the earlier reading left it — the trial ended at the
     // declined attempt. Dodo says `active` through a trial, so only the
     // trial's end can show it.
     const endedByTheDecline = { ...trialing, status: 'active' as const, trialEndsAt: attempted };
-    expect(driftBetween(endedByTheDecline, unchanged, config, false, 3)).toEqual(['trialEnd']);
+    expect(driftBetween(endedByTheDecline, unchanged, config, 'none', 3)).toEqual(['trialEnd']);
     // Nor does it agree with itself once Dodo stops reporting the trial's
     // length: the row's end, fed back as the booked one, is checked against
     // Dodo's next charge — two weeks after it, so no paid period began there.
     expect(
-      driftBetween(endedByTheDecline, { ...unchanged, trial_period_days: 0 }, config, false, 3),
+      driftBetween(endedByTheDecline, { ...unchanged, trial_period_days: 0 }, config, 'none', 3),
     ).toEqual(['trialEnd']);
 
     // A trial extended in Dodo — its next charge moved, nothing paid — runs to
@@ -802,9 +877,9 @@ describe('the nightly reconciler', () => {
       previous_billing_date: created.toISOString(),
       next_billing_date: extendedTo.toISOString(),
     });
-    expect(driftBetween(trialing, extension, config, false, 3)).toEqual(['periodEnd', 'trialEnd']);
+    expect(driftBetween(trialing, extension, config, 'none', 3)).toEqual(['periodEnd', 'trialEnd']);
     const followed = { ...trialing, trialEndsAt: extendedTo, currentPeriodEnd: extendedTo };
-    expect(driftBetween(followed, extension, config, false, 3)).toEqual([]);
+    expect(driftBetween(followed, extension, config, 'none', 3)).toEqual([]);
 
     // A paid upgrade the row never heard of: the trial ended at its payment.
     const paid = snapshotFor({
@@ -814,7 +889,7 @@ describe('the nightly reconciler', () => {
       previous_billing_date: attempted.toISOString(),
       next_billing_date: new Date(attempted.getTime() + 365 * DAY).toISOString(),
     });
-    expect(driftBetween(trialing, paid, config, false, 3)).toEqual([
+    expect(driftBetween(trialing, paid, config, 'none', 3)).toEqual([
       'product',
       'interval',
       'periodEnd',
@@ -829,16 +904,16 @@ describe('the nightly reconciler', () => {
       trialEndsAt: attempted,
       currentPeriodEnd: new Date(attempted.getTime() + 365 * DAY),
     };
-    expect(driftBetween(upgraded, paid, config, false, 3)).toEqual([]);
+    expect(driftBetween(upgraded, paid, config, 'none', 3)).toEqual([]);
   });
 
   it('compares Dodo’s quantity with the membership, not only with our row', async () => {
     const row = (await findSubscription(t.db, await seedOrg({}, 3)))!;
     // Our row and Dodo agree on three, but five people hold a seat: a push
     // that never landed, and whose debt is gone.
-    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, false, 5)).toEqual(['seats']);
+    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, 'none', 5)).toEqual(['seats']);
     // Below Team's minimum, three is still what is owed.
-    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, false, 2)).toEqual([]);
+    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, 'none', 2)).toEqual([]);
   });
 
   it('flags a membership Dodo no longer bills for, end to end — and corrects nothing', async () => {
@@ -864,6 +939,72 @@ describe('the nightly reconciler', () => {
       [orgId],
     );
     expect(audit.rows[0]?.metadata).toMatchObject({ driftFields: ['seats'] });
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+  });
+
+  it('counts an increase waiting for a scheduled change as drift past a short grace — never a decrease, nor a debt being retried', async () => {
+    const row = (await findSubscription(t.db, await seedOrg({}, 3)))!;
+    // Three billed, five seated, and the push waiting for the change.
+    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, 'waiting', 5)).toEqual([
+      'seats',
+    ]);
+    // A decrease waiting: the customer pays for the seat until the change
+    // lands, then is credited — expected.
+    const six = { ...row, seats: 6 };
+    expect(driftBetween(six, snapshotFor({ quantity: 6 }), config, 'waiting', 3)).toEqual([]);
+    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, 'pending', 5)).toEqual([]);
+
+    const waiting = {
+      orgId: row.orgId,
+      queuedAt: new Date(NOW.getTime() - DEFERRED_INCREASE_GRACE_MS - 60_000),
+      attempts: 0,
+      lastAttemptAt: null,
+      lastError: 'scheduled_change',
+      generation: 1,
+      claimedUntil: null,
+      notBefore: new Date(NOW.getTime() + 300 * DAY),
+      deadLetteredAt: null,
+      rescheduleProductId: null,
+      rescheduleAt: null,
+      rescheduleFromProductId: null,
+      rescheduleFromSeats: null,
+      rescheduleToSeats: null,
+      rescheduleConfirmedAt: null,
+    };
+    expect(seatDebtState(waiting, NOW)).toBe('waiting');
+    // Inside the grace, retried after a failure, or due again: being pushed.
+    expect(seatDebtState({ ...waiting, queuedAt: new Date(NOW.getTime() - 60_000) }, NOW)).toBe(
+      'pending',
+    );
+    expect(seatDebtState({ ...waiting, lastError: 'upstream_5xx' }, NOW)).toBe('pending');
+    expect(seatDebtState({ ...waiting, notBefore: null }, NOW)).toBe('pending');
+    // Given up on, or none: nothing explains a difference.
+    expect(seatDebtState({ ...waiting, deadLetteredAt: NOW }, NOW)).toBe('none');
+    expect(seatDebtState(undefined, NOW)).toBe('none');
+  });
+
+  it('raises the seats a scheduled change keeps unbilled, end to end — and corrects nothing', async () => {
+    const scheduledFor = new Date(NOW.getTime() + 300 * DAY);
+    const orgId = await seedOrg({ seats: 3, dodo_scheduled_change_at: scheduledFor }, 5);
+    await t.pg.query(
+      `insert into billing_seat_syncs (org_id, queued_at, last_error, not_before)
+       values ($1, $2, 'scheduled_change', $3)`,
+      [orgId, new Date(Date.now() - 3 * 3_600_000), new Date(scheduledFor.getTime() + 3_600_000)],
+    );
+    dodo.getSubscription.mockImplementation(async () => snapshotFor({ quantity: 3 }));
+
+    await reconcileSubscriptions(services());
+
+    const audit = await t.pg.query<{ metadata: Record<string, unknown> }>(
+      `select metadata from audit_logs where org_id = $1 and action = 'billing.drift_detected'`,
+      [orgId],
+    );
+    expect(audit.rows[0]?.metadata).toMatchObject({ driftFields: ['seats'] });
+    const raised = lines.find(
+      (line) =>
+        line.level === 'error' && /not billed yet/.test(line.message) && line['orgId'] === orgId,
+    );
+    expect(raised).toMatchObject({ billedSeats: 3, owedSeats: 5 });
     expect(dodo.changePlan).not.toHaveBeenCalled();
   });
 

@@ -51,7 +51,7 @@ export const POST = authenticatedRoute<Params>(
     authorizeBilling(scope, { audit: orgAudit, record }, ['billing.checkout_started']);
 
     const selection = await parseJsonBody(request, billingCheckoutSchema);
-    const { url, seats, replayed, promoCodeId } = await startCheckout(
+    const { url, seats, withoutTrial, replayed, promoCodeId } = await startCheckout(
       services,
       scope,
       user,
@@ -60,15 +60,22 @@ export const POST = authenticatedRoute<Params>(
     );
     if (replayed) return json({ url });
 
+    // What sets this checkout apart from a plain one, if anything. A free
+    // trial is had once, per organisation and per account. That a code was
+    // used — never the code itself (every admin of the organisation reads
+    // this row, and a reusable code is as good as the discount), nor what it
+    // takes off (the amount is Dodo's to state).
+    const reasons = [
+      ...(withoutTrial ? ['no free trial: one was already had'] : []),
+      ...(promoCodeId !== null ? ['with a promo code'] : []),
+    ];
+
     record(
       orgAudit.success('billing.checkout_started', subscriptionResource(scope.organization.id), {
         plan: selection.plan,
         billingInterval: selection.interval,
         seatCount: seats,
-        // That a code was used — never the code itself (every admin of the
-        // organisation reads this row, and a reusable code is as good as the
-        // discount), nor what it takes off (the amount is Dodo's to state).
-        ...(promoCodeId !== null ? { reason: 'with a promo code' } : {}),
+        ...(reasons.length > 0 ? { reason: reasons.join('; ') } : {}),
       }),
     );
     return json({ url });

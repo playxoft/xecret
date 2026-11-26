@@ -196,12 +196,24 @@ function BillingDetails({
     <div className="flex flex-col gap-6">
       {failing ? (
         <Alert tone="danger" title="Your builds are unaffected.">
-          <p>
-            Your card was declined. Every secret, every <code>xecret run</code> and every CI job
-            keeps working; update the card from the customer portal to keep the plan. A subscription
-            still unpaid after 14 days on hold ends, and the organisation moves to Free — nothing is
-            deleted.
-          </p>
+          {billing.hold?.afterTrial ? (
+            // A trial that ended with nothing paid holds for two days, not
+            // fourteen (`TRIAL_HOLD_LIMIT_MS` in `server/billing/jobs.ts`).
+            <p>
+              The trial has ended and its first payment did not go through — there is no card on
+              file, or the card was declined. Every secret, every <code>xecret run</code> and every
+              CI job keeps working; add a card from the customer portal to keep the plan. Unless it
+              is paid by {formatAbsoluteTime(billing.hold.endsAt)}, the organisation moves to Free —
+              nothing is deleted.
+            </p>
+          ) : (
+            <p>
+              Your card was declined. Every secret, every <code>xecret run</code> and every CI job
+              keeps working; update the card from the customer portal to keep the plan. A
+              subscription still unpaid after 14 days on hold ends, and the organisation moves to
+              Free — nothing is deleted.
+            </p>
+          )}
           {billing.actions.portal ? (
             <div className="mt-3">
               <PortalButton orgSlug={orgSlug} label="Update the card" />

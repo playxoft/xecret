@@ -547,6 +547,16 @@ export const billingCheckouts = pgTable(
      * (migration 0035). Written with the checkout and never after.
      */
     promoCodeId: uuid('promo_code_id').references(() => promoCodes.id, { onDelete: 'set null' }),
+    /**
+     * The Dodo mode of a checkout that may start a free trial — one for a plan
+     * whose product carries one (Team), that did not ask Dodo for none
+     * (migration 0036). Open and unspent, it counts as a trial had for the
+     * account that made it, in any other organisation: a trial is recorded
+     * only when its snapshot arrives, and a week of open checkouts would
+     * otherwise be a trial each. Never for its own organisation, which only
+     * one subscription can attach to. `null`: it cannot start one.
+     */
+    trialMode: text('trial_mode').$type<'test_mode' | 'live_mode'>(),
   },
   (t) => [
     check('billing_checkouts_quantity_check', sql`${t.quantity} >= 1`),
@@ -560,7 +570,14 @@ export const billingCheckouts = pgTable(
       'billing_checkouts_subscription_id_check',
       sql`${t.subscriptionId} is null or length(${t.subscriptionId}) between 1 and 255`,
     ),
+    check(
+      'billing_checkouts_trial_mode_check',
+      sql`${t.trialMode} is null or ${t.trialMode} in ('test_mode', 'live_mode')`,
+    ),
     index('billing_checkouts_org_idx').on(t.orgId, t.createdAt),
+    index('billing_checkouts_created_by_idx')
+      .on(t.createdBy)
+      .where(sql`${t.trialMode} is not null and ${t.subscriptionId} is null`),
     uniqueIndex('billing_checkouts_nonce_unique')
       .on(t.nonce)
       .where(sql`${t.nonce} is not null`),
@@ -581,6 +598,18 @@ export const billingCheckouts = pgTable(
  * membership change and a push clears the debt only under the generation it
  * counted, `claimed_until` is the one push in flight, `not_before` is when the
  * debt is next due, and `dead_lettered_at` is a debt given up on and raised.
+ *
+ * Migration 0036 adds the plan change a seat push replaced: a seat increase is
+ * pushed at once over a change Dodo has scheduled (`cancel_scheduled_change_plan`
+ * cancels that change in the same Dodo transaction), and the change is owed
+ * back to Dodo at the new seat count. `reschedule_product_id` is written before
+ * the push and cleared once the change is scheduled again, so an isolate lost
+ * between the two calls leaves it for the hourly job — never a downgrade the
+ * owner asked for silently dropped. A debt that still owes one is not paid.
+ * Beside it, what the push was made against — the product, the seats before
+ * and after — and whether it is known to have applied, so the change is made
+ * again only onto the subscription it was owed for, and never after a push
+ * that did not apply (`reschedule_confirmed_at` null until Dodo says).
  */
 export const billingSeatSyncs = pgTable(
   'billing_seat_syncs',
@@ -597,6 +626,17 @@ export const billingSeatSyncs = pgTable(
     claimedUntil: timestamp('claimed_until', { withTimezone: true }),
     notBefore: timestamp('not_before', { withTimezone: true }),
     deadLetteredAt: timestamp('dead_lettered_at', { withTimezone: true }),
+    /** The product of the scheduled change a seat push replaced, owed back to Dodo (0036). */
+    rescheduleProductId: text('reschedule_product_id'),
+    /** When that replaced change was due to take effect (0036). */
+    rescheduleAt: timestamp('reschedule_at', { withTimezone: true }),
+    /** The product the subscription was on when the change was owed — what it is made again onto (0036). */
+    rescheduleFromProductId: text('reschedule_from_product_id'),
+    /** The seats Dodo billed before the replacing push, and the seats it pushed (0036). */
+    rescheduleFromSeats: integer('reschedule_from_seats'),
+    rescheduleToSeats: integer('reschedule_to_seats'),
+    /** When the replacing push was known to have applied; null while Dodo's answer is unknown (0036). */
+    rescheduleConfirmedAt: timestamp('reschedule_confirmed_at', { withTimezone: true }),
   },
   (t) => [
     check('billing_seat_syncs_attempts_check', sql`${t.attempts} >= 0`),
@@ -605,6 +645,54 @@ export const billingSeatSyncs = pgTable(
       sql`${t.lastError} is null or length(${t.lastError}) <= 64`,
     ),
     check('billing_seat_syncs_generation_check', sql`${t.generation} >= 1`),
+    check(
+      'billing_seat_syncs_reschedule_product_check',
+      sql`(${t.rescheduleProductId} is null or length(${t.rescheduleProductId}) between 1 and 255)
+        and (${t.rescheduleFromProductId} is null
+          or length(${t.rescheduleFromProductId}) between 1 and 255)`,
+    ),
+  ],
+);
+
+/**
+ * Every Dodo subscription that started on a free trial (migration 0036): the
+ * organisation, the account whose checkout started it, and the Dodo mode.
+ *
+ * Team's trial is configured on the Dodo product, and every checkout by email
+ * creates a new Dodo customer — so Dodo's own per-customer trial-misuse check
+ * never sees a second organisation, or the same one checking out again after
+ * its trial lapsed to Free. A checkout for an organisation recorded here, or by
+ * an account recorded here (or one with the same address), asks Dodo for no
+ * trial (`subscription_data.trial_period_days: 0`). Only rows of the
+ * deployment's own Dodo mode count.
+ *
+ * Inserted and read, never edited: a record of what happened. Both references
+ * are `SET NULL` rather than cascade, so the purge of a deleted organisation
+ * thirty days on never hands the account that trialed it a fresh trial.
+ */
+export const billingTrials = pgTable(
+  'billing_trials',
+  {
+    subscriptionId: text('subscription_id').primaryKey(),
+    orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    dodoMode: text('dodo_mode').notNull().$type<'test_mode' | 'live_mode'>(),
+    /** When the trial was booked to end, as the snapshot that recorded it read it. */
+    trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'billing_trials_subscription_id_check',
+      sql`length(${t.subscriptionId}) between 1 and 255`,
+    ),
+    check('billing_trials_dodo_mode_check', sql`${t.dodoMode} in ('test_mode', 'live_mode')`),
+    index('billing_trials_org_idx')
+      .on(t.orgId)
+      .where(sql`${t.orgId} is not null`),
+    index('billing_trials_user_idx')
+      .on(t.userId)
+      .where(sql`${t.userId} is not null`),
   ],
 );
 

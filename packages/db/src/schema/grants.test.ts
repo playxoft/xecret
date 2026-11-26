@@ -44,6 +44,9 @@ const APPEND_ONLY = new Set([
   'promo_codes',
   // Migration 0035: who added or removed an admin, and when — only ever added to.
   'platform_admin_changes',
+  // Migration 0036: a subscription that started on a free trial is a record —
+  // editing or deleting one would hand its organisation or account another.
+  'billing_trials',
 ]);
 
 /**

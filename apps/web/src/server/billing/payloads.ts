@@ -66,10 +66,20 @@ export const dodoSubscriptionSchema = z.object({
   /**
    * A plan change waiting for its date — a downgrade scheduled for the period
    * end (`effective_at: next_billing_date`). Null when none is. Dodo refuses
-   * any other change-plan while one is, so a seat push waits for it.
+   * any other change-plan while one is, unless the request replaces it
+   * (`cancel_scheduled_change_plan`) — which is how a seat increase is billed
+   * at once, the change being made again afterwards to the same `product_id`
+   * (`seats.ts`). Dodo documents `product_id` and `quantity` on it; both are
+   * read as optional, and a change without its product is waited for instead.
    * https://docs.dodopayments.com/api-reference/subscriptions/get-subscriptions
    */
-  scheduled_change: optionalNullable(z.object({ effective_at: isoDate })),
+  scheduled_change: optionalNullable(
+    z.object({
+      effective_at: isoDate,
+      product_id: optionalNullable(id),
+      quantity: optionalNullable(z.number().check(z.int(), z.gte(0), z.lte(1_000_000))),
+    }),
+  ),
 });
 export type DodoSubscription = z.infer<typeof dodoSubscriptionSchema>;
 

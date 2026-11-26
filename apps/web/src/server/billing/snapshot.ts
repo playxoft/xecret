@@ -299,6 +299,46 @@ export function readTrial(
   return { endsAt, running: false, endedEarly };
 }
 
+/**
+ * How long before a trial's end a hold may begin and still be the trial's
+ * own: Dodo charges a conversion at the booked end (staging, 2026-11-05: the
+ * next charge was the creation plus fourteen days and 71 seconds), and the
+ * hold follows that attempt. A hold that began earlier in the trial — a
+ * declined seat charge, say — is not a trial ending.
+ */
+export const TRIAL_END_HOLD_MARGIN_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a subscription's trial ended with **nothing ever paid** by `at` —
+ * a trial with no card, or whose first charge was declined. Read from the row
+ * as `decideSnapshot` wrote it by {@link readTrial}: while Dodo's current cycle
+ * is still the trial, its next charge (`current_period_end`) is the trial's end
+ * within {@link TRIAL_OVER_MARGIN_MS}, because only a payment moves it a period
+ * on; and `at` (when the hold began, or now) is at or after that end.
+ *
+ * What it changes (`jobs.ts`): such a hold ends to Free after two days rather
+ * than fourteen — a customer who never paid is not a paying customer whose
+ * card lapsed, and fourteen days of a plan on hold was a second free trial.
+ * The emails say which.
+ *
+ * Dodo behaviour it rests on, to confirm on staging (docs/operations/billing.md
+ * §3, "A trial that ends with no card"): a trial whose first charge fails is
+ * put `on_hold` with `next_billing_date` left at the trial's end. Were Dodo to
+ * move the next charge on at the hold, the row would read as a paid period
+ * and the hold would keep the ordinary fourteen days — the cautious direction.
+ */
+export function trialEndedUnpaid(
+  row: { trialEndsAt: Date | null; currentPeriodEnd: Date | null },
+  at: Date,
+): boolean {
+  if (row.trialEndsAt === null || row.currentPeriodEnd === null) return false;
+  const end = row.trialEndsAt.getTime();
+  return (
+    row.currentPeriodEnd.getTime() <= end + TRIAL_OVER_MARGIN_MS &&
+    at.getTime() >= end - TRIAL_END_HOLD_MARGIN_MS
+  );
+}
+
 function addMonths(date: Date, months: number): Date {
   const next = new Date(date.getTime());
   next.setUTCMonth(next.getUTCMonth() + months);
