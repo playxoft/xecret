@@ -403,6 +403,42 @@ export interface ProjectFormProps {
   onSaved: () => void;
 }
 
+/** A project `PATCH` body: any subset of the two fields a person can edit. */
+export interface ProjectPatch {
+  name?: string;
+  description?: string | null;
+}
+
+/**
+ * What the rename dialog sends: the fields that differ from the project as the
+ * dialog read it, and nothing else.
+ *
+ * Compared the way they are sent — the name trimmed, the description trimmed
+ * with an empty box meaning none — so a trailing space, or a description
+ * cleared on a project that never had one, is not a change.
+ *
+ * ── Why not both fields, always ──
+ * Sending the description the dialog was opened with reverted any description
+ * saved in the meantime through "Edit description": a rename quietly undid a
+ * colleague's sentence. And an unchanged submit still wrote the row, moving
+ * `updated_at` and leaving a `project.updated` audit record for an edit nobody
+ * made. An empty patch is what disables Save.
+ */
+export function projectPatch(
+  project: Pick<Project, 'name' | 'description'>,
+  name: string,
+  description: string,
+): ProjectPatch {
+  const patch: ProjectPatch = {};
+  const nextName = name.trim();
+  if (nextName !== project.name) patch.name = nextName;
+  const nextDescription = descriptionToSend(description);
+  if (nextDescription !== descriptionToSend(project.description ?? '')) {
+    patch.description = nextDescription;
+  }
+  return patch;
+}
+
 /**
  * The name and the description, together.
  *
@@ -417,12 +453,14 @@ export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: P
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
+  const patch = projectPatch(project, name, description);
+  const unchanged = Object.keys(patch).length === 0;
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || unchanged) return;
 
-    const trimmed = name.trim();
-    if (trimmed.length === 0) {
+    if (name.trim().length === 0) {
       setFieldErrors({ name: 'Enter a project name.' });
       return;
     }
@@ -432,10 +470,7 @@ export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: P
     setError(null);
 
     try {
-      await api.patch(apiPath.project(orgSlug, project.slug), {
-        name: trimmed,
-        description: descriptionToSend(description),
-      });
+      await api.patch(apiPath.project(orgSlug, project.slug), patch);
       toast({ variant: 'success', title: 'Project updated' });
       onOpenChange(false);
       onSaved();
@@ -493,7 +528,7 @@ export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: P
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" loading={submitting}>
+        <Button type="submit" variant="primary" loading={submitting} disabled={unchanged}>
           Save changes
         </Button>
       </DialogFooter>

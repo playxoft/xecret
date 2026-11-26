@@ -108,6 +108,22 @@ describe('the project’s Manage menu edits the description in place', () => {
     expect(attribute(dialog, 'onSaved')).toBe('onChanged');
   });
 
+  // `projectPatch` has tests of its own. What they cannot see is the rename
+  // form using it: sending it, rather than both fields as the dialog opened —
+  // which reverted a description saved meanwhile — and disabling Save on it.
+  it('the rename form sends only what changed, and Save waits for a change', () => {
+    const text = source('../../../components/projects/project-actions.tsx');
+    const form = text.slice(
+      text.indexOf('export function RenameProjectForm'),
+      text.indexOf('function EditDescriptionDialog'),
+    );
+    expect(form).toMatch(/const patch = projectPatch\(project, name, description\);/);
+    expect(form).toMatch(/const unchanged = Object\.keys\(patch\)\.length === 0;/);
+    expect(form).toMatch(/if \(submitting \|\| unchanged\) return;/);
+    expect(form).toMatch(/api\.patch\(apiPath\.project\(orgSlug, project\.slug\), patch\)/);
+    expect(form).toMatch(/<Button type="submit"[^>]*disabled=\{unchanged\}>\s*Save changes/);
+  });
+
   // The heading is where the description is read; the project screen hands it
   // whatever the project says, so a saved description shows on reload.
   it('shown under the project’s heading', () => {

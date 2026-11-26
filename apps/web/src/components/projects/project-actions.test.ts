@@ -25,6 +25,7 @@ const {
   NAME_MAX_LENGTH,
   ProjectActions,
   projectMenuItems,
+  projectPatch,
   RenameProjectForm,
 } = await import('./project-actions');
 const server = await import('@/server/schemas/resources');
@@ -301,6 +302,65 @@ describe('the Rename project dialog', () => {
     const html = renderForm(RenameProjectForm, null);
     expect(html).toMatch(/<textarea[^>]*><\/textarea>/);
     expect(html).toContain(`0 of ${DESCRIPTION_MAX_LENGTH} characters.`);
+  });
+
+  // It opens on the project as it is, which is no change at all: a submit
+  // from here would write the row and an audit record for an edit nobody made.
+  it('opens with Save disabled', () => {
+    for (const description of [PROJECT.description, null]) {
+      expect(renderForm(RenameProjectForm, description)).toMatch(
+        /<button[^>]*type="submit"[^>]*disabled=""[^>]*>[\s\S]*?Save changes/,
+      );
+    }
+  });
+});
+
+/**
+ * What the rename dialog sends, from what is in its two boxes. Save is
+ * disabled exactly when this is empty (wired in `screen-wiring.test.ts`), so
+ * these are also its enabled and disabled states as somebody types — which
+ * static markup, rendering only the first, cannot show.
+ */
+describe('what the rename dialog sends', () => {
+  const opened = { name: PROJECT.name, description: PROJECT.description };
+
+  it('nothing, as opened — so Save starts disabled', () => {
+    expect(projectPatch(opened, 'API', 'Everything that talks to Stripe.')).toEqual({});
+    expect(projectPatch({ name: 'API', description: null }, 'API', '')).toEqual({});
+  });
+
+  it('the name alone when only the name changed', () => {
+    // Above all, not the description it was opened with: that would revert one
+    // saved meanwhile through "Edit description".
+    expect(projectPatch(opened, 'Billing API', 'Everything that talks to Stripe.')).toEqual({
+      name: 'Billing API',
+    });
+  });
+
+  it('the description alone when only the description changed', () => {
+    expect(projectPatch(opened, 'API', 'Payments, end to end.')).toEqual({
+      description: 'Payments, end to end.',
+    });
+    // Emptied: cleared, as null.
+    expect(projectPatch(opened, 'API', '')).toEqual({ description: null });
+    expect(projectPatch({ name: 'API', description: null }, 'API', 'New.')).toEqual({
+      description: 'New.',
+    });
+  });
+
+  it('both, when both changed', () => {
+    expect(projectPatch(opened, ' Billing ', ' Payments. ')).toEqual({
+      name: 'Billing',
+      description: 'Payments.',
+    });
+  });
+
+  it('nothing again once an edit is undone — so Save is disabled again', () => {
+    expect(projectPatch(opened, 'Billing API', 'Everything that talks to Stripe.')).not.toEqual({});
+    // Typed back, give or take the whitespace the server would trim anyway.
+    expect(projectPatch(opened, '  API ', ' Everything that talks to Stripe.\n')).toEqual({});
+    // A cleared box on a project with no description is no description still.
+    expect(projectPatch({ name: 'API', description: null }, 'API', '   ')).toEqual({});
   });
 });
 
