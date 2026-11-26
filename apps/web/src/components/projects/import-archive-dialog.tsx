@@ -114,6 +114,8 @@ export interface ImportArchiveDialogProps {
   orgSlug: string;
   orgId: string;
   projectId: string;
+  /** The project's slug, which a mode pin from before ids may be filed under. */
+  projectSlug: string;
   environments: readonly ProjectEnvironment[];
   /** Called after a real (not previewed) import wrote anything. */
   onImported: () => void;
@@ -246,6 +248,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
           orgSlug: props.orgSlug,
           orgId: props.orgId,
           projectId: props.projectId,
+          projectSlug: props.projectSlug,
           envSlug: environment.slug,
         }),
       });
@@ -281,6 +284,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
           orgSlug: props.orgSlug,
           orgId: props.orgId,
           projectId: props.projectId,
+          projectSlug: props.projectSlug,
           envSlug: target,
         });
         if (io.status !== 'ready') {

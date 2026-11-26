@@ -37,6 +37,7 @@ import {
 import { envKeyCount, holdEnvKey, readEnvKey, releaseEnvKeys } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
 import {
+  admitEncryptionMode,
   carryModePinsForward,
   checkPin,
   fingerprint,
@@ -688,7 +689,6 @@ describe('trust-on-first-use pinning', () => {
    * would be believed.
    */
   describe('carrying slug-filed mode pins to the id', () => {
-    const project = { id: PROJECT_ID, slug: 'api' };
     const legacy = (env: string) => `mode:acme/api/${env}`;
     const current = (env: string) =>
       modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: env });
@@ -698,7 +698,7 @@ describe('trust-on-first-use pinning', () => {
       recordModePin(legacy('production'), 'e2ee', storage);
       recordModePin(legacy('staging'), 'server', storage);
 
-      carryModePinsForward('acme', project, storage);
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
 
       const pins = readModePins(storage);
       expect(pins[current('production')]?.mode).toBe('e2ee');
@@ -717,7 +717,7 @@ describe('trust-on-first-use pinning', () => {
       recordModePin(current('staging'), 'server', storage);
       recordModePin(legacy('staging'), 'e2ee', storage);
 
-      carryModePinsForward('acme', project, storage);
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
 
       const pins = readModePins(storage);
       expect(pins[current('production')]?.mode).toBe('e2ee');
@@ -729,7 +729,7 @@ describe('trust-on-first-use pinning', () => {
       recordModePin('mode:acme/api-v2/production', 'e2ee', storage);
       recordModePin('mode:zebra/api/production', 'e2ee', storage);
 
-      carryModePinsForward('acme', project, storage);
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
 
       // `api-v2` shares the prefix `api` without the separator; `zebra` is
       // another tenant's book entirely.
@@ -741,10 +741,94 @@ describe('trust-on-first-use pinning', () => {
       recordModePin(current('production'), 'e2ee', storage);
       const before = storage.getItem('xecret.pins.mode.v1');
 
-      carryModePinsForward('acme', project, storage);
-      carryModePinsForward('acme', project, storage);
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
 
       expect(storage.getItem('xecret.pins.mode.v1')).toBe(before);
+    });
+
+    it('matches the slug in any case, as the citext column that resolved it did', () => {
+      // `/app/acme/API/production`, typed by hand, reached the same project and
+      // filed its pin under the spelling in the URL.
+      const storage = memoryStorage();
+      recordModePin('mode:acme/API/production', 'e2ee', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+
+      expect(modeIsAllowed(readModePins(storage), current('production'), 'server').allowed).toBe(
+        false,
+      );
+    });
+
+    it('takes the strictest of every slug it is given', () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/API/production', 'server', storage);
+      recordModePin(legacy('production'), 'e2ee', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['API', 'api', 'some-other-slug'], storage);
+
+      expect(readModePins(storage)[current('production')]?.mode).toBe('e2ee');
+    });
+  });
+
+  /**
+   * Every reader of the book goes through `admitEncryptionMode`, which carries
+   * a project's slug-filed pins to its id *before* it judges a `server` answer —
+   * so nothing depends on the shell's trail having landed first, which a
+   * server that wanted the downgrade could simply hold back.
+   */
+  describe('admitting an encryption mode', () => {
+    const target = { orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' };
+    const key = modePinKey(target);
+
+    it('refuses a server answer for an environment pinned under its old slug, with no trail at all', async () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/api/production', 'e2ee', storage);
+
+      // The slug arrives late — the trail held back, the project read slow —
+      // and the decision waits for it rather than racing it.
+      const slugs = vi.fn(
+        () => new Promise<readonly string[]>((resolve) => setTimeout(() => resolve(['api']), 5)),
+      );
+      expect(await admitEncryptionMode(target, 'server', slugs, storage)).toBe(false);
+      expect(slugs).toHaveBeenCalledOnce();
+
+      // Nothing was recorded under the id that would let a later answer through.
+      expect(readModePins(storage)[key]?.mode).toBe('e2ee');
+      expect(await admitEncryptionMode(target, 'server', async () => [], storage)).toBe(false);
+    });
+
+    it('admits and pins a server answer when no slug-filed pin says otherwise', async () => {
+      const storage = memoryStorage();
+
+      expect(await admitEncryptionMode(target, 'server', async () => ['api'], storage)).toBe(true);
+      expect(readModePins(storage)[key]?.mode).toBe('server');
+    });
+
+    it('asks for the slug only when it could matter', async () => {
+      const storage = memoryStorage();
+      const slugs = vi.fn(async () => ['api']);
+
+      // An `e2ee` answer is pinned as it stands — already the strictest entry.
+      expect(await admitEncryptionMode(target, 'e2ee', slugs, storage)).toBe(true);
+      // And an address with a pin of its own has its answer already.
+      expect(await admitEncryptionMode(target, 'server', slugs, storage)).toBe(false);
+      expect(slugs).not.toHaveBeenCalled();
+    });
+
+    it('fails, rather than believes server, when the slug cannot be learnt', async () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/api/production', 'e2ee', storage);
+
+      await expect(
+        admitEncryptionMode(
+          target,
+          'server',
+          () => Promise.reject(new Error('project held back')),
+          storage,
+        ),
+      ).rejects.toThrow('project held back');
+      expect(readModePins(storage)[key]).toBeUndefined();
     });
   });
 

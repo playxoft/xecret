@@ -44,15 +44,9 @@ export function LegacyProjectAddress({
 
   useEffect(() => {
     if (found === null) return;
-    const next = legacyProjectRedirect(window.location, found);
-    if (next === null) return;
-
-    // The trust-on-first-use mode pins this browser filed under the slug, moved
-    // to the address it will read them under from now on — before the page
-    // that reads them mounts.
-    carryModePinsForward(orgSlug, found);
-    router.replace(next);
-  }, [found, orgSlug, router]);
+    const next = leaveLegacyAddress({ location: window.location, orgSlug, projectSlug, found });
+    if (next !== null) router.replace(next);
+  }, [found, orgSlug, projectSlug, router]);
 
   if (project.error !== null) {
     return <ErrorState subject="this project" error={project.error} onRetry={project.reload} />;
@@ -86,4 +80,39 @@ export function legacyProjectRedirect(
 ): string | null {
   if (!isUuid(project.id)) return null;
   return canonicalProjectAddress(location, project.id);
+}
+
+/**
+ * What leaving an old address does, once its project has been read: carries
+ * the mode pins this browser filed under the slug to the id the page will read
+ * them under, and answers where to go — or `null`, having carried nothing.
+ *
+ * ── Which slug the pins are carried from ──
+ * The one in *this* URL, first. That is the spelling the pins were filed
+ * under; the server's answer is not, and a server that answered a different
+ * slug would otherwise turn the copy into a no-op and the id page into first
+ * contact — a downgrade let through by the very redirect meant to preserve the
+ * pin. The server's own slug follows: a second source can only add strictness,
+ * and it covers a slug typed here in another case. The id is the one the
+ * address is replaced with, which is the one the page will read under.
+ */
+export function leaveLegacyAddress(params: {
+  location: { pathname: string; search: string; hash: string };
+  orgSlug: string;
+  /** The slug as this browser's URL holds it. */
+  projectSlug: string;
+  /** What the server answered for it. */
+  found: { id: string; slug: string };
+  storage?: Storage | null;
+}): string | null {
+  const next = legacyProjectRedirect(params.location, params.found);
+  if (next === null) return null;
+
+  carryModePinsForward(
+    params.orgSlug,
+    params.found.id,
+    [params.projectSlug, params.found.slug],
+    params.storage,
+  );
+  return next;
 }

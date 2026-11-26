@@ -10,14 +10,10 @@ import {
 import { api } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
-  carryModePinsForward,
+  admitEncryptionMode,
   fetchEnvironmentKeys,
   submitGrants,
-  modeIsAllowed,
-  modePinKey,
   openEnvironmentKeys,
-  readModePins,
-  recordModePin,
   sealGrantFor,
 } from '@/components/envkeys';
 import type { VaultKeyMaterial } from '@/components/vault';
@@ -151,17 +147,18 @@ export async function mintServiceToken(
   // environment through the server, which is what a server that wanted the
   // values would ask for. The tokens page may be the first this browser has
   // opened since project addresses moved to ids, so a pin it filed under the
-  // project's slug is carried across first — this holds both.
-  carryModePinsForward(params.orgSlug, { id: params.projectId, slug: params.projectSlug });
-  const pinKey = modePinKey(target);
-  if (!modeIsAllowed(readModePins(), pinKey, keys.encryptionMode).allowed) {
+  // project's slug is carried across before the answer is judged — the dialog
+  // holds the slug it was chosen by.
+  const admitted = await admitEncryptionMode(target, keys.encryptionMode, async () => [
+    params.projectSlug,
+  ]);
+  if (!admitted) {
     throw new TokenKeyUnavailableError(
       'This environment is reporting server-side encryption, but your browser has read it as ' +
         'end-to-end encrypted before. No token will be minted until that is explained — a token ' +
         'issued now would read this environment through the server.',
     );
   }
-  recordModePin(pinKey, keys.encryptionMode);
 
   if (keys.encryptionMode !== 'e2ee') {
     const issued = await api.post<CreateServiceTokenResponse>(path, body);

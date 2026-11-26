@@ -100,16 +100,19 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     void reloadTrail();
   }, [reloadTrail]);
 
-  // The one read every project page shares, and so the place the mode pins this
+  // The one read every project page shares, and so a place the mode pins this
   // browser filed under a project's slug — before project addresses named the
-  // id — are carried across to the id they are read under now. Idempotent, and
-  // it can only make the book stricter; see `carryModePinsForward`.
+  // id — are carried across. Not the only one, and not the one a decision waits
+  // on: whoever reads a pin carries first (`admitEncryptionMode`), because
+  // nothing makes this trail land before the key state does.
   const trailProject = trail.data?.project ?? null;
   const trailOrgSlug = location.orgSlug;
+  const trailSegment = location.projectId;
   useEffect(() => {
-    if (trailProject === null || trailOrgSlug === null) return;
-    carryModePinsForward(trailOrgSlug, trailProject);
-  }, [trailProject, trailOrgSlug]);
+    if (trailProject === null || trailOrgSlug === null || trailSegment === null) return;
+    const carry = trailCarry(trailSegment, trailProject);
+    carryModePinsForward(trailOrgSlug, carry.projectId, carry.slugs);
+  }, [trailProject, trailOrgSlug, trailSegment]);
 
   // ── Catching up with a lock ──
   //
@@ -345,6 +348,30 @@ export function trailPath(
   if (vault?.configured !== true || !vault.unlocked) return null;
   if (location.orgSlug === null || location.projectId === null) return null;
   return apiPath.project(location.orgSlug, location.projectId);
+}
+
+/**
+ * Where the trail's read carries this browser's slug-filed mode pins: from
+ * which slugs, to which id.
+ *
+ * To the id **the URL holds**, which is the one every page here reads its pins
+ * under — never the id the trail's response names, which the server chose and
+ * no page reads. On an old address the URL holds the slug instead, which is the
+ * spelling the pins were filed under, so that leads; they go to the id the
+ * address is about to be replaced with.
+ *
+ * On an id address the browser holds no slug of its own, and the server's is
+ * all there is. A server that lies about it makes the copy miss, which leaves
+ * that address at first contact — the exposure any first visit has. See
+ * `carryModePinsForward`.
+ */
+export function trailCarry(
+  segment: string,
+  project: { id: string; slug: string },
+): { projectId: string; slugs: readonly string[] } {
+  return isUuid(segment)
+    ? { projectId: segment, slugs: [project.slug] }
+    : { projectId: project.id, slugs: [segment, project.slug] };
 }
 
 /** The display names the trail can show, each `null` until it is known. */

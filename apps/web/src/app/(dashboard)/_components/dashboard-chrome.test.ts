@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseDashboardPath } from '../_lib/paths';
-import { buildBreadcrumbs, trailPath } from './dashboard-chrome';
+import { buildBreadcrumbs, trailCarry, trailPath } from './dashboard-chrome';
 
 /**
  * The breadcrumb trail: every crumb labelled with what the thing is called, and
@@ -87,5 +87,24 @@ describe('what the trail reads its names from', () => {
     expect(trailPath(parseDashboardPath('/app/acme'), unlocked)).toBeNull();
     expect(trailPath(parseDashboardPath('/app/acme/members'), unlocked)).toBeNull();
     expect(trailPath(parseDashboardPath('/app/settings/account'), unlocked)).toBeNull();
+  });
+});
+
+/**
+ * Where the trail's read carries the mode pins this browser filed under a
+ * project's slug: to the id the pages read under — the URL's — and from the
+ * slug this browser itself held wherever it has one.
+ */
+describe('where the trail carries slug-filed mode pins', () => {
+  it('copies to the id in the URL, never to an id the response chose', () => {
+    const answered = { id: '0193f2a1-0000-7000-8000-000000000bad', slug: 'api' };
+    expect(trailCarry(PROJECT_ID, answered)).toEqual({ projectId: PROJECT_ID, slugs: ['api'] });
+  });
+
+  it('copies from the URL’s own slug first on an old address, to the id it is going to', () => {
+    expect(trailCarry('API', { id: PROJECT_ID, slug: 'api' })).toEqual({
+      projectId: PROJECT_ID,
+      slugs: ['API', 'api'],
+    });
   });
 });

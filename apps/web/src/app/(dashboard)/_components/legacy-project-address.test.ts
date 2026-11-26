@@ -41,7 +41,10 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/app/acme/payments-api/production',
 }));
 
-const { LegacyProjectAddress, legacyProjectRedirect } = await import('./legacy-project-address');
+const { LegacyProjectAddress, leaveLegacyAddress, legacyProjectRedirect } =
+  await import('./legacy-project-address');
+const { modeIsAllowed, modePinKey, readModePins, recordModePin } =
+  await import('@/components/envkeys/pins');
 const { ProjectScreen } = await import('./project-screen');
 const { EnvironmentScreen } = await import('./environment-screen');
 const { EnvironmentSettingsScreen } = await import('./environment-settings-screen');
@@ -122,6 +125,81 @@ describe('where an old address is sent', () => {
     for (const id of ['javascript:alert(1)', '../../evil', PROJECT_ID.toUpperCase(), '', 'api']) {
       expect(legacyProjectRedirect(at('/app/acme/payments-api'), { id }), id).toBeNull();
     }
+  });
+});
+
+/**
+ * Leaving an old address carries the mode pins this browser filed under the
+ * slug to the id — from the slug in the URL, which is the spelling the pins
+ * were filed under, and not merely from whatever slug the server answered.
+ */
+describe('the pins an old address leaves behind', () => {
+  function memoryStorage(): Storage {
+    const map = new Map<string, string>();
+    return {
+      get length() {
+        return map.size;
+      },
+      clear: () => map.clear(),
+      getItem: (key) => map.get(key) ?? null,
+      key: (index) => [...map.keys()][index] ?? null,
+      removeItem: (key) => map.delete(key),
+      setItem: (key, value) => void map.set(key, value),
+    } as Storage;
+  }
+
+  const at = { pathname: '/app/acme/api/production', search: '', hash: '' };
+  const idKey = modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' });
+
+  it('holds when the server answers a different slug than the one in the URL', () => {
+    const storage = memoryStorage();
+    recordModePin('mode:acme/api/production', 'e2ee', storage);
+
+    // A lying API: the right id, a slug that matches no pin. Carried from the
+    // server's slug alone, the copy would do nothing and the id page would be
+    // at first contact.
+    const next = leaveLegacyAddress({
+      location: at,
+      orgSlug: 'acme',
+      projectSlug: 'api',
+      found: { id: PROJECT_ID, slug: 'not-the-slug-you-pinned' },
+      storage,
+    });
+
+    expect(next).toBe(`/app/acme/${PROJECT_ID}/production`);
+    expect(modeIsAllowed(readModePins(storage), idKey, 'server').allowed).toBe(false);
+  });
+
+  it('holds for a slug typed in another case, through the server’s spelling', () => {
+    const storage = memoryStorage();
+    recordModePin('mode:acme/api/production', 'e2ee', storage);
+
+    leaveLegacyAddress({
+      location: { ...at, pathname: '/app/acme/API/production' },
+      orgSlug: 'acme',
+      projectSlug: 'API',
+      found: { id: PROJECT_ID, slug: 'api' },
+      storage,
+    });
+
+    expect(modeIsAllowed(readModePins(storage), idKey, 'server').allowed).toBe(false);
+  });
+
+  it('carries nothing when the answer is not an id, and goes nowhere', () => {
+    const storage = memoryStorage();
+    recordModePin('mode:acme/api/production', 'e2ee', storage);
+    const before = storage.getItem('xecret.pins.mode.v1');
+
+    expect(
+      leaveLegacyAddress({
+        location: at,
+        orgSlug: 'acme',
+        projectSlug: 'api',
+        found: { id: 'not-an-id', slug: 'api' },
+        storage,
+      }),
+    ).toBeNull();
+    expect(storage.getItem('xecret.pins.mode.v1')).toBe(before);
   });
 });
 
