@@ -308,7 +308,7 @@ describe('the reset result', () => {
     expect(html).toContain('2 archive files');
     expect(html).toContain('owner@example.com');
     expect(html).toContain('guess your passphrase offline');
-    expect(html).toContain('Settings → Security');
+    expect(html).toContain('Settings → Vault');
     expect(html).toContain('Set up my new vault');
   });
 

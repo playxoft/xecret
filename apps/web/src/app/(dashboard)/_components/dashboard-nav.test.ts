@@ -38,6 +38,7 @@ describe('the dashboard sidebar', () => {
       '/app/acme/payments-api',
       '/app/acme/payments-api/production',
       '/app/acme/payments-api/production/settings',
+      '/app/acme/payments-api/production/settings/encryption',
     ]) {
       expect(sidebarAt(pathname).active, pathname).toEqual(['Projects']);
     }
@@ -47,9 +48,16 @@ describe('the dashboard sidebar', () => {
     expect(sidebarAt('/app/acme/members').active).toEqual(['Members']);
     expect(sidebarAt('/app/acme/settings').active).toEqual(['Organisation settings']);
     expect(sidebarAt('/app/acme/settings/billing').active).toEqual(['Organisation settings']);
+    // …and on every other section of the organisation's settings.
+    for (const section of ['roles', 'single-sign-on', 'policies', 'webhooks', 'plans', 'danger']) {
+      expect(sidebarAt(`/app/acme/settings/${section}`).active, section).toEqual([
+        'Organisation settings',
+      ]);
+    }
   });
 
   it('lights nothing in the account area, which belongs to no organisation', () => {
     expect(sidebarAt('/app/settings/account').active).toEqual([]);
+    expect(sidebarAt('/app/settings/vault').active).toEqual([]);
   });
 });

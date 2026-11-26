@@ -23,7 +23,7 @@ import { useEffect, useSyncExternalStore } from 'react';
  * ── Why `sessionStorage` ──
  * Holding the slug in React state alone would cover a click through the user
  * menu and nothing else: it does not survive a reload, so refreshing
- * `/app/settings/security` — a page with a button that re-reads the session, on
+ * `/app/settings/unlock` — a page with a control that re-reads the session, on
  * a screen people sit on — would quietly re-point the shell at whichever
  * organisation sorts first. `sessionStorage` is scoped to the tab, which is the
  * correct scope: two tabs open on two organisations must not overwrite each

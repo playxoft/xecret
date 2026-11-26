@@ -72,7 +72,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
     '',
     `Once it is reset, until ${until} you can also recover the old vault`,
     'itself in xecret, with the same passphrase or a recovery code:',
-    `${params.origin}/app/settings/security`,
+    `${params.origin}/app/settings/vault`,
     '',
     'To open the attachment:',
     '  - offline, with no account: xecret vault open-archive <file>',
@@ -114,7 +114,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
       }
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
         Once it is reset, until <strong>${escapeHtml(until)}</strong> you can also
-        <a href="${escapeHtml(params.origin)}/app/settings/security">recover the old vault itself</a> in
+        <a href="${escapeHtml(params.origin)}/app/settings/vault">recover the old vault itself</a> in
         xecret, with the same passphrase or a recovery code.
       </p>
       <p style="margin:0 0 8px;font-size:15px;line-height:1.6;">To open the attachment:</p>
@@ -165,7 +165,7 @@ export function vaultResetNoticeMail(params: ResetNoticeParams): MailMessage {
     '',
     `Once it is reset, until ${until} you can recover the old vault in`,
     'xecret with its master passphrase or one of its recovery codes:',
-    `${params.origin}/app/settings/security`,
+    `${params.origin}/app/settings/vault`,
     '',
     'After that, xecret deletes it.',
     '',
@@ -185,7 +185,7 @@ export function vaultResetNoticeMail(params: ResetNoticeParams): MailMessage {
       </p>
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
         Once it is reset, until <strong>${escapeHtml(until)}</strong> you can
-        <a href="${escapeHtml(params.origin)}/app/settings/security">recover the old vault</a> in xecret
+        <a href="${escapeHtml(params.origin)}/app/settings/vault">recover the old vault</a> in xecret
         with its master passphrase or one of its recovery codes. After that, xecret deletes it.
       </p>
       <hr style="border:0;border-top:1px solid #e3e5e8;margin:0 0 24px;" />

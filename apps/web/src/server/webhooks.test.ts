@@ -1140,7 +1140,7 @@ describe('a failing endpoint', () => {
       expect(message.subject).toMatch(/switched off/);
       expect(message.text).toContain('hooks.example.com');
       expect(message.text).toContain('15 deliveries in a row failed');
-      expect(message.text).toContain(`${ORIGIN}/app/${org.slug}/settings`);
+      expect(message.text).toContain(`${ORIGIN}/app/${org.slug}/settings/webhooks`);
       expect(message.text + message.html).not.toContain('XXXXPATHCREDENTIAL');
     }
 

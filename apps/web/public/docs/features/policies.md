@@ -31,7 +31,7 @@ the source's writers change what production reads. See
 
 ## Token policy
 
-*Organisation settings → Token policy*, owners and admins, Pro and above.
+*Organisation settings → Policies → Token policy*, owners and admins, Pro and above.
 
 | Rule | Effect |
 |---|---|
@@ -46,8 +46,8 @@ always been available on every plan, and still is.
 
 ## Secret naming and strength {#secret-naming-and-strength}
 
-*Organisation settings → Secret naming and strength*, owners and admins, Team
-and above. It ships with a sensible default ruleset, switched off:
+*Organisation settings → Policies → Secret naming and strength*, owners and admins,
+Team and above. It ships with a sensible default ruleset, switched off:
 
 | Rule | Default |
 |---|---|
@@ -98,7 +98,7 @@ more for a rule people have to satisfy than precision does.
 
 ## Disabling plaintext export {#disabling-plaintext-export}
 
-*Environment settings → Plaintext export*, owners and admins, Team and above.
+*Environment settings → Policy → Plaintext export*, owners and admins, Team and above.
 
 With export disabled, `xecret pull`, `xecret export` and the dashboard's
 download refuse for that environment, naming the policy and who can change it.
@@ -121,7 +121,7 @@ laptop, which is how most leaked `.env` files begin.
 
 ## New-address read alerts
 
-*Environment settings → Read alerts*, Pro and above.
+*Environment settings → Policy → Read alerts*, Pro and above.
 
 The first time an environment is read from an address — or by a device — that
 has not read it before, the organisation's owners and admins are emailed. A CLI

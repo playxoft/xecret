@@ -73,7 +73,7 @@ lists this as a residual risk.
 ## Inheritance
 
 An environment can name a **parent** in the same project
-(*environment settings → Inherits from*). Reading it gives the parent's secrets
+(*environment settings → Inheritance*). Reading it gives the parent's secrets
 with the child's own on top: the child's value wins where both set a key, and a
 key the child does not set falls through.
 

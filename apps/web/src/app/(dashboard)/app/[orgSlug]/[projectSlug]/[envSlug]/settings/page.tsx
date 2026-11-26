@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-import { EnvironmentSettingsScreen } from '../../../../../_components/environment-settings-screen';
+import { EnvironmentGeneralSettings } from '../../../../../_components/environment-settings-screen';
 
 export async function generateMetadata({
   params,
@@ -9,16 +9,11 @@ export async function generateMetadata({
   return { title: `${envSlug} settings` };
 }
 
-export default async function EnvironmentSettingsPage({
-  params,
-}: PageProps<'/app/[orgSlug]/[projectSlug]/[envSlug]/settings'>) {
-  const { orgSlug, projectSlug, envSlug } = await params;
-  return (
-    <EnvironmentSettingsScreen
-      key={`${orgSlug}/${projectSlug}/${envSlug}`}
-      orgSlug={orgSlug}
-      projectSlug={projectSlug}
-      envSlug={envSlug}
-    />
-  );
+/**
+ * General: the environment's name, slug, display order and classification.
+ * The area's own address — `appPath.environmentSettings` — so the environment
+ * page's Settings button still opens here.
+ */
+export default function EnvironmentSettingsPage() {
+  return <EnvironmentGeneralSettings />;
 }

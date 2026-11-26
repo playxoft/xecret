@@ -260,7 +260,7 @@ const eslintConfig = defineConfig([
     // The ban exists because a `node:fs` import that reaches the worker bundle
     // is a 500 in production, and test files are only *usually* outside it — a
     // shared helper under `__tests__` that runtime code later imports is
-    // exactly how that stops being true. Five files asking for the exemption is
+    // exactly how that stops being true. Seven files asking for the exemption is
     // a thing a reviewer can see; every test in the app holding it is not.
     files: [
       'src/app/pricing/pricing-page.test.ts',
@@ -268,6 +268,7 @@ const eslintConfig = defineConfig([
       'src/server/bindings.test.ts',
       'src/app/(dashboard)/_components/screen-wiring.test.ts',
       'src/app/(dashboard)/_components/upgrade-plans.test.ts',
+      'src/app/(dashboard)/_components/settings-sections.test.ts',
       'src/app/(auth)/auth-pages.test.ts',
     ],
     rules: {
@@ -292,7 +293,10 @@ const eslintConfig = defineConfig([
       // sign-in panel's code step, which no static render reaches, to pin that
       // its field is a one-time code and that the panel never logs or stores,
       // and the invitation screen's links into sign-in, which it renders only
-      // after a fetch.
+      // after a fetch. `settings-sections.test.ts` lists the page folders under
+      // each settings area, to prove the nav's sections and the routes are the
+      // same set: a section with no page is a nav item that 404s, and a page in
+      // no section is one nobody can find.
       //
       // Stated as the narrower rule rather than as `'off'`, for the reason
       // spelled out above: ESLint replaces a rule's configuration wholesale,

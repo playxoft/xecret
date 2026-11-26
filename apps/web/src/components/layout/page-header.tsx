@@ -23,12 +23,20 @@ export interface PageHeaderProps {
    * `'lg'` gives the heading block more presence: a larger title and a
    * description at the size the prose on the page is set in.
    *
-   * For the screens that are an *area* rather than a page — the settings frame,
-   * where this header sits above a tab strip and stays pinned while three
-   * different screens scroll under it. At the default size it read as the
+   * For the screens that are an *area* rather than a page — the settings
+   * frame, whose header sits above the list of that area's sections and stays
+   * the same whichever of them is open. At the default size it read as the
    * heading of whichever card happened to be beneath it.
    */
   size?: 'md' | 'lg';
+  /**
+   * `'h2'` for a heading inside an area that already has its `<h1>` — the
+   * billing and plans sections of the organisation's settings, which were
+   * pages of their own and kept their headers when they moved inside the
+   * settings frame. Everything else about the block is unchanged, so a
+   * section that has a header looks like a page that has one.
+   */
+  as?: 'h1' | 'h2';
   className?: string;
 }
 
@@ -37,7 +45,8 @@ export interface PageHeaderProps {
  *
  * The title is the page's only `<h1>`. Every dashboard page renders one, so
  * the document outline always starts at level one and "jump to heading" lands
- * somewhere useful.
+ * somewhere useful — and a settings section, whose `<h1>` is the area's, asks
+ * for an `<h2>` with `as` rather than adding a second one.
  */
 export function PageHeader({
   title,
@@ -46,6 +55,7 @@ export function PageHeader({
   badge,
   actions,
   size = 'md',
+  as: Heading = 'h1',
   className,
 }: PageHeaderProps) {
   return (
@@ -57,7 +67,7 @@ export function PageHeader({
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2.5">
-          <h1
+          <Heading
             className={cn(
               'text-fg truncate font-semibold tracking-tight',
               size === 'lg' ? 'text-2xl' : 'text-xl',
@@ -66,8 +76,8 @@ export function PageHeader({
             {titleLoading ? (
               <>
                 {/* A `<span>` carrying the skeleton's styling rather than the
-                    `Skeleton` primitive, which renders a `<div>`: `<h1>` takes
-                    phrasing content, and the heading has to stay a heading. */}
+                    `Skeleton` primitive, which renders a `<div>`: a heading
+                    takes phrasing content, and it has to stay a heading. */}
                 <span
                   aria-hidden="true"
                   className="bg-surface-active my-1 inline-block h-5 w-44 max-w-full animate-pulse rounded-md align-middle"
@@ -77,7 +87,7 @@ export function PageHeader({
             ) : (
               title
             )}
-          </h1>
+          </Heading>
           {titleLoading ? null : badge}
         </div>
         {description ? (
