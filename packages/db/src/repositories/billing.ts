@@ -637,6 +637,8 @@ export async function recordCheckout(
     quantity: number;
     createdBy: string | null;
     nonce: string;
+    /** The discount code the server pre-applied to it (migration 0035). */
+    promoCodeId?: string | null;
     /** The Dodo mode, when the checkout may start a free trial; `null` (the default) when not. */
     trialMode?: 'test_mode' | 'live_mode' | null;
   },

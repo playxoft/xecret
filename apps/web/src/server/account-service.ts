@@ -1,5 +1,6 @@
 import {
   accountMembershipSummary,
+  consumeAllCliAuthCodesForUser,
   deleteVault,
   removeMember,
   revokeAllCliTokensForUser,
@@ -160,6 +161,10 @@ export async function deleteAccount(
 
     const revokedSessions = await revokeAllUserSessions(tx, userId);
     const revokedCliTokens = await revokeAllCliTokensForUser(tx, userId);
+    // An approval not yet exchanged would otherwise mint a token for an
+    // account that no longer exists — the exchange checks the user, and a
+    // soft-deleted one is still a row.
+    await consumeAllCliAuthCodesForUser(tx, userId);
     await deleteVault(tx, userId);
     // The `users` row survives a soft delete, and `vault_pin_peppers` cascades
     // from it rather than from `user_keys` — so without this line a deleted

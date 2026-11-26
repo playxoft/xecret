@@ -44,6 +44,10 @@ describe('the breadcrumb trail', () => {
       { label: 'Account' },
     ]);
   });
+
+  it('names the admin page, not an organisation called "admin"', () => {
+    expect(buildBreadcrumbs(parseDashboardPath('/app/admin'), NAMES)).toEqual([{ label: 'Admin' }]);
+  });
 });
 
 describe('what the trail reads its names from', () => {

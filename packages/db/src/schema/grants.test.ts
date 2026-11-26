@@ -37,6 +37,13 @@ const APPEND_ONLY = new Set([
   // issued, are records — never edited into something else.
   'billing_checkouts',
   'billing_license_keys',
+  // Migration 0035: a redemption happened, and a promo code handed out stays
+  // on record — counted and revoked through three column privileges (below),
+  // never rewritten or deleted.
+  'promo_code_redemptions',
+  'promo_codes',
+  // Migration 0035: who added or removed an admin, and when — only ever added to.
+  'platform_admin_changes',
   // Migration 0036: a subscription that started on a free trial is a record —
   // editing or deleting one would hand its organisation or account another.
   'billing_trials',
@@ -55,6 +62,8 @@ const NO_TABLE_UPDATE = new Set([
   // Migration 0024: a sent reminder is inserted, and pruned once its occasion
   // is long past; rewriting one would re-arm a reminder already sent.
   'billing_reminders',
+  // Migration 0035: an admin is added and removed, never edited into somebody else.
+  'platform_admins',
 ]);
 
 /**
@@ -139,6 +148,20 @@ describe('the application role', () => {
       [ROLE],
     );
     expect(result.rows.map((row) => row.column_name)).toEqual(['consumed_at', 'subscription_id']);
+  });
+
+  it('may update exactly the counting and revoking columns of a promo code (migration 0035)', async () => {
+    const result = await t.pg.query<{ column_name: string }>(
+      `select column_name from information_schema.column_privileges
+        where grantee = $1 and table_name = 'promo_codes' and privilege_type = 'UPDATE'
+        order by column_name`,
+      [ROLE],
+    );
+    expect(result.rows.map((row) => row.column_name)).toEqual([
+      'redemptions',
+      'revoked_at',
+      'revoked_by',
+    ]);
   });
 
   it('may update exactly the bookkeeping columns of a retained vault', async () => {

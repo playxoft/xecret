@@ -67,11 +67,89 @@ export interface OverridesCardProps {
   environmentId: string | null;
   /** From the same key state. `null` while it is still being read. */
   encryptionMode: string | null;
+  /**
+   * The name the set dialog is open on — `''` for a new override, a name to
+   * replace one — or `null` while it is closed.
+   *
+   * Held by the screen rather than here, because the dialog is also opened from
+   * outside the card: with no overrides there is no card, and the first one is
+   * set from the environment's "Changes" menu instead.
+   */
+  setting: string | null;
+  onSettingChange: (name: string | null) => void;
+}
+
+/**
+ * Whether the card is drawn: only once there is something in it.
+ *
+ * An empty "My overrides" card sat under every end-to-end encrypted
+ * environment: four bullet points about a feature somebody may never use,
+ * beneath the table everybody does. So it is drawn when the member has at
+ * least one override here — and when the list could not be read, because a
+ * failure is not the same answer as "none", and the card is where it is said.
+ * While the list is in flight nothing is drawn, so a member with none never
+ * sees a card flash up and vanish.
+ */
+export function overridesCardShown({
+  encryptionMode,
+  data,
+  error,
+}: {
+  encryptionMode: string | null;
+  data: OverrideListResponse | null;
+  error: unknown;
+}): boolean {
+  if (encryptionMode !== 'e2ee') return false;
+  if (error !== null) return true;
+  return data !== null && data.overrides.length > 0;
+}
+
+/**
+ * What stands between the member and setting an override, in the order it is
+ * worth telling them: the environment's mode, the list (which carries the plan
+ * answer), the plan, then the vault and the key state this browser needs to
+ * encrypt under. `ready` is the form.
+ */
+export type SetOverrideGate =
+  | { kind: 'ready' }
+  | { kind: 'reading' }
+  | { kind: 'server' }
+  | { kind: 'loading' }
+  | { kind: 'error'; error: unknown }
+  | { kind: 'plan'; upgradeTo: string | null }
+  | { kind: 'locked' };
+
+export function setOverrideGate({
+  encryptionMode,
+  data,
+  error,
+  vaultUnlocked,
+  keyStateRead,
+}: {
+  encryptionMode: string | null;
+  data: OverrideListResponse | null;
+  error: unknown;
+  vaultUnlocked: boolean;
+  /** Both AAD ids — the organisation's and the environment's — are known. */
+  keyStateRead: boolean;
+}): SetOverrideGate {
+  if (encryptionMode === null) return { kind: 'reading' };
+  if (encryptionMode !== 'e2ee') return { kind: 'server' };
+  if (error !== null) return { kind: 'error', error };
+  if (data === null) return { kind: 'loading' };
+  if (!data.canSet) return { kind: 'plan', upgradeTo: data.upgradeTo };
+  if (!vaultUnlocked) return { kind: 'locked' };
+  if (!keyStateRead) return { kind: 'reading' };
+  return { kind: 'ready' };
 }
 
 /**
  * "My overrides" — the signed-in member's own values for keys in this
  * environment (P19 §2).
+ *
+ * Drawn only when there is at least one; see `overridesCardShown`. Its dialogs
+ * are mounted either way, because the set dialog is how the first one arrives
+ * and the remove dialog is how the last one goes.
  *
  * ── What the card has to make unmistakable ──
  * That an override is *personal* in the strongest sense the product has. It is
@@ -86,15 +164,16 @@ export interface OverridesCardProps {
  *
  * ── Who can do what ──
  * Anybody who may read the environment may list, reveal and remove their own.
- * *Setting* one needs the `personalOverrides` feature (Pro); without it the form
- * is locked with the plan that unlocks it, and everything else keeps working —
- * an organisation that downgraded keeps every override its members set, and
- * `xecret run` keeps applying them.
+ * *Setting* one needs the `personalOverrides` feature (Pro); without it the set
+ * dialog says so with the plan that unlocks it instead of drawing the form, and
+ * everything else keeps working — an organisation that downgraded keeps every
+ * override its members set, and `xecret run` keeps applying them.
  *
  * ── The vault ──
  * Listing needs nothing but the session: names and timestamps are plaintext.
  * Revealing and setting need the vault unlocked, because the key is derived
- * from the member's own private key. A lock forgets anything revealed here.
+ * from the member's own private key. A lock forgets anything revealed here, and
+ * the set dialog asks for the vault before it offers a field to type into.
  */
 export function OverridesCard({
   orgSlug,
@@ -103,6 +182,8 @@ export function OverridesCard({
   envSlug,
   environmentId,
   encryptionMode,
+  setting,
+  onSettingChange,
 }: OverridesCardProps) {
   const vault = useVaultKeys();
   const { toast } = useToast();
@@ -113,8 +194,6 @@ export function OverridesCard({
     e2ee ? apiPath.overrides(orgSlug, projectSlug, envSlug) : null,
   );
 
-  /** The name the set dialog opened on: `''` for a new one, a name to replace one. */
-  const [setting, setSetting] = useState<string | null>(null);
   const [removing, setRemoving] = useState<StoredOverride | null>(null);
 
   const canSet = list.data?.canSet ?? false;
@@ -122,6 +201,7 @@ export function OverridesCard({
   /** Every AAD component this browser needs, present and unlocked. */
   const ready = vault !== null && orgId !== null && environmentId !== null;
   const overrides = list.data?.overrides ?? [];
+  const shown = overridesCardShown({ encryptionMode, data: list.data, error: list.error });
 
   async function save(name: string, value: string): Promise<void> {
     if (!ready) return;
@@ -132,62 +212,33 @@ export function OverridesCard({
       title: replacing ? `Replaced your override for ${name}` : `Override set for ${name}`,
       description: 'xecret run on your machine uses it from its next run.',
     });
+    // The first one brings the card in: the list it is drawn from is re-read.
     void list.reload();
   }
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <CardTitle>My overrides</CardTitle>
-          <CardDescription>
-            Your own values for keys in this environment, used in place of the shared ones when{' '}
-            <code className="font-mono">xecret run</code> starts a process on your machine.
-            Everybody else — and every CI run — keeps getting the shared values.
-          </CardDescription>
-        </div>
-        {e2ee && list.data !== null && canSet && ready ? (
-          <Button variant="secondary" onClick={() => setSetting('')}>
-            <PlusIcon className="size-4" />
-            Set an override
-          </Button>
-        ) : null}
-      </CardHeader>
+    <>
+      {shown ? (
+        <Card>
+          <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <CardTitle>My overrides</CardTitle>
+              <CardDescription>
+                Your own values for keys in this environment, used in place of the shared ones when{' '}
+                <code className="font-mono">xecret run</code> starts a process on your machine.
+                Everybody else — and every CI run — keeps getting the shared values.
+              </CardDescription>
+            </div>
+            {list.data !== null && canSet && ready ? (
+              <Button variant="secondary" onClick={() => onSettingChange('')}>
+                <PlusIcon className="size-4" />
+                Set an override
+              </Button>
+            ) : null}
+          </CardHeader>
 
-      <CardContent className="flex flex-col gap-4">
-        {encryptionMode === null ? (
-          <div aria-busy="true" aria-label="Loading your overrides" className="flex flex-col gap-2">
-            <Skeleton className="h-12 w-full" />
-          </div>
-        ) : !e2ee ? (
-          <Alert tone="info" title="Personal overrides need end-to-end encryption">
-            An override is sealed under a key only your own vault can derive, so it exists only for
-            environments whose values are encrypted in the browser. This one uses server-side
-            encryption.
-          </Alert>
-        ) : (
-          <>
-            <Alert tone="info" title="Only you, and only on your machine">
-              <ul className="list-disc space-y-1 pl-4">
-                <li>
-                  Encrypted under a key derived from your own vault. A teammate who holds this
-                  environment’s key cannot open one, and neither can xecret’s servers.
-                </li>
-                <li>
-                  Applied only by <code className="font-mono">xecret run</code> when you run it,
-                  signed in as you. Never part of a CI fetch, a service token’s read, an export or a
-                  pull.
-                </li>
-                <li>
-                  This environment only. An environment that inherits from this one does not inherit
-                  your overrides.
-                </li>
-                <li>
-                  A vault reset gives your account a new key pair, and overrides made before it stop
-                  opening — remove them and set them again.
-                </li>
-              </ul>
-            </Alert>
+          <CardContent className="flex flex-col gap-4">
+            <OverrideFacts />
 
             {vault === null ? (
               <p className="text-fg-subtle text-sm">
@@ -198,6 +249,8 @@ export function OverridesCard({
               <p className="text-fg-subtle text-sm">Reading this environment’s key state…</p>
             ) : null}
 
+            {/* An organisation that downgraded keeps every override its members
+                set; the card says why there is no way to add another. */}
             {list.data !== null && !canSet ? (
               <PlanLock what="Setting a personal override" upgradeTo={upgradeTo} />
             ) : null}
@@ -213,21 +266,6 @@ export function OverridesCard({
                   Try again
                 </Button>
               </ChangeError>
-            ) : list.data === null ? (
-              <div
-                aria-busy="true"
-                aria-label="Loading your overrides"
-                className="flex flex-col gap-2"
-              >
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-              </div>
-            ) : overrides.length === 0 ? (
-              <p className="text-fg-subtle text-sm">
-                {canSet
-                  ? 'You have no overrides here. Set one to try a different value locally — a scratch database, a test key — without changing what anybody else gets.'
-                  : 'You have no overrides here.'}
-              </p>
             ) : (
               <ul className="border-line divide-line-subtle divide-y rounded-lg border">
                 {overrides.map((override) => (
@@ -257,7 +295,7 @@ export function OverridesCard({
                           variant="ghost"
                           size="sm"
                           aria-label={`Replace your override for ${override.name}`}
-                          onClick={() => setSetting(override.name)}
+                          onClick={() => onSettingChange(override.name)}
                         >
                           <PencilIcon className="size-3.5" />
                           Replace
@@ -287,33 +325,45 @@ export function OverridesCard({
                 ))}
               </ul>
             )}
-          </>
-        )}
-      </CardContent>
+          </CardContent>
+        </Card>
+      ) : null}
 
+      {/* Outside the card, which may not be drawn: the first override is set
+          from the environment's menu while there is no card yet. */}
       <Dialog
         open={setting !== null}
-        onOpenChange={(open) => (open ? undefined : setSetting(null))}
+        onOpenChange={(open) => (open ? undefined : onSettingChange(null))}
       >
         <DialogContent>
           {/* One component down, so closing the dialog unmounts the form and the
               value typed into it goes with it — nothing typed here outlives the
               dialog it was typed into. */}
           {setting !== null ? (
-            <SetOverrideForm
+            <SetOverrideStep
+              gate={setOverrideGate({
+                encryptionMode,
+                data: list.data,
+                error: list.error,
+                vaultUnlocked: vault !== null,
+                keyStateRead: orgId !== null && environmentId !== null,
+              })}
               initialName={setting}
               envSlug={envSlug}
               existingNames={overrides.map((entry) => entry.name)}
-              onCancel={() => setSetting(null)}
+              onRetry={() => void list.reload()}
+              onCancel={() => onSettingChange(null)}
               onSave={async (name, value) => {
                 await save(name, value);
-                setSetting(null);
+                onSettingChange(null);
               }}
             />
           ) : null}
         </DialogContent>
       </Dialog>
 
+      {/* Outside the card too, which goes away with the last override this
+          removes — the dialog has to outlive it long enough to close. */}
       {removing !== null ? (
         <ConfirmDialog
           open
@@ -331,7 +381,129 @@ export function OverridesCard({
           }}
         />
       ) : null}
-    </Card>
+    </>
+  );
+}
+
+/**
+ * What an override is, in the four sentences that make "only you" a claim
+ * rather than a hope. Drawn in the card, and in the set dialog while it cannot
+ * go ahead yet — which, for somebody with no overrides and so no card, is the
+ * first place they meet them. The form says the short version in its own
+ * description.
+ */
+function OverrideFacts() {
+  return (
+    <Alert tone="info" title="Only you, and only on your machine">
+      <ul className="list-disc space-y-1 pl-4">
+        <li>
+          Encrypted under a key derived from your own vault. A teammate who holds this environment’s
+          key cannot open one, and neither can xecret’s servers.
+        </li>
+        <li>
+          Applied only by <code className="font-mono">xecret run</code> when you run it, signed in
+          as you. Never part of a CI fetch, a service token’s read, an export or a pull.
+        </li>
+        <li>
+          This environment only. An environment that inherits from this one does not inherit your
+          overrides.
+        </li>
+        <li>
+          A vault reset gives your account a new key pair, and overrides made before it stop opening
+          — remove them and set them again.
+        </li>
+      </ul>
+    </Alert>
+  );
+}
+
+/**
+ * The set dialog's body: the form, or why there is no form yet.
+ *
+ * The dialog can now be opened from the environment's menu by somebody who has
+ * never seen the card, so each reason it cannot go ahead — the plan, a locked
+ * vault, the list still on its way — is said inside it, with nothing to type
+ * until it can. Exported for its test, which renders it in a bare `Dialog` root.
+ */
+export function SetOverrideStep({
+  gate,
+  initialName,
+  envSlug,
+  existingNames,
+  onRetry,
+  onCancel,
+  onSave,
+}: {
+  gate: SetOverrideGate;
+  initialName: string;
+  envSlug: string;
+  existingNames: readonly string[];
+  onRetry: () => void;
+  onCancel: () => void;
+  onSave: (name: string, value: string) => Promise<void>;
+}) {
+  if (gate.kind === 'ready') {
+    return (
+      <SetOverrideForm
+        initialName={initialName}
+        envSlug={envSlug}
+        existingNames={existingNames}
+        onCancel={onCancel}
+        onSave={onSave}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <DialogHeader>
+        <DialogTitle>Set an override</DialogTitle>
+        <DialogDescription>
+          Your own value for a key in {envSlug}, used in place of the shared one when{' '}
+          <code className="font-mono">xecret run</code> starts a process on your machine.
+        </DialogDescription>
+      </DialogHeader>
+
+      <DialogBody className="flex flex-col gap-4">
+        {gate.kind === 'plan' ? (
+          <PlanLock what="Setting a personal override" upgradeTo={gate.upgradeTo} />
+        ) : gate.kind === 'locked' ? (
+          <Alert tone="info" title="Unlock your vault first">
+            An override is encrypted in this browser under a key derived from your own vault, so it
+            cannot be set while the vault is locked.
+          </Alert>
+        ) : gate.kind === 'server' ? (
+          <Alert tone="info" title="Personal overrides need end-to-end encryption">
+            An override is sealed under a key only your own vault can derive, so it exists only for
+            environments whose values are encrypted in the browser. This one uses server-side
+            encryption.
+          </Alert>
+        ) : gate.kind === 'error' ? (
+          <ChangeError error={gate.error} title="Your overrides could not be loaded">
+            <Button variant="secondary" size="sm" className="mt-2" onClick={onRetry}>
+              Try again
+            </Button>
+          </ChangeError>
+        ) : (
+          // `loading` and `reading`: a moment, not a refusal.
+          <div
+            aria-busy="true"
+            aria-label="Checking whether you can set an override"
+            className="flex flex-col gap-2"
+          >
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
+
+        <OverrideFacts />
+      </DialogBody>
+
+      <DialogFooter>
+        <Button variant="ghost" onClick={onCancel}>
+          Close
+        </Button>
+      </DialogFooter>
+    </div>
   );
 }
 
