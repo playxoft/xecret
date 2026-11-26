@@ -19,8 +19,10 @@ xecret run -- npm run dev
 
 `run` prints which overrides it applied — names only — every time, so a local
 value is never mistaken for the shared one. Remove one with
-`xecret overrides unset DATABASE_URL`. The dashboard's environment page has a
-*My overrides* card that does the same.
+`xecret overrides unset DATABASE_URL`. In the dashboard, set one from the
+environment page's **Changes** menu (*Set a personal override…*); once you have
+one, a *My overrides* card under the table lists, reveals, replaces and removes
+them.
 
 The name need not be a secret the environment already holds: an override is
 also how you try a new variable locally before proposing it.
