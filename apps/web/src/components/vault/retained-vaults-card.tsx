@@ -32,7 +32,7 @@ import { readRecoveryCode } from './vault-client';
 import { useVault } from './vault-keys';
 
 /**
- * Settings → Security: the vaults this account reset in the last seven days,
+ * Settings → Vault: the vaults this account reset in the last seven days,
  * and the way to recover one (P23).
  *
  * Renders nothing while the vault is locked — recovering re-seals the old keys

@@ -123,15 +123,15 @@ export function BillingScreen({
   }, [waitingForPayment, polls, reload]);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+    // A section of the organisation's settings (`settings-sections.ts`), so the
+    // frame around it holds the measure and owns the page's `<h1>`. The list of
+    // sections beside it is the way back to the rest of the settings, which is
+    // what the "Organisation settings" button that used to sit here was for.
+    <div className="flex flex-col gap-6">
       <PageHeader
+        as="h2"
         title="Billing"
         description="The plan, the seats it is billed for, and the card that pays for it."
-        actions={
-          <Button variant="ghost" asChild>
-            <Link href={appPath.orgSettings(orgSlug)}>Organisation settings</Link>
-          </Button>
-        }
       />
 
       {!isOwner ? (

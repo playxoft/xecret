@@ -257,7 +257,7 @@ function SsoSettings({
             only within ten minutes of signing in again.
           </p>
           <Button variant="secondary" size="sm" className="mt-2" asChild>
-            <a href={loginHref({ reauth: true, next: appPath.orgSettings(orgSlug) })}>
+            <a href={loginHref({ reauth: true, next: appPath.orgSingleSignOn(orgSlug) })}>
               Sign in again
             </a>
           </Button>

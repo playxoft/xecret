@@ -71,9 +71,9 @@ export function VaultCard({ user }: VaultCardProps) {
 
   if (vault.loading && vault.material === null) {
     return (
-      // The id and the marker are on the skeleton too: the settings contents
-      // list reads them, and a card that acquires its anchor only once loaded
-      // would make the list grow an entry under the reader's cursor.
+      // The id and the marker are on the skeleton too: `…/vault#vault` is a
+      // fragment old links carry, and a card that acquires its anchor only
+      // once loaded is one the browser's jump has already missed.
       <Card id="vault" data-settings-section>
         <CardHeader>
           <CardTitle>Vault</CardTitle>

@@ -10,8 +10,9 @@ import type { ProjectResponse } from '@/components/projects/types';
  * pages were named by id — arriving at the page it always meant.
  *
  * Three layers, each tested where it can be. Which addresses take the redirect
- * at all is the pages' decision, made by shape on the server, and is asserted
- * on the element each page returns. Where the redirect goes is
+ * at all is the pages' decision — the settings area's layout's, for every
+ * section beneath it — made by shape on the server, and is asserted on the
+ * element each returns. Where the redirect goes is
  * `legacyProjectRedirect`, pure, and asserted directly. What is drawn while the
  * slug is being looked up, and when it names nothing, is rendered to static
  * markup.
@@ -47,10 +48,10 @@ const { modeIsAllowed, modePinKey, readModePins, recordModePin } =
   await import('@/components/envkeys/pins');
 const { ProjectScreen } = await import('./project-screen');
 const { EnvironmentScreen } = await import('./environment-screen');
-const { EnvironmentSettingsScreen } = await import('./environment-settings-screen');
+const { EnvironmentSettingsLayout } = await import('./environment-settings-screen');
 const projectPage = await import('../app/[orgSlug]/[projectId]/page');
 const environmentPage = await import('../app/[orgSlug]/[projectId]/[envSlug]/page');
-const settingsPage = await import('../app/[orgSlug]/[projectId]/[envSlug]/settings/page');
+const settingsLayout = await import('../app/[orgSlug]/[projectId]/[envSlug]/settings/layout');
 
 const PROJECT_ID = '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
 
@@ -72,7 +73,7 @@ describe('which project addresses take the redirect', () => {
   it('sends a slug in the project segment to the redirect, on every project page', async () => {
     const params = { orgSlug: 'acme', projectId: 'payments-api', envSlug: 'production' };
 
-    for (const page of [projectPage.default, environmentPage.default, settingsPage.default]) {
+    for (const page of [projectPage.default, environmentPage.default, settingsLayout.default]) {
       const element = await pageFor(page, params);
       expect(element.type).toBe(LegacyProjectAddress);
       expect(element.props).toEqual({ orgSlug: 'acme', projectSlug: 'payments-api' });
@@ -90,8 +91,8 @@ describe('which project addresses take the redirect', () => {
     expect(environment.type).toBe(EnvironmentScreen);
     expect(environment.props).toMatchObject({ projectId: PROJECT_ID, envSlug: 'production' });
 
-    const settings = await pageFor(settingsPage.default, params);
-    expect(settings.type).toBe(EnvironmentSettingsScreen);
+    const settings = await pageFor(settingsLayout.default, params);
+    expect(settings.type).toBe(EnvironmentSettingsLayout);
     expect(settings.props).toMatchObject({ projectId: PROJECT_ID, envSlug: 'production' });
   });
 

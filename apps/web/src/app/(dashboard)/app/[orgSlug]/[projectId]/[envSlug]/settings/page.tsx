@@ -1,9 +1,6 @@
 import type { Metadata } from 'next';
 
-import { isUuid } from '@xecret/core/ids';
-
-import { EnvironmentSettingsScreen } from '../../../../../_components/environment-settings-screen';
-import { LegacyProjectAddress } from '../../../../../_components/legacy-project-address';
+import { EnvironmentGeneralSettings } from '../../../../../_components/environment-settings-screen';
 
 export async function generateMetadata({
   params,
@@ -12,17 +9,11 @@ export async function generateMetadata({
   return { title: `${envSlug} settings` };
 }
 
-export default async function EnvironmentSettingsPage({
-  params,
-}: PageProps<'/app/[orgSlug]/[projectId]/[envSlug]/settings'>) {
-  const { orgSlug, projectId, envSlug } = await params;
-  if (!isUuid(projectId)) return <LegacyProjectAddress orgSlug={orgSlug} projectSlug={projectId} />;
-  return (
-    <EnvironmentSettingsScreen
-      key={`${orgSlug}/${projectId}/${envSlug}`}
-      orgSlug={orgSlug}
-      projectId={projectId}
-      envSlug={envSlug}
-    />
-  );
+/**
+ * General: the environment's name, slug, display order and classification.
+ * The area's own address — `appPath.environmentSettings` — so the environment
+ * page's Settings button still opens here.
+ */
+export default function EnvironmentSettingsPage() {
+  return <EnvironmentGeneralSettings />;
 }

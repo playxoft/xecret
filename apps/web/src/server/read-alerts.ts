@@ -257,7 +257,9 @@ async function sendDigest(
     // click should not cost a second load.
     settingsUrls.set(
       `${sighting.projectSlug}/${sighting.environmentSlug}`,
-      `${origin}/app/${organization.slug}/${sighting.projectId}/${sighting.environmentSlug}/settings`,
+      // The environment's policy section: the alert switch and the list of
+      // every address it has been read from, which the email points to.
+      `${origin}/app/${organization.slug}/${sighting.projectId}/${sighting.environmentSlug}/settings/policy`,
     );
   }
   const sightings = owed.map(toMailSighting);

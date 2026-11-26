@@ -39,7 +39,7 @@ describe('vaultArchiveMail', () => {
   it('states the seven-day window and where to recover', () => {
     const mail = vaultArchiveMail(params);
     expect(mail.text).toContain('until 2026-10-19 at 09:30 UTC');
-    expect(mail.text).toContain('https://xecret.playxoft.com/app/settings/security');
+    expect(mail.text).toContain('https://xecret.playxoft.com/app/settings/vault');
     expect(mail.text).toContain('xecret vault open-archive');
   });
 

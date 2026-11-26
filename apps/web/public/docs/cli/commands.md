@@ -620,7 +620,7 @@ writing a second audit record.
 **Creating** a service token is deliberately not a CLI command. The server
 requires a browser session for it — a token that could mint another token would
 turn one leaked credential into a permanent foothold, so the chain has to start
-with a person. Create them in the dashboard under *Settings → Tokens*.
+with a person. Create them in the dashboard, on the organisation's *Tokens* page.
 
 ## Housekeeping
 

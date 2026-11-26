@@ -19,6 +19,7 @@ import {
   toggleEventType,
   validateWebhookForm,
   WEBHOOK_DESCRIPTION_MAX_LENGTH,
+  webhookFormChanged,
   webhookStateCopy,
 } from './webhook-form';
 
@@ -244,5 +245,72 @@ describe('atWebhookLimit', () => {
     expect(atWebhookLimit({ max: 3, used: 3 })).toBe(true);
     expect(atWebhookLimit({ max: 0, used: 0 })).toBe(true);
     expect(atWebhookLimit({ max: null, used: 500 })).toBe(false);
+  });
+});
+
+describe('webhookFormChanged', () => {
+  it('always has something to send for a new endpoint', () => {
+    expect(webhookFormChanged(null, emptyWebhookForm())).toBe(true);
+  });
+
+  /**
+   * A type this build does not know — retired since, or added by a newer
+   * server — is not in the form, so it cannot have been unticked. Counting it
+   * offered Save on an untouched form, and a save of the description alone sent
+   * the known events, which the server stores whole, dropping it.
+   */
+  describe('an endpoint subscribed to an event this build does not know', () => {
+    const original = webhook({ eventTypes: ['secret.created', 'secret.someday'] });
+
+    it('is unchanged as it opens', () => {
+      expect(webhookFormChanged(original, formFromWebhook(original))).toBe(false);
+      expect(patchBody(original, formFromWebhook(original))).toBeNull();
+    });
+
+    it('leaves its events out of an edit that does not touch them, so the server keeps all of them', () => {
+      const patch = patchBody(original, { ...formFromWebhook(original), description: 'Chat bot' });
+      expect(patch).toEqual({ description: 'Chat bot' });
+      expect(parseWith(webhookPatchSchema, patch)).toEqual(patch);
+    });
+
+    it('still sends the events when they are changed — the known ones, the only ones the route accepts', () => {
+      const values = { ...formFromWebhook(original), eventTypes: ['secret.updated' as const] };
+      expect(webhookFormChanged(original, values)).toBe(true);
+      expect(patchBody(original, values)).toEqual({ eventTypes: ['secret.updated'] });
+    });
+  });
+
+  it('is false for an edit that matches the endpoint as saved, and true once it differs', () => {
+    const original = webhook();
+    const values = formFromWebhook(original);
+
+    expect(webhookFormChanged(original, values)).toBe(false);
+    expect(webhookFormChanged(original, { ...values, description: 'Chat bot' })).toBe(true);
+    expect(
+      webhookFormChanged(original, { ...values, url: 'https://hooks.example.com/other' }),
+    ).toBe(true);
+    expect(webhookFormChanged(original, { ...values, eventTypes: ['secret.created'] })).toBe(true);
+  });
+
+  it('is false again when the edit is undone, read the way the patch reads it', () => {
+    const original = webhook();
+    const values = formFromWebhook(original);
+
+    expect(webhookFormChanged(original, { ...values, description: ' Deploy bot ' })).toBe(false);
+    expect(
+      webhookFormChanged(original, {
+        ...values,
+        eventTypes: [...values.eventTypes].reverse(),
+      }),
+    ).toBe(false);
+  });
+
+  it('is false once the endpoint is saved as the form describes it', () => {
+    const original = webhook();
+    const values = { ...formFromWebhook(original), description: 'Chat bot' };
+    const saved = webhook({ description: 'Chat bot' });
+
+    expect(webhookFormChanged(original, values)).toBe(true);
+    expect(webhookFormChanged(saved, values)).toBe(false);
   });
 });

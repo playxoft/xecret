@@ -349,7 +349,7 @@ describe('a read from somewhere new', () => {
     expect(message!.text).toContain('203.0.113.5');
     // Linked by the project's id, the dashboard's canonical address, while the
     // text names it by slug.
-    const settings = `${ORIGIN}/app/${world.slug}/${world.projectId}/production/settings`;
+    const settings = `${ORIGIN}/app/${world.slug}/${world.projectId}/production/settings/policy`;
     expect(message!.text).toContain(settings);
     expect(message!.html).toContain(settings);
     expect(message!.text).not.toContain(`${ORIGIN}/app/${world.slug}/api/`);

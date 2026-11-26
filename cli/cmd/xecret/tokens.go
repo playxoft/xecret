@@ -28,7 +28,7 @@ that could have minted it.
 Minting a service token is deliberately not here. The server requires a browser
 session for it — a token that could mint another token would turn one leaked
 credential into a permanent foothold, so the chain has to start with a person.
-Create them at <server>/settings/tokens.
+Create them on the organisation's Tokens page, <server>/app/<organisation>/tokens.
 `
 
 func cmdTokens(args []string) error {
@@ -41,7 +41,7 @@ func cmdTokens(args []string) error {
 		// Answered here rather than by the server's 403, because the reason is
 		// a design decision and the fix is a URL.
 		return errors.New(
-			"service tokens are created in the dashboard, under Settings → Tokens — minting one requires a browser session")
+			"service tokens are created in the dashboard, on the organisation's Tokens page — minting one requires a browser session")
 	case "help":
 		_, _ = io.WriteString(os.Stdout, tokensUsage)
 		return nil
