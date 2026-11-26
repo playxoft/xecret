@@ -158,6 +158,17 @@ export const dodoPortalSessionSchema = z.object({
   link: z.string().check(z.minLength(1), z.maxLength(2048)),
 });
 
+/**
+ * `POST /discounts` and `GET /discounts/code/{code}` — the id of the discount,
+ * the code Dodo stored (upper-cased by Dodo), which must be the one asked for,
+ * and its metadata, which says whether it is one of ours.
+ */
+export const dodoDiscountSchema = z.object({
+  discount_id: id,
+  code: z.string().check(z.minLength(1), z.maxLength(64)),
+  metadata: metadataSchema,
+});
+
 /** `GET /customers/{id}/payment-methods`, reduced to the expiry of cards. */
 export const dodoPaymentMethodsSchema = z.object({
   items: z.array(

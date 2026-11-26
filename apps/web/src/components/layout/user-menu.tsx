@@ -4,9 +4,6 @@ import Link from 'next/link';
 import { useState } from 'react';
 
 import { cn } from '@/lib/cn';
-import { endSession, SIGN_IN_PATH } from '@/lib/api';
-import { beginLeavingPage, beginSignInRedirect } from '@/lib/page-exit';
-import { releaseVaultKeys } from '@/components/vault';
 import { initials } from '@/lib/format';
 import { THEME_LABELS } from '@/lib/theme';
 import type { ThemePreference } from '@/lib/theme';
@@ -26,10 +23,12 @@ import {
   MonitorIcon,
   MoonIcon,
   SettingsIcon,
+  ShieldIcon,
   Shortcut,
   SunIcon,
   UpgradeIcon,
 } from '@/components/ui';
+import { signOutAndLeave } from './sign-out';
 import { useTheme } from './theme-provider';
 
 /** The public pricing page the account menu's Upgrade item opens. */
@@ -44,6 +43,13 @@ export interface UserMenuProps {
   user: ShellUser;
   /** Adds an "Account settings" item when provided. */
   accountHref?: string;
+  /**
+   * Adds "Admin" when provided: the page where xecret's own staff give an
+   * organisation a free plan and issue promo codes. The shell hands it over
+   * only for one of xecret's admins, as the session reports them; for anybody
+   * else the page is a 404, so an item drawn by mistake leads nowhere.
+   */
+  adminHref?: string;
   /**
    * Locks the session without ending it. Adds the "Lock now" item when given.
    *
@@ -63,7 +69,7 @@ const THEME_ICONS: Record<ThemePreference, typeof SunIcon> = {
 
 const THEME_ORDER: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
-export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps) {
+export function UserMenu({ user, accountHref, adminHref, onLock, className }: UserMenuProps) {
   const { preference, setPreference } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
   const [locking, setLocking] = useState(false);
@@ -91,40 +97,8 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
 
   async function handleSignOut() {
     setSigningOut(true);
-    // First, before the revoke and before the keys are released: from here on
-    // every 401 is expected, and neither the API client's sign-in redirect nor
-    // the shell's re-read of the session may start a navigation that replaces
-    // the one below (`lib/page-exit.ts`). Raised unconditionally because the
-    // navigation below is unconditional too.
-    //
-    // In two stages. Until the revoke is confirmed the session may still be
-    // live — offline, a 5xx — and staged edits may still be savable, so the
-    // browser is still allowed to ask about leaving them. Only a confirmed
-    // revoke makes this a departure on purpose, which nobody is asked about.
-    beginSignInRedirect();
-    // The sign-in page, unless the server answers WorkOS's logout URL for the
-    // AuthKit session this one came from — which ends that too, and comes back
-    // to the sign-in page itself.
-    let destination = SIGN_IN_PATH;
-    try {
-      destination = await endSession();
-      beginLeavingPage();
-    } finally {
-      // The keys first, and unconditionally. The navigation below throws the
-      // document away, which disposes of them too — but only once it happens,
-      // and this path is also reached when sign-out failed. A browser that has
-      // decided it is signed out must not still be holding a User Key while it
-      // gets there.
-      releaseVaultKeys();
-
-      // A full navigation rather than a router push. Every RSC payload cached
-      // in this tab was rendered for a session that no longer exists, and the
-      // only way to be certain none of it is reused is to throw the document
-      // away. This runs even if sign-out threw: the cookie is already gone in
-      // the common failure modes, and staying on a dashboard the user believes
-      // they have left is the worse outcome.
-      window.location.assign(destination);
-    }
+    // Shared with the frames the shell draws without a session (`sign-out.tsx`).
+    await signOutAndLeave();
   }
 
   return (
@@ -188,6 +162,21 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
+
+        {/* Its own group, below the account's and the organisation's items:
+            it is about neither, and somebody who has it uses it rarely enough
+            that it should not sit where "Account settings" is reached for. */}
+        {adminHref ? (
+          <>
+            <DropdownMenuItem asChild>
+              <Link href={adminHref}>
+                <ShieldIcon className="size-4" />
+                Admin
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
 
         <DropdownMenuLabel>Theme</DropdownMenuLabel>
         {/* A radio group rather than a cycle button: three states cannot be

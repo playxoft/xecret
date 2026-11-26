@@ -65,3 +65,29 @@ describe('UserMenu', () => {
     expect(html).not.toContain('/settings/plans');
   });
 });
+
+describe('UserMenu’s "Admin" item', () => {
+  it('is offered when the shell hands it the admin page, below the account items', () => {
+    const html = renderToStaticMarkup(
+      createElement(UserMenu, {
+        user: USER,
+        accountHref: '/app/settings/account',
+        adminHref: '/app/admin',
+      }),
+    );
+
+    expect(html).toContain('>Admin<');
+    expect(html).toContain('href="/app/admin"');
+    expect(html.indexOf('>Upgrade<')).toBeLessThan(html.indexOf('>Admin<'));
+    expect(html.indexOf('>Admin<')).toBeLessThan(html.indexOf('Theme'));
+  });
+
+  it('is not there for anybody else', () => {
+    const html = renderToStaticMarkup(
+      createElement(UserMenu, { user: USER, accountHref: '/app/settings/account' }),
+    );
+
+    expect(html).not.toContain('>Admin<');
+    expect(html).not.toContain('/app/admin');
+  });
+});

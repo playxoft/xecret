@@ -7,8 +7,10 @@ import type { ReactNode } from 'react';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { PageHeader } from '@/components/layout';
+import { ComplimentaryPlanNotice } from '@/components/plans/complimentary-plan';
 import { ADDON_NOT_YET, formatCount, NOT_YET } from '@/components/plans/pricing-content';
 import type { Cell } from '@/components/plans/pricing-content';
+import { checkoutPromoCode, PromoCodeField } from '@/components/plans/promo-code-field';
 import {
   Alert,
   ArrowRightIcon,
@@ -29,6 +31,7 @@ import {
   TableRow,
   TerminalIcon,
 } from '@/components/ui';
+import type { PromoCodePreviewPayload } from '@/server/schemas/admin';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
@@ -103,6 +106,13 @@ import type {
  * here. Coming back from checkout lands on the billing screen too, which is
  * where the wait for the payment is watched; a `?checkout=returned` that
  * reaches this page is pointed there rather than polled twice.
+ *
+ * ── A code from xecret ──
+ * Under the cards, for an owner the billing read allows one
+ * (`actions.promoCode`): the billing screen's "Have a code?", the same
+ * component. A free-plan code is redeemed on the spot and the page re-reads
+ * the plan; a discount code is held here and goes with an "Upgrade to …" for a
+ * plan it covers — as part of the decision, so it is under the decision's key.
  */
 
 type Billing = BillingStatusPayload;
@@ -183,12 +193,26 @@ export function UpgradeScreen({
   // and the toggle says what monthly costs one click away.
   const [period, setPeriod] = useState<BillingPeriod>('yearly');
 
+  // ── A discount code ──
+  // Held here, because the checkout that carries it is started here, and read
+  // through `actions.promoCode` so a code applied before the plan changed is
+  // never sent with a checkout that no longer takes one.
+  const [promo, setPromo] = useState<PromoCodePreviewPayload | null>(null);
+  const appliedPromo = billing?.actions.promoCode === true ? promo : null;
+
   // ── The checkout ──
-  // One idempotency key per decision — the plan and the period — kept for a
-  // retry of the same choice, so a double click or a retry after an answer that
-  // never arrived is one checkout at Dodo, and replaced when the choice
-  // changes. The billing screen's rule, for the same request.
-  const decision = useRef<{ plan: PaidPlanId; period: BillingPeriod; key: string } | null>(null);
+  // One idempotency key per decision — the plan, the period and the promo
+  // code — kept for a retry of the same choice, so a double click or a retry
+  // after an answer that never arrived is one checkout at Dodo, and replaced
+  // when the choice changes. The billing screen's rule, for the same request;
+  // the server fingerprints the key with the code, and refuses the same key
+  // with another.
+  const decision = useRef<{
+    plan: PaidPlanId;
+    period: BillingPeriod;
+    code: string | null;
+    key: string;
+  } | null>(null);
   const [busy, setBusy] = useState<PaidPlanId | null>(null);
   // Where the button that failed was — a card, or the head of a table column —
   // so the sentence lands beside the button that was pressed rather than a
@@ -201,19 +225,25 @@ export function UpgradeScreen({
   } | null>(null);
 
   async function checkout(plan: PaidPlanId, at: CheckoutButton) {
+    // Only for a plan the discount covers; any other goes at the full price,
+    // and its card says so.
+    const code = checkoutPromoCode(appliedPromo, plan);
     const previous = decision.current;
     const key =
-      previous !== null && previous.plan === plan && previous.period === period
+      previous !== null &&
+      previous.plan === plan &&
+      previous.period === period &&
+      previous.code === code
         ? previous.key
         : crypto.randomUUID();
-    decision.current = { plan, period, key };
+    decision.current = { plan, period, code, key };
 
     setBusy(plan);
     setFailure(null);
     try {
       const { url } = await api.post<{ url: string }>(
         apiPath.billingCheckout(orgSlug),
-        { plan, interval: period },
+        { plan, interval: period, ...(code === null ? {} : { promoCode: code }) },
         { idempotencyKey: key },
       );
       // Left busy: the page is about to be replaced by Dodo's checkout.
@@ -264,6 +294,13 @@ export function UpgradeScreen({
               Upgrade to {offer.name}
               <ArrowRightIcon className="size-4" />
             </Button>
+            {appliedPromo !== null ? (
+              <p className="text-fg-subtle text-center text-xs leading-5">
+                {checkoutPromoCode(appliedPromo, offered.plan) !== null
+                  ? `${appliedPromo.code} comes off at checkout.`
+                  : `${appliedPromo.code} does not apply to ${offer.name}.`}
+              </p>
+            ) : null}
             {failure?.plan === offered.plan && failure.at === 'card' ? (
               <CheckoutFailure error={failure.error} />
             ) : null}
@@ -440,6 +477,26 @@ export function UpgradeScreen({
           ))}
         </div>
 
+        {/* Under the cards whose buttons it changes, and only where the
+            billing read allows a code at all — which also means an owner. */}
+        {billing !== null && billing.actions.promoCode ? (
+          <PromoCodeField
+            orgSlug={orgSlug}
+            applied={appliedPromo}
+            onApplied={(next) => {
+              setPromo(next);
+              // A failure belongs to the decision that failed; with or without
+              // a code is a different one.
+              setFailure(null);
+            }}
+            discounts={billing.actions.checkout}
+            // The re-read is what shows it: the plan's badge in the header,
+            // its card marked current, and the complimentary plan's notice.
+            onRedeemed={() => void resource.reload()}
+            className="max-w-md"
+          />
+        ) : null}
+
         <EnterpriseRow selling={selling} current={currentPlan === 'enterprise'} />
 
         {selling ? (
@@ -592,6 +649,10 @@ function Notices({
         <Alert key="disabled" tone="info" title="This installation does not take payments">
           <p>Plans here are set by whoever runs it.</p>
         </Alert>,
+      );
+    } else if (billing.managedBy === 'support' && billing.grant !== null) {
+      notices.push(
+        <ComplimentaryPlanNotice key="support" plan={billing.plan} grant={billing.grant} />,
       );
     } else if (billing.managedBy === 'support') {
       notices.push(

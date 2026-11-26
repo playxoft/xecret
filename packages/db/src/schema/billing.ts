@@ -187,11 +187,33 @@ export const orgSubscriptions = pgTable(
      */
     limitOverrides: jsonb('limit_overrides').$type<Record<string, number | null>>(),
 
+    /**
+     * When an operator's grant ends (migration 0035): the hourly job returns
+     * the organisation to Free at this moment. `null` is a grant with no end —
+     * or no grant at all. Only ever set on a grant (`operatorManaged`): the
+     * CHECK below refuses it on Free and on a row Dodo bills.
+     */
+    grantEndsAt: timestamp('grant_ends_at', { withTimezone: true }),
+    /**
+     * Where the grant came from, in a line the billing screen can show —
+     * "Promo code FRIENDS", "Granted by xecret support". The reason itself is
+     * in the audit row, never here.
+     */
+    grantNote: text('grant_note'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check('org_subscriptions_seats_check', sql`${t.seats} >= 0`),
+    check(
+      'org_subscriptions_grant_ends_check',
+      sql`${t.grantEndsAt} is null or (${t.plan} <> 'free' and ${t.dodoSubscriptionId} is null)`,
+    ),
+    check(
+      'org_subscriptions_grant_note_check',
+      sql`${t.grantNote} is null or length(${t.grantNote}) between 1 and 200`,
+    ),
     // Free is never billed, so it must never carry an interval; every paid plan
     // must. Enforced here rather than in application code because the invariant
     // is about what the row *means*, and a row that means nothing coherent is
@@ -234,6 +256,10 @@ export const orgSubscriptions = pgTable(
     index('org_subscriptions_dodo_customer_idx')
       .on(t.dodoCustomerId)
       .where(sql`${t.dodoCustomerId} is not null`),
+    // The hourly grant sweep: grants due to end, and the reminders before.
+    index('org_subscriptions_grant_ends_idx')
+      .on(t.grantEndsAt)
+      .where(sql`${t.grantEndsAt} is not null`),
   ],
 );
 
@@ -346,6 +372,147 @@ export const billingWebhookEvents = pgTable(
   ],
 );
 
+/** What a promo code does (migration 0035). */
+export const PROMO_CODE_KINDS = ['grant', 'discount'] as const;
+export type PromoCodeKind = (typeof PROMO_CODE_KINDS)[number];
+
+export const PROMO_DISCOUNT_TYPES = ['percentage', 'flat'] as const;
+export type PromoDiscountType = (typeof PROMO_DISCOUNT_TYPES)[number];
+
+/**
+ * A code xecret's admins made (migration 0035), of one of two kinds:
+ *
+ *  - `grant` — redeemed in the app by an owner: the organisation gets
+ *    `grantPlan` for `grantDays` days (or for good), with no card and nothing at
+ *    Dodo. Counted here, atomically (`redeemGrantCode`).
+ *  - `discount` — a Dodo discount code (`dodoDiscountId`, in `dodoMode`),
+ *    restricted to xecret's own products, which checkout pre-applies after
+ *    checking it here. Dodo's own code box is hidden, so a code works only
+ *    through that check — `allowedEmails`, `expiresAt` and `revokedAt` included.
+ *
+ * Never deleted, and after its insert only counted and revoked: the role holds
+ * UPDATE on `redemptions`, `revoked_at` and `revoked_by` and nothing else, so
+ * the code, its kind and what it gives can never quietly change.
+ */
+export const promoCodes = pgTable(
+  'promo_codes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Upper-case letters and digits, 3 to 16 — what Dodo accepts. Unique for ever. */
+    code: text('code').notNull().unique('promo_codes_code_unique'),
+    kind: text('kind').notNull().$type<PromoCodeKind>(),
+    /** The admin's own note: who it was for, which campaign. Never shown to customers. */
+    description: text('description'),
+
+    grantPlan: planIdEnum('grant_plan').$type<PlanId>(),
+    /** How long a redemption lasts; `null` for good. */
+    grantDays: integer('grant_days'),
+    /** The seat ceiling a redemption sets; `null` keeps `resolveBilledSeats`' own answer. */
+    grantSeats: integer('grant_seats'),
+
+    discountType: text('discount_type').$type<PromoDiscountType>(),
+    /** Basis points for `percentage` (`10000` is 100%); the currency's minor unit for `flat`. */
+    discountAmount: integer('discount_amount'),
+    /** ISO-4217, for `flat` only. */
+    discountCurrency: text('discount_currency'),
+    /** Billing cycles the discount lasts; `null` for every renewal. */
+    discountCycles: integer('discount_cycles'),
+    /** The plans the code is good for, at checkout. */
+    discountPlans: planIdEnum('discount_plans').array().$type<PlanId[]>(),
+    dodoDiscountId: text('dodo_discount_id'),
+    dodoMode: text('dodo_mode').$type<'test_mode' | 'live_mode'>(),
+
+    /** Lower-cased addresses that may use it; `null` for anybody holding the code. */
+    allowedEmails: text('allowed_emails').array(),
+    maxRedemptions: integer('max_redemptions'),
+    /** Grant redemptions so far. A discount's uses are counted by Dodo. */
+    redemptions: integer('redemptions').notNull().default(0),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedBy: uuid('revoked_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    check('promo_codes_code_check', sql`${t.code} ~ '^[A-Z0-9]{3,16}$'`),
+    check('promo_codes_kind_check', sql`${t.kind} in ('grant', 'discount')`),
+    check(
+      'promo_codes_description_check',
+      sql`${t.description} is null or length(${t.description}) between 1 and 200`,
+    ),
+    check(
+      'promo_codes_grant_check',
+      sql`${t.kind} <> 'grant' or (
+        ${t.grantPlan} is not null and ${t.grantPlan} not in ('free', 'scale')
+        and (${t.grantDays} is null or ${t.grantDays} between 1 and 3650)
+        and (${t.grantSeats} is null or ${t.grantSeats} between 1 and 100000)
+        and ${t.discountType} is null and ${t.discountAmount} is null
+        and ${t.discountCurrency} is null and ${t.discountCycles} is null
+        and ${t.discountPlans} is null and ${t.dodoDiscountId} is null and ${t.dodoMode} is null
+      )`,
+    ),
+    check(
+      'promo_codes_discount_check',
+      sql`${t.kind} <> 'discount' or (
+        ${t.grantPlan} is null and ${t.grantDays} is null and ${t.grantSeats} is null
+        and ${t.dodoDiscountId} is not null and length(${t.dodoDiscountId}) between 1 and 255
+        and ${t.dodoMode} in ('test_mode', 'live_mode')
+        and ${t.discountPlans} is not null and cardinality(${t.discountPlans}) between 1 and 2
+        and ${t.discountPlans} <@ array['pro', 'team']::plan_id[]
+        and (${t.discountCycles} is null or ${t.discountCycles} between 1 and 120)
+        and (
+          (${t.discountType} = 'percentage' and ${t.discountAmount} between 1 and 10000
+            and ${t.discountCurrency} is null)
+          or (${t.discountType} = 'flat' and ${t.discountAmount} between 1 and 100000000
+            and ${t.discountCurrency} ~ '^[A-Z]{3}$')
+        )
+      )`,
+    ),
+    check(
+      'promo_codes_allowed_emails_check',
+      sql`${t.allowedEmails} is null or cardinality(${t.allowedEmails}) between 1 and 100`,
+    ),
+    check(
+      'promo_codes_max_redemptions_check',
+      sql`${t.maxRedemptions} is null or ${t.maxRedemptions} between 1 and 100000`,
+    ),
+    check(
+      'promo_codes_redemptions_check',
+      sql`${t.redemptions} >= 0 and (${t.maxRedemptions} is null or ${t.redemptions} <= ${t.maxRedemptions})`,
+    ),
+    check('promo_codes_revoked_check', sql`${t.revokedBy} is null or ${t.revokedAt} is not null`),
+    index('promo_codes_created_idx').on(t.createdAt),
+  ],
+);
+
+/**
+ * Which organisation redeemed which grant code, and who did (migration 0035).
+ * The primary key is "once per organisation"; the unique index is "once per
+ * person", so one owner cannot collect a code's free months on every
+ * organisation they create. Append-only by grant.
+ */
+export const promoCodeRedemptions = pgTable(
+  'promo_code_redemptions',
+  {
+    codeId: uuid('code_id')
+      .notNull()
+      .references(() => promoCodes.id, { onDelete: 'cascade' }),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    redeemedAt: timestamp('redeemed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'promo_code_redemptions_pkey', columns: [t.codeId, t.orgId] }),
+    uniqueIndex('promo_code_redemptions_user_unique')
+      .on(t.codeId, t.userId)
+      .where(sql`${t.userId} is not null`),
+    index('promo_code_redemptions_org_idx').on(t.orgId),
+  ],
+);
+
 /**
  * Every hosted checkout an owner was sent to (migration 0024).
  *
@@ -375,6 +542,11 @@ export const billingCheckouts = pgTable(
     /** The subscription this checkout produced, once one did (migration 0025). */
     subscriptionId: text('subscription_id'),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    /**
+     * The discount code the server pre-applied to this checkout, if any
+     * (migration 0035). Written with the checkout and never after.
+     */
+    promoCodeId: uuid('promo_code_id').references(() => promoCodes.id, { onDelete: 'set null' }),
   },
   (t) => [
     check('billing_checkouts_quantity_check', sql`${t.quantity} >= 1`),
@@ -392,6 +564,9 @@ export const billingCheckouts = pgTable(
     uniqueIndex('billing_checkouts_nonce_unique')
       .on(t.nonce)
       .where(sql`${t.nonce} is not null`),
+    index('billing_checkouts_promo_code_idx')
+      .on(t.promoCodeId)
+      .where(sql`${t.promoCodeId} is not null`),
   ],
 );
 
@@ -435,7 +610,7 @@ export const billingSeatSyncs = pgTable(
 
 /**
  * The billing emails, by kind. The database refuses any other (migration
- * 0024; `plan_ended_unpaid` from 0025).
+ * 0024; `plan_ended_unpaid` from 0025; the three `grant_*` from 0035).
  */
 export const BILLING_REMINDER_KINDS = [
   'trial_ending_3d',
@@ -448,6 +623,9 @@ export const BILLING_REMINDER_KINDS = [
   'usage_100',
   'invoice_available',
   'plan_ended_unpaid',
+  'grant_ending_7d',
+  'grant_ending_1d',
+  'grant_ended',
 ] as const;
 
 export type BillingReminderKind = (typeof BILLING_REMINDER_KINDS)[number];
