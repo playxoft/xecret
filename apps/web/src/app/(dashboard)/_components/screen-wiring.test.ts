@@ -89,6 +89,34 @@ describe('the account menu offers the plans of the organisation on screen', () =
   });
 });
 
+describe('the account menu offers the admin page to xecret’s staff only', () => {
+  // The session's `admin` decides whether the item is drawn; the shell hands
+  // the link to the menu only then. Either line deleted leaves both components
+  // working — and the item gone for every admin, or drawn for everybody.
+  it('built from the session’s answer, and handed to the menu only then', () => {
+    const chrome = source('./dashboard-chrome.tsx');
+    expect(chrome).toMatch(/const admin = session\.data\.admin === true;/);
+    expect(chrome).toMatch(/\{\.\.\.\(admin \? \{ adminHref: appPath\.admin\(\) \} : \{\}\)\}/);
+    const shell = source('../../../components/layout/app-shell.tsx');
+    expect(shell.slice(shell.indexOf('<UserMenu'))).toContain('{ adminHref }');
+  });
+});
+
+describe('removing an admin from the Admins tab', () => {
+  // `removeAdmin` has tests of its own for the order — the session re-read,
+  // then `/app`. What they cannot see is the tab handing it the real router
+  // and the session's own refresh: unwired, an admin who removed themselves
+  // would stay on a page that now 404s, with "Admin" still in the menu.
+  it('goes through `removeAdmin`, with the session’s refresh and the router', () => {
+    const tab = source('./admin-admins.tsx');
+    const confirm = attribute(tab.slice(tab.indexOf('<ConfirmDialog')), 'onConfirm') ?? '';
+    expect(confirm).toContain('await removeAdmin(target, {');
+    expect(confirm).toContain('refresh,');
+    expect(confirm).toContain('navigate: (href) => router.replace(href),');
+    expect(tab).toMatch(/const \{ refresh \} = useSession\(\);/);
+  });
+});
+
 describe('the shell catches up with a lock through its coordinator', () => {
   // `lock-catch-up.ts` decides when the shell re-reads the session, and its own
   // tests pin how. What they cannot see is the shell actually using it — armed
@@ -158,7 +186,7 @@ describe('every sign-out leaves in the same order', () => {
   // left whatever the revoke did. A failed revoke may leave the session live,
   // and the browser must still be allowed to ask.
   it.each([
-    ['the account menu', '../../../components/layout/user-menu.tsx'],
+    ['the account menu and the bare frame', '../../../components/layout/sign-out.tsx'],
     ['the lock screen', './lock-screen.tsx'],
     ['the invitation screen', '../../(auth)/invite/[token]/invite-screen.tsx'],
   ])('%s', (_where, path) => {
@@ -166,5 +194,24 @@ describe('every sign-out leaves in the same order', () => {
     expect(text).toMatch(
       /beginSignInRedirect\(\);[\s\S]*?try \{\s*destination = await endSession\(\);\s*beginLeavingPage\(\);\s*\} finally \{[\s\S]*?releaseVaultKeys\(\);/,
     );
+  });
+});
+
+describe('a page with no account to show still has a way out', () => {
+  // "Could not load your account" and "You are not a member of any
+  // organisation" are drawn without the shell, so without the account menu
+  // either — the frame carries its own Sign out, the same one the menu uses.
+  it('the account menu signs out through the shared function', () => {
+    expect(source('../../../components/layout/user-menu.tsx')).toMatch(
+      /await signOutAndLeave\(\);/,
+    );
+  });
+
+  it('the bare frame offers it on both pages, and not while already leaving', () => {
+    const chrome = source('./dashboard-chrome.tsx');
+    expect(chrome).toMatch(/<ChromeFrame signOut>\s*<ErrorState subject="your account"/);
+    expect(chrome).toMatch(/<ChromeFrame signOut>\s*<EmptyState/);
+    expect(chrome).toMatch(/\{signOut \? <SignOutButton \/> : null\}/);
+    expect(chrome).toMatch(/function ChromeNotice[\s\S]*?<ChromeFrame>/);
   });
 });
