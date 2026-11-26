@@ -453,6 +453,7 @@ export {
 export type { CodeSendReservation, GuessReservation, Reauthentication } from './reauth';
 
 export {
+  consumeAllCliAuthCodesForUser,
   consumeCliAuthCode,
   consumeCliAuthCodeByValue,
   createCliAuthCode,
@@ -470,6 +471,7 @@ export {
   listCliTokens,
   listServiceTokens,
   revokeAllCliTokensForUser,
+  revokeCliTokensOfUser,
   revokeCliToken,
   revokeServiceToken,
   touchCliTokenUsage,
