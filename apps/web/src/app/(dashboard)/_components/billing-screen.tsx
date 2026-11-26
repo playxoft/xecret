@@ -1,12 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import Link from 'next/link';
 
 import { MINIMUM_SEATS } from '@xecret/core/entitlements';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
+import { ComplimentaryPlanNotice } from '@/components/plans/complimentary-plan';
+import { checkoutPromoCode, PromoCodeField } from '@/components/plans/promo-code-field';
 import {
   Alert,
   Badge,
@@ -18,6 +21,7 @@ import {
   CardTitle,
   useToast,
 } from '@/components/ui';
+import type { PromoCodePreviewPayload } from '@/server/schemas/admin';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
@@ -40,6 +44,14 @@ import { canAdminister, useOrganization } from './session';
  *
  * Owners only. The server refuses everybody else (`billing.manage`); the
  * screen says so rather than drawing controls that would be refused.
+ *
+ * ── A code from xecret ──
+ * On Free, with nothing waiting to activate (`actions.promoCode`), an owner can
+ * enter a promo code (`PromoCodeField`). A free-plan code is redeemed here and
+ * the plan changes at once; a discount code is held by this screen and sent
+ * with the checkout, where Dodo takes the amount off. A plan given that way —
+ * or by an admin — is a complimentary plan, and the screen says so, and until
+ * when, instead of "managed by support".
  */
 
 type Billing = BillingStatusPayload;
@@ -156,7 +168,29 @@ function BillingDetails({
   initialChoice: { plan?: Plan; interval?: Interval };
   onChanged: () => void;
 }) {
+  const { toast } = useToast();
   const failing = billing.status === 'past_due' || billing.status === 'on_hold';
+
+  // The discount code an owner applied, held here because the checkout that
+  // carries it is started from here. Read through `actions.promoCode`, so a
+  // code applied before the plan changed under it — a webhook landing, a code
+  // redeemed in another tab — is not sent with a checkout that no longer takes
+  // one.
+  const [promo, setPromo] = useState<PromoCodePreviewPayload | null>(null);
+  const appliedPromo = billing.actions.promoCode ? promo : null;
+  const promoField: ReactNode = billing.actions.promoCode ? (
+    <PromoCodeField
+      orgSlug={orgSlug}
+      applied={appliedPromo}
+      onApplied={setPromo}
+      discounts={billing.actions.checkout}
+      onRedeemed={(_, redeemed) => {
+        toast({ variant: 'success', title: `${redeemed.summary} — active now` });
+        onChanged();
+      }}
+    />
+  ) : null;
+  const choosing = billing.actions.checkout || billing.actions.changePlan;
 
   return (
     <div className="flex flex-col gap-6">
@@ -222,20 +256,32 @@ function BillingDetails({
       ) : null}
 
       {billing.managedBy === 'support' ? (
-        <Alert tone="info" title="Managed by xecret support">
-          <p>
-            This organisation’s plan was arranged with us directly, so it is changed by us too.{' '}
-            <Link href="/contact">Contact us</Link> to change it.
-          </p>
-        </Alert>
-      ) : billing.actions.checkout || billing.actions.changePlan ? (
+        billing.grant !== null ? (
+          <ComplimentaryPlanNotice plan={billing.plan} grant={billing.grant} />
+        ) : (
+          <Alert tone="info" title="Managed by xecret support">
+            <p>
+              This organisation’s plan was arranged with us directly, so it is changed by us too.{' '}
+              <Link href="/contact">Contact us</Link> to change it.
+            </p>
+          </Alert>
+        )
+      ) : choosing ? (
         <ChoosePlan
           orgSlug={orgSlug}
           billing={billing}
           initialChoice={initialChoice}
+          promo={appliedPromo}
+          promoField={promoField}
           onChanged={onChanged}
         />
       ) : null}
+
+      {/* A code with no checkout to go beside — this installation takes no
+          payments, so only a free-plan code can do anything here. Said on its
+          own line rather than not at all: a free-plan code needs nothing from
+          the payment provider. */}
+      {billing.managedBy !== 'support' && !choosing ? promoField : null}
 
       {billing.actions.portal ? (
         <Card>
@@ -259,12 +305,20 @@ function BillingDetails({
 
 function CurrentPlan({ billing }: { billing: Billing }) {
   const status = STATUS[billing.status];
-  const rows: [string, React.ReactNode][] = [
+  // A complimentary plan is billed for nothing. The row still carries an
+  // interval — the schema wants one on every paid plan — and a seat count, and
+  // "billed yearly" or "4 billed" beside a free plan would be the screen
+  // inventing an invoice.
+  const complimentary = billing.grant !== null;
+  const billed = billing.plan !== 'free' && !complimentary;
+  const rows: [string, ReactNode][] = [
     [
       'Plan',
       <span key="plan" className="inline-flex items-center gap-2">
         {PLAN_NAME[billing.plan]}
-        {billing.interval ? (
+        {complimentary ? (
+          <span className="text-fg-muted">· complimentary</span>
+        ) : billing.interval ? (
           <span className="text-fg-muted">· billed {billing.interval}</span>
         ) : null}
         {billing.plan !== 'free' ? <Badge tone={status.tone}>{status.label}</Badge> : null}
@@ -274,14 +328,22 @@ function CurrentPlan({ billing }: { billing: Billing }) {
       'Seats',
       <span key="seats">
         {count(billing.seats.seated)} in use
-        {billing.plan !== 'free' ? ` · ${count(billing.seats.billed)} billed` : ''}
+        {billed ? ` · ${count(billing.seats.billed)} billed` : ''}
         {billing.seats.pendingInvitations > 0
-          ? ` · ${count(billing.seats.pendingInvitations)} invited, billed once they join`
+          ? billed
+            ? ` · ${count(billing.seats.pendingInvitations)} invited, billed once they join`
+            : ` · ${count(billing.seats.pendingInvitations)} invited`
           : ''}
       </span>,
     ],
   ];
-  if (billing.plan !== 'free' && billing.seats.minimum > 1) {
+  if (billing.grant !== null) {
+    rows.push([
+      'Ends',
+      billing.grant.endsAt === null ? 'No end date' : formatAbsoluteTime(billing.grant.endsAt),
+    ]);
+  }
+  if (billed && billing.seats.minimum > 1) {
     rows.push(['Billing floor', `${count(billing.seats.minimum)} seats`]);
   }
   if (billing.trialEndsAt && billing.status === 'trialing') {
@@ -374,7 +436,11 @@ function Usage({ billing }: { billing: Billing }) {
           Nothing stops at the allowance: fetches past it keep working
           {billing.plan === 'free'
             ? '. On Free they are not billed; a paid plan includes far more.'
-            : ` and are billed at ${billing.usage.overageRate}, on the next invoice.`}
+            : billing.grant !== null
+              ? // No subscription stands behind a complimentary plan, so there
+                // is no next invoice for a charge to land on.
+                '.'
+              : ` and are billed at ${billing.usage.overageRate}, on the next invoice.`}
         </p>
       </CardContent>
     </Card>
@@ -413,11 +479,17 @@ function ChoosePlan({
   orgSlug,
   billing,
   initialChoice,
+  promo,
+  promoField,
   onChanged,
 }: {
   orgSlug: string;
   billing: Billing;
   initialChoice: { plan?: Plan; interval?: Interval };
+  /** The discount code applied above, carried into the checkout for a plan it covers. */
+  promo: PromoCodePreviewPayload | null;
+  /** "Have a code?", drawn beside the checkout it feeds — `null` where no code can be used. */
+  promoField: ReactNode;
   onChanged: () => void;
 }) {
   const { toast } = useToast();
@@ -444,6 +516,11 @@ function ChoosePlan({
   // click, or a retry after an answer that never arrived, is one checkout or
   // one change at Dodo — and replaced when the choice changes or succeeds.
   const [decisionKey, setDecisionKey] = useState(() => crypto.randomUUID());
+  // The promo code the current key was minted for. The code is part of the
+  // decision — the server fingerprints the key with it, and refuses the same
+  // key with another code — so applying, removing or swapping one is a new
+  // decision with a new key, worked out when the checkout is sent.
+  const [keyedCode, setKeyedCode] = useState<string | null>(null);
   const choose =
     <T,>(set: (value: T) => void) =>
     (value: T) => {
@@ -452,14 +529,25 @@ function ChoosePlan({
       setDecisionKey(crypto.randomUUID());
     };
 
+  // Sent only for a plan the discount covers; a checkout for any other plan
+  // goes at the full price, and the sentence under the picker says so.
+  const promoCode = checkoutPromoCode(promo, plan);
+
   async function subscribe() {
+    let key = decisionKey;
+    if (promoCode !== keyedCode) {
+      key = crypto.randomUUID();
+      setDecisionKey(key);
+      setKeyedCode(promoCode);
+    }
+
     setBusy(true);
     setError(null);
     try {
       const { url } = await api.post<{ url: string }>(
         apiPath.billingCheckout(orgSlug),
-        { plan, interval },
-        { idempotencyKey: decisionKey },
+        { plan, interval, ...(promoCode === null ? {} : { promoCode }) },
+        { idempotencyKey: key },
       );
       window.location.assign(url);
     } catch (cause) {
@@ -555,6 +643,14 @@ function ChoosePlan({
         ) : (
           <p className="text-fg-subtle text-sm">Pro has no seat minimum.</p>
         )}
+
+        {!subscribed && promoField !== null ? promoField : null}
+        {!subscribed && promo !== null && promoCode === null ? (
+          <p className="text-fg-subtle text-sm">
+            <code className="font-mono">{promo.code}</code> does not apply to {PLAN_NAME[plan]}:
+            this checkout would be at the full price.
+          </p>
+        ) : null}
 
         {preview ? (
           <Alert tone="info" title="Before you confirm">

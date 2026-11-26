@@ -151,6 +151,26 @@ export async function consumeCliAuthCodeByValue(
 }
 
 /**
+ * Spends every approval a user has not exchanged yet, so none can become a
+ * token later. A code outlives the session that approved it — the exchange
+ * checks the user and the membership, not the session — so somebody holding a
+ * stolen session could approve a device, keep the code, and exchange it after
+ * the owner had reset the password and every session and token was gone.
+ * Returns how many it spent.
+ */
+export async function consumeAllCliAuthCodesForUser(
+  exec: Executor,
+  userId: string,
+): Promise<number> {
+  const rows = await exec
+    .update(cliAuthCodes)
+    .set({ consumedAt: new Date() })
+    .where(and(eq(cliAuthCodes.userId, userId), isNull(cliAuthCodes.consumedAt)))
+    .returning({ id: cliAuthCodes.id });
+  return rows.length;
+}
+
+/**
  * Deletes codes that expired before `before`. For a scheduled worker, on the
  * same reasoning as `deleteExpiredPinResets`: consumed rows keep answering
  * "was this approval exchanged?" for the short window they survive.

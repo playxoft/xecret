@@ -66,7 +66,11 @@ export type BillingReminder =
     }
   | { kind: 'usage_80' | 'usage_100'; used: number; included: number }
   | { kind: 'invoice_available' }
-  | { kind: 'plan_ended_unpaid'; plan: string; days: number };
+  | { kind: 'plan_ended_unpaid'; plan: string; days: number }
+  /** A complimentary plan (migration 0035) ending on `endsAt`, a week or a day out. */
+  | { kind: 'grant_ending_7d' | 'grant_ending_1d'; plan: string; endsAt: Date }
+  /** A complimentary plan that has ended: the organisation is on Free. */
+  | { kind: 'grant_ended'; plan: string };
 
 /** Every kind the database accepts has a template — the type and the CHECK agree. */
 const KINDS: Readonly<Record<BillingReminderKind, true>> = {
@@ -80,6 +84,9 @@ const KINDS: Readonly<Record<BillingReminderKind, true>> = {
   usage_100: true,
   invoice_available: true,
   plan_ended_unpaid: true,
+  grant_ending_7d: true,
+  grant_ending_1d: true,
+  grant_ended: true,
 };
 export const REMINDER_KINDS = Object.keys(KINDS) as BillingReminderKind[];
 
@@ -240,6 +247,40 @@ function compose(reminder: BillingReminder, organization: string): Composed {
         action: 'See usage',
       };
     }
+    case 'grant_ending_7d':
+    case 'grant_ending_1d': {
+      const plan = planName(reminder.plan);
+      const when = formatDay(reminder.endsAt);
+      return {
+        subject: `${organization}'s complimentary ${plan} plan ends on ${when}`,
+        lines: [
+          `The complimentary ${plan} plan xecret gave ${organization} ends on ${when}. After ` +
+            `that, ${organization} moves to the Free plan. Nothing is deleted: every secret stays ` +
+            'where it is and stays readable, and nobody already in the organisation loses their ' +
+            'seat.',
+          BUILDS_UNAFFECTED,
+          // Not "subscribe now": while the grant lasts, checkout is refused
+          // (the plan is support-managed), and a subscription bought around it
+          // would be charged and never applied.
+          `To keep ${plan}, choose it from the billing page once the complimentary plan has ` +
+            'ended — or, if it should be extended, ask us before then through the contact page on ' +
+            'the xecret website.',
+        ],
+        action: 'Open billing',
+      };
+    }
+    case 'grant_ended':
+      return {
+        subject: `${organization} has moved to the Free plan`,
+        lines: [
+          `The complimentary ${planName(reminder.plan)} plan xecret gave ${organization} has ` +
+            'ended, so the organisation is now on Free. Nothing was deleted: every secret is ' +
+            'still there and still readable.',
+          BUILDS_UNAFFECTED,
+          `To return to ${planName(reminder.plan)}, choose it from the billing page.`,
+        ],
+        action: 'Open billing',
+      };
     case 'invoice_available':
       return {
         subject: `A receipt for ${organization} is ready`,

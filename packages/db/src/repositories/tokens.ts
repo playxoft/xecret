@@ -275,13 +275,31 @@ export async function revokeCliToken(
  * for the audit record.
  */
 export async function revokeAllCliTokensForUser(exec: Executor, userId: string): Promise<number> {
-  const rows = await exec
+  return (await revokeCliTokensOfUser(exec, userId)).length;
+}
+
+/** A CLI token `revokeCliTokensOfUser` revoked: enough to audit it in its own organisation. */
+export interface RevokedCliToken {
+  id: string;
+  orgId: string;
+  name: string;
+}
+
+/**
+ * The same revocation, answering which tokens it revoked — so each can be
+ * recorded as `token.revoked` in the organisation it belonged to, which is
+ * where an admin looking for why a device stopped working will look. The
+ * password-reset path.
+ */
+export async function revokeCliTokensOfUser(
+  exec: Executor,
+  userId: string,
+): Promise<RevokedCliToken[]> {
+  return exec
     .update(cliTokens)
     .set({ revokedAt: sql`now()` })
     .where(and(eq(cliTokens.userId, userId), isNull(cliTokens.revokedAt)))
-    .returning({ id: cliTokens.id });
-
-  return rows.length;
+    .returning({ id: cliTokens.id, orgId: cliTokens.orgId, name: cliTokens.name });
 }
 
 /**
