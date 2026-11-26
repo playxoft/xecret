@@ -826,7 +826,7 @@ describe('migration 0036: a free trial is had once', () => {
     ).toBe(true);
   });
 
-  it('counts an open checkout that may start a trial — for its account anywhere, and its organisation — until it is spent or a week old', async () => {
+  it('counts an open checkout that may start a trial for its account in other organisations — never its own — until it is spent or a week old', async () => {
     const opener = await seedOrg();
     const elsewhere = await seedOrg();
     const stranger = await seedOrg();
@@ -846,9 +846,12 @@ describe('migration 0036: a free trial is had once', () => {
     });
     expect((await findCheckout(t.db, sessionId))?.trialMode).toBe('test_mode');
 
-    // The same account, for another organisation; anybody, for the same one.
+    // The same account, for another organisation — but never the same
+    // organisation, by that account or anybody: reopening checkout there is
+    // ordinary, and only one subscription can attach to it.
     expect(await ask(elsewhere.orgId, opener.ownerId)).toBe(true);
-    expect(await ask(opener.orgId, stranger.ownerId)).toBe(true);
+    expect(await ask(opener.orgId, opener.ownerId)).toBe(false);
+    expect(await ask(opener.orgId, stranger.ownerId)).toBe(false);
     expect(await ask(stranger.orgId, stranger.ownerId)).toBe(false);
     expect(await ask(elsewhere.orgId, opener.ownerId, 'live_mode')).toBe(false);
 

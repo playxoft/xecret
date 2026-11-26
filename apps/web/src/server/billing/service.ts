@@ -37,7 +37,7 @@ import { authorize } from '../tenancy';
 import type { OrgScope } from '../tenancy';
 import { billingProvider, DodoApiError } from './client';
 import type { PlanChange, PlanChangePreview } from './client';
-import { billingSetup, CHECKOUT_OPEN_MS, productFor } from './config';
+import { billingSetup, CHECKOUT_OPEN_MS, productFor, TRIAL_PLANS } from './config';
 import type { BillingConfig, PurchasablePlan } from './config';
 import { subscriptionResource } from './audit';
 import { holdDeadline } from './jobs';
@@ -384,7 +384,9 @@ export const USAGE_WARN_AT = WARN_AT;
  * that has had a trial, or a checkout by an account that started one for any
  * organisation (`billing_trials`, written when the trial's snapshot is
  * applied), asks Dodo for none (`withoutTrial`): the first period is charged
- * at checkout. `withoutTrial` in the answer says so, for the audit record.
+ * at checkout — and so does one by an account with a trial checkout still
+ * open for another organisation. `withoutTrial` in the answer says so, for
+ * the audit record.
  */
 export async function startCheckout(
   services: ServiceContext,
@@ -425,8 +427,9 @@ export async function startCheckout(
         row.billingCountry !== null &&
         row.currency !== null;
       const nonce = checkoutNonce();
-      // A trial had already — or one on its way: an open checkout of this
-      // account's, or this organisation's, that may start one.
+      // A trial had already — by this organisation, or by this account
+      // anywhere — or one on its way: an open checkout of this account's, for
+      // another organisation, that may start one (`trialAlreadyUsed`).
       const withoutTrial = await trialAlreadyUsed(services.db, {
         orgId,
         userId: principal.user.id,
@@ -470,9 +473,10 @@ export async function startCheckout(
         quantity: seats,
         createdBy: principal.user.id,
         nonce,
-        // This checkout may start a trial: the next one waits until it is
-        // spent or a week old (`trialAlreadyUsed`).
-        trialMode: withoutTrial ? null : config.mode,
+        // Only a product with a trial can start one (`TRIAL_PLANS`): this
+        // account's checkouts for other organisations wait until it is spent
+        // or a week old. A Pro checkout, or one asking for none, starts none.
+        trialMode: !withoutTrial && TRIAL_PLANS.has(selection.plan) ? config.mode : null,
       });
       return { url: session.url, seats, withoutTrial };
     },

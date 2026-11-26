@@ -376,11 +376,13 @@ export const billingCheckouts = pgTable(
     subscriptionId: text('subscription_id'),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
     /**
-     * The Dodo mode of a checkout that may start a free trial — it did not ask
-     * Dodo for none (migration 0036). Open and unspent, it counts as a trial
-     * had, for its account and its organisation: a trial is recorded only when
-     * its snapshot arrives, and a week of open checkouts would otherwise be a
-     * trial each. `null`: it asked for none.
+     * The Dodo mode of a checkout that may start a free trial — one for a plan
+     * whose product carries one (Team), that did not ask Dodo for none
+     * (migration 0036). Open and unspent, it counts as a trial had for the
+     * account that made it, in any other organisation: a trial is recorded
+     * only when its snapshot arrives, and a week of open checkouts would
+     * otherwise be a trial each. Never for its own organisation, which only
+     * one subscription can attach to. `null`: it cannot start one.
      */
     trialMode: text('trial_mode').$type<'test_mode' | 'live_mode'>(),
   },

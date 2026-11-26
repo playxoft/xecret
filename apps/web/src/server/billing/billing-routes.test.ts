@@ -612,10 +612,8 @@ describe('a free trial is had once', () => {
     expect(sent().withoutTrial).toBe(true);
   });
 
-  it('counts a trial on its way: checkouts opened in parallel, before any is paid, get one trial between them', async () => {
-    // One account opens Team checkouts for two new organisations at once.
-    const first = await seedOrg();
-    const owner = first.owner;
+  /** A second organisation owned by `owner`, with the session back on them. */
+  async function secondOrgOf(owner: { id: string; email: string }): Promise<string> {
     const secondId = randomUUID();
     const secondSlug = `acme-${secondId.slice(0, 8)}`;
     await t.pg.query(
@@ -625,6 +623,12 @@ describe('a free trial is had once', () => {
     await t.pg.query(`insert into org_subscriptions (org_id) values ($1)`, [secondId]);
     await addMember(secondId, owner.id, 'owner');
     caller = sessionOf(owner);
+    return secondSlug;
+  }
+
+  it('counts a trial on its way across organisations: one account’s parallel Team checkouts get one trial between them', async () => {
+    const first = await seedOrg();
+    const secondSlug = await secondOrgOf(first.owner);
 
     dodo.createCheckoutSession.mockResolvedValueOnce({
       sessionId: 'cks_parallel_one',
@@ -642,22 +646,59 @@ describe('a free trial is had once', () => {
     expect(sent().withoutTrial).toBe(true);
     expect((await findCheckout(t.db, 'cks_parallel_two'))?.trialMode).toBeNull();
 
-    // And a second open checkout for the first organisation — another choice,
-    // by another owner — gets none either.
-    const coOwner = await seedUser();
-    await addMember(first.orgId, coOwner.id, 'owner');
-    caller = sessionOf(coOwner);
-    sessionReady();
-    expect((await checkout(first.slug, { plan: 'team', interval: 'yearly' })).status).toBe(200);
-    expect(sent().withoutTrial).toBe(true);
-
     // A week on, the first checkout can no longer attach: a trial is offered again.
     await t.pg.query(
       `update billing_checkouts set created_at = now() - interval '8 days' where org_id = $1`,
       [first.orgId],
     );
     sessionReady();
-    expect((await checkout(first.slug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
+    expect((await checkout(secondSlug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
+    expect(sent()).not.toHaveProperty('withoutTrial');
+  });
+
+  it('never costs a trial to reopen checkout for the same organisation — again, the other period, or a co-owner', async () => {
+    const { orgId, slug } = await seedOrg();
+    const offered: unknown[] = [];
+    const open = async (interval: 'monthly' | 'yearly') => {
+      sessionReady();
+      expect((await checkout(slug, { plan: 'team', interval })).status).toBe(200);
+      offered.push(sent().withoutTrial);
+    };
+
+    await open('monthly'); // the Dodo tab closed unpaid; the owner reloads
+    await open('monthly');
+    await open('yearly'); // changed their mind
+    const coOwner = await seedUser();
+    await addMember(orgId, coOwner.id, 'owner');
+    caller = sessionOf(coOwner);
+    await open('monthly'); // the other owner clicks too
+
+    expect(offered).toEqual([undefined, undefined, undefined, undefined]);
+    const marked = await t.pg.query<{ trial_mode: string | null }>(
+      `select trial_mode from billing_checkouts where org_id = $1`,
+      [orgId],
+    );
+    expect(marked.rows.map((row) => row.trial_mode)).toEqual([
+      'test_mode',
+      'test_mode',
+      'test_mode',
+      'test_mode',
+    ]);
+  });
+
+  it('never counts a Pro checkout — Pro’s products carry no trial — against a Team trial elsewhere', async () => {
+    const first = await seedOrg();
+    const secondSlug = await secondOrgOf(first.owner);
+
+    dodo.createCheckoutSession.mockResolvedValueOnce({
+      sessionId: 'cks_pro_open',
+      url: 'https://test.checkout.dodopayments.com/session/pro',
+    });
+    expect((await checkout(first.slug, { plan: 'pro', interval: 'monthly' })).status).toBe(200);
+    expect((await findCheckout(t.db, 'cks_pro_open'))?.trialMode).toBeNull();
+
+    sessionReady();
+    expect((await checkout(secondSlug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
     expect(sent()).not.toHaveProperty('withoutTrial');
   });
 

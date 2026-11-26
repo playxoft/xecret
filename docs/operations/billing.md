@@ -148,13 +148,25 @@ second trial. Only trials of the deployment's own mode count — a staging rehea
 live trial. What it does not stop: a second person's account (an accomplice, a new address),
 which the per-account organisation ceiling bounds but nothing here can tell apart.
 
-A trial **on its way** counts too. A trial is recorded only when its snapshot arrives, and a
-checkout stays attachable for a week, so a checkout that may start one records its Dodo mode
-(`billing_checkouts.trial_mode`); while it is open — unspent and under a week old — it counts as a
-trial had, for the account that made it and for its organisation. Without that, one account opening
-checkouts for several organisations before paying any got a trial in each. The price: an owner who
-leaves a checkout unpaid and starts another for a different plan within the week gets no trial on
-the second; extend a trial in Dodo for them (§2, "How the row reads a trial") if they ask.
+A trial **on its way** counts too, across organisations. A trial is recorded only when its
+snapshot arrives, and a checkout stays attachable for a week, so a Team checkout that may start one
+records its Dodo mode (`billing_checkouts.trial_mode`; Pro's products carry no trial and record
+none — `TRIAL_PLANS` in `config.ts`). While it is open — unspent and under a week old — it counts as
+a trial had for the account that made it, **in any other organisation**: without that, one account
+opening checkouts for several organisations before paying any got a trial in each. The price: an
+owner with a Team checkout left open for one organisation gets no trial in a second organisation
+until that checkout is a week old; extend a trial in Dodo for them (§2, "How the row reads a
+trial") if they ask.
+
+For the **same** organisation only a trial actually had counts, never an open checkout. Reopening
+checkout is ordinary — a closed tab, monthly instead of yearly, a co-owner clicking too — and must
+not cost a trial nobody had; and several open trial checkouts for one organisation are harmless,
+because only one subscription attaches to it (a second paid is "A second live Dodo subscription
+arrived", raised for a refund). Older checkouts are never closed to make this so: a customer who pays
+an older tab that is still open must still be attached. One gap is accepted: a second trial
+subscription bought through another open checkout of the same organisation could attach if the
+first ends — is cancelled — within that checkout's week; the trial is then recorded twice for the
+organisation, and nothing after it gets one.
 
 **How the row reads a trial** (`readTrial` in `snapshot.ts`, the one statement of it — the
 status, the trial end, the period start, `metered_from`, the trial emails, the billing screen and
@@ -431,8 +443,10 @@ Round 2 adds what only Dodo itself can answer — record what it does:
       not the product's 14. `readTrial` books a trial from the subscription's own
       `trial_period_days`; were it 14 on a subscription that started paid, the row would read as
       trialing to `created_at` + 14 days (the trial emails, no meter) until Dodo's next charge
-      moved past it. Also open checkouts for two fresh organisations by one owner before paying
-      either: the second checkout shows no trial (`billing_checkouts.trial_mode` is null on it).
+      moved past it. Also open Team checkouts for two fresh organisations by one owner before
+      paying either: the second checkout shows no trial (`billing_checkouts.trial_mode` is null on
+      it) — while reopening checkout for the *same* organisation, monthly then yearly, still shows
+      the trial each time.
 - [ ] **A trial that ends with no card — before live mode.** On a fresh organisation, start Team's
       trial without a card (if the product requires one, a card the test gateway declines), and
       let it reach its end — or move its next billing date to a few minutes on in Dodo, while

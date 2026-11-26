@@ -713,7 +713,12 @@ describe('seats added while a plan change is scheduled (security review, 2026-11
       [orgId],
     );
     dodo.changePlan.mockClear();
-    expect(await syncSeats(services(), orgId)).toBe('in-sync');
+    const mailEnv = {
+      ...BILLING_ENV,
+      ZEPTOMAIL_TOKEN: 'token',
+      ZEPTOMAIL_FROM_ADDRESS: 'no-reply@example.com',
+    };
+    expect(await syncSeats(services(mailEnv), orgId)).toBe('synced');
     // Settled by Dodo's count first — it applied — and the downgrade made again.
     expect(dodo.changePlan.mock.calls.map((call) => call[1])).toEqual([
       expect.objectContaining({
@@ -724,6 +729,22 @@ describe('seats added while a plan change is scheduled (security review, 2026-11
     ]);
     expect(state.scheduled).toMatchObject({ product: 'pdt_team_m', quantity: 5 });
     expect(await debtOf(orgId)).toBeUndefined();
+    // Recorded as the success it was, as any push is: the failure the first
+    // run filed, then this one — and the owners told the bill moved, from the
+    // three Dodo billed before.
+    expect(
+      (await auditActions(orgId))
+        .filter((record) => record.action === 'billing.seats_synced')
+        .map((record) => [
+          record.outcome,
+          record.metadata['seatCount'],
+          record.metadata['previousSeatCount'],
+        ]),
+    ).toEqual([
+      ['error', 5, 3],
+      ['success', 5, 3],
+    ]);
+    expect(mail.sent.map((message) => message.subject)).toEqual(['Acme is now billed for 5 seats']);
   });
 
   it('never makes again a downgrade withdrawn after a push that did not apply', async () => {

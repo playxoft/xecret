@@ -44,6 +44,18 @@ export const DODO_BASE_URL: Readonly<Record<DodoMode, string>> = Object.freeze({
  */
 export const CHECKOUT_OPEN_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * The plans whose Dodo product starts a free trial — Team's fourteen days —
+ * and so the only checkouts that can start one (`billing_checkouts.trial_mode`,
+ * `trialAlreadyUsed`). The trial lives on the Dodo product, not here, so this
+ * restates the setup the runbook asks for (docs/operations/billing.md §2): the
+ * Pro products are usage-based for the overage meter, and Dodo's dashboard
+ * cannot put a trial on a usage-based product — switching one to usage-based
+ * billing drops its trial. If a trial is ever added to another product, add
+ * its plan here, or its checkouts go uncounted while open.
+ */
+export const TRIAL_PLANS: ReadonlySet<PurchasablePlan> = new Set<PurchasablePlan>(['team']);
+
 /** The plans checkout sells. Free is never bought; Enterprise is a contract. */
 export const PURCHASABLE_PLANS = ['pro', 'team'] as const satisfies readonly PlanId[];
 export type PurchasablePlan = (typeof PURCHASABLE_PLANS)[number];

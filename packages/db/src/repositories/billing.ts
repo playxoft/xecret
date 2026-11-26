@@ -792,15 +792,20 @@ export async function recordTrial(
  * good (`users.email` is unique across deleted accounts too), so the account
  * is the person.
  *
- * "Had" includes one on its way: an open checkout — unspent, made since
- * `openSince` — that may start a trial (`trial_mode`), by this account or for
- * this organisation. A trial is recorded only when its snapshot arrives, and a
- * checkout stays attachable for a week, so without it one account opening
- * checkouts for several organisations before paying any would get a trial in
- * each; and one organisation with two open checkouts could attach the second
- * once the first trial was cancelled. The price: an owner who leaves one
- * checkout unpaid and starts another for a different plan within the week gets
- * no trial on the second (support can extend one in Dodo).
+ * For the account, "had" includes one on its way: an open checkout — unspent,
+ * made since `openSince` — that may start a trial (`trial_mode`), by this
+ * account **for another organisation**. A trial is recorded only when its
+ * snapshot arrives, and a checkout stays attachable for a week, so without it
+ * one account opening checkouts for several organisations before paying any
+ * would get a trial in each.
+ *
+ * For the organisation, only a trial actually had counts — never an open
+ * checkout. Reopening checkout is ordinary (a closed tab, monthly instead of
+ * yearly, a co-owner clicking too), and it must not cost a trial nobody had.
+ * Several open trial checkouts for one organisation are harmless: only one
+ * subscription attaches to it (another is a second live subscription, raised
+ * for a refund). Earlier checkouts are never closed to make this true — a
+ * customer who pays an older tab that is still open must still be attached.
  */
 export async function trialAlreadyUsed(
   exec: Executor,
@@ -825,7 +830,8 @@ export async function trialAlreadyUsed(
         eq(billingCheckouts.trialMode, query.mode),
         isNull(billingCheckouts.subscriptionId),
         gt(billingCheckouts.createdAt, query.openSince),
-        or(eq(billingCheckouts.orgId, query.orgId), eq(billingCheckouts.createdBy, query.userId)),
+        eq(billingCheckouts.createdBy, query.userId),
+        ne(billingCheckouts.orgId, query.orgId),
       ),
     )
     .limit(1);

@@ -261,8 +261,18 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
         debt.rescheduleProductId !== null &&
         debt.rescheduleConfirmedAt === null
       ) {
-        if ((await settleReplacingPush(services, provider, row, debt)) === 'failed') {
-          return 'failed';
+        const settled = await settleReplacingPush(services, provider, row, debt);
+        if (settled === 'failed') return 'failed';
+        if (settled === 'applied') {
+          // A push that landed after all: the owners hear about the bill that
+          // moved, as for any push (`tellOwners`, in `finally`).
+          pushed = {
+            from: pushed?.from ?? debt.rescheduleFromSeats ?? row.seats,
+            to: debt.rescheduleToSeats ?? row.seats,
+            at: pushed?.at ?? new Date(),
+            subscriptionId: row.dodoSubscriptionId,
+          };
+          outcome = 'synced';
         }
         continue; // settled: read the row and the debt again
       }
@@ -568,8 +578,9 @@ function refusedByDodo(cause: unknown): cause is DodoApiError {
  *    scheduled another since). Nothing is owed back; an increase still
  *    unbilled is pushed over it again, and owes it again.
  *  - **No change scheduled, on the same product, billing the seats pushed** —
- *    it applied: the change is owed back for certain, and our row takes
- *    Dodo's count.
+ *    it applied: the change is owed back for certain, our row takes Dodo's
+ *    count, and the push is recorded as the success it was (`applied`) — the
+ *    audit record, and the owners' seat email.
  *  - **No change scheduled, still billing the seats from before** — it never
  *    applied, and the scheduled change went another way: withdrawn in the
  *    portal meanwhile. Not made again.
@@ -581,7 +592,7 @@ async function settleReplacingPush(
   provider: BillingProvider,
   row: SubscriptionRecord & { dodoSubscriptionId: string },
   debt: SeatSyncRecord,
-): Promise<'settled' | 'failed'> {
+): Promise<'settled' | 'applied' | 'failed'> {
   const log = services.log.at('syncSeats');
   const orgId = row.orgId;
   let atDodo: DodoSubscription;
@@ -615,11 +626,23 @@ async function settleReplacingPush(
         { dodoScheduledChangeAt: null },
         { billed, enforced: providerSeats(resolvePlanId(row.plan), billed).enforced },
       );
+      // The run that made it recorded a failure; this is the push's success.
+      await appendAuditEvents(tx, [
+        systemAudit(services, orgId, 'seat sync').success(
+          'billing.seats_synced',
+          subscriptionResource(orgId),
+          {
+            seatCount: billed,
+            previousSeatCount: debt.rescheduleFromSeats ?? row.seats,
+            reason: 'billed now over a scheduled plan change, which is made again',
+          },
+        ),
+      ]);
     });
     log.info('The push that replaced the scheduled change applied; the change is owed back', {
       orgId,
     });
-    return 'settled';
+    return 'applied';
   }
 
   await settleReschedule(services.db, orgId);

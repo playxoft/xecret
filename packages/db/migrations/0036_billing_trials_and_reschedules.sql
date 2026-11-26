@@ -27,11 +27,13 @@
 -- `billing_trials` is written when a trial's snapshot arrives, and a checkout
 -- stays attachable for a week — so one account opening checkouts for several
 -- organisations at once, before any of them is paid, would have had a trial
--- in each. A checkout that may start a trial (it did not ask Dodo for none)
--- records the Dodo mode it was made in; an open, unspent one counts as a trial
--- had, for the account that made it and for its organisation. Null: it asked
--- for none. Set by the insert; the application still updates only the two
--- consumption columns.
+-- in each. A checkout that may start a trial (a plan whose product carries one
+-- — Team — and that did not ask Dodo for none) records the Dodo mode it was
+-- made in; an open, unspent one counts as a trial had for the account that
+-- made it, in any other organisation. Never in its own: reopening checkout is
+-- ordinary, and only one subscription attaches to an organisation. Null: it
+-- cannot start one. Set by the insert; the application still updates only the
+-- two consumption columns.
 --
 -- ── billing_seat_syncs: a scheduled change a seat push replaced ──
 -- While Dodo has a plan change scheduled (a downgrade waiting for the renewal)
