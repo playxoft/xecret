@@ -89,7 +89,8 @@ describe('createCheckoutSession', () => {
         [ORG_METADATA_KEY]: 'org-uuid',
         [CHECKOUT_NONCE_METADATA_KEY]: 'nonce-0123456789abcdef',
       },
-      feature_flags: { allow_currency_selection: false },
+      // Dodo's own code box hidden: the account is shared with other products.
+      feature_flags: { allow_currency_selection: false, allow_discount_code: false },
     });
   });
 
