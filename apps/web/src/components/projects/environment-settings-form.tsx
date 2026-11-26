@@ -33,40 +33,70 @@ export interface EnvironmentSettingsFormProps {
    * decides.
    */
   canManage: boolean;
-  /** Whether the viewer holds `environment.delete`, which deleting asks instead. */
-  canDelete: boolean;
   onChanged: () => void;
 }
 
 const NAME_MAX_LENGTH = 100;
 const SORT_ORDER_MAX = 10_000;
 
+/** What the details form saves: the two fields an environment is edited in. */
+export interface EnvironmentDetails {
+  name: string;
+  sortOrder: number;
+}
+
+/**
+ * Whether the details form holds anything other than what is saved, read the
+ * way a save sends it: the name trimmed, the order parsed as the submit parses
+ * it. Save is offered only while this is true.
+ *
+ * An order that does not parse counts as a change — it is not what is stored,
+ * and Save is how its problem gets said, in the sentence the submit gives it.
+ */
+export function environmentDetailsChanged(
+  saved: EnvironmentDetails,
+  draft: { name: string; sortOrder: string },
+): boolean {
+  const order = Number.parseInt(draft.sortOrder, 10);
+  return draft.name.trim() !== saved.name || order !== saved.sortOrder;
+}
+
 /**
  * Everything that can be changed about an environment, and the two things that
- * cannot.
+ * cannot — the General section of its settings. Deleting it is the Danger zone
+ * section's (`DeleteEnvironmentCard`, below).
  *
  * The slug is immutable and says so. The Env Data Key is not exposed at all —
  * there is no operation here that touches it, because destroying it is
  * cryptographic erasure of every value ever written in this environment,
  * including in every backup taken since, and that is not a button.
+ *
+ * ── The saved details are this form's own ──
+ * Held here and moved to what was sent the moment a save succeeds, rather than
+ * read from the environment the screen reloads afterwards: the reload lands a
+ * beat after the save, and for that beat a Save button compared against the old
+ * values would be offering to send the new ones again.
  */
 export function EnvironmentSettingsForm({
   orgSlug,
   projectSlug,
   environment,
   canManage,
-  canDelete,
   onChanged,
 }: EnvironmentSettingsFormProps) {
-  const router = useRouter();
   const { toast } = useToast();
 
+  const [saved, setSaved] = useState<EnvironmentDetails>({
+    name: environment.name,
+    sortOrder: environment.sortOrder,
+  });
   const [name, setName] = useState(environment.name);
   const [sortOrder, setSortOrder] = useState(String(environment.sortOrder));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [reclassifying, setReclassifying] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+
+  const changed = environmentDetailsChanged(saved, { name, sortOrder });
   /**
    * The flag change about to cross production's protection the way creating a
    * link does (review round 2, F1): turning it on would expose an existing
@@ -80,7 +110,7 @@ export function EnvironmentSettingsForm({
 
   async function saveDetails(event: React.FormEvent) {
     event.preventDefault();
-    if (saving) return;
+    if (saving || !changed) return;
 
     const trimmed = name.trim();
     const order = Number.parseInt(sortOrder, 10);
@@ -98,6 +128,11 @@ export function EnvironmentSettingsForm({
     setError(null);
     try {
       await api.patch(path, { name: trimmed, sortOrder: order });
+      setSaved({ name: trimmed, sortOrder: order });
+      // The fields hold what was sent, so "  Staging " or "03" do not read as
+      // an edit the moment they are saved.
+      setName(trimmed);
+      setSortOrder(String(order));
       toast({ variant: 'success', title: 'Environment updated' });
       onChanged();
     } catch (cause) {
@@ -135,15 +170,6 @@ export function EnvironmentSettingsForm({
       }
       throw cause;
     }
-  }
-
-  async function deleteEnvironment() {
-    // The server refuses a production delete unless the slug is echoed back, and
-    // accepts the field on any environment. Sending it only where it is required
-    // keeps the client's rule identical to the server's.
-    await api.delete(path, environment.isProduction ? { confirm: environment.slug } : undefined);
-    toast({ variant: 'success', title: `Deleted ${environment.name}` });
-    router.push(appPath.project(orgSlug, projectSlug));
   }
 
   return (
@@ -202,7 +228,7 @@ export function EnvironmentSettingsForm({
 
             {canManage ? (
               <div>
-                <Button type="submit" variant="primary" loading={saving}>
+                <Button type="submit" variant="primary" loading={saving} disabled={!changed}>
                   Save changes
                 </Button>
               </div>
@@ -233,23 +259,6 @@ export function EnvironmentSettingsForm({
               onClick={() => setReclassifying(true)}
             >
               {environment.isProduction ? 'Remove the production mark' : 'Mark as production'}
-            </Button>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {canDelete ? (
-        <Card className="border-danger-line">
-          <CardHeader>
-            <CardTitle>Delete this environment</CardTitle>
-            <CardDescription>
-              Its {pluralize(environment.secretCount, 'secret')} stop being reachable. Anything
-              already running keeps working until its next deploy.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button variant="danger" onClick={() => setDeleting(true)}>
-              Delete environment
             </Button>
           </CardContent>
         </Card>
@@ -303,6 +312,58 @@ export function EnvironmentSettingsForm({
         confirmVariant="danger"
         onConfirm={() => (crossing === null ? undefined : setProduction(crossing.next, true))}
       />
+    </div>
+  );
+}
+
+export interface DeleteEnvironmentCardProps {
+  orgSlug: string;
+  projectSlug: string;
+  environment: EnvironmentDetail;
+}
+
+/**
+ * Deleting an environment — the Danger zone section of its settings, drawn for
+ * a viewer who holds `environment.delete`. The section is not listed for
+ * anybody else (`settings-sections.ts`).
+ */
+export function DeleteEnvironmentCard({
+  orgSlug,
+  projectSlug,
+  environment,
+}: DeleteEnvironmentCardProps) {
+  const router = useRouter();
+  const { toast } = useToast();
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteEnvironment() {
+    // The server refuses a production delete unless the slug is echoed back, and
+    // accepts the field on any environment. Sending it only where it is required
+    // keeps the client's rule identical to the server's.
+    await api.delete(
+      apiPath.environment(orgSlug, projectSlug, environment.slug),
+      environment.isProduction ? { confirm: environment.slug } : undefined,
+    );
+    toast({ variant: 'success', title: `Deleted ${environment.name}` });
+    router.push(appPath.project(orgSlug, projectSlug));
+  }
+
+  return (
+    <>
+      <Card className="border-danger-line">
+        <CardHeader>
+          <CardTitle>Delete this environment</CardTitle>
+          <CardDescription>
+            Its {pluralize(environment.secretCount, 'secret')} stop being reachable. Anything
+            already running keeps working until its next deploy.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="danger" onClick={() => setDeleting(true)}>
+            Delete environment
+          </Button>
+        </CardContent>
+      </Card>
 
       {environment.isProduction ? (
         <ConfirmDialog
@@ -329,7 +390,7 @@ export function EnvironmentSettingsForm({
           <EnvironmentDeleteNote />
         </ConfirmDialog>
       )}
-    </div>
+    </>
   );
 }
 

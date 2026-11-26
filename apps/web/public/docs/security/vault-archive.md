@@ -81,7 +81,7 @@ does not affect them: you can still read them after setting up your new vault.
 If you find your old passphrase or one of its recovery codes within seven days:
 
 1. Set up your new vault (if you have not already) and unlock it.
-2. Go to **Settings → Security → Recover a previous vault**.
+2. Go to **Settings → Vault → Recover a previous vault**.
 3. Choose **Recover**, and enter the old passphrase or a recovery code.
 
 Your browser opens the old vault and moves its environment keys into your
@@ -107,7 +107,7 @@ would need both. If you get a reset email you did not ask for:
    reset), reset again and set up your own vault. Your original vault is not
    affected by the second reset: each reset keeps its own old vault for its own
    seven days.
-3. Recover your original vault from **Settings → Security → Recover a previous
+3. Recover your original vault from **Settings → Vault → Recover a previous
    vault** with your passphrase. Somebody who held your account in between may
    have spent its wrong-guess allowance on purpose, so recovering can be refused
    for a while — **up to an hour** — before it works. The seven days are not

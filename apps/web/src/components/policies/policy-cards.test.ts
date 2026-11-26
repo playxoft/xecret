@@ -5,6 +5,14 @@ import { authoritySummary } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
 import { DEFAULT_SECRET_POLICY, DEFAULT_TOKEN_POLICY } from '@xecret/core/policy';
 import type { SessionOrganization } from '@/app/(dashboard)/_components/session';
+import {
+  parseSecretPolicyDraft,
+  parseTokenPolicyDraft,
+  sameSecretPolicy,
+  sameTokenPolicy,
+  secretPolicyDraftOf,
+  tokenPolicyDraftOf,
+} from './policy-form';
 import type { OrgPoliciesResponse } from './types';
 
 /**
@@ -167,5 +175,70 @@ describe('PolicyCards', () => {
     shows(policies({ secrets: { ...DEFAULT_SECRET_POLICY, enabled: true, namePattern: '[A-Z' } }));
     const html = render('owner');
     expect(html).toContain('The stored policy does not pass today’s checks');
+  });
+});
+
+/** The opening tag of the button whose label is `label`. */
+function buttonLabelled(html: string, label: string): string {
+  const at = html.indexOf(`>${label}<`);
+  if (at === -1) throw new Error(`no button labelled ${label}`);
+  const start = html.lastIndexOf('<button', at);
+  return html.slice(start, html.indexOf('>', start) + 1);
+}
+
+/**
+ * Save is offered only once a form differs from what is stored. The cards
+ * decide that with the same comparison the request is built from — the draft
+ * parsed as a save parses it, against the stored policy — and reseed from the
+ * stored policy after a save (they are keyed on it), so a saved form is an
+ * unchanged form again.
+ */
+describe('the policy forms’ Save', () => {
+  it('is disabled while the forms hold what is stored', () => {
+    shows(
+      policies({
+        tokens: { requireIpAllowlist: true, maxLifetimeDays: 30 },
+        secrets: { ...DEFAULT_SECRET_POLICY, enabled: true },
+      }),
+    );
+    const html = render('owner');
+
+    expect(buttonLabelled(html, 'Save token policy')).toMatch(/\sdisabled=""/);
+    expect(buttonLabelled(html, 'Save secret policy')).toMatch(/\sdisabled=""/);
+  });
+
+  it('turns on for an edit, and off again when the edit is undone', () => {
+    const stored = { requireIpAllowlist: false, maxLifetimeDays: 30 };
+    const unchanged = (draft: ReturnType<typeof tokenPolicyDraftOf>) => {
+      const parsed = parseTokenPolicyDraft(draft);
+      return parsed.ok && sameTokenPolicy(stored, parsed.policy);
+    };
+    const draft = tokenPolicyDraftOf(stored);
+
+    expect(unchanged(draft)).toBe(true);
+    expect(unchanged({ ...draft, requireIpAllowlist: true })).toBe(false);
+    expect(unchanged({ ...draft, maxLifetimeDays: '45' })).toBe(false);
+    // Back to what is stored — typed with stray spaces, as the save would read it.
+    expect(unchanged({ ...draft, maxLifetimeDays: ' 30 ' })).toBe(true);
+    // After a save the card reseeds from the policy it stored.
+    expect(unchanged(tokenPolicyDraftOf(stored))).toBe(true);
+  });
+
+  it('does the same for the secret policy', () => {
+    const stored = { ...DEFAULT_SECRET_POLICY, enabled: true };
+    const unchanged = (draft: ReturnType<typeof secretPolicyDraftOf>) => {
+      const parsed = parseSecretPolicyDraft(draft);
+      return parsed.ok && sameSecretPolicy(stored, parsed.policy);
+    };
+    const draft = secretPolicyDraftOf(stored);
+
+    expect(unchanged(draft)).toBe(true);
+    expect(unchanged({ ...draft, enabled: false })).toBe(false);
+    expect(unchanged({ ...draft, forbiddenSubstrings: 'password' })).toBe(false);
+    // Back to what is stored, with the blank lines and spaces a save drops.
+    expect(unchanged({ ...draft, forbiddenSubstrings: `\n${draft.forbiddenSubstrings}\n  ` })).toBe(
+      true,
+    );
+    expect(unchanged(secretPolicyDraftOf(stored))).toBe(true);
   });
 });

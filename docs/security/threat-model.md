@@ -512,7 +512,7 @@ The victim's own vault, and with it their copy of every end-to-end-encrypted key
 
 **Since P23 (2026-10-12) a reset is not destruction.** The old vault is retained for seven
 days (migration 0020): the victim can recover it with their passphrase or a recovery code, from
-Settings → Security, which re-seals its keys into whatever vault the account now has — and
+Settings → Vault, which re-seals its keys into whatever vault the account now has — and
 nothing in xecret, the attacker's session included, can delete it early: the database refuses
 the DELETE by its own clock, the application's role cannot update the window, and there is no
 route that issues one. What an attacker who passes both locks gains is unchanged — server-mode

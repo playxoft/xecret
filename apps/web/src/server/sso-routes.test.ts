@@ -838,7 +838,7 @@ describe('the setup portal link', () => {
     expect(workos.generateLink).toHaveBeenCalledWith({
       organization: linked,
       intent: 'sso',
-      returnUrl: `${ORIGIN}/app/${org.slug}/settings#single-sign-on`,
+      returnUrl: `${ORIGIN}/app/${org.slug}/settings/single-sign-on`,
     });
     expect(audit).toEqual([
       expect.objectContaining({

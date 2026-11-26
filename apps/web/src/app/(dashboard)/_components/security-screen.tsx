@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 
 import { AUTO_LOCK_MINUTES_OPTIONS, nearestAutoLockOption } from '@xecret/core/auth';
@@ -39,16 +40,21 @@ import { ErrorState } from './resource-states';
 import { useSession } from './session';
 
 /**
- * The Security tab: how you sign in, the vault, the lock, and every session
- * that can currently act as this account.
+ * The account settings' Security sections: how you sign in, the vault, the
+ * lock, and every session that can currently act as this account.
  *
- * The first card is the only one that changes nothing here. The identity
+ * They were one tab, five cards long, and are four sections now, each its own
+ * route in the settings frame (`settings-sections.ts`). `/app/settings/security`
+ * still answers, and sends a visit to the vault — what the emails that carry
+ * that address are about — or, with an old fragment, to the section that holds
+ * its card.
+ *
+ * The sign-in section is the only one that changes nothing here. The identity
  * provider owns credentials — ADR 0003's rule, kept when WorkOS replaced
  * Firebase — and since AuthKit it owns the screens for them too: the password,
  * Google, multi-factor and single sign-on all live on the hosted sign-in page,
- * so this page's part is to say so and to send you there. Everything below it
- * — the vault, the lock, the sessions — is xecret's own and is changed in
- * place.
+ * so this section's part is to say so and to send you there. The others — the
+ * vault, the lock, the sessions — are xecret's own and are changed in place.
  */
 
 interface DeviceSession {
@@ -64,15 +70,24 @@ interface SessionsResponse {
   sessions: readonly DeviceSession[];
 }
 
-export function SecurityScreen() {
+/** Password & sign-in — where the credentials are changed, which is not here. */
+export function SignInSettings() {
+  return <SignInCard />;
+}
+
+/**
+ * Vault — the passphrase and recovery codes, and the vault a recent reset left
+ * behind. One section, because both answer "what are my secrets sealed with?",
+ * and because the reset emails send people here to recover the old one.
+ */
+export function VaultSettings() {
   const { user } = useSession();
 
   return (
     <div className="flex flex-col gap-6">
-      <SignInCard />
       {/* The vault card lives with the rest of the vault client, in
-          `components/vault`, because it is the only card on this page that
-          composes cryptography: changing a passphrase re-derives Argon2id in the
+          `components/vault`, because it is the only card here that composes
+          cryptography: changing a passphrase re-derives Argon2id in the
           browser and re-wraps the User Key, and that machinery belongs beside
           the ceremony and the unlock screen that share it. */}
       <VaultCard user={user} />
@@ -80,10 +95,39 @@ export function SecurityScreen() {
           recovered, and only while unlocked — recovering re-seals the old keys
           to the current vault. Otherwise it renders nothing. */}
       <RetainedVaultsCard />
-      <LockCard />
-      <DevicesCard />
     </div>
   );
+}
+
+/**
+ * Unlock & auto-lock. Listed only once there is a vault (`settings-sections.ts`);
+ * a visit before then — an old link, a bookmark — is told what to do first
+ * rather than shown an empty page, which is what the card drawing nothing
+ * would leave.
+ */
+export function UnlockSettings() {
+  const { vault } = useSession();
+
+  if (!vault.configured) {
+    return (
+      <Alert tone="info" title="Set up your vault first">
+        <p>
+          There is nothing to unlock yet. Your vault is set up the next time the dashboard loads;
+          after that, this is where you choose how it unlocks and how long it stays unlocked.
+        </p>
+        <p className="mt-2">
+          <Link href={appPath.settingsVault()}>Go to Vault</Link>
+        </p>
+      </Alert>
+    );
+  }
+
+  return <LockCard />;
+}
+
+/** Signed-in devices — every session that can currently act as you. */
+export function DevicesSettings() {
+  return <DevicesCard />;
 }
 
 /**
@@ -138,14 +182,14 @@ function SignInCard() {
           </p>
           <p>
             A new password does not sign out your other devices: xecret issues its own sessions. If
-            you are changing it because of a lost or shared device, sign that device out under
-            Signed-in devices below as well.
+            you are changing it because of a lost or shared device, sign that device out under{' '}
+            <Link href={appPath.settingsDevices()}>Signed-in devices</Link> as well.
           </p>
         </div>
 
         <div className="flex justify-end">
           <Button variant="secondary" asChild>
-            <a href={loginHref({ reauth: true, next: appPath.settingsSecurity() })}>
+            <a href={loginHref({ reauth: true, next: appPath.settingsSignIn() })}>
               Open sign-in page
             </a>
           </Button>

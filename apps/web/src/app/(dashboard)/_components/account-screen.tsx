@@ -25,12 +25,14 @@ import { apiPath } from '../_lib/paths';
 import { useSession } from './session';
 
 /**
- * The General tab of settings: who this account is, and how xecret looks.
+ * The account settings' first two sections: who this account is, and how
+ * xecret looks.
  *
  * Security controls — password, vault, devices — live in `security-screen.tsx`,
  * and the irreversible actions in `danger-screen.tsx`. The split mirrors how
  * people arrive: routine personalisation should not share a screen with the
- * controls that end sessions or accounts.
+ * controls that end sessions or accounts. Each section is its own route in the
+ * settings frame; see `settings-sections.ts`.
  */
 
 const THEME_OPTIONS: ReadonlyArray<{ value: ThemePreference; Icon: typeof SunIcon }> = [
@@ -42,15 +44,18 @@ const THEME_OPTIONS: ReadonlyArray<{ value: ThemePreference; Icon: typeof SunIco
 /** The cap the endpoint enforces, mirrored so the field can count down to it. */
 const NAME_MAX_LENGTH = 120;
 
-export function AccountScreen() {
+/**
+ * Profile — `/app/settings/account`, the address the account menu's "Account
+ * settings" has always opened.
+ */
+export function ProfileSettings() {
   const { user } = useSession();
-  const { preference, setPreference } = useTheme();
 
   return (
     <div className="flex flex-col gap-6">
-      {/* `id` plus `data-settings-section`: the settings layout's contents
-          list is built from these, and the id makes each card a link somebody
-          can send. See `settings-toc.tsx`. */}
+      {/* The `id` is the fragment links from before the sections had
+          addresses carry (`…/account#profile`), and `data-settings-section`
+          keeps a jump to it clear of the sticky top bar (`globals.css`). */}
       <Card id="profile" data-settings-section>
         <CardHeader>
           <CardTitle>Profile</CardTitle>
@@ -73,7 +78,16 @@ export function AccountScreen() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
 
+/** Appearance — the theme, which is this browser's and not the account's. */
+export function AppearanceSettings() {
+  const { preference, setPreference } = useTheme();
+
+  return (
+    <div className="flex flex-col gap-6">
       <Card id="appearance" data-settings-section>
         <CardHeader>
           <CardTitle>Appearance</CardTitle>
@@ -117,6 +131,16 @@ export function AccountScreen() {
 }
 
 /**
+ * Whether the name field holds something other than the saved name, read the
+ * way a save would send it: trimmed, and empty meaning "no name". Save is
+ * offered only while this is true — a button that would send the stored value
+ * back is a button that does nothing and audits it.
+ */
+export function displayNameChanged(saved: string | null, draft: string): boolean {
+  return draft.trim() !== (saved ?? '');
+}
+
+/**
  * The one editable thing about an account.
  *
  * ── Why an empty field is a valid save ──
@@ -140,7 +164,7 @@ function NameForm() {
 
   const trimmed = name.trim();
   const tooLong = trimmed.length > NAME_MAX_LENGTH;
-  const unchanged = trimmed === (user.displayName ?? '');
+  const unchanged = !displayNameChanged(user.displayName, name);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();

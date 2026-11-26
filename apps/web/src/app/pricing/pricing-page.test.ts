@@ -879,3 +879,29 @@ describe('the yearly rate is the one the page opens on', () => {
     }
   });
 });
+
+describe('a visitor who already has an account', () => {
+  // The account menu's Upgrade opens this page in a new tab. Its paid-plan
+  // buttons used to lead every visitor to `/sign-up`, which shows a signed-in
+  // owner a form to make the account they already have — a dead end between
+  // "Upgrade" and checkout.
+  it('is told apart by the session hint cookie, as a choice of destination only', () => {
+    expect(PAGE).toMatch(/\(await cookies\(\)\)\.has\(CSRF_COOKIE_NAME\)/);
+    expect(PAGE).toMatch(/const signedIn = await looksSignedIn\(\);/);
+  });
+
+  it('is sent to the in-app plans, with checkout, from Pro and Team — and to the app from Free', () => {
+    const at = PAGE.indexOf('function ctaFor(');
+    const body = PAGE.slice(at, PAGE.indexOf('\n}\n', at));
+    expect(body).toMatch(/if \(!signedIn \|\| plan\.cta\.external\) return plan\.cta;/);
+    expect(body).toMatch(/plan\.id === 'pro' \|\| plan\.id === 'team'/);
+    expect(body).toContain('href: IN_APP_PLANS_PATH');
+    expect(body).toMatch(/plan\.id === 'free'[\s\S]*?href: POST_SIGN_IN_PATH/);
+    expect(PAGE).toMatch(/const IN_APP_PLANS_PATH = `\$\{POST_SIGN_IN_PATH\}\?to=plans`;/);
+  });
+
+  it('every plan button is built from that choice', () => {
+    expect(PAGE).toContain('<Link href={ctaFor(plan, signedIn).href}>');
+    expect(PAGE).not.toMatch(/<Link href=\{plan\.cta\.href\}>/);
+  });
+});

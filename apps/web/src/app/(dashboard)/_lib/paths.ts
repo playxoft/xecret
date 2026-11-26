@@ -64,8 +64,9 @@ export const appPath = {
   orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
   /**
    * The plans, inside the app. Every member may read it; only an owner is
-   * offered a checkout from it. Where the account menu's "Upgrade plan" and
-   * every in-app "Compare plans" link go.
+   * offered a checkout from it. Where every in-app "Compare plans" link goes,
+   * and the public pricing page's buttons for a signed-in visitor (through
+   * `/app?to=plans`). The account menu's Upgrade opens the pricing page.
    *
    * Under `settings`, beside billing, rather than at `/app/{org}/upgrade`: that
    * is the slot a project slug takes, and claiming it would shadow any project
@@ -73,6 +74,16 @@ export const appPath = {
    * there. `settings` is already reserved, so this path shadows nothing.
    */
   orgPlans: (org: string): string => `/app/${segment(org)}/settings/plans`,
+  // The rest of the organisation's settings sections, one address each — see
+  // `settings-sections.ts` for the list they make and who is shown which.
+  // General is `orgSettings` itself, so every link to the area as a whole
+  // still lands on the page that names the organisation.
+  orgRoles: (org: string): string => `/app/${segment(org)}/settings/roles`,
+  /** Where the WorkOS setup portal sends an owner back to when they are done. */
+  orgSingleSignOn: (org: string): string => `/app/${segment(org)}/settings/single-sign-on`,
+  orgPolicies: (org: string): string => `/app/${segment(org)}/settings/policies`,
+  orgWebhooks: (org: string): string => `/app/${segment(org)}/settings/webhooks`,
+  orgDanger: (org: string): string => `/app/${segment(org)}/settings/danger`,
   members: (org: string): string => `/app/${segment(org)}/members`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,
@@ -84,7 +95,16 @@ export const appPath = {
   environmentSettings: (org: string, project: string, env: string): string =>
     `${appPath.environment(org, project, env)}/settings`,
   account: (): string => '/app/settings/account',
-  settingsSecurity: (): string => '/app/settings/security',
+  // The account area's other sections. There is no `settingsSecurity` any
+  // more: `/app/settings/security` was one long page of five cards, and it is
+  // now four sections with an address each. The old address still answers —
+  // it redirects to the vault, which is what the emails that carry it are
+  // about — but nothing new should link to a page that no longer exists.
+  settingsAppearance: (): string => '/app/settings/appearance',
+  settingsSignIn: (): string => '/app/settings/sign-in',
+  settingsVault: (): string => '/app/settings/vault',
+  settingsUnlock: (): string => '/app/settings/unlock',
+  settingsDevices: (): string => '/app/settings/devices',
   settingsDanger: (): string => '/app/settings/danger',
   /**
    * The admin page: xecret's own staff giving organisations a free plan and

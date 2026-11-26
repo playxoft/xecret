@@ -531,7 +531,9 @@ function UnlockForm({
     rememberNudge(storage, now);
     toast({
       title: 'Unlock with your fingerprint or face next time — set it up in seconds',
-      action: { label: 'Set it up', href: appPath.settingsSecurity() },
+      // Unlock & auto-lock, where the passkeys and the device PIN are set
+      // up — the section this nudge is about, not the vault's passphrase.
+      action: { label: 'Set it up', href: appPath.settingsUnlock() },
       // Until dismissed. Five seconds is long enough to notice a message and
       // too short to decide on one, and this is the only toast in the product
       // carrying a link somebody is meant to reach for.
@@ -1101,8 +1103,8 @@ export function ResetResult({
 
       <p className="text-fg-muted text-sm leading-6">
         Until <span className="text-fg">{until}</span> you can recover your old vault from Settings
-        → Security with its passphrase or a recovery code. Nothing in xecret can delete it before
-        then; after that, it is deleted for good.
+        → Vault with its passphrase or a recovery code. Nothing in xecret can delete it before then;
+        after that, it is deleted for good.
       </p>
 
       <Button variant="primary" onClick={onContinue}>
@@ -1587,7 +1589,7 @@ function AllCodesLost({
           {preflightFacts}
           <p>
             <span className="text-fg">We also keep your old vault for seven days.</span> If you find
-            your passphrase or a code in that time, you can recover it from Settings → Security.
+            your passphrase or a code in that time, you can recover it from Settings → Vault.
             Nothing in xecret can delete it before then; after that, it is deleted for good.
           </p>
           <p>Your teammates and your organisation’s data are unaffected.</p>
