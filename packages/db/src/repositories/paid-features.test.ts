@@ -750,6 +750,9 @@ describe('read sightings', () => {
     expect(owed).toHaveLength(2);
     expect(owed[0]).toMatchObject({
       environmentSlug: 'production',
+      // The id is what the alert's link names the project by; the slug is what
+      // its text does.
+      projectId: f.projectId,
       projectSlug: 'api',
       isProduction: true,
       principalLabel: 'laptop',

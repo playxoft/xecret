@@ -215,10 +215,14 @@ afterEach(() => {
 const PROJECT = 'api';
 const ENVIRONMENT_SLUG = 'production';
 
+/** Each organisation's one project, by id — the segment the dashboard's IO addresses. */
+const projectIds = new Map<string, string>();
+
 /** An owner's session in a fresh organisation, with one environment in the given mode. */
 async function setup(mode: 'e2ee' | 'server'): Promise<{ org: Org; env: Env }> {
   const org = await f.seedOrg('free');
   const projectId = await f.seedProject(org, PROJECT);
+  projectIds.set(org.orgId, projectId);
   const env = await f.seedEnv(org, projectId, ENVIRONMENT_SLUG, { mode });
   caller = f.sessionOf(org.owner);
   return { org, env };
@@ -237,8 +241,14 @@ function openedKey(env: Env): EnvKeyMaterial {
   return material;
 }
 
+/**
+ * The IO's address, as the environment screen builds it: the project by id. The
+ * listing below still asks by slug, so both spellings reach the same rows.
+ */
 function ioContext(org: Org) {
-  return { orgSlug: org.slug, orgId: org.orgId, projectSlug: PROJECT, envSlug: ENVIRONMENT_SLUG };
+  const projectId = projectIds.get(org.orgId);
+  if (projectId === undefined) throw new Error('organisation not seeded by `setup`');
+  return { orgSlug: org.slug, orgId: org.orgId, projectId, envSlug: ENVIRONMENT_SLUG };
 }
 
 /** The listing exactly as the environment screen fetches it. */

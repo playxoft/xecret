@@ -2,14 +2,11 @@
 
 import type { OpenedArchive, OpenedEnvironment } from '@xecret/core/vault-archive';
 import {
+  admitEncryptionMode,
   clientSecretIo,
   fetchEnvironmentKeys,
   fetchRecipients,
-  modeIsAllowed,
-  modePinKey,
   openEnvironmentKeys,
-  readModePins,
-  recordModePin,
 } from '@/components/envkeys';
 import type { ImportPolicyCheck, SecretIo } from '@/components/envkeys';
 import { readVaultKeys } from '@/components/vault/key-store';
@@ -90,6 +87,12 @@ export type TargetState =
 export async function ioForEnvironment(context: {
   orgSlug: string;
   orgId: string;
+  projectId: string;
+  /**
+   * The project's slug, from the project the dialog was opened on — so a mode
+   * pin this browser filed under it is carried to the id before the answer is
+   * judged, rather than whenever the shell's trail happens to land.
+   */
   projectSlug: string;
   envSlug: string;
 }): Promise<TargetState> {
@@ -106,11 +109,10 @@ export async function ioForEnvironment(context: {
   }
   const environmentId = keys.environmentId;
 
-  const pin = modePinKey(context);
-  if (!modeIsAllowed(readModePins(), pin, keys.encryptionMode).allowed) {
-    return { status: 'unavailable', environmentId, reason: 'downgraded' };
-  }
-  recordModePin(pin, keys.encryptionMode);
+  const admitted = await admitEncryptionMode(context, keys.encryptionMode, async () => [
+    context.projectSlug,
+  ]);
+  if (!admitted) return { status: 'unavailable', environmentId, reason: 'downgraded' };
 
   if (keys.encryptionMode !== 'e2ee') {
     return { status: 'unavailable', environmentId, reason: 'server-mode' };
@@ -135,7 +137,7 @@ export async function ioForEnvironment(context: {
  */
 async function nobodyHoldsKey(context: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }): Promise<boolean> {
   try {

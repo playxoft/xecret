@@ -4,7 +4,7 @@ import { EnvironmentEncryptionSettings } from '../../../../../../_components/env
 
 export async function generateMetadata({
   params,
-}: PageProps<'/app/[orgSlug]/[projectSlug]/[envSlug]/settings/encryption'>): Promise<Metadata> {
+}: PageProps<'/app/[orgSlug]/[projectId]/[envSlug]/settings/encryption'>): Promise<Metadata> {
   const { envSlug } = await params;
   return { title: `${envSlug} encryption key` };
 }

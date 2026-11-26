@@ -37,6 +37,8 @@ import {
 import { envKeyCount, holdEnvKey, readEnvKey, releaseEnvKeys } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
 import {
+  admitEncryptionMode,
+  carryModePinsForward,
   checkPin,
   fingerprint,
   modeIsAllowed,
@@ -88,6 +90,7 @@ const USER_ID = '018f3f6a-0000-7000-8000-0000000000d1';
 const OTHER_USER_ID = '018f3f6a-0000-7000-8000-0000000000d2';
 const TOKEN_ID = '018f3f6a-0000-7000-8000-0000000000e1';
 const INVITATION_ID = '018f3f6a-0000-7000-8000-0000000000f1';
+const PROJECT_ID = '018f3f6a-0000-7000-8000-0000000000f2';
 
 const posted: { path: string; body: unknown }[] = [];
 const responses = new Map<string, unknown>();
@@ -464,6 +467,7 @@ describe('the invite fragment flow', () => {
 
     const served: InviteKeyGrant = {
       environmentId: ENVIRONMENT_ID,
+      projectId: PROJECT_ID,
       projectSlug: 'acme',
       environmentSlug: 'production',
       envDataKeyId: EDK_ID,
@@ -491,7 +495,9 @@ describe('the invite fragment flow', () => {
     // afresh — never the invitation's blob copied across, which would produce a
     // row nobody can open because its AAD still names the invitation.
     const [upload] = posted;
-    expect(upload?.path).toContain('/keys/grants');
+    // Addressed by the project's id, which the served grant carries — the
+    // address every environment screen uses.
+    expect(upload?.path).toContain(`/projects/${PROJECT_ID}/environments/production/keys/grants`);
 
     const body = parseWith(environmentKeyGrantsSchema, upload?.body);
     expect(body.envDataKeyId).toBe(EDK_ID);
@@ -532,6 +538,7 @@ describe('the invite fragment flow', () => {
       grants: [
         {
           environmentId: ENVIRONMENT_ID,
+          projectId: PROJECT_ID,
           projectSlug: 'acme',
           environmentSlug: 'production',
           envDataKeyId: EDK_ID,
@@ -617,7 +624,7 @@ describe('trust-on-first-use pinning', () => {
    * the transition that is refused is exactly one, and the other three are not.
    */
   describe('the encryption-mode pin', () => {
-    const key = modePinKey({ orgSlug: 'acme', projectSlug: 'api', envSlug: 'production' });
+    const key = modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' });
 
     it('permits first contact and every direction except the downgrade', () => {
       const storage = memoryStorage();
@@ -657,7 +664,7 @@ describe('trust-on-first-use pinning', () => {
       const storage = memoryStorage();
       recordModePin(key, 'e2ee', storage);
 
-      const sibling = modePinKey({ orgSlug: 'acme', projectSlug: 'api', envSlug: 'staging' });
+      const sibling = modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'staging' });
       expect(modeIsAllowed(readModePins(storage), sibling, 'server').allowed).toBe(true);
     });
 
@@ -668,6 +675,160 @@ describe('trust-on-first-use pinning', () => {
 
       expect(readModePins(storage)).toEqual({});
       expect(modeIsAllowed(readModePins(storage), key, 'server').allowed).toBe(true);
+    });
+
+    it('is filed under the address the URL holds: the project by id', () => {
+      expect(key).toBe(`mode:acme/${PROJECT_ID}/production`);
+    });
+  });
+
+  /**
+   * Pins filed before project addresses named the id were filed under the slug.
+   * A browser that has seen an environment encrypted must stay pinned through
+   * the change of address, or the change itself is the moment a downgrade
+   * would be believed.
+   */
+  describe('carrying slug-filed mode pins to the id', () => {
+    const legacy = (env: string) => `mode:acme/api/${env}`;
+    const current = (env: string) =>
+      modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: env });
+
+    it('copies every environment of the project, so the downgrade is still refused', () => {
+      const storage = memoryStorage();
+      recordModePin(legacy('production'), 'e2ee', storage);
+      recordModePin(legacy('staging'), 'server', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+
+      const pins = readModePins(storage);
+      expect(pins[current('production')]?.mode).toBe('e2ee');
+      expect(pins[current('staging')]?.mode).toBe('server');
+      expect(modeIsAllowed(pins, current('production'), 'server').allowed).toBe(false);
+      // Kept, not moved: nothing is ever removed from the book.
+      expect(pins[legacy('production')]?.mode).toBe('e2ee');
+    });
+
+    it('only ever makes the book stricter', () => {
+      const storage = memoryStorage();
+      // Already pinned under the id: an `e2ee` there is never overwritten by an
+      // older `server`, and a `server` there is lifted by an older `e2ee`.
+      recordModePin(current('production'), 'e2ee', storage);
+      recordModePin(legacy('production'), 'server', storage);
+      recordModePin(current('staging'), 'server', storage);
+      recordModePin(legacy('staging'), 'e2ee', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+
+      const pins = readModePins(storage);
+      expect(pins[current('production')]?.mode).toBe('e2ee');
+      expect(pins[current('staging')]?.mode).toBe('e2ee');
+    });
+
+    it('touches neither another project nor another organisation', () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/api-v2/production', 'e2ee', storage);
+      recordModePin('mode:zebra/api/production', 'e2ee', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+
+      // `api-v2` shares the prefix `api` without the separator; `zebra` is
+      // another tenant's book entirely.
+      expect(readModePins(storage)[current('production')]).toBeUndefined();
+    });
+
+    it('writes nothing when there is nothing to carry', () => {
+      const storage = memoryStorage();
+      recordModePin(current('production'), 'e2ee', storage);
+      const before = storage.getItem('xecret.pins.mode.v1');
+
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+
+      expect(storage.getItem('xecret.pins.mode.v1')).toBe(before);
+    });
+
+    it('matches the slug in any case, as the citext column that resolved it did', () => {
+      // `/app/acme/API/production`, typed by hand, reached the same project and
+      // filed its pin under the spelling in the URL.
+      const storage = memoryStorage();
+      recordModePin('mode:acme/API/production', 'e2ee', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+
+      expect(modeIsAllowed(readModePins(storage), current('production'), 'server').allowed).toBe(
+        false,
+      );
+    });
+
+    it('takes the strictest of every slug it is given', () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/API/production', 'server', storage);
+      recordModePin(legacy('production'), 'e2ee', storage);
+
+      carryModePinsForward('acme', PROJECT_ID, ['API', 'api', 'some-other-slug'], storage);
+
+      expect(readModePins(storage)[current('production')]?.mode).toBe('e2ee');
+    });
+  });
+
+  /**
+   * Every reader of the book goes through `admitEncryptionMode`, which carries
+   * a project's slug-filed pins to its id *before* it judges a `server` answer —
+   * so nothing depends on the shell's trail having landed first, which a
+   * server that wanted the downgrade could simply hold back.
+   */
+  describe('admitting an encryption mode', () => {
+    const target = { orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' };
+    const key = modePinKey(target);
+
+    it('refuses a server answer for an environment pinned under its old slug, with no trail at all', async () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/api/production', 'e2ee', storage);
+
+      // The slug arrives late — the trail held back, the project read slow —
+      // and the decision waits for it rather than racing it.
+      const slugs = vi.fn(
+        () => new Promise<readonly string[]>((resolve) => setTimeout(() => resolve(['api']), 5)),
+      );
+      expect(await admitEncryptionMode(target, 'server', slugs, storage)).toBe(false);
+      expect(slugs).toHaveBeenCalledOnce();
+
+      // Nothing was recorded under the id that would let a later answer through.
+      expect(readModePins(storage)[key]?.mode).toBe('e2ee');
+      expect(await admitEncryptionMode(target, 'server', async () => [], storage)).toBe(false);
+    });
+
+    it('admits and pins a server answer when no slug-filed pin says otherwise', async () => {
+      const storage = memoryStorage();
+
+      expect(await admitEncryptionMode(target, 'server', async () => ['api'], storage)).toBe(true);
+      expect(readModePins(storage)[key]?.mode).toBe('server');
+    });
+
+    it('asks for the slug only when it could matter', async () => {
+      const storage = memoryStorage();
+      const slugs = vi.fn(async () => ['api']);
+
+      // An `e2ee` answer is pinned as it stands — already the strictest entry.
+      expect(await admitEncryptionMode(target, 'e2ee', slugs, storage)).toBe(true);
+      // And an address with a pin of its own has its answer already.
+      expect(await admitEncryptionMode(target, 'server', slugs, storage)).toBe(false);
+      expect(slugs).not.toHaveBeenCalled();
+    });
+
+    it('fails, rather than believes server, when the slug cannot be learnt', async () => {
+      const storage = memoryStorage();
+      recordModePin('mode:acme/api/production', 'e2ee', storage);
+
+      await expect(
+        admitEncryptionMode(
+          target,
+          'server',
+          () => Promise.reject(new Error('project held back')),
+          storage,
+        ),
+      ).rejects.toThrow('project held back');
+      expect(readModePins(storage)[key]).toBeUndefined();
     });
   });
 
@@ -690,7 +851,7 @@ describe('the client secret IO', () => {
   const context = {
     orgSlug: 'acme',
     orgId: ORG_ID,
-    projectSlug: 'api',
+    projectId: 'api',
     envSlug: 'production',
   };
 
@@ -855,7 +1016,7 @@ describe('import and export, client-side', () => {
   const context = {
     orgSlug: 'acme',
     orgId: ORG_ID,
-    projectSlug: 'api',
+    projectId: 'api',
     envSlug: 'production',
   };
 
@@ -1024,7 +1185,7 @@ describe('the in-flight crypto guard', () => {
   const context = {
     orgSlug: 'acme',
     orgId: ORG_ID,
-    projectSlug: 'api',
+    projectId: 'api',
     envSlug: 'production',
   };
 
@@ -1186,7 +1347,7 @@ describe('the in-flight crypto guard', () => {
     releaseEnvKeys();
 
     const outcome = await rotateEnvironment({
-      target: { orgSlug: 'acme', projectSlug: 'api', envSlug: 'production' },
+      target: { orgSlug: 'acme', projectId: 'api', envSlug: 'production' },
       vault,
       material,
       plan: planRotation({
@@ -1212,7 +1373,7 @@ describe('the in-flight crypto guard', () => {
 });
 
 describe('sealing against a key that moved', () => {
-  const target = { orgSlug: 'acme', projectSlug: 'api', envSlug: 'production' };
+  const target = { orgSlug: 'acme', projectId: 'api', envSlug: 'production' };
 
   it('re-reads, re-seals against the active key, and retries once', async () => {
     // ── The stale snapshot this closes ──

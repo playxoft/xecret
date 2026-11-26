@@ -82,6 +82,8 @@ export type { InviteKeyStepProps } from './invite-key-step';
 export { PendingSharesBanner } from './pending-shares';
 
 export {
+  admitEncryptionMode,
+  carryModePinsForward,
   checkPin,
   fingerprint,
   modeIsAllowed,

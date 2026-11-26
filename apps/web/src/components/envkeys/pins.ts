@@ -212,13 +212,26 @@ function defaultStorage(): Storage | null {
  * migration this whole branch exists to perform, and it takes capability away
  * from the server rather than granting it.
  *
- * ── Why the slug path is the key, and not `environmentId` ──
- * The id arrives in the same response as the mode, so a server willing to lie
- * about one would file its lie under a fresh id and miss the pin entirely. The
- * slug path is what *this browser* put in the URL. It is renameable, and a
- * rename loses the pin — which reads as first contact and permits the answer,
- * over-permitting in a rare and deliberate case rather than under-permitting on
- * every page load.
+ * ── Why the address is the key, and not `environmentId` ──
+ * The environment's id arrives in the same response as the mode, so a server
+ * willing to lie about one would file its lie under a fresh id and miss the pin
+ * entirely. The address is what *this browser* put in the URL — the
+ * organisation's slug, the project's id and the environment's slug, exactly as
+ * the dashboard names a project page. The project is filed by id because that
+ * is what the URL holds; it arrived in an earlier response (the listing the
+ * link came from) than the mode does, which is the property the rule needs. An
+ * environment slug is renameable, and a rename loses the pin — which reads as
+ * first contact and permits the answer, over-permitting in a rare and
+ * deliberate case rather than under-permitting on every page load.
+ *
+ * ── Pins filed before projects were named by id ──
+ * The book used to file the project by slug, because that was what the URL
+ * held. Those pins are not thrown away: {@link carryModePinsForward} copies
+ * them across to the id — from the slug this browser itself held wherever it
+ * still has one — and {@link admitEncryptionMode}, which every reader of the
+ * book goes through, does so before a `server` answer is believed. An
+ * environment this browser has seen encrypted stays pinned through the change
+ * of address.
  */
 
 /** Separate from the key book: a different record shape, kept in a different key. */
@@ -233,13 +246,129 @@ export interface ModePin {
 
 export type ModePinStore = Readonly<Record<string, ModePin>>;
 
-/** How a mode pin is filed. The slug path, never an id the server chose. */
+/**
+ * How a mode pin is filed: the address the URL names the environment by —
+ * never an id that arrived with the mode.
+ */
 export function modePinKey(target: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }): string {
-  return `mode:${target.orgSlug}/${target.projectSlug}/${target.envSlug}`;
+  return `mode:${target.orgSlug}/${target.projectId}/${target.envSlug}`;
+}
+
+/**
+ * Copies the mode pins one project's environments were given under a slug —
+ * the key before project addresses named the id — to the same environments
+ * under `projectId`.
+ *
+ * ── Which slug, and which id ──
+ * A copy can never weaken the book: an entry is written only where the id has
+ * none, or has `server` while the slug says `e2ee` — the one upgrade the book
+ * itself permits — and nothing is ever removed. What a copy *can* be made to do
+ * is miss. Looked up under a slug the server chose, it finds nothing whenever
+ * the server answers a slug other than the one this browser filed the pin
+ * under, and the id is then at first contact: the downgrade this book exists to
+ * refuse, let through by a copy that did nothing. Written to an id the server
+ * chose, it lands somewhere the page never reads. So:
+ *
+ *  - `projectId` is the id **the page reads under** — the one in its URL, or
+ *    the one an old address is about to be replaced with.
+ *  - `slugs` lead with the spelling **this browser** filed under, wherever it
+ *    has one: the slug in an old address's URL, exactly as typed. The server's
+ *    own slug may follow it. A second source can only add strictness, so it is
+ *    always safe to pass, and it covers the ordinary case where the browser
+ *    holds no slug of its own.
+ *
+ * Matched without regard to case, because slugs are `citext`: an address typed
+ * as `/app/acme/Payments-API/…` reached the same project, and filed its pins
+ * under that spelling.
+ *
+ * ── What is left ──
+ * On a cold load of an id address the browser holds no slug at all, so the
+ * server's is the only one there is, and a server that lies about it makes the
+ * copy miss. That is first contact for that address — the same exposure the
+ * very first visit to any environment has had all along, and no wider.
+ *
+ * One read and at most one write, however many environments and slugs.
+ */
+export function carryModePinsForward(
+  orgSlug: string,
+  projectId: string,
+  slugs: readonly string[],
+  storage: Storage | null = defaultStorage(),
+): void {
+  const prefixes = [
+    ...new Set(
+      slugs
+        .filter((slug) => slug !== '' && slug.toLowerCase() !== projectId.toLowerCase())
+        .map((slug) => `mode:${orgSlug}/${slug}/`.toLowerCase()),
+    ),
+  ];
+  if (prefixes.length === 0) return;
+
+  const pins = readModePins(storage);
+  const target = `mode:${orgSlug}/${projectId}/`;
+
+  const carried: Record<string, ModePin> = {};
+  for (const [key, pin] of Object.entries(pins)) {
+    const prefix = prefixes.find(
+      (candidate) => key.slice(0, candidate.length).toLowerCase() === candidate,
+    );
+    if (prefix === undefined) continue;
+
+    const forward = `${target}${key.slice(prefix.length)}`;
+    // Against what this pass has already carried as well as the book, so two
+    // spellings of one slug land as the stricter of the two.
+    const current = carried[forward] ?? pins[forward];
+    if (current === undefined || (current.mode === 'server' && pin.mode === 'e2ee')) {
+      carried[forward] = pin;
+    }
+  }
+
+  if (Object.keys(carried).length === 0) return;
+  writeRecord(MODE_STORAGE_KEY, { ...pins, ...carried }, storage);
+}
+
+/**
+ * Whether the mode the server just claimed for an environment may be used —
+ * pinning it if so — with the environment's slug-filed pins carried across
+ * *before* that is decided.
+ *
+ * ── Why the carry is not left to the shell ──
+ * The shell copies a project's pins when its trail lands, but nothing makes the
+ * trail land first: on a cold load the key state can arrive before it, and a
+ * server that wanted the downgrade would make sure it did — answer the keys at
+ * once, hold the trail back, and the page records `server` under an id that
+ * has never been pinned, and never looks again. So every reader asks here, and
+ * here the carry is awaited.
+ *
+ * Only for a `server` answer at an address with no pin of its own, because
+ * that is the only answer a slug-filed pin could refuse: an `e2ee` answer is
+ * pinned as it stands, which is already the strictest entry there is, and an
+ * address with a pin has its answer already. `projectSlugs` is therefore asked
+ * at most once per environment per browser, and only when it can matter.
+ *
+ * A `projectSlugs` that rejects rejects this too, and the caller treats it as
+ * an error. A server that could withhold the project to skip the carry would
+ * otherwise have found the way round it.
+ */
+export async function admitEncryptionMode(
+  target: { orgSlug: string; projectId: string; envSlug: string },
+  mode: EncryptionMode,
+  projectSlugs: () => Promise<readonly string[]>,
+  storage: Storage | null = defaultStorage(),
+): Promise<boolean> {
+  const key = modePinKey(target);
+
+  if (mode === 'server' && readModePins(storage)[key] === undefined) {
+    carryModePinsForward(target.orgSlug, target.projectId, await projectSlugs(), storage);
+  }
+
+  if (!modeIsAllowed(readModePins(storage), key, mode).allowed) return false;
+  recordModePin(key, mode, storage);
+  return true;
 }
 
 /** Reads the mode book. Every failure is an empty book — see {@link readPins}. */

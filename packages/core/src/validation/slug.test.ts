@@ -13,6 +13,13 @@ import {
   SLUG_MAX_LENGTH,
 } from './slug';
 import type { SlugProblem } from './slug';
+import { uuidv7 } from '../ids';
+
+/**
+ * A canonical UUID, which passes every structural rule a slug has: lowercase
+ * hex and hyphens, none leading, trailing or doubled.
+ */
+const UUID_SHAPED = '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
 
 describe('slugify', () => {
   it.each([
@@ -96,6 +103,7 @@ describe('checkSlug', () => {
     ['acme corp', 'invalidCharacters'],
     ['acme_corp', 'invalidCharacters'],
     ['settings', 'reserved'],
+    [UUID_SHAPED, 'uuidShaped'],
   ])('reports %s as %s', (slug, problem) => {
     const check = checkSlug(slug, SLUG_MAX_LENGTH);
 
@@ -142,6 +150,7 @@ describe('checkSlug', () => {
       'acme--corp',
       'settings',
       'availability',
+      UUID_SHAPED,
       'a'.repeat(ORGANIZATION_SLUG_MAX_LENGTH),
       'a'.repeat(ORGANIZATION_SLUG_MAX_LENGTH + 1),
       'a'.repeat(SLUG_MAX_LENGTH + 1),
@@ -217,21 +226,70 @@ describe('slugReferenceSchema', () => {
     }
   });
 
-  // `checkSlug` is `checkSlugShape` plus the list, and nothing else. A rule
-  // added to one that the other cannot see is the drift this pins.
+  // `checkSlug` is `checkSlugShape` plus the two claim rules — the UUID shape
+  // and the list — and nothing else. A rule added to one that the other cannot
+  // see is the drift this pins.
   it('is the only difference between the two checks', () => {
-    for (const slug of ['acme', 'playxoft', 'settings', '-acme', 'a--b', 'ACME', '']) {
+    for (const slug of ['acme', 'playxoft', 'settings', '-acme', 'a--b', 'ACME', '', UUID_SHAPED]) {
       const shape = checkSlugShape(slug, SLUG_MAX_LENGTH);
       const claim = checkSlug(slug, SLUG_MAX_LENGTH);
-      expect(claim, slug).toEqual(
-        shape.valid && isReservedSlug(slug)
+      const expected = !shape.valid
+        ? shape
+        : slug === UUID_SHAPED
           ? {
               valid: false,
-              problem: 'reserved',
-              message: 'That slug is reserved. Choose a different one.',
+              problem: 'uuidShaped',
+              message: 'A slug cannot be shaped like a UUID: that shape is how an id is written.',
             }
-          : shape,
-      );
+          : isReservedSlug(slug)
+            ? {
+                valid: false,
+                problem: 'reserved',
+                message: 'That slug is reserved. Choose a different one.',
+              }
+            : shape;
+      expect(claim, slug).toEqual(expected);
+    }
+  });
+
+  // A claim rule, like the list: a row that already holds such a slug is still
+  // addressable wherever it is referenced as one.
+  it('accepts a UUID-shaped slug as a reference', () => {
+    expect(slugReferenceSchema.safeParse(UUID_SHAPED).success).toBe(true);
+  });
+});
+
+/**
+ * A project is addressed by its id *or* its slug in the same path segment, and
+ * the two are told apart by shape — so no slug may ever take an id's shape.
+ */
+describe('a slug shaped like a UUID', () => {
+  it('is refused wherever a slug is claimed, with its own sentence', () => {
+    for (const slug of [UUID_SHAPED, uuidv7(), uuidv7()]) {
+      const check = checkSlug(slug, SLUG_MAX_LENGTH);
+      expect(check.valid, slug).toBe(false);
+      expect(check.valid === false && check.problem, slug).toBe('uuidShaped');
+      expect(slugSchema.safeParse(slug).success, slug).toBe(false);
+    }
+  });
+
+  it('can be reached from a name, and is refused there too', () => {
+    // `slugify` keeps a pasted id intact, so a project *named* after one
+    // derives the same refused slug rather than slipping past the rule.
+    expect(slugify(UUID_SHAPED.toUpperCase())).toBe(UUID_SHAPED);
+    expect(slugSchema.safeParse(slugify(UUID_SHAPED)).success).toBe(false);
+  });
+
+  it('leaves near misses alone, because only the canonical shape is an id', () => {
+    for (const slug of [
+      // One group short, one character long, and a non-hex letter.
+      '0193f2a1-7c3e-7d2a-9b1f',
+      `${UUID_SHAPED}0`,
+      '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7g',
+      // Hex, hyphenated, but not in the 8-4-4-4-12 grouping.
+      '0193f2a17c3e-7d2a-9b1f-2a3b-4c5d6e7f',
+    ]) {
+      expect(checkSlug(slug, SLUG_MAX_LENGTH), slug).toEqual({ valid: true });
     }
   });
 });

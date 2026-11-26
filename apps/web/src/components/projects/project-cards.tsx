@@ -33,7 +33,7 @@ export function ProjectCards({ orgSlug, projects }: ProjectCardsProps) {
       {projects.map((project) => (
         <li key={project.slug}>
           <Link
-            href={appPath.project(orgSlug, project.slug)}
+            href={appPath.project(orgSlug, project.id)}
             className="border-line bg-surface shadow-raised hover:border-line-strong hover:bg-surface-hover flex h-full flex-col rounded-xl border p-5 transition-colors"
           >
             <span className="text-fg truncate text-[0.9375rem] font-semibold tracking-tight">
@@ -84,7 +84,7 @@ export function ProjectRows({
       {projects.map((project) => (
         <li key={project.slug}>
           <Link
-            href={appPath.project(orgSlug, project.slug)}
+            href={appPath.project(orgSlug, project.id)}
             className="border-line bg-surface hover:border-line-strong hover:bg-surface-hover flex flex-col gap-1.5 rounded-xl border px-4 py-3 transition-colors lg:flex-row lg:items-center lg:gap-4"
           >
             <span className="min-w-0 lg:flex-1 xl:w-64 xl:flex-none">

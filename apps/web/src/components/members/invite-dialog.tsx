@@ -49,6 +49,8 @@ import type { InviteResponse } from './types';
 
 /** What the access tree needs to draw one project and its environments. */
 interface ProjectAccessOption {
+  /** The address its environments' keys are read and sealed through. */
+  id: string;
   name: string;
   slug: string;
   environments: { name: string; slug: string; isProduction: boolean }[];
@@ -201,7 +203,7 @@ function InviteFlow({
 
     (async () => {
       try {
-        const list = await api.get<{ projects: { name: string; slug: string }[] }>(
+        const list = await api.get<{ projects: { id: string; name: string; slug: string }[] }>(
           apiPath.projects(orgSlug),
         );
         const options = await Promise.all(
@@ -612,17 +614,31 @@ function InviteFlow({
 function grantTargets(
   grants: readonly { projectSlug: string; environmentSlug: string }[],
   projects: readonly ProjectAccessOption[],
-): { projectSlug: string; envSlug: string }[] {
-  const targets: { projectSlug: string; envSlug: string }[] = [];
+): GrantTarget[] {
+  const targets: GrantTarget[] = [];
 
   for (const grant of grants) {
     const project = projects.find((entry) => entry.slug === grant.projectSlug);
     if (project === undefined) continue;
 
-    targets.push({ projectSlug: project.slug, envSlug: grant.environmentSlug });
+    targets.push({
+      projectId: project.id,
+      projectSlug: project.slug,
+      envSlug: grant.environmentSlug,
+    });
   }
 
   return targets;
+}
+
+/**
+ * One environment to seal to the invitation: addressed by the project's id, as
+ * every environment is, and named by its slug in a failure the inviter reads.
+ */
+interface GrantTarget {
+  projectId: string;
+  projectSlug: string;
+  envSlug: string;
 }
 
 /**
@@ -643,7 +659,7 @@ async function sealInviteGrants(params: {
   vault: Parameters<typeof sealInviteGrant>[0]['vault'] | null;
   invitationId: string;
   fragmentSeed: Bytes;
-  targets: readonly { projectSlug: string; envSlug: string }[];
+  targets: readonly GrantTarget[];
 }): Promise<string[]> {
   const failed: string[] = [];
   if (params.vault === null) return params.targets.map((target) => target.envSlug);
@@ -651,7 +667,7 @@ async function sealInviteGrants(params: {
   for (const target of params.targets) {
     const ref = {
       orgSlug: params.orgSlug,
-      projectSlug: target.projectSlug,
+      projectId: target.projectId,
       envSlug: target.envSlug,
     };
 

@@ -4,7 +4,7 @@ import { EnvironmentPolicySettings } from '../../../../../../_components/environ
 
 export async function generateMetadata({
   params,
-}: PageProps<'/app/[orgSlug]/[projectSlug]/[envSlug]/settings/policy'>): Promise<Metadata> {
+}: PageProps<'/app/[orgSlug]/[projectId]/[envSlug]/settings/policy'>): Promise<Metadata> {
   const { envSlug } = await params;
   return { title: `${envSlug} policy` };
 }

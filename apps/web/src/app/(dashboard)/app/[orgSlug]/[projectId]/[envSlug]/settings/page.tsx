@@ -4,7 +4,7 @@ import { EnvironmentGeneralSettings } from '../../../../../_components/environme
 
 export async function generateMetadata({
   params,
-}: PageProps<'/app/[orgSlug]/[projectSlug]/[envSlug]/settings'>): Promise<Metadata> {
+}: PageProps<'/app/[orgSlug]/[projectId]/[envSlug]/settings'>): Promise<Metadata> {
   const { envSlug } = await params;
   return { title: `${envSlug} settings` };
 }

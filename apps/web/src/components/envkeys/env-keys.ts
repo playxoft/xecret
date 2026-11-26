@@ -54,15 +54,19 @@ import type {
  * testable with fabricated keys and no React.
  */
 
-/** Where an environment lives, as the API addresses it. */
+/**
+ * Where an environment lives, as the dashboard addresses it: the organisation
+ * by slug, the project by id, the environment by slug — the segments of its
+ * page's URL, and of the API routes behind it.
+ */
 export interface EnvironmentRef {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
 }
 
 export function keysPath(target: EnvironmentRef): string {
-  return `${apiPath.environment(target.orgSlug, target.projectSlug, target.envSlug)}/keys`;
+  return `${apiPath.environment(target.orgSlug, target.projectId, target.envSlug)}/keys`;
 }
 
 export function recipientsPath(target: EnvironmentRef): string {
@@ -519,7 +523,7 @@ async function reSealAll(params: {
         await api.post(
           grantsPath({
             orgSlug: params.orgSlug,
-            projectSlug: grant.projectSlug,
+            projectId: grant.projectId,
             envSlug: grant.environmentSlug,
           }),
           {

@@ -50,7 +50,7 @@ export interface DashboardNavParams {
    * projects index included. Read for one thing: "Projects" stays highlighted
    * while you are inside one of them.
    */
-  projectSlug: string | null;
+  projectId: string | null;
   /**
    * The viewer's membership of the current organisation — its authority is
    * what decides the admin-only items — or `null` while the session is still
@@ -64,7 +64,7 @@ export interface DashboardNavParams {
 /** The nav itself, without the memo — what `useDashboardNav` renders. */
 export function dashboardNav({
   orgSlug,
-  projectSlug,
+  projectId,
   viewer,
 }: DashboardNavParams): readonly NavSection[] {
   // Reachable only for an account with no memberships at all — which the
@@ -100,7 +100,7 @@ export function dashboardNav({
           // `/app/{org}/…` too. The URL has already said which kind of page
           // this is, so outside a project the match is exact, and inside one
           // the prefix is what keeps "Projects" lit.
-          exact: projectSlug === null,
+          exact: projectId === null,
         },
         {
           href: appPath.members(orgSlug),
@@ -147,13 +147,10 @@ export function dashboardNav({
 
 export function useDashboardNav({
   orgSlug,
-  projectSlug,
+  projectId,
   viewer,
 }: DashboardNavParams): readonly NavSection[] {
   // Memoised because `useNavShortcuts` rebuilds its key map whenever the nav's
   // identity changes, and the chrome re-renders on every navigation.
-  return useMemo(
-    () => dashboardNav({ orgSlug, projectSlug, viewer }),
-    [orgSlug, projectSlug, viewer],
-  );
+  return useMemo(() => dashboardNav({ orgSlug, projectId, viewer }), [orgSlug, projectId, viewer]);
 }

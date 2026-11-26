@@ -61,7 +61,7 @@ export interface OverridesCardProps {
   orgSlug: string;
   /** From the session. An AAD component of every override, so nothing opens without it. */
   orgId: string | null;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
   /** From the environment's key state. `null` while it is still being read. */
   environmentId: string | null;
@@ -178,7 +178,7 @@ export function setOverrideGate({
 export function OverridesCard({
   orgSlug,
   orgId,
-  projectSlug,
+  projectId,
   envSlug,
   environmentId,
   encryptionMode,
@@ -188,10 +188,10 @@ export function OverridesCard({
   const vault = useVaultKeys();
   const { toast } = useToast();
   const e2ee = encryptionMode === 'e2ee';
-  const target: OverrideTarget = { orgSlug, projectSlug, envSlug };
+  const target: OverrideTarget = { orgSlug, projectId, envSlug };
 
   const list = useApiResource<OverrideListResponse>(
-    e2ee ? apiPath.overrides(orgSlug, projectSlug, envSlug) : null,
+    e2ee ? apiPath.overrides(orgSlug, projectId, envSlug) : null,
   );
 
   const [removing, setRemoving] = useState<StoredOverride | null>(null);

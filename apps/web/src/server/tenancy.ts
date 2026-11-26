@@ -12,6 +12,7 @@ import {
   entitlementsFromRow,
   findEnvironmentBySlug,
   findOrganizationBySlugWithEntitlements,
+  findProjectById,
   findProjectBySlug,
   loadAuthorizationContext,
 } from '@xecret/db/repositories';
@@ -24,6 +25,7 @@ import type {
 import type { CredentialSignIn, Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
+import { isUuid } from './schemas/ids';
 
 /**
  * Resolving a request path into an authorized scope.
@@ -36,10 +38,11 @@ import { errors } from './errors';
  * breach).
  *
  * Every resolver below returns `not_found` for anything the caller may not see:
- * a slug in another organisation, a project they hold no grant on, an
- * environment outside a service token's pin. They are indistinguishable from a
- * genuinely absent resource on purpose. Answering `forbidden` would confirm the
- * resource exists, which is a directory of another tenant's projects.
+ * a slug in another organisation, another organisation's project id, a project
+ * they hold no grant on, an environment outside a service token's pin. They are
+ * indistinguishable from a genuinely absent resource on purpose. Answering
+ * `forbidden` would confirm the resource exists, which is a directory of
+ * another tenant's projects.
  */
 
 export interface OrgScope {
@@ -218,14 +221,36 @@ function bindScope(services: ServiceContext, fields: Record<string, string>): vo
   services.bindLog(fields);
 }
 
-/** Resolves a project within an already-resolved organisation. */
+/**
+ * Resolves a project within an already-resolved organisation, by its id or by
+ * its slug.
+ *
+ * ── Why either ──
+ * The dashboard names a project by its id (`/app/{org}/{projectId}/…`), so an
+ * address never spells out what a project is called, and calls the API with
+ * the segment its own URL holds. The CLI, `.xecret.yaml` and every CI configuration name it by slug, and
+ * must keep working unchanged. One segment serves both, told apart by shape: a
+ * canonical lowercase UUID is an id, anything else is a slug. No slug can take
+ * that shape — `checkSlug` refuses one at creation — so the reading is never
+ * ambiguous; and an id is never retried as a slug, so a segment means one thing
+ * whichever lookup answers it.
+ *
+ * ── Why an id is no shortcut past the tenancy chain ──
+ * The id is accepted only here, beneath an organisation this principal has
+ * already been resolved into, and `findProjectById` filters on that
+ * organisation's id as well as the project's. Another tenant's project id is
+ * therefore exactly the `not_found` an unknown slug is — same branch, same
+ * answer — and the service-token pin below applies to both spellings.
+ */
 export async function resolveProject(
   scope: OrgScope,
-  slug: string,
+  segment: string,
   services: ServiceContext,
 ): Promise<ProjectScope> {
-  const project = await findProjectBySlug(services.db, scope.organization.id, slug);
-  if (!project) throw errors.notFound('no project with slug in organisation');
+  const project = isUuid(segment)
+    ? await findProjectById(services.db, scope.organization.id, segment)
+    : await findProjectBySlug(services.db, scope.organization.id, segment);
+  if (!project) throw errors.notFound('no project with that id or slug in organisation');
 
   // A service token is pinned to one project. Reaching any other through it is
   // refused here rather than left to `can()`, so the blast radius of a leaked CI
@@ -278,6 +303,13 @@ export async function resolveEnvironment(
  * Routes call these rather than chaining the three above, so the sequence — and
  * therefore the tenancy chain — cannot be assembled in the wrong order or with a
  * level skipped.
+ *
+ * `projectSlug` is the route folder's name, `[projectSlug]`, and it holds the
+ * project's slug *or its id* — whichever the caller addressed it by; see
+ * `resolveProject`. The folder keeps the name it has always had because every
+ * route below it, and every client that calls one, is unaffected by which of the
+ * two arrives: the resolved scope carries the project row, and the routes read
+ * `scope.project.slug` for anything they record.
  */
 export async function resolveProjectPath(
   principal: Principal,

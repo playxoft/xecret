@@ -316,8 +316,8 @@ describe('every section is a page, and every page is a section', () => {
 
   it('in an environment’s settings', () => {
     const groups = environmentSettingsSections(ENV_SETTINGS, member('owner'));
-    expect(existsSync(`${app}[orgSlug]/[projectSlug]/[envSlug]/settings/page.tsx`)).toBe(true);
-    expect(pageFolders('[orgSlug]/[projectSlug]/[envSlug]/settings')).toEqual(
+    expect(existsSync(`${app}[orgSlug]/[projectId]/[envSlug]/settings/page.tsx`)).toBe(true);
+    expect(pageFolders('[orgSlug]/[projectId]/[envSlug]/settings')).toEqual(
       sectionFolders(groups, ENV_SETTINGS),
     );
   });

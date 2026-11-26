@@ -57,7 +57,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
   };
 });
 
-const context = { orgSlug: 'acme', orgId: ORG_ID, projectSlug: 'api', envSlug: 'production' };
+const context = { orgSlug: 'acme', orgId: ORG_ID, projectId: 'api', envSlug: 'production' };
 let material: EnvKeyMaterial;
 
 beforeEach(() => {

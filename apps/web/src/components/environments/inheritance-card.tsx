@@ -66,13 +66,13 @@ import { protectionCrossingWarning } from './protection-crossing';
  */
 export function InheritanceCard({
   orgSlug,
-  projectSlug,
+  projectId,
   environment,
   canManage,
   onChanged,
 }: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   environment: EnvironmentDetail;
   /** Whether the viewer holds `environment.update`. The server still decides. */
   canManage: boolean;
@@ -81,7 +81,7 @@ export function InheritanceCard({
   const { toast } = useToast();
   // The project listing, for the siblings: each one's name, mode and parent.
   // The environment's own detail carries its parent's slug and nothing else.
-  const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectSlug));
+  const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectId));
 
   const [choice, setChoice] = useState<string>('');
   const [confirming, setConfirming] = useState<'set' | 'clear' | null>(null);
@@ -111,7 +111,7 @@ export function InheritanceCard({
     setError(null);
     try {
       await api.put<EnvironmentChangeResponse>(
-        apiPath.environmentParent(orgSlug, projectSlug, environment.slug),
+        apiPath.environmentParent(orgSlug, projectId, environment.slug),
         { parent: next, ...(confirmCrossesProtection ? { confirmCrossesProtection: true } : {}) },
       );
       toast({

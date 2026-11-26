@@ -25,6 +25,17 @@ That omission is the IDOR bug this product cannot afford (threat T2).
 The cost is one join per level. It is paid once per request and is the reason the read path
 budget is expressed in queries, not in convenience.
 
+**One exception, and it keeps the chain:** the project segment takes the project's **id** as well
+as its slug. The dashboard names a project page by id — `/app/{orgSlug}/{projectId}/{envSlug}` —
+so an address never spells out what a project is called, and it calls the API with the segment
+its own URL holds; the CLI, `.xecret.yaml` and CI keep naming
+projects by slug, unchanged. The two are told apart by shape: a canonical lowercase UUID is an id,
+anything else a slug, and no slug may be shaped like a UUID (`checkSlug` refuses one at creation),
+so a segment never means two things. The id is still read only *beneath* its organisation and
+looked up with the organisation's id in the `WHERE` clause (`resolveProject` → `findProjectById`):
+another organisation's project id is the same `not_found` as a slug that does not exist, and a
+service token's pin applies to both spellings. There is no route keyed by a bare project id.
+
 ---
 
 ## 2. Authentication
@@ -651,7 +662,7 @@ The acceptance response carries the invitation's own sealed grants, **read-only*
   "role": "developer",
   "invitationId": "…",
   "inviteKeyGrants": [
-    { "environmentId": "…", "projectSlug": "…", "environmentSlug": "…",
+    { "environmentId": "…", "projectId": "…", "projectSlug": "…", "environmentSlug": "…",
       "envDataKeyId": "…", "edkVersion": 3, "edkSealed": "xk2.x25519.…",
       "ehkSealed": "xk2.x25519.…" }
   ]
@@ -825,6 +836,11 @@ Dodo still bills is refused (**409**) until its subscription is cancelled.
 |---|---|
 | `GET` `POST` | `/api/orgs/{orgSlug}/projects` |
 | `GET` `PATCH` `DELETE` | `/api/orgs/{orgSlug}/projects/{projectSlug}` |
+
+`{projectSlug}` here and in every route beneath it is the project's slug **or its id** (see §1).
+Every project payload carries `id` beside `slug`, and the listing is where the dashboard's project
+links are built from; audit metadata keeps naming projects by slug whichever spelling the request
+used.
 
 **A project arrives with its three default environments, and every one of them is end-to-end
 encrypted** — so `POST` carries the key hierarchy for all three:

@@ -27,8 +27,10 @@ import { authorize, resolveProjectPath } from '@/server/tenancy';
  * One project: its detail, its editable fields, and its removal.
  *
  * `resolveProjectPath` walks organisation then project in that order, so a
- * project slug from another tenant is `not_found` before any permission is
- * consulted, and a service token cannot reach past the project it is pinned to.
+ * project slug — or a project id — from another tenant is `not_found` before
+ * any permission is consulted, and a service token cannot reach past the
+ * project it is pinned to. The segment takes either: the dashboard addresses a
+ * project by its id, the CLI by its slug (see `resolveProject`).
  */
 
 type Params = { orgSlug: string; projectSlug: string };

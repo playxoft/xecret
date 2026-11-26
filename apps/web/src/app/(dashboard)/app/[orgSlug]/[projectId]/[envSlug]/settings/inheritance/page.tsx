@@ -4,7 +4,7 @@ import { EnvironmentInheritanceSettings } from '../../../../../../_components/en
 
 export async function generateMetadata({
   params,
-}: PageProps<'/app/[orgSlug]/[projectSlug]/[envSlug]/settings/inheritance'>): Promise<Metadata> {
+}: PageProps<'/app/[orgSlug]/[projectId]/[envSlug]/settings/inheritance'>): Promise<Metadata> {
   const { envSlug } = await params;
   return { title: `${envSlug} inheritance` };
 }
