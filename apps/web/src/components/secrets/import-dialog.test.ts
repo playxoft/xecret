@@ -25,7 +25,7 @@ function render(): string {
       null,
       createElement(ImportDialog, {
         orgSlug: 'acme',
-        projectSlug: 'api',
+        projectId: 'api',
         envSlug: 'staging',
         isProduction: false,
         io: null,

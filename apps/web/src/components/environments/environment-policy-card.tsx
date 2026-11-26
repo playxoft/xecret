@@ -70,13 +70,13 @@ type Pending = 'export' | 'alerts' | 'reset' | null;
  */
 export function EnvironmentPolicyCard({
   orgSlug,
-  projectSlug,
+  projectId,
   environment,
   canManage,
   onChanged,
 }: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   environment: EnvironmentDetail;
   /** Whether the viewer holds `environment.update`. The server still decides. */
   canManage: boolean;
@@ -86,7 +86,7 @@ export function EnvironmentPolicyCard({
   const policies = useOrgPolicies(orgSlug);
   const sightings = useApiResource<ReadSightingsResponse>(
     canManage
-      ? withQuery(apiPath.readSightings(orgSlug, projectSlug, environment.slug), {
+      ? withQuery(apiPath.readSightings(orgSlug, projectId, environment.slug), {
           limit: SIGHTINGS_LIMIT,
         })
       : null,
@@ -115,7 +115,7 @@ export function EnvironmentPolicyCard({
     setError(null);
     try {
       await api.patch<EnvironmentChangeResponse>(
-        apiPath.environmentPolicy(orgSlug, projectSlug, environment.slug),
+        apiPath.environmentPolicy(orgSlug, projectId, environment.slug),
         body,
       );
       toast({ variant: 'success', title });

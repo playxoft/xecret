@@ -69,6 +69,7 @@ function render(org: SessionOrganization, environments: readonly Environment[] =
       createElement(ProjectActions, {
         orgSlug: 'acme',
         project: {
+          id: '018f3f6a-0000-7000-8000-000000000a01',
           name: 'API',
           slug: 'api',
           description: null,
@@ -250,6 +251,7 @@ describe('the Edit description item', () => {
 });
 
 const PROJECT = {
+  id: '018f3f6a-0000-7000-8000-000000000a01',
   name: 'API',
   slug: 'api',
   description: 'Everything that talks to Stripe.',

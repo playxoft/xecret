@@ -120,7 +120,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
             <Button variant="ghost" asChild>
               {/* `rel="noreferrer"` as well as `noopener`: without it the target
                   site is told which dashboard URL the user came from, and these
-                  paths carry organisation and project slugs. */}
+                  paths carry organisation slugs and project ids. */}
               <a
                 href="https://github.com/playxoft/xecret#how-it-works"
                 target="_blank"

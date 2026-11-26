@@ -58,6 +58,8 @@
     "check:unkeyed": "tsx scripts/check-unkeyed-environments.ts",
     "// check:server-encrypted": "Reports environments still on server-side encryption and the secrets they hold, which the privacy policy and terms name as the exception to 'xecret cannot read your secrets'. Nothing found means no stored value is one the server can open. Read-only, counts only: phase run --env Production -- npm run check:server-encrypted",
     "check:server-encrypted": "tsx scripts/check-server-encrypted-environments.ts",
+    "// check:uuid-slugs": "Reports projects whose slug is shaped like a UUID — which a project address now reads as an id, so the CLI could not reach such a project by slug. Creation refuses one from now on; this says whether any predates that. Read-only: phase run -- npm run check:uuid-slugs",
+    "check:uuid-slugs": "tsx scripts/check-uuid-shaped-slugs.ts",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test",
     "keygen": "tsx scripts/keygen.ts",
     "// icons": "Regenerates app/icon.svg, favicon.ico and apple-icon.png from the single mark in scripts/generate-icons.ts",

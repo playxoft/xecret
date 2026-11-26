@@ -4,7 +4,9 @@ import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
+import { isUuid } from '@xecret/core/ids';
 import { isApiError, SIGN_IN_PATH } from '@/lib/api';
+import { carryModePinsForward } from '@/components/envkeys';
 import { lockVault, VaultProvider } from '@/components/vault';
 import { AppShell, SignOutButton, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
@@ -85,7 +87,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const viewer = memberships?.find((organization) => organization.slug === navOrgSlug) ?? null;
   const nav = useDashboardNav({
     orgSlug: navOrgSlug,
-    projectSlug: location.projectSlug,
+    projectId: location.projectId,
     viewer,
   });
 
@@ -97,6 +99,20 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const refreshTrail = useCallback(() => {
     void reloadTrail();
   }, [reloadTrail]);
+
+  // The one read every project page shares, and so a place the mode pins this
+  // browser filed under a project's slug — before project addresses named the
+  // id — are carried across. Not the only one, and not the one a decision waits
+  // on: whoever reads a pin carries first (`admitEncryptionMode`), because
+  // nothing makes this trail land before the key state does.
+  const trailProject = trail.data?.project ?? null;
+  const trailOrgSlug = location.orgSlug;
+  const trailSegment = location.projectId;
+  useEffect(() => {
+    if (trailProject === null || trailOrgSlug === null || trailSegment === null) return;
+    const carry = trailCarry(trailSegment, trailProject);
+    carryModePinsForward(trailOrgSlug, carry.projectId, carry.slugs);
+  }, [trailProject, trailOrgSlug, trailSegment]);
 
   // ── Catching up with a lock ──
   //
@@ -336,8 +352,32 @@ export function trailPath(
   vault: VaultStatus | undefined,
 ): string | null {
   if (vault?.configured !== true || !vault.unlocked) return null;
-  if (location.orgSlug === null || location.projectSlug === null) return null;
-  return apiPath.project(location.orgSlug, location.projectSlug);
+  if (location.orgSlug === null || location.projectId === null) return null;
+  return apiPath.project(location.orgSlug, location.projectId);
+}
+
+/**
+ * Where the trail's read carries this browser's slug-filed mode pins: from
+ * which slugs, to which id.
+ *
+ * To the id **the URL holds**, which is the one every page here reads its pins
+ * under — never the id the trail's response names, which the server chose and
+ * no page reads. On an old address the URL holds the slug instead, which is the
+ * spelling the pins were filed under, so that leads; they go to the id the
+ * address is about to be replaced with.
+ *
+ * On an id address the browser holds no slug of its own, and the server's is
+ * all there is. A server that lies about it makes the copy miss, which leaves
+ * that address at first contact — the exposure any first visit has. See
+ * `carryModePinsForward`.
+ */
+export function trailCarry(
+  segment: string,
+  project: { id: string; slug: string },
+): { projectId: string; slugs: readonly string[] } {
+  return isUuid(segment)
+    ? { projectId: segment, slugs: [project.slug] }
+    : { projectId: project.id, slugs: [segment, project.slug] };
 }
 
 /** The display names the trail can show, each `null` until it is known. */
@@ -355,34 +395,38 @@ export interface TrailNames {
  * word twice in a row.
  *
  * Every crumb is labelled with its display name — "Payments API", not
- * `payments-api` — and links by slug, which is the identifier and belongs in
- * the URL. The trail used to show the project and environment by slug, so the
- * line above every project page named it by its identifier while the heading
- * under it used its name. Until a name is known — the first moment of a cold
- * load, or a project the viewer cannot read — the slug stands in.
+ * `payments-api` — and links by the address the URL uses: the organisation and
+ * the environment by slug, the project by id. The trail used to show the
+ * project and environment by slug, so the line above every project page named
+ * it by its identifier while the heading under it used its name. Until a name
+ * is known — the first moment of a cold load, or a project the viewer cannot
+ * read — the slug stands in, and for the project, whose segment is an id that
+ * should never be shown to a person, the word "Project" does.
  */
 export function buildBreadcrumbs(
   location: DashboardLocation,
   names: TrailNames,
 ): readonly BreadcrumbItem[] {
-  const { orgSlug, projectSlug, envSlug, isAccountArea, isAdminArea } = location;
+  const { orgSlug, projectId, envSlug, isAccountArea, isAdminArea } = location;
 
   if (isAccountArea) return [{ label: 'Account' }];
   if (isAdminArea) return [{ label: 'Admin' }];
   if (orgSlug === null) return [{ label: 'Organisations' }];
 
   const crumbs: BreadcrumbItem[] = [{ label: names.org ?? orgSlug, href: appPath.org(orgSlug) }];
-  if (projectSlug === null) return crumbs;
+  if (projectId === null) return crumbs;
 
   crumbs.push({
-    label: names.project ?? projectSlug,
-    href: appPath.project(orgSlug, projectSlug),
+    // An old address still carries the slug here for the moment before it is
+    // replaced, and a slug is fit to show; an id is not.
+    label: names.project ?? (isUuid(projectId) ? 'Project' : projectId),
+    href: appPath.project(orgSlug, projectId),
   });
   if (envSlug === null) return crumbs;
 
   crumbs.push({
     label: names.environment ?? envSlug,
-    href: appPath.environment(orgSlug, projectSlug, envSlug),
+    href: appPath.environment(orgSlug, projectId, envSlug),
   });
   return crumbs;
 }

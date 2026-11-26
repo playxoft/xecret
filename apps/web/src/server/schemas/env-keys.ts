@@ -458,12 +458,15 @@ export function toGrant(grant: EnvKeyGrantRecord): GrantPayload {
  * is stored (`claimInvitationId` on the grants endpoint), so the code can be
  * entered whenever it turns up.
  *
- * The two slugs travel with it because the invitee has no other view of this
- * organisation yet: they joined a moment ago, and the route they re-upload to
- * is addressed by slug.
+ * The project and environment travel with it because the invitee has no other
+ * view of this organisation yet: they joined a moment ago, and the route they
+ * re-upload to is addressed by the project's id and the environment's slug —
+ * the address the dashboard uses everywhere else. The project's slug comes too,
+ * for anything that names it to a person.
  */
 export interface InviteKeyGrantPayload {
   environmentId: string;
+  projectId: string;
   projectSlug: string;
   environmentSlug: string;
   envDataKeyId: string;
@@ -475,6 +478,7 @@ export interface InviteKeyGrantPayload {
 export function toInviteKeyGrant(grant: InvitationGrantRecord): InviteKeyGrantPayload {
   return {
     environmentId: grant.environmentId,
+    projectId: grant.projectId,
     projectSlug: grant.projectSlug,
     environmentSlug: grant.environmentSlug,
     envDataKeyId: grant.envDataKeyId,

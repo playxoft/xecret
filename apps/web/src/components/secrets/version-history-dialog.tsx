@@ -26,7 +26,7 @@ import type { SecretSummary, SecretVersion, SecretVersionListResponse } from './
 
 export interface VersionHistoryDialogProps {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
   isProduction: boolean;
   /**
@@ -82,7 +82,7 @@ const PAGE_SIZE = 100;
  */
 export function VersionHistoryDialog({
   orgSlug,
-  projectSlug,
+  projectId,
   envSlug,
   isProduction,
   secret,
@@ -113,7 +113,7 @@ export function VersionHistoryDialog({
    */
   const currentVersion = versions?.[0]?.version ?? secret.version;
 
-  const path = withQuery(apiPath.secretVersions(orgSlug, projectSlug, envSlug, secretName), {
+  const path = withQuery(apiPath.secretVersions(orgSlug, projectId, envSlug, secretName), {
     limit: PAGE_SIZE,
   });
 

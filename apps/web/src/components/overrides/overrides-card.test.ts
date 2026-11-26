@@ -67,7 +67,7 @@ function renderCard(encryptionMode: string | null = 'e2ee'): string {
       createElement(OverridesCard, {
         orgSlug: 'acme',
         orgId: 'org-1',
-        projectSlug: 'api',
+        projectId: 'api',
         envSlug: 'development',
         environmentId: 'env-1',
         encryptionMode,

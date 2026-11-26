@@ -30,7 +30,14 @@ import type { ExportFormat } from './types';
 
 export interface ExportDialogProps {
   orgSlug: string;
-  projectSlug: string;
+  /** The project segment of the address the download is fetched from. */
+  projectId: string;
+  /**
+   * What the refusal names the project by, as the server and the CLI do — or
+   * `null` while the project has not loaded, when it names the environment
+   * alone rather than print an id.
+   */
+  projectSlug: string | null;
   envSlug: string;
   isProduction: boolean;
   /**
@@ -63,9 +70,10 @@ export interface ExportDialogProps {
  *
  * Exported for the screens that refuse before the dialog is even opened.
  */
-export function exportDisabledSentence(projectSlug: string, envSlug: string): string {
+export function exportDisabledSentence(projectSlug: string | null, envSlug: string): string {
+  const where = projectSlug === null ? envSlug : `${projectSlug}/${envSlug}`;
   return (
-    `Plaintext export is disabled for ${projectSlug}/${envSlug} by its environment policy; ` +
+    `Plaintext export is disabled for ${where} by its environment policy; ` +
     'an owner or admin of the organisation can change it in the environment’s settings.'
   );
 }
@@ -136,6 +144,7 @@ export function ExportDialog({ open, onOpenChange, ...target }: ExportDialogProp
 
 function ExportBody({
   orgSlug,
+  projectId,
   projectSlug,
   envSlug,
   isProduction,
@@ -156,7 +165,7 @@ function ExportBody({
   const [refusedByBundle, setRefusedByBundle] = useState(false);
 
   const clientSide = io?.mode === 'e2ee';
-  const href = withQuery(apiPath.export(orgSlug, projectSlug, envSlug), { format });
+  const href = withQuery(apiPath.export(orgSlug, projectId, envSlug), { format });
   const selected = FORMATS.find((entry) => entry.value === format);
   const disabled = plaintextExport === 'disabled' || refusedByBundle;
   /**

@@ -34,11 +34,12 @@ const ORG_ID = '018f3f6a-0000-7000-8000-0000000000a1';
 const OTHER_ORG_ID = '018f3f6a-0000-7000-8000-0000000000a2';
 const ENVIRONMENT_ID = '018f3f6a-0000-7000-8000-0000000000b1';
 const OTHER_ENVIRONMENT_ID = '018f3f6a-0000-7000-8000-0000000000b2';
+const PROJECT_ID = '018f3f6a-0000-7000-8000-0000000000c1';
 const USER_ID = '018f3f6a-0000-7000-8000-0000000000d1';
 const OTHER_USER_ID = '018f3f6a-0000-7000-8000-0000000000d2';
 
-const TARGET = { orgSlug: 'acme', projectSlug: 'api', envSlug: 'dev' };
-const BASE = '/api/orgs/acme/projects/api/environments/dev/overrides';
+const TARGET = { orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'dev' };
+const BASE = `/api/orgs/acme/projects/${PROJECT_ID}/environments/dev/overrides`;
 
 const calls: { method: string; path: string; body: unknown }[] = [];
 const responses = new Map<string, unknown>();

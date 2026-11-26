@@ -2,16 +2,19 @@
  * Every address the dashboard uses: the pages a person navigates to, and the API
  * routes behind them.
  *
- * The two halves live together because they have to agree. `/app/{org}/{project}`
- * and `/api/orgs/{org}/projects/{project}` name the same resource, and a screen
+ * The two halves live together because they have to agree. `/app/{org}/{projectId}`
+ * and `/api/orgs/{org}/projects/{projectId}` name the same resource, and a screen
  * that reads one while linking to the other produces a 404 nobody notices until
- * somebody's slug is interesting.
+ * somebody's slug is interesting. The API's project segment takes the project's
+ * id or its slug (`resolveProject`), so a screen hands it whichever its own URL
+ * holds, and the CLI keeps addressing projects by slug.
  *
  * Two rules:
  *
- *  1. **Every segment is encoded.** Slugs and secret names are pattern-bound
- *     (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, `^[A-Za-z_][A-Za-z0-9_]*$`), so encoding is
- *     a no-op for every value that can legitimately arrive — which is precisely
+ *  1. **Every segment is encoded.** Ids, slugs and secret names are
+ *     pattern-bound (a canonical UUID, `^[a-z0-9]+(?:-[a-z0-9]+)*$`,
+ *     `^[A-Za-z_][A-Za-z0-9_]*$`), so encoding is a no-op for every value
+ *     that can legitimately arrive — which is precisely
  *     why it is unconditional rather than "where needed". The day a value gets
  *     here from a path that did not validate it, this is what keeps it inside
  *     its own segment.
@@ -89,11 +92,22 @@ export const appPath = {
   audit: (org: string): string => `/app/${segment(org)}/audit`,
   /** The invitation-acceptance page. Top-level: the visitor may have no session. */
   invite: (token: string): string => `/invite/${segment(token)}`,
-  project: (org: string, project: string): string => `${appPath.org(org)}/${segment(project)}`,
-  environment: (org: string, project: string, env: string): string =>
-    `${appPath.project(org, project)}/${segment(env)}`,
-  environmentSettings: (org: string, project: string, env: string): string =>
-    `${appPath.environment(org, project, env)}/settings`,
+  /**
+   * A project's pages, named by the project's **id** — never its slug.
+   *
+   * An id, so the address says nothing about what a project is called and is
+   * the same address for as long as the project exists: a bookmark, a link in
+   * a chat, a URL in an emailed digest. The organisation and the environment
+   * are still named by slug, as `xecret run --env` names an environment. An
+   * address from before projects were named this way still arrives — the page
+   * reads a slug-shaped segment as one and replaces the URL with
+   * `canonicalProjectAddress`.
+   */
+  project: (org: string, projectId: string): string => `${appPath.org(org)}/${segment(projectId)}`,
+  environment: (org: string, projectId: string, env: string): string =>
+    `${appPath.project(org, projectId)}/${segment(env)}`,
+  environmentSettings: (org: string, projectId: string, env: string): string =>
+    `${appPath.environment(org, projectId, env)}/settings`,
   account: (): string => '/app/settings/account',
   // The account area's other sections. There is no `settingsSecurity` any
   // more: `/app/settings/security` was one long page of five cards, and it is
@@ -205,6 +219,11 @@ export const apiPath = {
   token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
     `${apiPath.org(org)}/tokens/${kind}/${segment(tokenId)}`,
   audit: (org: string): string => `${apiPath.org(org)}/audit`,
+  /**
+   * One project, and everything below it. `project` is the project's id — what
+   * every dashboard address holds — or its slug, which is all some payloads
+   * carry; the API resolves either, within the organisation (`resolveProject`).
+   */
   project: (org: string, project: string): string => `${apiPath.projects(org)}/${segment(project)}`,
   environments: (org: string, project: string): string =>
     `${apiPath.project(org, project)}/environments`,
@@ -335,7 +354,9 @@ export function withQuery(
  * `settings` is unambiguous at both places it appears. At the first position it
  * is `/app/settings/account`, and no organisation can shadow it because
  * `settings` is in the reserved slug list; at the second it is the organisation
- * settings page, and no project can shadow it for the same reason.
+ * settings page, and nothing in the project slot can shadow it — an id never
+ * spells a word, and the slug an old address carries there is barred from the
+ * list for the same reason.
  *
  * `admin` at the first position is the admin page, by the same reasoning. Read
  * as a slug it would point the whole shell at an organisation called "admin" —
@@ -344,7 +365,14 @@ export function withQuery(
  */
 export interface DashboardLocation {
   orgSlug: string | null;
-  projectSlug: string | null;
+  /**
+   * The project segment as the URL spells it: the project's id at every address
+   * the dashboard builds, or — for a moment, on an address from before projects
+   * were named by id — its slug, which the page then replaces with the id. Both
+   * reach the same project through the API, so nothing reading this has to know
+   * which it holds; nothing should show it to a person either.
+   */
+  projectId: string | null;
   envSlug: string | null;
   /** `/app/settings/**` — scoped to the person, not to an organisation. */
   isAccountArea: boolean;
@@ -356,7 +384,7 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   const [root, first, second, third] = pathname.split('/').filter(Boolean);
   const empty: DashboardLocation = {
     orgSlug: null,
-    projectSlug: null,
+    projectId: null,
     envSlug: null,
     isAccountArea: false,
     isAdminArea: false,
@@ -366,17 +394,53 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   if (first === 'settings') return { ...empty, isAccountArea: true };
   if (first === 'admin') return { ...empty, isAdminArea: true };
 
-  // Org-level pages that occupy the slot a project slug would. All four names
-  // are in the reserved slug list, so no project can ever shadow one — which is
-  // what makes this a lookup rather than a guess.
+  // Org-level pages that occupy the slot a project would. All four names are in
+  // the reserved slug list and none is shaped like an id, so no project can
+  // ever shadow one — which is what makes this a lookup rather than a guess.
   const orgPage =
     second === 'settings' || second === 'members' || second === 'tokens' || second === 'audit';
 
   return {
     orgSlug: decodeURIComponent(first),
-    projectSlug: second === undefined || orgPage ? null : decodeURIComponent(second),
+    projectId: second === undefined || orgPage ? null : decodeURIComponent(second),
     envSlug: third === undefined || orgPage ? null : decodeURIComponent(third),
     isAccountArea: false,
     isAdminArea: false,
   };
+}
+
+/**
+ * Where a project page reached by an old address belongs: the same page, named
+ * by the project's id, with everything after it kept — the environment, the
+ * `settings` beneath it, the query string and the fragment.
+ *
+ * ── Why an old address has to keep working ──
+ * Until project pages were named by id they were named by slug, and those
+ * addresses are in bookmarks, browser history, chat threads and every read-alert
+ * digest ever sent. A link that 404s because the product changed its mind about
+ * URLs is a broken promise to whoever saved it. So a slug-shaped segment is
+ * looked up as a slug (the API still takes one) and the address is *replaced*
+ * — not pushed, so Back does not return to a page that only redirects.
+ *
+ * Only the project segment changes. The rest is taken from the address as it
+ * stands rather than rebuilt from parsed parts, so a sub-path this function has
+ * never heard of — a settings anchor, a future tab — survives the move too.
+ *
+ * `null` when the path is not a project page at all, which no caller should
+ * reach: it is the answer for an address the redirect has no business touching.
+ */
+export function canonicalProjectAddress(
+  location: { pathname: string; search: string; hash: string },
+  projectId: string,
+): string | null {
+  if (parseDashboardPath(location.pathname).projectId === null) return null;
+
+  // `['', 'app', org, project, …rest]` — the leading slash is the empty first
+  // element, so the project is the fourth. Checked rather than assumed: a path
+  // `parseDashboardPath` reads leniently (a doubled slash) must not have some
+  // other segment overwritten.
+  const segments = location.pathname.split('/');
+  if (segments[0] !== '' || segments[1] !== 'app' || !segments[3]) return null;
+  segments[3] = segment(projectId);
+  return `${segments.join('/')}${location.search}${location.hash}`;
 }

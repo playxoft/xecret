@@ -29,7 +29,7 @@ import type { CreateEnvironmentResponse } from './types';
 
 export interface CreateEnvironmentDialogProps {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   /** Used to place the new environment at the end of the existing order. */
   nextSortOrder: number;
   open: boolean;
@@ -85,7 +85,7 @@ function validateEnvironmentSlug(slug: string): string | null {
  */
 export function CreateEnvironmentDialog({
   orgSlug,
-  projectSlug,
+  projectId,
   nextSortOrder,
   open,
   onOpenChange,
@@ -101,7 +101,7 @@ export function CreateEnvironmentDialog({
             effect that clears them a render too late. */}
         <CreateEnvironmentForm
           orgSlug={orgSlug}
-          projectSlug={projectSlug}
+          projectId={projectId}
           nextSortOrder={nextSortOrder}
           onOpenChange={onOpenChange}
           onCreated={onCreated}
@@ -114,14 +114,14 @@ export function CreateEnvironmentDialog({
 
 function CreateEnvironmentForm({
   orgSlug,
-  projectSlug,
+  projectId,
   nextSortOrder,
   onOpenChange,
   onCreated,
   onSubmittingChange,
 }: {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   nextSortOrder: number;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
@@ -190,7 +190,7 @@ function CreateEnvironmentForm({
 
     try {
       const created = await api.post<CreateEnvironmentResponse>(
-        apiPath.environments(orgSlug, projectSlug),
+        apiPath.environments(orgSlug, projectId),
         {
           id: environmentId,
           name: trimmedName,

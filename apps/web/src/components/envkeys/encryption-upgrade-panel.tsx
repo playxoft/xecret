@@ -86,7 +86,7 @@ const automaticAttempts = new Set<string>();
 const automaticFailures = new Set<string>();
 
 function attemptKey(target: EnvironmentRef): string {
-  return `${target.orgSlug}/${target.projectSlug}/${target.envSlug}`;
+  return `${target.orgSlug}/${target.projectId}/${target.envSlug}`;
 }
 
 export function EncryptionUpgradePanel({
@@ -110,12 +110,12 @@ export function EncryptionUpgradePanel({
     latestUpgraded.current = onUpgraded;
   }, [onUpgraded]);
 
-  const { orgSlug, projectSlug, envSlug } = target;
+  const { orgSlug, projectId, envSlug } = target;
 
   useEffect(() => {
     if (!canManage) return;
     const controller = new AbortController();
-    fetchUpgradePreview({ orgSlug, projectSlug, envSlug }, { signal: controller.signal })
+    fetchUpgradePreview({ orgSlug, projectId, envSlug }, { signal: controller.signal })
       .then((answer) => {
         if (controller.signal.aborted) return;
         setPreview(answer);
@@ -127,13 +127,13 @@ export function EncryptionUpgradePanel({
         if (!controller.signal.aborted) setPreviewFailed(true);
       });
     return () => controller.abort();
-  }, [canManage, orgSlug, projectSlug, envSlug, attempt]);
+  }, [canManage, orgSlug, projectId, envSlug, attempt]);
 
   // ── The automatic upgrade ──
   // Only from the banner placement, so one page cannot start it twice, and only
   // when the server's own preview says there is nothing to decide. "Running" is
   // derived rather than stored: eligible, and not already failed in this tab.
-  const key = attemptKey({ orgSlug, projectSlug, envSlug });
+  const key = attemptKey({ orgSlug, projectId, envSlug });
   const automaticRunning =
     placement === 'banner' &&
     preview !== null &&
@@ -149,7 +149,7 @@ export function EncryptionUpgradePanel({
     automaticAttempts.add(key);
 
     void runEncryptionUpgrade({
-      target: { orgSlug, projectSlug, envSlug },
+      target: { orgSlug, projectId, envSlug },
       orgId,
       vault,
       preview,
@@ -179,7 +179,7 @@ export function EncryptionUpgradePanel({
     vault,
     orgId,
     orgSlug,
-    projectSlug,
+    projectId,
     envSlug,
     environmentName,
     toast,

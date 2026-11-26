@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { apiPath, appPath, parseDashboardPath, withQuery } from './paths';
+import { apiPath, appPath, canonicalProjectAddress, parseDashboardPath, withQuery } from './paths';
 
 /**
  * The query builder every paginated screen composes its requests with.
@@ -73,11 +73,118 @@ describe('the plans page', () => {
   it('is read as an organisation page, not a project', () => {
     expect(parseDashboardPath(appPath.orgPlans('acme'))).toEqual({
       orgSlug: 'acme',
-      projectSlug: null,
+      projectId: null,
       envSlug: null,
       isAccountArea: false,
       isAdminArea: false,
     });
+  });
+});
+
+const PROJECT_ID = '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
+
+/**
+ * A project's pages are named by its id, so an address never says what a
+ * project is called. The organisation and the environment stay named by slug.
+ */
+describe('a project address', () => {
+  it('names the project by id, and the organisation and environment by slug', () => {
+    expect(appPath.project('acme', PROJECT_ID)).toBe(`/app/acme/${PROJECT_ID}`);
+    expect(appPath.environment('acme', PROJECT_ID, 'production')).toBe(
+      `/app/acme/${PROJECT_ID}/production`,
+    );
+    expect(appPath.environmentSettings('acme', PROJECT_ID, 'production')).toBe(
+      `/app/acme/${PROJECT_ID}/production/settings`,
+    );
+  });
+
+  it('is read back into the same three parts', () => {
+    expect(parseDashboardPath(`/app/acme/${PROJECT_ID}`)).toEqual({
+      orgSlug: 'acme',
+      projectId: PROJECT_ID,
+      envSlug: null,
+      isAccountArea: false,
+      isAdminArea: false,
+    });
+    expect(parseDashboardPath(`/app/acme/${PROJECT_ID}/production/settings`)).toEqual({
+      orgSlug: 'acme',
+      projectId: PROJECT_ID,
+      envSlug: 'production',
+      isAccountArea: false,
+      isAdminArea: false,
+    });
+  });
+
+  it('still reads an organisation page in the project slot as the organisation’s', () => {
+    for (const page of ['settings', 'members', 'tokens', 'audit']) {
+      expect(parseDashboardPath(`/app/acme/${page}`).projectId, page).toBeNull();
+    }
+  });
+
+  it('talks to the API with the same segment its URL holds', () => {
+    // The API takes the id or the slug, so the screens hand it whichever their
+    // own address carries — and the two halves of this module still agree.
+    expect(apiPath.environment('acme', PROJECT_ID, 'production')).toBe(
+      `/api/orgs/acme/projects/${PROJECT_ID}/environments/production`,
+    );
+  });
+});
+
+/**
+ * An address from before project pages were named by id: a bookmark, a chat
+ * link, an old read-alert digest. It must arrive, at the same page.
+ */
+describe('the address an old project link is replaced with', () => {
+  const at = (pathname: string, search = '', hash = '') => ({ pathname, search, hash });
+
+  it('swaps the slug for the id and keeps the environment and the page beneath it', () => {
+    expect(canonicalProjectAddress(at('/app/acme/payments-api'), PROJECT_ID)).toBe(
+      `/app/acme/${PROJECT_ID}`,
+    );
+    expect(canonicalProjectAddress(at('/app/acme/payments-api/production'), PROJECT_ID)).toBe(
+      `/app/acme/${PROJECT_ID}/production`,
+    );
+    expect(
+      canonicalProjectAddress(at('/app/acme/payments-api/production/settings'), PROJECT_ID),
+    ).toBe(`/app/acme/${PROJECT_ID}/production/settings`);
+  });
+
+  it('keeps the query string and the fragment exactly as they were', () => {
+    expect(
+      canonicalProjectAddress(
+        at('/app/acme/payments-api/production/settings', '?tab=keys&x=1', '#rotate-key'),
+        PROJECT_ID,
+      ),
+    ).toBe(`/app/acme/${PROJECT_ID}/production/settings?tab=keys&x=1#rotate-key`);
+  });
+
+  it('keeps a sub-path it has never heard of, and a trailing slash', () => {
+    expect(
+      canonicalProjectAddress(at('/app/acme/payments-api/production/some/later/tab/'), PROJECT_ID),
+    ).toBe(`/app/acme/${PROJECT_ID}/production/some/later/tab/`);
+  });
+
+  it('changes only the project segment — never the organisation, never an environment', () => {
+    // An organisation and an environment can share the project's slug; only
+    // the fourth segment moves.
+    expect(canonicalProjectAddress(at('/app/web/web/web'), PROJECT_ID)).toBe(
+      `/app/web/${PROJECT_ID}/web`,
+    );
+  });
+
+  it('touches nothing that is not a project page', () => {
+    for (const pathname of [
+      '/app',
+      '/app/acme',
+      '/app/acme/members',
+      '/app/acme/settings/billing',
+      '/app/settings/account',
+      '/app/admin',
+      '/invite/abc',
+      '//app/acme/payments-api',
+    ]) {
+      expect(canonicalProjectAddress(at(pathname), PROJECT_ID), pathname).toBeNull();
+    }
   });
 });
 
@@ -106,7 +213,7 @@ describe('the settings sections', () => {
     for (const path of [appPath.orgWebhooks('acme'), appPath.orgDanger('acme')]) {
       expect(parseDashboardPath(path), path).toEqual({
         orgSlug: 'acme',
-        projectSlug: null,
+        projectId: null,
         envSlug: null,
         isAccountArea: false,
         isAdminArea: false,
@@ -136,7 +243,7 @@ describe('the settings sections', () => {
       ),
     ).toEqual({
       orgSlug: 'acme',
-      projectSlug: 'payments-api',
+      projectId: 'payments-api',
       envSlug: 'production',
       isAccountArea: false,
       isAdminArea: false,
@@ -157,7 +264,7 @@ describe('the admin page', () => {
   it('is read as no organisation at all', () => {
     expect(parseDashboardPath(appPath.admin())).toEqual({
       orgSlug: null,
-      projectSlug: null,
+      projectId: null,
       envSlug: null,
       isAccountArea: false,
       isAdminArea: true,

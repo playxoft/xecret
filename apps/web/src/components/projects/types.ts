@@ -23,6 +23,12 @@ export interface Organization {
 }
 
 export interface Project {
+  /**
+   * The project's UUIDv7. What its dashboard address names it by
+   * (`appPath.project`), and what every screen inside it addresses the API
+   * with; the slug stays the identifier people type.
+   */
+  id: string;
   name: string;
   slug: string;
   description: string | null;

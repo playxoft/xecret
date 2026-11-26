@@ -38,7 +38,7 @@ function render(canManage: boolean): string {
       null,
       createElement(EnvironmentSettingsForm, {
         orgSlug: 'acme',
-        projectSlug: 'payments-api',
+        projectId: 'payments-api',
         environment: STAGING,
         canManage,
         onChanged: () => {},
@@ -99,7 +99,7 @@ describe('the environment’s deletion', () => {
         null,
         createElement(DeleteEnvironmentCard, {
           orgSlug: 'acme',
-          projectSlug: 'payments-api',
+          projectId: 'payments-api',
           environment: STAGING,
         }),
       ),

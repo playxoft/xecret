@@ -173,7 +173,16 @@ function CreateTokenFlow({
     event.preventDefault();
     if (submitting) return;
 
-    if (name.trim() === '' || projectSlug === '' || environmentSlugs.size === 0) {
+    // The chosen project's id, from the read that lists its environments — the
+    // address its key state is fetched from and its mode pin is filed under.
+    // Absent only before that read lands, when no environment can be ticked.
+    const projectId = project.data?.project.id;
+    if (
+      name.trim() === '' ||
+      projectSlug === '' ||
+      projectId === undefined ||
+      environmentSlugs.size === 0
+    ) {
       setFormError('Name the token and choose a project and at least one environment.');
       return;
     }
@@ -209,6 +218,7 @@ function CreateTokenFlow({
         minted.push(
           await mintServiceToken({
             orgSlug,
+            projectId,
             projectSlug,
             environmentSlug,
             name: name.trim(),

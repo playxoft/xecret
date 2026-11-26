@@ -92,7 +92,7 @@ const production = (archive: OpenedArchive) =>
 const ready = (environmentId: string): TargetState => ({
   status: 'ready',
   environmentId,
-  io: serverSecretIo({ orgSlug: 'acme', orgId: 'o', projectSlug: 'api', envSlug: 'x' }),
+  io: serverSecretIo({ orgSlug: 'acme', orgId: 'o', projectId: 'api', envSlug: 'x' }),
 });
 
 describe('the default mapping', () => {
@@ -173,7 +173,7 @@ describe('importing into an end-to-end-encrypted environment', () => {
       {
         orgSlug: 'acme',
         orgId: '0192f0a1-0000-7000-8000-0000000000e3',
-        projectSlug: 'api',
+        projectId: 'api',
         envSlug: 'production',
       },
       material,
@@ -220,7 +220,7 @@ describe('importing into an end-to-end-encrypted environment', () => {
     const io = serverSecretIo({
       orgSlug: 'acme',
       orgId: 'o',
-      projectSlug: 'api',
+      projectId: 'api',
       envSlug: 'legacy',
     });
 
@@ -234,7 +234,13 @@ describe('importing into an end-to-end-encrypted environment', () => {
 });
 
 describe('a target environment', () => {
-  const context = { orgSlug: 'acme', orgId: 'o', projectSlug: 'api', envSlug: 'production' };
+  const context = {
+    orgSlug: 'acme',
+    orgId: 'o',
+    projectId: '0192f0a1-0000-7000-8000-0000000000e9',
+    projectSlug: 'api',
+    envSlug: 'production',
+  };
   const keysAnswer = (encryptionMode: 'e2ee' | 'server', myGrant: unknown = null) => ({
     keys: {
       encryptionMode,
@@ -288,6 +294,21 @@ describe('a target environment', () => {
     const state = await ioForEnvironment(context);
     expect(state).toMatchObject({ status: 'unavailable', reason: 'downgraded' });
     expect(describeTarget(state as never)).toMatch(/changed its encryption mode/);
+  });
+
+  it('is refused as a downgrade on a pin filed under the project’s slug, before ids', async () => {
+    // The book as a browser left it before project addresses named the id, and
+    // no project page opened since — nothing has carried the pin to the id.
+    const store = withStorage();
+    store.set(
+      'xecret.pins.mode.v1',
+      JSON.stringify({
+        'mode:acme/api/production': { mode: 'e2ee', firstSeen: '2026-01-01T00:00:00Z' },
+      }),
+    );
+
+    answers.set('/keys', keysAnswer('server'));
+    expect(await ioForEnvironment(context)).toMatchObject({ reason: 'downgraded' });
   });
 
   it('says a locked vault is the problem when it is', async () => {
@@ -356,6 +377,7 @@ describe('the dialog', () => {
         onOpenChange: () => {},
         orgSlug: 'acme',
         orgId: 'o',
+        projectId: 'api',
         projectSlug: 'api',
         environments: [],
         onImported: () => {},
@@ -375,6 +397,7 @@ describe('the dialog', () => {
         onOpenChange: () => {},
         orgSlug: 'acme',
         orgId: 'o',
+        projectId: 'api',
         projectSlug: 'api',
         environments: [],
         onImported: () => {},

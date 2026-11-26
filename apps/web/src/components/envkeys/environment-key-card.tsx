@@ -41,7 +41,7 @@ import { useEnvironmentKeys } from './use-environment-keys';
  */
 export function EnvironmentKeyCard({
   orgSlug,
-  projectSlug,
+  projectId,
   envSlug,
   environmentName,
   isProduction,
@@ -56,7 +56,7 @@ export function EnvironmentKeyCard({
   const keys = useEnvironmentKeys({
     orgSlug,
     orgId: organization?.id ?? null,
-    projectSlug,
+    projectId,
     envSlug,
   });
   const [rotating, setRotating] = useState(false);
@@ -86,7 +86,7 @@ export function EnvironmentKeyCard({
           </Alert>
         ) : keys.state.status === 'server' ? (
           <EncryptionUpgradePanel
-            target={{ orgSlug, projectSlug, envSlug }}
+            target={{ orgSlug, projectId, envSlug }}
             orgId={organization?.id ?? null}
             environmentName={environmentName}
             isProduction={isProduction}
@@ -150,7 +150,7 @@ export function EnvironmentKeyCard({
 
             {material !== null && pendingCount > 0 ? (
               <PendingSharesBanner
-                target={{ orgSlug, projectSlug, envSlug }}
+                target={{ orgSlug, projectId, envSlug }}
                 material={material}
                 pendingCount={pendingCount}
                 onShared={keys.reload}
@@ -174,7 +174,7 @@ export function EnvironmentKeyCard({
 
       {material !== null ? (
         <RotationDialog
-          target={{ orgSlug, projectSlug, envSlug }}
+          target={{ orgSlug, projectId, envSlug }}
           material={material}
           environmentName={environmentName}
           isProduction={isProduction}

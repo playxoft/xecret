@@ -73,8 +73,17 @@ function organization(role: OrgRole): SessionOrganization {
   };
 }
 
+/** Each fixture project's id — what its card links to. */
+const IDS: Readonly<Record<string, string>> = {
+  web: '018f3f6a-0000-7000-8000-000000000a01',
+  api: '018f3f6a-0000-7000-8000-000000000a02',
+  renamed: '018f3f6a-0000-7000-8000-000000000a03',
+};
+
 function project(slug: string, updatedAt: string, createdAt = '2026-01-01T00:00:00.000Z') {
-  return { name: slug, slug, description: null, createdAt, updatedAt, environmentCount: 3 };
+  const id = IDS[slug];
+  if (id === undefined) throw new Error(`no fixture id for ${slug}`);
+  return { id, name: slug, slug, description: null, createdAt, updatedAt, environmentCount: 3 };
 }
 
 function render(): string {
@@ -88,9 +97,15 @@ function render(): string {
   );
 }
 
-/** The project hrefs, in the order they are drawn. */
+/**
+ * The projects linked to, in the order they are drawn — read back as slugs from
+ * the ids the links carry, so a link by slug would read as a missing project.
+ */
 function order(html: string): string[] {
-  return [...html.matchAll(/href="\/app\/acme\/([a-z-]+)"/g)].map((match) => match[1] ?? '');
+  const slugOf = new Map(Object.entries(IDS).map(([slug, id]) => [id, slug]));
+  return [...html.matchAll(/href="\/app\/acme\/([0-9a-f-]+)"/g)].map(
+    (match) => slugOf.get(match[1] ?? '') ?? `unknown:${match[1] ?? ''}`,
+  );
 }
 
 /** The opening tag of the button labelled `label`. */
@@ -148,6 +163,18 @@ describe('ProjectsScreen', () => {
     expect(order(html)).toEqual(['renamed', 'web', 'api']);
     expect(html).toContain('<ul class="flex flex-col gap-2">');
     expect(html).not.toContain('sm:grid-cols-2');
+  });
+
+  it('links each project by its id, never by its slug, in either layout', () => {
+    for (const view of ['grid', 'list'] as const) {
+      remembered.view = view;
+      const html = render();
+
+      expect(html, view).toContain(`href="/app/acme/${IDS['web']}"`);
+      // The slug is still shown — it is what people type — but never linked.
+      expect(html, view).not.toContain('href="/app/acme/web"');
+      expect(html, view).toContain('>web</span>');
+    }
   });
 
   it('says which projects arrived, and what a search covers, when the API held some back', () => {

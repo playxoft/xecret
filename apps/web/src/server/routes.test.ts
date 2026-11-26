@@ -569,11 +569,14 @@ describe('response shapes', () => {
     deletedAt: null,
   };
 
-  // A slug is scoped to its parent, so a path built from slugs carries the whole
-  // tenancy chain. Publishing an id invites a caller to address a resource
-  // without one.
-  it('addresses a project and an environment by slug, never by id', () => {
-    expect(Object.hasOwn(toProject(project), 'id')).toBe(false);
+  // A path still carries the whole tenancy chain. A project's id is published
+  // because the dashboard names a project page by it — and it is accepted only
+  // as the project segment *under* its organisation, looked up with that
+  // organisation's id (`resolveProject`), so it addresses nothing on its own.
+  // Nothing else that would let a caller skip a level is published: not the
+  // organisation's id on a project, not an environment's id or its parent's.
+  it('publishes a project’s own id, and no id that would let a path skip a level', () => {
+    expect(toProject(project).id).toBe(project.id);
     expect(Object.hasOwn(toProject(project), 'orgId')).toBe(false);
     expect(Object.hasOwn(toEnvironment(environment, null), 'id')).toBe(false);
     expect(Object.hasOwn(toEnvironment(environment, null), 'projectId')).toBe(false);

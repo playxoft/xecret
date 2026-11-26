@@ -49,7 +49,7 @@ import { useVaultKeys } from '@/components/vault';
 export interface RestorePointDialogProps {
   orgSlug: string;
   orgId: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
   environmentName: string;
   isProduction: boolean;
@@ -141,7 +141,7 @@ interface Previewed {
 function RestoreBody({
   orgSlug,
   orgId,
-  projectSlug,
+  projectId,
   envSlug,
   environmentName,
   isProduction,
@@ -152,7 +152,7 @@ function RestoreBody({
 }: Omit<RestorePointDialogProps, 'open'> & { onBusyChange: (busy: boolean) => void }) {
   const { toast } = useToast();
   const vault = useVaultKeys();
-  const target = { orgSlug, projectSlug, envSlug };
+  const target = { orgSlug, projectId, envSlug };
 
   const [instant, setInstant] = useState(anHourAgo);
   /**

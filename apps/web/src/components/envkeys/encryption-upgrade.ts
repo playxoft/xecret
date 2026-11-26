@@ -130,7 +130,7 @@ export interface UpgradeResult {
 }
 
 export function upgradePath(target: EnvironmentRef): string {
-  return `${apiPath.environment(target.orgSlug, target.projectSlug, target.envSlug)}/encryption-upgrade`;
+  return `${apiPath.environment(target.orgSlug, target.projectId, target.envSlug)}/encryption-upgrade`;
 }
 
 export function upgradeMaterialPath(target: EnvironmentRef): string {

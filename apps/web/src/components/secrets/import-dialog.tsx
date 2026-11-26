@@ -48,7 +48,7 @@ import type {
 
 export interface ImportDialogProps {
   orgSlug: string;
-  projectSlug: string;
+  projectId: string;
   envSlug: string;
   isProduction: boolean;
   /** How the environment is written. `null` when its key is unavailable. */
@@ -167,7 +167,7 @@ function ImportBody({
   onOpenChange,
   onImported,
   onApplyingChange,
-}: Omit<ImportDialogProps, 'open' | 'orgSlug' | 'projectSlug'> & {
+}: Omit<ImportDialogProps, 'open' | 'orgSlug' | 'projectId'> & {
   onApplyingChange: (applying: boolean) => void;
 }) {
   const { toast } = useToast();

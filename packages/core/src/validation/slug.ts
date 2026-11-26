@@ -1,8 +1,14 @@
 import * as z from 'zod/mini';
 
+import { isUuid } from '../ids';
+
 /**
  * Slugs identify organisations, projects and environments in URLs and in the
  * CLI (`xecret run --env production`). They must be machine-friendly and stable.
+ *
+ * A project's dashboard address names it by id rather than by slug, and its API
+ * routes take either — see `checkSlug` for the one rule that keeps the two
+ * from ever being confused.
  */
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -170,6 +176,7 @@ export type SlugProblem =
   | 'trailingHyphen'
   | 'doubleHyphen'
   | 'invalidCharacters'
+  | 'uuidShaped'
   | 'reserved';
 
 /**
@@ -270,10 +277,35 @@ export function checkSlugShape(slug: string, maxLength: number): SlugCheck {
  * with a 400 that named no field. A slug being *referenced* has already been
  * claimed — the reserved list has nothing left to decide. See
  * `checkSlugShape` and `slugReferenceSchema`.
+ *
+ * ── Why a slug may not be shaped like a UUID ──
+ * A project is addressed by its id or by its slug in the same path segment —
+ * `/app/{org}/{projectId}/…` in the dashboard, and either one under
+ * `/api/orgs/{org}/projects/` — and `resolveProject` tells them apart by shape
+ * alone: a canonical UUID is read as an id, anything else as a slug. That is
+ * only unambiguous while no slug can take the shape, which is what this rule
+ * keeps true. It costs nothing anybody would choose (36 characters of hex in
+ * the 8-4-4-4-12 pattern), and it is the only thing standing between a project
+ * slugged after another project's id and a URL that opens the wrong one.
+ *
+ * A claim rule beside the reserved list rather than a shape rule, for the
+ * reason that list is one: nothing refused such a slug before this, so a
+ * reference to a row already holding one is still shaped like a slug, and the
+ * lookups that only ever take a slug — a grant's project, the audit filter —
+ * still find it. A project address reads that shape as an id, though, so
+ * `scripts/check-uuid-shaped-slugs.ts` reports whether any such row exists.
  */
 export function checkSlug(slug: string, maxLength: number): SlugCheck {
   const shape = checkSlugShape(slug, maxLength);
   if (!shape.valid) return shape;
+
+  if (isUuid(slug)) {
+    return {
+      valid: false,
+      problem: 'uuidShaped',
+      message: 'A slug cannot be shaped like a UUID: that shape is how an id is written.',
+    };
+  }
 
   if (isReservedSlug(slug)) {
     return {

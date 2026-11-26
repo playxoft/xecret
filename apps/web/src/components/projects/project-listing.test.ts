@@ -21,6 +21,7 @@ import type { ProjectListItem } from './types';
 
 function project(fields: Partial<ProjectListItem> & { slug: string }): ProjectListItem {
   return {
+    id: `id-${fields.slug}`,
     name: fields.slug,
     description: null,
     createdAt: '2026-01-01T00:00:00.000Z',

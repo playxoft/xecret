@@ -4,7 +4,7 @@ import { EnvironmentDangerSettings } from '../../../../../../_components/environ
 
 export async function generateMetadata({
   params,
-}: PageProps<'/app/[orgSlug]/[projectSlug]/[envSlug]/settings/danger'>): Promise<Metadata> {
+}: PageProps<'/app/[orgSlug]/[projectId]/[envSlug]/settings/danger'>): Promise<Metadata> {
   const { envSlug } = await params;
   return { title: `Delete ${envSlug}` };
 }
