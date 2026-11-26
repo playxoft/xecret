@@ -12,6 +12,7 @@ import { parseQuery, parseWith } from './http';
 import {
   assertSlugImmutable,
   confirmationMatches,
+  DESCRIPTION_MAX_LENGTH,
   destructiveRequestSchema,
   environmentCreateSchema,
   environmentPatchSchema,
@@ -316,6 +317,33 @@ describe('patch schemas', () => {
         name: truncateName('A Very Long Organisation Name Indeed', ORGANIZATION_NAME_MAX_LENGTH),
       }).name.length,
     ).toBeLessThanOrEqual(ORGANIZATION_NAME_MAX_LENGTH);
+  });
+
+  /**
+   * The project page's "Edit description" sends the description and nothing
+   * else — never the name it was opened with, which would silently revert a
+   * rename made meanwhile. So a description on its own must be a whole patch.
+   */
+  it('accepts a project description on its own, set or cleared, trimmed', () => {
+    expect(parseWith(projectPatchSchema, { description: '  Payments, end to end. ' })).toEqual({
+      description: 'Payments, end to end.',
+    });
+    expect(parseWith(projectPatchSchema, { description: null })).toEqual({ description: null });
+  });
+
+  it('refuses a project description past the limit, on its own field', () => {
+    expect(
+      failingFields(projectPatchSchema, { description: 'x'.repeat(DESCRIPTION_MAX_LENGTH + 1) }),
+    ).toEqual(['description']);
+    expect(
+      parseWith(projectPatchSchema, { description: 'x'.repeat(DESCRIPTION_MAX_LENGTH) })
+        .description,
+    ).toHaveLength(DESCRIPTION_MAX_LENGTH);
+    // Measured after the trim, so padding cannot push a description over.
+    expect(
+      parseWith(projectPatchSchema, { description: ` ${'x'.repeat(DESCRIPTION_MAX_LENGTH)} ` })
+        .description,
+    ).toHaveLength(DESCRIPTION_MAX_LENGTH);
   });
 
   it('accepts the fields that can genuinely change', () => {

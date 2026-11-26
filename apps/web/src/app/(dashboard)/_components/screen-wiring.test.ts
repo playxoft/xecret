@@ -75,6 +75,131 @@ describe('a rename reaches the breadcrumb trail', () => {
   });
 });
 
+describe('the project’s Manage menu edits the description in place', () => {
+  // The open menu renders into a portal, which static markup never draws, so
+  // the placement is read off the source: directly under Rename, in the same
+  // group — no separator between them — and above Delete.
+  it('directly below Rename project, in its group', () => {
+    const text = source('../../../components/projects/project-actions.tsx');
+    const menu = text.slice(
+      text.indexOf('<DropdownMenuContent'),
+      text.indexOf('</DropdownMenuContent>'),
+    );
+
+    const rename = menu.indexOf('Rename project…');
+    const description = menu.indexOf('Edit description…');
+    const remove = menu.indexOf('Delete project…');
+    expect(rename).toBeGreaterThan(-1);
+    expect(description).toBeGreaterThan(rename);
+    expect(remove).toBeGreaterThan(description);
+
+    const between = menu.slice(rename, description + 'Edit description…'.length);
+    expect(between).not.toContain('DropdownMenuSeparator');
+    // Gated on its own flag, and opening its own dialog.
+    expect(between).toMatch(
+      /\{canEditDescription \? \(\s*<DropdownMenuItem onSelect=\{\(\) => setEditingDescription\(true\)\}>\s*Edit description…/,
+    );
+  });
+
+  it('through a dialog that tells the screen, so the heading re-reads', () => {
+    const text = source('../../../components/projects/project-actions.tsx');
+    const dialog = text.slice(text.indexOf('<EditDescriptionDialog'));
+    expect(attribute(dialog, 'open')).toBe('editingDescription');
+    expect(attribute(dialog, 'onSaved')).toBe('onChanged');
+  });
+
+  // `projectPatch` has tests of its own. What they cannot see is the rename
+  // form using it: sending it, rather than both fields as the dialog opened —
+  // which reverted a description saved meanwhile — and disabling Save on it.
+  it('the rename form sends only what changed, and Save waits for a change', () => {
+    const text = source('../../../components/projects/project-actions.tsx');
+    const form = text.slice(
+      text.indexOf('export function RenameProjectForm'),
+      text.indexOf('function EditDescriptionDialog'),
+    );
+    expect(form).toMatch(/const patch = projectPatch\(project, name, description\);/);
+    expect(form).toMatch(/const unchanged = Object\.keys\(patch\)\.length === 0;/);
+    expect(form).toMatch(/if \(submitting \|\| unchanged\) return;/);
+    expect(form).toMatch(/api\.patch\(apiPath\.project\(orgSlug, project\.slug\), patch\)/);
+    expect(form).toMatch(/<Button type="submit"[^>]*disabled=\{unchanged\}>\s*Save changes/);
+  });
+
+  // The heading is where the description is read; the project screen hands it
+  // whatever the project says, so a saved description shows on reload.
+  it('shown under the project’s heading', () => {
+    const screen = source('./project-screen.tsx');
+    expect(attribute(screen, 'description')).toBe('project.data?.project.description ?? undefined');
+  });
+});
+
+describe('the environment switcher', () => {
+  const screen = source('./environment-screen.tsx');
+
+  // A strip of its own, under the heading — not one more control in the
+  // heading's actions, where the legend has no room.
+  it('sits under the heading, not among its actions', () => {
+    expect(attribute(screen, 'actions')).not.toContain('<EnvironmentSwitcher');
+    expect(screen.indexOf('<EnvironmentSwitcher')).toBeGreaterThan(screen.indexOf('<PageHeader'));
+  });
+
+  // Every way the switcher takes an environment off the page — the Compare
+  // menu, a legend ×, "Stop comparing", a chord — goes through the screen's
+  // guard, which hears from the table how many compared cells are unsaved.
+  it('takes compared environments off through the guard that knows about unsaved cells', () => {
+    const switcher = screen.slice(screen.indexOf('<EnvironmentSwitcher'));
+    expect(attribute(switcher, 'onCompare')).toBe('toggleCompared');
+    expect(attribute(switcher, 'onStopComparing')).toBe('() => changeCompared([])');
+    expect(screen).toMatch(/function toggleCompared\(slug: string\) \{\s*changeCompared\(/);
+    expect(screen).toMatch(
+      /if \(drops && unsavedCompared > 0\) \{[\s\S]*?setPendingCompared\(\{ next, closing \}\);\s*return;/,
+    );
+    // And confirming applies exactly the comparison that was asked about.
+    expect(screen).toMatch(/setCompared\(pendingCompared\.next\);\s*setPendingCompared\(null\);/);
+
+    const table = screen.slice(screen.indexOf('<SecretTable'));
+    expect(attribute(table, 'onComparedUnsavedChange')).toBe('setUnsavedCompared');
+    const tableSource = source('../../../components/secrets/secret-table.tsx');
+    expect(tableSource).toMatch(
+      /onComparedUnsavedChange\?\.\(comparedUnsaved\);\s*return \(\) => onComparedUnsavedChange\?\.\(0\);/,
+    );
+  });
+
+  // Comparing used to be a shift-click nobody could find. It is a menu now, and
+  // a shifted click on a capsule is the browser's again.
+  it('does not take over a modified click', () => {
+    const switcher = source('../../../components/projects/environment-switcher.tsx');
+    expect(switcher).not.toMatch(/shiftKey/);
+    expect(switcher).not.toMatch(/onClick: \(event: MouseEvent/);
+  });
+});
+
+describe('the first personal override is set from the environment’s menu', () => {
+  // The card is drawn only once there is an override in it, so the way to the
+  // first one is the "Changes" menu, opening the dialog the card owns.
+  const screen = source('./environment-screen.tsx');
+
+  it('offered in every end-to-end encrypted environment', () => {
+    expect(screen).toMatch(/const offersOverride = keyFacts\?\.encryptionMode === 'e2ee';/);
+    expect(screen).toMatch(/\{canChangeInBulk \|\| offersOverride \? \(/);
+    expect(screen).toMatch(
+      /\{offersOverride \? \([\s\S]*?<DropdownMenuItem onSelect=\{\(\) => setOverrideFor\(''\)\}>[\s\S]*?Set a personal override…/,
+    );
+  });
+
+  it('opening the set dialog the card owns', () => {
+    const card = screen.slice(screen.indexOf('<OverridesCard'));
+    expect(attribute(card, 'setting')).toBe('overrideFor');
+    expect(attribute(card, 'onSettingChange')).toBe('setOverrideFor');
+    // And the dialog is mounted whether the card is drawn or not.
+    const component = source('../../../components/overrides/overrides-card.tsx');
+    const body = component.slice(component.indexOf('export function OverridesCard'));
+    expect(body.indexOf('{shown ? (')).toBeGreaterThan(-1);
+    expect(body.indexOf('<Dialog')).toBeGreaterThan(body.indexOf('</Card>'));
+    expect(body.indexOf('<ConfirmDialog')).toBeGreaterThan(body.indexOf('</Card>'));
+    expect(attribute(body, 'open')).toBe('setting !== null');
+  });
+});
+
 describe('the account menu offers the plans of the organisation on screen', () => {
   // The shell builds the link from the slug the switcher names — so "Upgrade
   // plan" can never open another tenant's plans — and hands it to the menu
