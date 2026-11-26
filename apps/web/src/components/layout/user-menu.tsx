@@ -17,6 +17,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  ExternalLinkIcon,
   LockIcon,
   LogOutIcon,
   MonitorIcon,
@@ -30,6 +31,9 @@ import {
 import { signOutAndLeave } from './sign-out';
 import { useTheme } from './theme-provider';
 
+/** The public pricing page the account menu's Upgrade item opens. */
+export const PRICING_PATH = '/pricing';
+
 export interface ShellUser {
   name: string;
   email: string;
@@ -39,11 +43,6 @@ export interface UserMenuProps {
   user: ShellUser;
   /** Adds an "Account settings" item when provided. */
   accountHref?: string;
-  /**
-   * Adds "Upgrade plan" when provided: the plans page of the organisation on
-   * screen. Absent where there is no organisation to upgrade.
-   */
-  upgradeHref?: string;
   /**
    * Adds "Admin" when provided: the page where xecret's own staff give an
    * organisation a free plan and issue promo codes. The shell hands it over
@@ -70,14 +69,7 @@ const THEME_ICONS: Record<ThemePreference, typeof SunIcon> = {
 
 const THEME_ORDER: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
-export function UserMenu({
-  user,
-  accountHref,
-  upgradeHref,
-  adminHref,
-  onLock,
-  className,
-}: UserMenuProps) {
+export function UserMenu({ user, accountHref, adminHref, onLock, className }: UserMenuProps) {
   const { preference, setPreference } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
   const [locking, setLocking] = useState(false);
@@ -146,24 +138,30 @@ export function UserMenu({
           </DropdownMenuItem>
         ) : null}
 
-        {upgradeHref ? (
-          <DropdownMenuItem
-            asChild
-            // Tinted at rest rather than only on hover, so it is found without
-            // being hunted for — and tinted rather than filled, so it reads as
-            // an offer beside the account items and not as the menu's
-            // primary action. The plans page it opens is for every member;
-            // only an owner is offered a checkout there.
-            className="bg-accent-tint text-accent-text data-[highlighted]:bg-surface-active data-[highlighted]:text-accent-text mt-0.5"
-          >
-            <Link href={upgradeHref}>
-              <UpgradeIcon className="size-4" />
-              <span className="font-medium">Upgrade plan</span>
-            </Link>
-          </DropdownMenuItem>
-        ) : null}
+        <DropdownMenuItem
+          asChild
+          // Tinted at rest rather than only on hover, so it is found without
+          // being hunted for — and tinted rather than filled, so it reads as
+          // an offer beside the account items and not as the menu's
+          // primary action.
+          className="bg-accent-tint text-accent-text data-[highlighted]:bg-surface-active data-[highlighted]:text-accent-text mt-0.5"
+        >
+          {/* The public pricing page, in a new tab (the owner's call): every
+              plan side by side, without leaving the work on screen. Always
+              offered — it needs no organisation, and on an installation that
+              sells nothing the page compares the plans without a price and
+              says why. The organisation's own plans page, with its checkout,
+              stays in its settings. A plain <a>, not <Link>: a new tab is a
+              new document, and the client router has nothing to do. */}
+          <a href={PRICING_PATH} target="_blank" rel="noopener noreferrer">
+            <UpgradeIcon className="size-4" />
+            <span className="flex-1 font-medium">Upgrade</span>
+            <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
+            <span className="sr-only">(opens the pricing page in a new tab)</span>
+          </a>
+        </DropdownMenuItem>
 
-        {accountHref || upgradeHref ? <DropdownMenuSeparator /> : null}
+        <DropdownMenuSeparator />
 
         {/* Its own group, below the account's and the organisation's items:
             it is about neither, and somebody who has it uses it rarely enough

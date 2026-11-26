@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import type { Metadata } from 'next';
-import { headers } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import Link from 'next/link';
 
 import {
@@ -52,6 +52,7 @@ import {
 import type { Cell, PricingPlanId } from '@/components/plans/pricing-content';
 import { cn } from '@/lib/cn';
 import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
+import { CSRF_COOKIE_NAME, POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import { takesPayments } from '@/server/billing/payments-live';
 
 /**
@@ -1526,8 +1527,46 @@ function PriceControls({ currencyMenu }: { currencyMenu: boolean }) {
   );
 }
 
+/**
+ * Where a visitor who already has an account goes to upgrade: the in-app plans
+ * page of their organisation, with its checkout (`/app?to=plans` picks the
+ * organisation — see `OrganizationsScreen`).
+ */
+const IN_APP_PLANS_PATH = `${POST_SIGN_IN_PATH}?to=plans`;
+
+/**
+ * Whether the visitor looks signed in — the CSRF cookie set beside the session
+ * on sign-in (`lib/session-hint.ts`). The account menu's Upgrade opens this
+ * page in a new tab, and a signed-in owner sent from here to `/sign-up` would
+ * be shown a form to make the account they already have. Only ever a choice of
+ * destination, never of what anybody may see: the page is the same document
+ * either way, and the dashboard behind either link authenticates on its own.
+ * Reading it costs nothing the route had left to give — it is already dynamic
+ * (`resolveInitialCurrency`).
+ */
+async function looksSignedIn(): Promise<boolean> {
+  try {
+    return (await cookies()).has(CSRF_COOKIE_NAME);
+  } catch {
+    return false;
+  }
+}
+
+/** A plan's button for this visitor: sign-up for a newcomer, the app for an account. */
+function ctaFor(plan: Plan, signedIn: boolean): Plan['cta'] {
+  if (!signedIn || plan.cta.external) return plan.cta;
+  if (plan.id === 'free') {
+    return { label: 'Open your dashboard', href: POST_SIGN_IN_PATH, external: false };
+  }
+  if (plan.id === 'pro' || plan.id === 'team') {
+    return { label: `Upgrade to ${plan.name}`, href: IN_APP_PLANS_PATH, external: false };
+  }
+  return plan.cta;
+}
+
 export default async function PricingPage() {
   const initialCurrency = await resolveInitialCurrency();
+  const signedIn = await looksSignedIn();
   const paymentsLive = await takesPayments();
   const currencyMenu = await currencyMenuShown();
   const faq = faqFor(paymentsLive);
@@ -1797,14 +1836,18 @@ export default async function PricingPage() {
                       variant={plan.recommended ? 'primary' : 'secondary'}
                       className="w-full"
                     >
-                      {plan.cta.external ? (
-                        <a href={plan.cta.href} target="_blank" rel="noreferrer noopener">
-                          {plan.cta.label}
+                      {ctaFor(plan, signedIn).external ? (
+                        <a
+                          href={ctaFor(plan, signedIn).href}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                        >
+                          {ctaFor(plan, signedIn).label}
                           <ExternalLinkIcon className="size-4" />
                         </a>
                       ) : (
-                        <Link href={plan.cta.href}>
-                          {plan.cta.label}
+                        <Link href={ctaFor(plan, signedIn).href}>
+                          {ctaFor(plan, signedIn).label}
                           <ArrowRightIcon className="size-4" />
                         </Link>
                       )}

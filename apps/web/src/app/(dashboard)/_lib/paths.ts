@@ -64,8 +64,9 @@ export const appPath = {
   orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
   /**
    * The plans, inside the app. Every member may read it; only an owner is
-   * offered a checkout from it. Where the account menu's "Upgrade plan" and
-   * every in-app "Compare plans" link go.
+   * offered a checkout from it. Where every in-app "Compare plans" link goes,
+   * and the public pricing page's buttons for a signed-in visitor (through
+   * `/app?to=plans`). The account menu's Upgrade opens the pricing page.
    *
    * Under `settings`, beside billing, rather than at `/app/{org}/upgrade`: that
    * is the slot a project slug takes, and claiming it would shadow any project
