@@ -12,6 +12,8 @@ export type { OrgSwitcherProps, ShellOrganization } from './org-switcher';
 export { PageHeader } from './page-header';
 export type { PageHeaderProps } from './page-header';
 
+export { SignOutButton, signOutAndLeave } from './sign-out';
+
 export { Sidebar } from './sidebar';
 export type { NavItem, NavSection, SidebarProps } from './sidebar';
 

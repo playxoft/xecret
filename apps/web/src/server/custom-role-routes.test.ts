@@ -71,6 +71,9 @@ const repositories = vi.hoisted(() => ({
   findVaultKeys: vi.fn(),
   updateMemberRole: vi.fn(),
   listGrantsForMember: vi.fn(),
+  // `/api/auth/me` asks whether the caller is one of xecret's admins (migration
+  // 0035); the stub database here cannot answer, and nobody here is one.
+  isPlatformAdmin: vi.fn(async () => false),
 }));
 
 vi.mock('./context', () => context);
@@ -1469,5 +1472,22 @@ describe('GET /api/auth/me — effective authority per organisation', () => {
       assignableRoles: [],
       definableBaseRoles: [],
     });
+  });
+
+  it('still answers when the admin lookup fails — "not an admin", never "could not load"', async () => {
+    // A database the admin tables have not reached yet (migration 0035 not
+    // applied) is the case that met this first: every page of the dashboard
+    // waited on this route, and the whole account failed to load over a flag
+    // that only decides whether the menu shows one link.
+    repositories.findVaultKeys.mockResolvedValue(null);
+    repositories.listOrganizationsForUser.mockResolvedValue([]);
+    repositories.isPlatformAdmin.mockRejectedValueOnce(
+      new Error('relation "platform_admins" does not exist'),
+    );
+
+    const response = await meRoute(request('GET', '/api/auth/me'), { params: Promise.resolve({}) });
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { admin: boolean }).admin).toBe(false);
   });
 });

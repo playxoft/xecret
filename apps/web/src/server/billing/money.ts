@@ -19,7 +19,7 @@ export const OVERAGE_RATE_TEXT =
  * units" (https://docs.dodopayments.com/integrations/datafast) — which is what
  * ISO 4217's digits, as `Intl` knows them, say too.
  */
-function fractionDigits(currency: string): number {
+export function fractionDigits(currency: string): number {
   try {
     return (
       new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions()
