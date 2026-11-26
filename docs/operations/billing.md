@@ -148,6 +148,14 @@ second trial. Only trials of the deployment's own mode count — a staging rehea
 live trial. What it does not stop: a second person's account (an accomplice, a new address),
 which the per-account organisation ceiling bounds but nothing here can tell apart.
 
+A trial **on its way** counts too. A trial is recorded only when its snapshot arrives, and a
+checkout stays attachable for a week, so a checkout that may start one records its Dodo mode
+(`billing_checkouts.trial_mode`); while it is open — unspent and under a week old — it counts as a
+trial had, for the account that made it and for its organisation. Without that, one account opening
+checkouts for several organisations before paying any got a trial in each. The price: an owner who
+leaves a checkout unpaid and starts another for a different plan within the week gets no trial on
+the second; extend a trial in Dodo for them (§2, "How the row reads a trial") if they ask.
+
 **How the row reads a trial** (`readTrial` in `snapshot.ts`, the one statement of it — the
 status, the trial end, the period start, `metered_from`, the trial emails, the billing screen and
 the reconciler all follow it). The booked end is `created_at` plus `trial_period_days`; during an
@@ -396,7 +404,16 @@ Round 2 adds what only Dodo itself can answer — record what it does:
       - The change made again: a change-plan to Team monthly, quantity 5, `next_billing_date`,
         `prevent_change`, is accepted, and `GET` shows `scheduled_change` back — Team monthly,
         quantity 5, the same `effective_at` — and no `addons` lost (the request sends none, as
-        the billing screen's never has).
+        the billing screen's never has). Run this on an organisation **with the SAML add-on**
+        too, and write down `scheduled_change.addons` before the push and after the change is
+        made again: Dodo's `scheduled_change` carries addons, and the request that makes it
+        again sends none. If the add-on is gone from the scheduled change — or from the
+        subscription after the seat push — stop and raise it: the next renewal would drop SAML.
+      - A push Dodo does not answer: if you can make one time out (or answer a 5xx) while it
+        replaces a scheduled change, the next run must settle it by Dodo's own count before it
+        pushes anything — `billing_seat_syncs.reschedule_confirmed_at` set if Dodo bills the
+        pushed seats, the row cleared (and nothing scheduled again) if Dodo still bills the seats
+        from before with no scheduled change.
       - The audit log: `billing.seats_synced` ("billed now over a scheduled plan change") then a
         system `billing.plan_change_requested` ("made again after new seats were billed");
         `billing_seat_syncs` has no row for the organisation.
@@ -410,14 +427,21 @@ Round 2 adds what only Dodo itself can answer — record what it does:
       `next_billing_date` a month on. Write down what the checkout page says. (The request sends
       `subscription_data: { trial_period_days: 0 }`; Dodo documents 0 as allowed. Check too that
       the Team product's own description at Dodo does not promise a trial this checkout will not
-      give.)
+      give.) Then `GET` the subscription itself and confirm **`trial_period_days` is 0** on it —
+      not the product's 14. `readTrial` books a trial from the subscription's own
+      `trial_period_days`; were it 14 on a subscription that started paid, the row would read as
+      trialing to `created_at` + 14 days (the trial emails, no meter) until Dodo's next charge
+      moved past it. Also open checkouts for two fresh organisations by one owner before paying
+      either: the second checkout shows no trial (`billing_checkouts.trial_mode` is null on it).
 - [ ] **A trial that ends with no card — before live mode.** On a fresh organisation, start Team's
       trial without a card (if the product requires one, a card the test gateway declines), and
       let it reach its end — or move its next billing date to a few minutes on in Dodo, while
       `previous_billing_date` still equals `created_at` (§2). Write down: the status Dodo moves it
       to (`on_hold` expected), and whether `next_billing_date` stays at the trial's end. The
       two-day end rests on the second: `SELECT status, trial_ends_at, current_period_end,
-      on_hold_since FROM org_subscriptions WHERE org_id = '…'` must show `on_hold`,
+      on_hold_since FROM org_subscriptions WHERE org_id = '…'` must show `on_hold` (not
+      `past_due` — a past-due row is never ended at two days, and gets the ordinary dunning
+      email; the `payment.failed` email, sent before the status is known, assumes the hold),
       `current_period_end` within a day of `trial_ends_at`, and `on_hold_since` after it; the
       billing screen's banner names a date two days after the hold began, and the owners' email
       says 2 days. Were Dodo to move the next charge on at the hold, the row would read as a paid
@@ -510,7 +534,7 @@ stuck cause pages once, and a new subscription or product with the same cause pa
 | "An organisation's Dodo customer is held by another organisation too" | A shared customer from before checkouts forced one per organisation; the portal was refused | Give each organisation its own customer in Dodo and update the rows. |
 | "A subscription was on hold for N days and has been ended here" / "A trial ended without a payment and its subscription was on hold for N days" | Fourteen days unpaid — or two, for a trial that ended with nothing ever paid: the organisation is on Free | Cancel the subscription in Dodo, or leave it if the customer is about to pay (its next `active` event gives the plan back). |
 | "Seats added while a plan change is scheduled are not billed yet" | The reconciler found a seat increase still waiting for a scheduled plan change two hours after it was owed — the push could not be made over it (the change is due within a day, Dodo's `scheduled_change` named no product, or the replacing push was refused 409 for a pending payment-link change). Raised with the `seats` drift every night until it is billed | Look at the scheduled change in Dodo. If it is far off, cancel it there, let the hourly job push the seats, and schedule the change again at the new quantity — or talk to the owner. |
-| "A plan change the owner had scheduled was replaced when new seats were billed, and has failed N times to be made again" / "…and Dodo refused to schedule it again" / "…could not be made again before its date" / "…its product is no longer one this deployment sells" | A seat increase was billed over the owner's scheduled downgrade (`cancel_scheduled_change_plan`), and the downgrade could not be scheduled again — ten failures, or one refusal Dodo meant (raised at once: asking again cannot change it) — or not in time, and the subscription renewed on the plan the owner moved away from | Schedule the change in Dodo by hand (the product, the current quantity, at the next billing date) before the renewal. If the renewal already happened, talk to the owner: change the plan, and refund the difference if they ask. |
+| "A plan change the owner had scheduled was replaced when new seats were billed, and has failed N times to be made again" / "…and Dodo refused to schedule it again" / "…could not be made again before its date" / "…its product is no longer one this deployment sells" / "…the subscription has changed plan or billing cycle since" / "A seat push that replaced a plan change the owner had scheduled was never answered, and the subscription has moved since" | A seat increase was billed over the owner's scheduled downgrade (`cancel_scheduled_change_plan`), and the downgrade could not be scheduled again — ten failures, or one refusal Dodo meant (raised at once: asking again cannot change it) — or not in time, and the subscription renewed on the plan the owner moved away from | Schedule the change in Dodo by hand (the product, the current quantity, at the next billing date) before the renewal. If the renewal already happened, talk to the owner: change the plan, and refund the difference if they ask. |
 | "A Dodo subscription is on a product this deployment does not sell" | A `DODO_PRODUCT_*` is wrong, or a product was added in Dodo. From a webhook, per delivery; from the hourly job (a stale trial, a stranded checkout), once per subscription and product | Fix the variable; nothing was granted. The hourly job keeps asking, and applies the subscription on its first run after the fix. |
 | "Dodo reports a billing country … region-locked" / "billing country is not the country that issued its card" | The PPP guardrail (pricing-plan §4); raised once, when Dodo's report changes | Review the customer in Dodo. Nothing was changed automatically, deliberately. |
 | "Dodo refunded a payment" / "A cardholder opened a dispute" | Money moved back, or a chargeback, on a payment we invoiced — filed under its organisation. "…its customer is ours but the payment is not one we invoiced" is filed nowhere: ours with a gap in the invoice ledger, or another product's wearing a customer Dodo reused (§1, gaps (a) and (b)). Another product's refunds and chargebacks otherwise raise nothing | Respond in Dodo. Access is deliberately unchanged. For the unfiled one, find the payment in Dodo first: if it is another product's, there is nothing to do here. |
@@ -536,7 +560,8 @@ debt is dead-lettered and raised once; a new membership change makes it due agai
 
 ```sql
 SELECT org_id, generation, attempts, last_error, not_before, dead_lettered_at,
-       reschedule_product_id, reschedule_at
+       reschedule_product_id, reschedule_at, reschedule_from_product_id,
+       reschedule_from_seats, reschedule_to_seats, reschedule_confirmed_at
   FROM billing_seat_syncs ORDER BY queued_at;
 -- Retry a dead-lettered one by hand, once the cause is fixed:
 UPDATE billing_seat_syncs SET dead_lettered_at = NULL, attempts = 0, not_before = NULL
@@ -558,6 +583,18 @@ seats unbilled all that time, and Dodo renewing at the quantity the change reque
   already has a scheduled change (the push never applied, or somebody chose again). A failure to
   make it again is retried with the debt's backoff and raised at the cap; one whose date passed
   first is raised (the table above).
+- **Only onto the subscription it was owed for.** The debt records the product the subscription
+  was on (`reschedule_from_product_id`) and the seats before and after the push. A subscription on
+  another product, or whose next charge is more than a day from the owed date — the owner upgraded
+  since, and the cycle restarted — stands the change down, raised, rather than landing the old
+  downgrade on the new plan.
+- **A push Dodo did not answer may have applied.** Only a refusal (4xx) clears the owed change at
+  once. A timeout, a broken connection or any 5xx leaves it owed but unconfirmed
+  (`reschedule_confirmed_at` null), and the next sync settles it by Dodo's own word before it
+  pushes anything: a scheduled change still there, or no scheduled change with Dodo still billing
+  the seats from before, is a push that never applied — in the second case the owner withdrew the
+  change meanwhile, and it is not made again; Dodo billing the pushed seats on the same product is
+  one that did, and the change is made again. Anything else is raised.
 - **It waits instead**, as before — until an hour after the change takes effect — for a seat
   *decrease* (the customer pays for the seat until then, and is credited after), a change due
   within a day, a `scheduled_change` that names no product or one this deployment does not sell,
@@ -754,12 +791,16 @@ Migration **0036** (`0036_billing_trials_and_reschedules.sql`, from the security
 2026-11-25): the `billing_trials` table — a subscription that started on a free trial, with its
 organisation, the account whose checkout started it and its Dodo mode; read and insert only by
 grant, both references `ON DELETE SET NULL` so an organisation's purge never hands its owner a
-fresh trial — and two nullable columns on `billing_seat_syncs`, `reschedule_product_id` and
-`reschedule_at`: the scheduled plan change a seat push replaced, owed back to Dodo (§4,
-"Seat-sync debts"). Additive only. **Apply it before the build that reads it**: every applied
-subscription snapshot inserts into `billing_trials`, and every whole-row read of
-`billing_seat_syncs` names the new columns — the seat sync after every membership change, the
-hourly job and the reconciler. (Numbered 0036 because 0035 is the admin branch's, already applied
+fresh trial; `billing_checkouts.trial_mode` — the Dodo mode of a checkout that may start a trial,
+set by the insert (the application still updates only the two consumption columns), with a
+partial index on `created_by`; and six nullable columns on `billing_seat_syncs` —
+`reschedule_product_id`, `reschedule_at`, `reschedule_from_product_id`, `reschedule_from_seats`,
+`reschedule_to_seats`, `reschedule_confirmed_at`: the scheduled plan change a seat push replaced,
+owed back to Dodo, and what it was owed against (§4, "Seat-sync debts"). Additive only. **Apply it
+before the build that reads it**: every applied subscription snapshot inserts into
+`billing_trials`, every checkout writes `trial_mode`, and every whole-row read of
+`billing_seat_syncs` or `billing_checkouts` names the new columns — the seat sync after every
+membership change, the hourly job, the reconciler, checkout and the webhook. (Numbered 0036 because 0035 is the admin branch's, already applied
 to the shared database; its journal entry is dated after 0035's so the migrator still applies it
 there.)
 
@@ -783,7 +824,7 @@ there.)
 - **No card or invoice UI.** Dodo's customer portal is it.
 - **A subscription ended here after its hold — fourteen days, or two after a trial that ended
   with nothing paid — is not cancelled at Dodo.** The alert says so; a human decides.
-- **The terms still say fourteen days.** `app/terms/page.tsx` (shown only once payments are live)
-  says a subscription "still unpaid after 14 days on hold" returns to Free. A trial that ends with
-  nothing paid now does so after two. Amend that clause — a terms change, the owner's to make and
-  date — before switching `DODO_ENVIRONMENT` to `live_mode`.
+- **The terms say how trials work** (the version of 26 November 2026): one per organisation and
+  per account, and two days on hold for a trial that ends unpaid — in the clauses shown once
+  payments are live. If this build deploys after that date, move `UPDATED` and `EFFECTIVE` in
+  `app/terms/page.tsx` to the deploy day, as the comment beside them says.

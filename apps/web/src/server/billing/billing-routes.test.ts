@@ -612,6 +612,55 @@ describe('a free trial is had once', () => {
     expect(sent().withoutTrial).toBe(true);
   });
 
+  it('counts a trial on its way: checkouts opened in parallel, before any is paid, get one trial between them', async () => {
+    // One account opens Team checkouts for two new organisations at once.
+    const first = await seedOrg();
+    const owner = first.owner;
+    const secondId = randomUUID();
+    const secondSlug = `acme-${secondId.slice(0, 8)}`;
+    await t.pg.query(
+      `insert into organizations (id, name, slug, created_by) values ($1, 'Acme Two', $2, $3)`,
+      [secondId, secondSlug, owner.id],
+    );
+    await t.pg.query(`insert into org_subscriptions (org_id) values ($1)`, [secondId]);
+    await addMember(secondId, owner.id, 'owner');
+    caller = sessionOf(owner);
+
+    dodo.createCheckoutSession.mockResolvedValueOnce({
+      sessionId: 'cks_parallel_one',
+      url: 'https://test.checkout.dodopayments.com/session/1',
+    });
+    expect((await checkout(first.slug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
+    expect(sent()).not.toHaveProperty('withoutTrial');
+    expect((await findCheckout(t.db, 'cks_parallel_one'))?.trialMode).toBe('test_mode');
+
+    dodo.createCheckoutSession.mockResolvedValueOnce({
+      sessionId: 'cks_parallel_two',
+      url: 'https://test.checkout.dodopayments.com/session/2',
+    });
+    expect((await checkout(secondSlug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
+    expect(sent().withoutTrial).toBe(true);
+    expect((await findCheckout(t.db, 'cks_parallel_two'))?.trialMode).toBeNull();
+
+    // And a second open checkout for the first organisation — another choice,
+    // by another owner — gets none either.
+    const coOwner = await seedUser();
+    await addMember(first.orgId, coOwner.id, 'owner');
+    caller = sessionOf(coOwner);
+    sessionReady();
+    expect((await checkout(first.slug, { plan: 'team', interval: 'yearly' })).status).toBe(200);
+    expect(sent().withoutTrial).toBe(true);
+
+    // A week on, the first checkout can no longer attach: a trial is offered again.
+    await t.pg.query(
+      `update billing_checkouts set created_at = now() - interval '8 days' where org_id = $1`,
+      [first.orgId],
+    );
+    sessionReady();
+    expect((await checkout(first.slug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
+    expect(sent()).not.toHaveProperty('withoutTrial');
+  });
+
   it('lets the product’s own trial apply otherwise — a first trial, or one had only in the other Dodo mode', async () => {
     const first = await seedOrg();
     sessionReady();

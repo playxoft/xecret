@@ -637,6 +637,8 @@ export async function recordCheckout(
     quantity: number;
     createdBy: string | null;
     nonce: string;
+    /** The Dodo mode, when the checkout may start a free trial; `null` (the default) when not. */
+    trialMode?: 'test_mode' | 'live_mode' | null;
   },
 ): Promise<void> {
   // The same session recorded twice is one checkout; the same nonce on two is
@@ -789,12 +791,22 @@ export async function recordTrial(
  * before it lets Dodo start another. An address belongs to one account for
  * good (`users.email` is unique across deleted accounts too), so the account
  * is the person.
+ *
+ * "Had" includes one on its way: an open checkout — unspent, made since
+ * `openSince` — that may start a trial (`trial_mode`), by this account or for
+ * this organisation. A trial is recorded only when its snapshot arrives, and a
+ * checkout stays attachable for a week, so without it one account opening
+ * checkouts for several organisations before paying any would get a trial in
+ * each; and one organisation with two open checkouts could attach the second
+ * once the first trial was cancelled. The price: an owner who leaves one
+ * checkout unpaid and starts another for a different plan within the week gets
+ * no trial on the second (support can extend one in Dodo).
  */
 export async function trialAlreadyUsed(
   exec: Executor,
-  query: { orgId: string; userId: string; mode: 'test_mode' | 'live_mode' },
+  query: { orgId: string; userId: string; mode: 'test_mode' | 'live_mode'; openSince: Date },
 ): Promise<boolean> {
-  const [row] = await exec
+  const [recorded] = await exec
     .select({ subscriptionId: billingTrials.subscriptionId })
     .from(billingTrials)
     .where(
@@ -804,7 +816,20 @@ export async function trialAlreadyUsed(
       ),
     )
     .limit(1);
-  return row !== undefined;
+  if (recorded !== undefined) return true;
+  const [open] = await exec
+    .select({ sessionId: billingCheckouts.sessionId })
+    .from(billingCheckouts)
+    .where(
+      and(
+        eq(billingCheckouts.trialMode, query.mode),
+        isNull(billingCheckouts.subscriptionId),
+        gt(billingCheckouts.createdAt, query.openSince),
+        or(eq(billingCheckouts.orgId, query.orgId), eq(billingCheckouts.createdBy, query.userId)),
+      ),
+    )
+    .limit(1);
+  return open !== undefined;
 }
 
 /* ── seat-sync debts ───────────────────────────────────────────────────────── */
@@ -942,26 +967,57 @@ export async function findSeatSync(exec: Executor, orgId: string): Promise<SeatS
  * about to replace (`cancel_scheduled_change_plan`) — **before** the push, so
  * an isolate lost between the push and the re-scheduling leaves the change
  * owed rather than forgotten. The debt is not paid while it is owed.
+ *
+ * With it, what the push is made against: the product the subscription is on
+ * (the change is made again only onto that), and the seats before and after
+ * (how Dodo's own count later tells a push that applied from one that did
+ * not). Unconfirmed until {@link confirmReschedule}.
  */
 export async function oweReschedule(
   exec: Executor,
   orgId: string,
-  change: { productId: string; at: Date },
+  change: {
+    productId: string;
+    at: Date;
+    fromProductId: string;
+    fromSeats: number;
+    toSeats: number;
+  },
 ): Promise<void> {
+  const owed = {
+    rescheduleProductId: change.productId,
+    rescheduleAt: change.at,
+    rescheduleFromProductId: change.fromProductId,
+    rescheduleFromSeats: change.fromSeats,
+    rescheduleToSeats: change.toSeats,
+    rescheduleConfirmedAt: null,
+  };
   await exec
     .insert(billingSeatSyncs)
-    .values({ orgId, rescheduleProductId: change.productId, rescheduleAt: change.at })
-    .onConflictDoUpdate({
-      target: billingSeatSyncs.orgId,
-      set: { rescheduleProductId: change.productId, rescheduleAt: change.at },
-    });
+    .values({ orgId, ...owed })
+    .onConflictDoUpdate({ target: billingSeatSyncs.orgId, set: owed });
 }
 
-/** The owed re-scheduling is settled — made again, or standing down to one Dodo already has. */
+/** The push that replaced the owed change is known to have applied. */
+export async function confirmReschedule(exec: Executor, orgId: string): Promise<void> {
+  await exec
+    .update(billingSeatSyncs)
+    .set({ rescheduleConfirmedAt: new Date() })
+    .where(and(eq(billingSeatSyncs.orgId, orgId), isNotNull(billingSeatSyncs.rescheduleProductId)));
+}
+
+/** The owed re-scheduling is settled — made again, or standing down. */
 export async function settleReschedule(exec: Executor, orgId: string): Promise<void> {
   await exec
     .update(billingSeatSyncs)
-    .set({ rescheduleProductId: null, rescheduleAt: null })
+    .set({
+      rescheduleProductId: null,
+      rescheduleAt: null,
+      rescheduleFromProductId: null,
+      rescheduleFromSeats: null,
+      rescheduleToSeats: null,
+      rescheduleConfirmedAt: null,
+    })
     .where(eq(billingSeatSyncs.orgId, orgId));
 }
 

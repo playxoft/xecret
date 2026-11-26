@@ -114,6 +114,10 @@ export async function applyPaymentEvent(
     // The trial's own first charge, at its end, with nothing paid before it:
     // the hold it leads to ends in days, not weeks (`trialEndedUnpaid`), and
     // the email says so. Shares the day's dunning slot with the snapshot's.
+    // The status is not known yet here: this rests on Dodo putting a failed
+    // trial conversion on hold (docs/operations/billing.md §3, "A trial that
+    // ends with no card"); the snapshot's own email says two days only for a
+    // hold.
     const trialEnded = !firstPayment && !declinedUpgrade && trialEndedUnpaid(row, input.now);
     outcome.audit.push(
       audit.success('billing.payment_failed', resource, {

@@ -426,14 +426,28 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       paragraphs: [
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
+        // The sentence the legal-date guard reads stays on both versions of the
+        // page — this version takes effect the day it was written whether or
+        // not payments are taken — and only what it says about trials follows
+        // the clauses it describes, which render only once payments are live.
         <>
-          The version of 26 November 2026 is not a material change. It says how free trials work
-          from now on: one per organisation and one per person&rsquo;s account, and a trial that
-          ends without any payment returns the organisation to Free after 2 days on hold rather than
-          14. When it was published no subscription was in a trial or on hold, so it changes no
-          arrangement anybody already has; a trial started after it is started under it. Nothing you
-          have paid for, and nothing a paying subscription gets, has changed &mdash; a subscription
-          that has paid still has 14 days on hold before it ends.
+          The version of 26 November 2026 is not a material change.{' '}
+          {paymentsLive ? (
+            <>
+              It says how free trials work from now on: one per organisation and one per
+              person&rsquo;s account, and a trial that ends without any payment returns the
+              organisation to Free after 2 days on hold rather than 14. When it was published no
+              subscription was in a trial or on hold, so it changes no arrangement anybody already
+              has; a trial started after it is started under it. Nothing you have paid for, and
+              nothing a paying subscription gets, has changed &mdash; a subscription that has paid
+              still has 14 days on hold before it ends.
+            </>
+          ) : (
+            <>
+              It changes nothing this page says while no payment is taken: it adds how free trials
+              will work once payments are taken, which this page states from that day.
+            </>
+          )}
         </>,
         <>
           The version of 23 November 2026 was not a material change either. It named the company you

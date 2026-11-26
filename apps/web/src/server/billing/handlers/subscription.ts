@@ -250,10 +250,13 @@ export async function applySubscriptionSnapshot(
 
   // A payment going wrong: the owners hear about it at once (and then at most
   // once a UTC day — see `paymentFailedOccasion`). A trial that ended with
-  // nothing paid gets its own wording: its hold ends in days, not weeks
-  // (`trialEndedUnpaid`, `jobs.ts`).
+  // nothing paid gets its own wording — its hold ends in days, not weeks — but
+  // only on hold: the hourly job ends `on_hold` rows at two days
+  // (`trialEndedUnpaid`, `jobs.ts`) and never a `past_due` one, which gets the
+  // ordinary dunning email.
   const failing = (status: string) => status === 'past_due' || status === 'on_hold';
   if (failing(change.status) && !failing(change.previousStatus)) {
+    const trialEnded = change.status === 'on_hold' && trialEndedUnpaid(decision.patch, input.now);
     outcome.effects.push({
       kind: 'mail',
       orgId,
@@ -262,7 +265,7 @@ export async function applySubscriptionSnapshot(
         kind: 'payment_failed',
         plan: change.plan,
         firstPayment: false,
-        ...(trialEndedUnpaid(decision.patch, input.now) ? { trialEnded: true as const } : {}),
+        ...(trialEnded ? { trialEnded: true as const } : {}),
       },
     });
   }

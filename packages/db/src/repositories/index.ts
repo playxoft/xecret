@@ -523,6 +523,7 @@ export {
   clearSeatSync,
   completeBillingRequest,
   completeSeatSync,
+  confirmReschedule,
   consumeCheckout,
   countOrgsWithDodoCustomer,
   currentUsage,

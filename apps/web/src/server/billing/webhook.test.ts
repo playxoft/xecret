@@ -1901,6 +1901,53 @@ describe('a seat push waiting for a scheduled plan change', () => {
   });
 });
 
+describe('a trial that ended with nothing paid', () => {
+  /** Team's trial, booked to end a day ago, its first charge just declined: Dodo says `status`. */
+  async function trialEndedAs(status: 'on_hold' | 'past_due') {
+    const { orgId } = await seedOrg();
+    const subscriptionId = `sub_${uniq()}`;
+    const customerId = `cus_${uniq()}`;
+    const created = new Date(Date.now() - 15 * DAY);
+    const trial = (over: Partial<SubscriptionFixture> = {}) =>
+      subscriptionData({
+        subscriptionId,
+        customerId,
+        orgId,
+        trialDays: 14,
+        createdAt: created,
+        periodStart: created,
+        // Nothing paid: the next charge is still the trial's booked end.
+        periodEnd: new Date(created.getTime() + 14 * DAY),
+        ...over,
+      });
+    await deliver({
+      type: 'subscription.active',
+      data: trial(),
+      at: new Date(Date.now() - 60_000),
+    });
+    mail.sent = [];
+    await deliver({ type: 'subscription.updated', data: trial({ status }) });
+    return { orgId };
+  }
+
+  it('says two days when Dodo puts it on hold — the hold the hourly job ends at two days', async () => {
+    const { orgId } = await trialEndedAs('on_hold');
+    expect((await rowOf(orgId)).status).toBe('on_hold');
+    expect(mail.sent).toHaveLength(1);
+    expect(mail.sent[0]!.text).toContain('trial for Acme has ended');
+    expect(mail.sent[0]!.text).toContain('2 days');
+  });
+
+  it('sends the ordinary dunning email when it is past due — nothing ends that at two days', async () => {
+    const { orgId } = await trialEndedAs('past_due');
+    expect((await rowOf(orgId)).status).toBe('past_due');
+    expect(mail.sent).toHaveLength(1);
+    expect(mail.sent[0]!.text).toContain('Team subscription was declined');
+    expect(mail.sent[0]!.text).toContain('14 days on hold');
+    expect(mail.sent[0]!.text).not.toContain('2 days');
+  });
+});
+
 describe('a free trial is recorded once, with who started it', () => {
   it('records the organisation and the account whose checkout started it — once', async () => {
     const { orgId, ownerId } = await seedOrg();

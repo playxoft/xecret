@@ -959,6 +959,10 @@ describe('the nightly reconciler', () => {
       deadLetteredAt: null,
       rescheduleProductId: null,
       rescheduleAt: null,
+      rescheduleFromProductId: null,
+      rescheduleFromSeats: null,
+      rescheduleToSeats: null,
+      rescheduleConfirmedAt: null,
     };
     expect(seatDebtState(waiting, NOW)).toBe('waiting');
     // Inside the grace, retried after a failure, or due again: being pushed.

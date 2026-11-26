@@ -37,7 +37,7 @@ import { authorize } from '../tenancy';
 import type { OrgScope } from '../tenancy';
 import { billingProvider, DodoApiError } from './client';
 import type { PlanChange, PlanChangePreview } from './client';
-import { billingSetup, productFor } from './config';
+import { billingSetup, CHECKOUT_OPEN_MS, productFor } from './config';
 import type { BillingConfig, PurchasablePlan } from './config';
 import { subscriptionResource } from './audit';
 import { holdDeadline } from './jobs';
@@ -425,10 +425,13 @@ export async function startCheckout(
         row.billingCountry !== null &&
         row.currency !== null;
       const nonce = checkoutNonce();
+      // A trial had already — or one on its way: an open checkout of this
+      // account's, or this organisation's, that may start one.
       const withoutTrial = await trialAlreadyUsed(services.db, {
         orgId,
         userId: principal.user.id,
         mode: config.mode,
+        openSince: new Date(now.getTime() - CHECKOUT_OPEN_MS),
       });
 
       let session: { sessionId: string; url: string };
@@ -467,6 +470,9 @@ export async function startCheckout(
         quantity: seats,
         createdBy: principal.user.id,
         nonce,
+        // This checkout may start a trial: the next one waits until it is
+        // spent or a week old (`trialAlreadyUsed`).
+        trialMode: withoutTrial ? null : config.mode,
       });
       return { url: session.url, seats, withoutTrial };
     },

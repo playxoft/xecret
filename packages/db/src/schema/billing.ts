@@ -375,6 +375,14 @@ export const billingCheckouts = pgTable(
     /** The subscription this checkout produced, once one did (migration 0025). */
     subscriptionId: text('subscription_id'),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    /**
+     * The Dodo mode of a checkout that may start a free trial — it did not ask
+     * Dodo for none (migration 0036). Open and unspent, it counts as a trial
+     * had, for its account and its organisation: a trial is recorded only when
+     * its snapshot arrives, and a week of open checkouts would otherwise be a
+     * trial each. `null`: it asked for none.
+     */
+    trialMode: text('trial_mode').$type<'test_mode' | 'live_mode'>(),
   },
   (t) => [
     check('billing_checkouts_quantity_check', sql`${t.quantity} >= 1`),
@@ -388,7 +396,14 @@ export const billingCheckouts = pgTable(
       'billing_checkouts_subscription_id_check',
       sql`${t.subscriptionId} is null or length(${t.subscriptionId}) between 1 and 255`,
     ),
+    check(
+      'billing_checkouts_trial_mode_check',
+      sql`${t.trialMode} is null or ${t.trialMode} in ('test_mode', 'live_mode')`,
+    ),
     index('billing_checkouts_org_idx').on(t.orgId, t.createdAt),
+    index('billing_checkouts_created_by_idx')
+      .on(t.createdBy)
+      .where(sql`${t.trialMode} is not null and ${t.subscriptionId} is null`),
     uniqueIndex('billing_checkouts_nonce_unique')
       .on(t.nonce)
       .where(sql`${t.nonce} is not null`),
@@ -414,6 +429,10 @@ export const billingCheckouts = pgTable(
  * the push and cleared once the change is scheduled again, so an isolate lost
  * between the two calls leaves it for the hourly job — never a downgrade the
  * owner asked for silently dropped. A debt that still owes one is not paid.
+ * Beside it, what the push was made against — the product, the seats before
+ * and after — and whether it is known to have applied, so the change is made
+ * again only onto the subscription it was owed for, and never after a push
+ * that did not apply (`reschedule_confirmed_at` null until Dodo says).
  */
 export const billingSeatSyncs = pgTable(
   'billing_seat_syncs',
@@ -434,6 +453,13 @@ export const billingSeatSyncs = pgTable(
     rescheduleProductId: text('reschedule_product_id'),
     /** When that replaced change was due to take effect (0036). */
     rescheduleAt: timestamp('reschedule_at', { withTimezone: true }),
+    /** The product the subscription was on when the change was owed — what it is made again onto (0036). */
+    rescheduleFromProductId: text('reschedule_from_product_id'),
+    /** The seats Dodo billed before the replacing push, and the seats it pushed (0036). */
+    rescheduleFromSeats: integer('reschedule_from_seats'),
+    rescheduleToSeats: integer('reschedule_to_seats'),
+    /** When the replacing push was known to have applied; null while Dodo's answer is unknown (0036). */
+    rescheduleConfirmedAt: timestamp('reschedule_confirmed_at', { withTimezone: true }),
   },
   (t) => [
     check('billing_seat_syncs_attempts_check', sql`${t.attempts} >= 0`),
@@ -444,7 +470,9 @@ export const billingSeatSyncs = pgTable(
     check('billing_seat_syncs_generation_check', sql`${t.generation} >= 1`),
     check(
       'billing_seat_syncs_reschedule_product_check',
-      sql`${t.rescheduleProductId} is null or length(${t.rescheduleProductId}) between 1 and 255`,
+      sql`(${t.rescheduleProductId} is null or length(${t.rescheduleProductId}) between 1 and 255)
+        and (${t.rescheduleFromProductId} is null
+          or length(${t.rescheduleFromProductId}) between 1 and 255)`,
     ),
   ],
 );

@@ -15,6 +15,7 @@ import {
   clearSeatSync,
   completeBillingRequest,
   completeSeatSync,
+  confirmReschedule,
   consumeCheckout,
   countOrgsWithDodoCustomer,
   currentUsage,
@@ -711,21 +712,40 @@ describe('migration 0036: a scheduled change owed back after a seat push', () =>
     await queueSeatSync(t.db, orgId);
     const generation = (await claimSeatSync(t.db, orgId, 60_000))!;
     const due = new Date(Date.now() + 300 * DAY);
-    await oweReschedule(t.db, orgId, { productId: 'pdt_team_m', at: due });
+    await oweReschedule(t.db, orgId, {
+      productId: 'pdt_team_m',
+      at: due,
+      fromProductId: 'pdt_team_y',
+      fromSeats: 3,
+      toSeats: 7,
+    });
+    expect((await findSeatSync(t.db, orgId))?.rescheduleConfirmedAt).toBeNull();
+    await confirmReschedule(t.db, orgId);
 
     // A membership change, a backoff or a deferral never forgets it.
     await queueSeatSync(t.db, orgId);
     await failSeatSync(t.db, orgId, 'upstream_5xx');
     await deferSeatSync(t.db, orgId, due, 'scheduled_change');
-    expect(await findSeatSync(t.db, orgId)).toMatchObject({
+    const kept = await findSeatSync(t.db, orgId);
+    expect(kept).toMatchObject({
       rescheduleProductId: 'pdt_team_m',
       rescheduleAt: due,
+      rescheduleFromProductId: 'pdt_team_y',
+      rescheduleFromSeats: 3,
+      rescheduleToSeats: 7,
     });
+    expect(kept?.rescheduleConfirmedAt).toBeInstanceOf(Date);
 
     const now = (await seatSyncGeneration(t.db, orgId))!;
     expect(now).toBeGreaterThan(generation);
     expect(await completeSeatSync(t.db, orgId, now)).toBe(false);
     await settleReschedule(t.db, orgId);
+    expect(await findSeatSync(t.db, orgId)).toMatchObject({
+      rescheduleProductId: null,
+      rescheduleFromProductId: null,
+      rescheduleToSeats: null,
+      rescheduleConfirmedAt: null,
+    });
     expect(await completeSeatSync(t.db, orgId, now)).toBe(true);
     expect(await findSeatSync(t.db, orgId)).toBeNull();
   });
@@ -778,7 +798,7 @@ describe('migration 0036: a free trial is had once', () => {
     );
 
     const ask = (orgId: string, userId: string, mode: 'test_mode' | 'live_mode' = 'test_mode') =>
-      trialAlreadyUsed(t.db, { orgId, userId, mode });
+      trialAlreadyUsed(t.db, { orgId, userId, mode, openSince: new Date(Date.now() - 7 * DAY) });
     expect(await ask(trialed.orgId, stranger.ownerId)).toBe(true);
     expect(await ask(other.orgId, trialed.ownerId)).toBe(true);
     expect(await ask(stranger.orgId, stranger.ownerId)).toBe(false);
@@ -797,8 +817,60 @@ describe('migration 0036: a free trial is had once', () => {
 
     const elsewhere = await seedOrg();
     expect(
-      await trialAlreadyUsed(t.db, { orgId: elsewhere.orgId, userId: ownerId, mode: 'test_mode' }),
+      await trialAlreadyUsed(t.db, {
+        orgId: elsewhere.orgId,
+        userId: ownerId,
+        mode: 'test_mode',
+        openSince: new Date(Date.now() - 7 * DAY),
+      }),
     ).toBe(true);
+  });
+
+  it('counts an open checkout that may start a trial — for its account anywhere, and its organisation — until it is spent or a week old', async () => {
+    const opener = await seedOrg();
+    const elsewhere = await seedOrg();
+    const stranger = await seedOrg();
+    const openSince = new Date(Date.now() - 7 * DAY);
+    const ask = (orgId: string, userId: string, mode: 'test_mode' | 'live_mode' = 'test_mode') =>
+      trialAlreadyUsed(t.db, { orgId, userId, mode, openSince });
+    const sessionId = `cks_${uniq()}`;
+    await recordCheckout(t.db, {
+      sessionId,
+      orgId: opener.orgId,
+      plan: 'team',
+      billingInterval: 'monthly',
+      quantity: 3,
+      createdBy: opener.ownerId,
+      nonce: `nonce${uniq()}`,
+      trialMode: 'test_mode',
+    });
+    expect((await findCheckout(t.db, sessionId))?.trialMode).toBe('test_mode');
+
+    // The same account, for another organisation; anybody, for the same one.
+    expect(await ask(elsewhere.orgId, opener.ownerId)).toBe(true);
+    expect(await ask(opener.orgId, stranger.ownerId)).toBe(true);
+    expect(await ask(stranger.orgId, stranger.ownerId)).toBe(false);
+    expect(await ask(elsewhere.orgId, opener.ownerId, 'live_mode')).toBe(false);
+
+    // A week old: no longer attachable, so no longer a trial on its way.
+    await t.pg.query(
+      `update billing_checkouts set created_at = now() - interval '8 days' where session_id = $1`,
+      [sessionId],
+    );
+    expect(await ask(elsewhere.orgId, opener.ownerId)).toBe(false);
+
+    // One that asked for no trial never counts.
+    await recordCheckout(t.db, {
+      sessionId: `cks_${uniq()}`,
+      orgId: opener.orgId,
+      plan: 'team',
+      billingInterval: 'yearly',
+      quantity: 3,
+      createdBy: opener.ownerId,
+      nonce: `nonce${uniq()}`,
+      trialMode: null,
+    });
+    expect(await ask(elsewhere.orgId, opener.ownerId)).toBe(false);
   });
 
   it('refuses a Dodo mode that is not one', async () => {
