@@ -60,9 +60,9 @@ import type {
 } from './upgrade-plans';
 
 /**
- * The plans, inside the app — `/app/{org}/settings/plans`, where "Upgrade
- * plan" in the account menu and every "Compare plans" beside a locked control
- * lead.
+ * The plans, inside the app — `/app/{org}/settings/plans`, where every
+ * "Compare plans" beside a locked control leads, and the public pricing page's
+ * buttons for a signed-in visitor (through `/app?to=plans`).
  *
  * ── Who sees what ──
  * Every member sees the whole page: the three self-serve plans, the pricing

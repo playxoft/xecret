@@ -154,3 +154,17 @@ describe('every sign-out leaves in the same order', () => {
     );
   });
 });
+
+describe('`/app?to=plans` opens the organisation’s plans', () => {
+  // Where the pricing page sends a visitor who already has an account: their
+  // organisation's plans page, with its checkout — or, in several, a choice of
+  // which one to upgrade.
+  it('the page reads the intent, and the screen opens the plans with it', () => {
+    const page = source('../app/page.tsx');
+    expect(page).toMatch(/intent=\{to === 'plans' \? 'plans' : null\}/);
+    const screen = source('./organizations-screen.tsx');
+    expect(screen).toMatch(/const open = intent === 'plans' \? appPath\.orgPlans : appPath\.org;/);
+    expect(screen).toContain('router.replace(open(only.slug))');
+    expect(screen).toContain('href={open(organization.slug)}');
+  });
+});
