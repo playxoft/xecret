@@ -32,7 +32,7 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: availability and change, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-11-26';
+const UPDATED = '2026-11-27';
 /**
  * The day it was written: this version says how free trials work from now on —
  * one per organisation and per account, and a trial that ends unpaid returns
@@ -43,7 +43,7 @@ const UPDATED = '2026-11-26';
  * dates to that day. The versions before it — 23 November (the company, the
  * encryption) and 3 November 2026 (the plan limits) — are in §Changes too.
  */
-const EFFECTIVE: string | null = '2026-11-26';
+const EFFECTIVE: string | null = '2026-11-27';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -431,7 +431,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         // not payments are taken — and only what it says about trials follows
         // the clauses it describes, which render only once payments are live.
         <>
-          The version of 26 November 2026 is not a material change.{' '}
+          The version of 27 November 2026 is not a material change.{' '}
           {paymentsLive ? (
             <>
               It says how free trials work from now on: one per organisation and one per
