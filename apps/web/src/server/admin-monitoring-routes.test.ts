@@ -476,6 +476,14 @@ describe('listing organisations', () => {
     const { orgId, slug, owner } = await seedOrg({ createdAt: '2041-01-01T00:00:00Z' });
     const coOwner = await seedUser();
     await addMember(orgId, coOwner.id, 'owner');
+    // A second later than the first owner, so "longest-standing first" has an
+    // order to find: two memberships made in the same instant are ordered by
+    // their random ids, and the test would pass or fail on a coin toss.
+    await t.pg.query(
+      `update org_members set created_at = created_at + interval '1 second'
+       where org_id = $1 and user_id = $2`,
+      [orgId, coOwner.id],
+    );
     await addMember(orgId, (await seedUser()).id, 'developer');
     await t.pg.query(
       `insert into invitations (id, org_id, email, role, token_hash, invited_by, expires_at)
