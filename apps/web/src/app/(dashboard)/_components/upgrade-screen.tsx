@@ -393,9 +393,10 @@ export function UpgradeScreen({
     billing !== null && billing.plan !== 'free' ? (STATUS_LABEL[billing.status] ?? null) : null;
 
   return (
-    // A section of the organisation's settings, and the one given the frame's
-    // whole width (`wide` in `settings-sections.ts`): three plan columns and a
-    // comparison table do not fit a form's measure. The frame owns the `<h1>`.
+    // A section of the organisation's settings, and the widest of them: the
+    // frame's column, the same width on every section, is sized for its three
+    // plan columns and comparison table (`settings-layout.tsx`). The frame
+    // owns the `<h1>`.
     //
     // A container, so the plan columns are laid out by the width this page is
     // actually given rather than by the viewport's: beside the settings nav, a

@@ -153,9 +153,10 @@ describe('the settings nav', () => {
       expect(row.split(' ')).not.toContain('flex-col');
     });
 
-    it('runs the groups together, printing their headings only in the column', () => {
-      const heading = /<p id="[^"]*" class="([^"]*)">Security<\/p>/.exec(html)?.[1] ?? '';
-      expect(heading.split(' ')).toEqual(expect.arrayContaining(['hidden', 'xl:block']));
+    it('runs the groups together, as one list', () => {
+      expect(html.match(/<ul[ >]/g)).toHaveLength(1);
+      // Every section is an item of it, Danger zone included.
+      expect(html.match(/<li[ >]/g)).toHaveLength(links(html).length);
     });
 
     it('keeps each link on one line, underlined rather than barred when current', () => {
@@ -174,11 +175,54 @@ describe('the settings nav', () => {
         ]),
       );
     });
+  });
 
-    it('names each group for a screen reader, which hears the heading the row hides', () => {
-      const id = /<p id="([^"]*)"[^>]*>Security<\/p>/.exec(html)?.[1];
-      expect(id).toBeDefined();
-      expect(html).toContain(`<ul aria-labelledby="${id}"`);
+  describe('as a plain list', () => {
+    /** The classes of the item holding the link labelled `label`. */
+    function item(html: string, label: string): string[] {
+      const match = new RegExp(`<li class="([^"]*)"><a [^>]*>${label}</a></li>`).exec(html);
+      return (match?.[1] ?? '').split(' ');
+    }
+
+    it('prints no group headings, in any area', () => {
+      const environment = appPath.environmentSettings('acme', 'payments-api', 'production');
+      for (const html of [
+        nav(accountSettingsSections({ vaultConfigured: true }), appPath.account()),
+        nav(organizationSettingsSections('acme', member('owner')), ORG_SETTINGS),
+        nav(environmentSettingsSections(environment, member('admin')), environment),
+      ]) {
+        expect(html).not.toMatch(/<(p|h\d)[ >]/);
+        expect(html).not.toContain('aria-labelledby');
+        // Every word in the nav is a link's.
+        expect(html.replace(/<a [^>]*>[^<]*<\/a>/g, '').replace(/<[^>]*>/g, '')).toBe('');
+      }
+      const organization = nav(organizationSettingsSections('acme', member('owner')), ORG_SETTINGS);
+      expect(organization).not.toContain('Plan and billing');
+      expect(
+        nav(accountSettingsSections({ vaultConfigured: true }), appPath.account()),
+      ).not.toMatch(/>Security</);
+    });
+
+    it('sets each former group a little apart in the column, and only there', () => {
+      const html = nav(organizationSettingsSections('acme', member('owner')), ORG_SETTINGS);
+
+      // The first section of every group after the first: Billing, Danger zone.
+      for (const label of ['Billing', 'Danger zone']) {
+        expect(item(html, label), label).toContain('xl:mt-3');
+        expect(
+          item(html, label).some((name) => /^m[tb]?-/.test(name)),
+          label,
+        ).toBe(false);
+      }
+      for (const label of ['General', 'Roles', 'Webhooks', 'Plans']) {
+        expect(item(html, label), label).not.toContain('xl:mt-3');
+      }
+    });
+
+    it('starts the gap from the first section the viewer is shown, when a group’s first is hidden', () => {
+      // An admin is not shown Billing, so Plans opens that group.
+      const html = nav(organizationSettingsSections('acme', member('admin')), ORG_SETTINGS);
+      expect(item(html, 'Plans')).toContain('xl:mt-3');
     });
   });
 });
@@ -201,7 +245,9 @@ describe('the settings frame', () => {
 
   /** The classes of the column the section is drawn in. */
   function column(html: string): string[] {
-    return (/<div class="([^"]*)"><p>the section<\/p>/.exec(html)?.[1] ?? '').split(' ');
+    // Unescaped, because an arbitrary variant's `&` arrives as `&amp;`.
+    const classes = /<div class="([^"]*)"><p>the section<\/p>/.exec(html)?.[1] ?? '';
+    return classes.replaceAll('&amp;', '&').split(' ');
   }
 
   const groups = organizationSettingsSections('acme', member('owner'));
@@ -212,13 +258,34 @@ describe('the settings frame', () => {
     expect(html.indexOf('<nav')).toBeLessThan(html.indexOf('the section'));
   });
 
-  it('holds a section to a form’s measure', () => {
-    expect(column(frame(groups, ORG_SETTINGS))).toContain('max-w-2xl');
-    expect(column(frame(groups, appPath.orgBilling('acme')))).toContain('max-w-2xl');
+  /** Every section of every area, as the frame would be asked to draw it. */
+  const ENVIRONMENT = appPath.environmentSettings('acme', 'payments-api', 'production');
+  const AREAS = [
+    accountSettingsSections({ vaultConfigured: true }),
+    groups,
+    environmentSettingsSections(ENVIRONMENT, member('admin')),
+  ];
+
+  it('draws every section in the same column, so the page never changes width under you', () => {
+    for (const area of AREAS) {
+      const columns = area
+        .flatMap((group) => group.sections)
+        .map((section) => column(frame(area, section.href)).join(' '));
+
+      expect(columns[0]).not.toBe('');
+      expect(new Set(columns).size).toBe(1);
+    }
   });
 
-  it('gives the plans the column’s whole width', () => {
-    expect(column(frame(groups, appPath.orgPlans('acme')))).not.toContain('max-w-2xl');
+  it('gives that column the frame’s whole width, the plans’ and a form’s alike', () => {
+    const plans = column(frame(groups, appPath.orgPlans('acme')));
+    expect(plans).toContain('flex-1');
+    // No measure of its own: the column is the frame less the nav.
+    expect(plans.some((name) => /^max-w-/.test(name))).toBe(false);
+  });
+
+  it('holds a section’s fields to a form’s measure inside it', () => {
+    expect(column(frame(groups, ORG_SETTINGS))).toContain('[&_[data-field]]:max-w-2xl');
   });
 
   /** The classes of the frame itself, the outermost element. */
@@ -234,12 +301,13 @@ describe('the settings frame', () => {
   });
 
   /**
-   * The arithmetic the frame's width rests on, done on the classes it renders:
-   * at its widest, the frame less the nav column and the gap beside it must
-   * hold the plans' comparison table whole. The table is `min-w-[52rem]` in
-   * `upgrade-screen.tsx`, and scrolls inside its own box below that.
+   * The arithmetic the column's width rests on, done on the classes it
+   * renders: at its widest, the frame less the nav column and the gap beside
+   * it must hold the plans side by side — three columns from a 56rem
+   * container, `@4xl` in `upgrade-screen.tsx` — and their comparison table
+   * whole, which is `min-w-[52rem]` and scrolls inside its own box below that.
    */
-  it('leaves a wide section room for the plans’ 52rem comparison table beside the nav', () => {
+  it('leaves every section room for the plans’ three columns and 52rem table beside the nav', () => {
     const html = frame(groups, appPath.orgPlans('acme'));
     const rem = (scale: string) => Number(scale) / 4;
     const MAX_WIDTH_REM: Record<string, number> = { '5xl': 64, '6xl': 72, '7xl': 80 };
@@ -247,8 +315,12 @@ describe('the settings frame', () => {
     const frameWidth = MAX_WIDTH_REM[/max-w-(\w+)/.exec(outer(html).join(' '))?.[1] ?? ''];
     const navWidth = rem(/<nav [^>]*class="[^"]*xl:w-(\d+)/.exec(html)?.[1] ?? 'NaN');
     const gap = rem(/xl:flex-row[^"]*xl:gap-(\d+)/.exec(html)?.[1] ?? 'NaN');
+    const room = (frameWidth ?? 0) - navWidth - gap;
 
+    const PLAN_COLUMNS_REM = 56;
+    const COMPARISON_TABLE_REM = 52;
     expect(frameWidth).toBeDefined();
-    expect((frameWidth ?? 0) - navWidth - gap).toBeGreaterThanOrEqual(52);
+    expect(room).toBeGreaterThanOrEqual(PLAN_COLUMNS_REM);
+    expect(room).toBeGreaterThanOrEqual(COMPARISON_TABLE_REM);
   });
 });

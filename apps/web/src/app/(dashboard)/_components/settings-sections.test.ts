@@ -85,9 +85,13 @@ describe('the account settings', () => {
     );
   });
 
-  it('groups the security sections under a heading, as the Security tab grouped them', () => {
+  it('keeps the security sections together, as the Security tab kept them', () => {
     const groups = visibleSettingsGroups(accountSettingsSections({ vaultConfigured: true }));
-    expect(groups.map((group) => group.label)).toEqual([undefined, 'Security', undefined]);
+    expect(groups.map((group) => group.sections.map((section) => section.label))).toEqual([
+      ['Profile', 'Appearance'],
+      ['Password & sign-in', 'Vault', 'Unlock & auto-lock', 'Signed-in devices'],
+      ['Danger zone'],
+    ]);
   });
 });
 
@@ -146,10 +150,6 @@ describe('an organisation’s settings', () => {
     expect(href('General')).toBe(appPath.orgSettings('acme'));
     expect(href('Billing')).toBe(appPath.orgBilling('acme'));
     expect(href('Plans')).toBe(appPath.orgPlans('acme'));
-    // The one section that needs the frame's full width.
-    expect(sections.filter((section) => section.wide).map((section) => section.label)).toEqual([
-      'Plans',
-    ]);
   });
 });
 

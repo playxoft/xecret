@@ -54,20 +54,14 @@ export interface SettingsSection {
    * legacy anchor leads: the section says who can use it.
    */
   hidden?: boolean;
-  /**
-   * Given the whole content column rather than a form's measure. For the plans,
-   * whose three columns and comparison table were laid out for a page of their
-   * own and are cramped at the 42rem every form is held to.
-   */
-  wide?: boolean;
 }
 
+/**
+ * A run of sections that belong together. Untitled: the nav is one plain list,
+ * and a group is only the little space in its column before the next — see
+ * `SettingsNav`.
+ */
 export interface SettingsSectionGroup {
-  /**
-   * Printed above the group in the vertical nav. The horizontal one runs every
-   * group together, where a heading between two links would read as a third.
-   */
-  label?: string;
   sections: readonly SettingsSection[];
 }
 
@@ -149,10 +143,11 @@ export function legacyAnchorTarget(
  * the two acts that cannot be undone.
  *
  * What were three tabs — General, Security, Danger zone — and a contents rail
- * inside two of them is now one list. The tabs survive as its groups, and the
- * Security tab, five cards long, is four sections: the sign-in page, the vault
- * (with the vault a recent reset left behind, which is the same question), the
- * unlock and its auto-lock, and the devices signed in.
+ * inside two of them is now one list. The tabs survive as its groups, set a
+ * little apart from one another, and the Security tab, five cards long, is
+ * four sections: the sign-in page, the vault (with the vault a recent reset
+ * left behind, which is the same question), the unlock and its auto-lock, and
+ * the devices signed in.
  *
  * "Unlock & auto-lock" waits for a vault: until there is one there is nothing
  * to unlock, and its card has never been drawn without one.
@@ -170,7 +165,6 @@ export function accountSettingsSections({
       ],
     },
     {
-      label: 'Security',
       sections: [
         { href: appPath.settingsSignIn(), label: 'Password & sign-in', anchors: ['sign-in'] },
         { href: appPath.settingsVault(), label: 'Vault', anchors: ['vault', 'previous-vaults'] },
@@ -249,14 +243,13 @@ export function organizationSettingsSections(
       ],
     },
     {
-      label: 'Plan and billing',
       sections: [
         {
           href: appPath.orgBilling(orgSlug),
           label: 'Billing',
           hidden: !canAdminister(viewer, 'billing.manage'),
         },
-        { href: appPath.orgPlans(orgSlug), label: 'Plans', wide: true },
+        { href: appPath.orgPlans(orgSlug), label: 'Plans' },
       ],
     },
     {
