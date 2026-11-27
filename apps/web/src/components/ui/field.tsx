@@ -78,7 +78,10 @@ export function Field({ label, children, hint, error, optional, className }: Fie
 
   return (
     <FieldContext value={{ controlId, describedBy, invalid: hasError }}>
-      <div className={cn('flex flex-col gap-1.5', className)}>
+      {/* `data-field` is how a layout finds its fields without reaching into
+          every form: the settings frame holds them to a form's measure in a
+          column sized for wider things (`settings-layout.tsx`). */}
+      <div data-field="" className={cn('flex flex-col gap-1.5', className)}>
         <div className="flex items-baseline justify-between gap-3">
           <Label htmlFor={controlId}>{label}</Label>
           {optional ? <span className="text-fg-subtle text-sm">Optional</span> : null}

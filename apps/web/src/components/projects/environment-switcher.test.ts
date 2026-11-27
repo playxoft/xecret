@@ -9,11 +9,12 @@ import type { Environment } from './types';
  *
  * What is pinned: which environment the page is about, which are compared
  * beside it and which are neither are three different looks, three different
- * icons and three different things a screen reader is told; the Compare button
- * and the legend name the comparison in words, with a way out of it; and a
- * screen with nowhere to show a comparison draws neither. The open menus render
- * into a portal, which static markup never draws, so what they list is left to
- * the pure helpers below them.
+ * icons and three different things a screen reader is told; the strip is only
+ * as wide as its contents, with no line under the capsules until there is a
+ * comparison to name; the Compare button and the legend name it in words, with
+ * a way out of it; and a screen with nowhere to show a comparison draws
+ * neither. The open menus render into a portal, which static markup never
+ * draws, so what they list is left to the pure helpers below them.
  */
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {} }) }));
@@ -187,13 +188,44 @@ describe('the Compare button', () => {
   });
 });
 
+describe('the strip', () => {
+  /** The classes of the switcher's outermost element. */
+  function outer(html: string): string[] {
+    return (/^<div class="([^"]*)"/.exec(html)?.[1] ?? '').split(' ');
+  }
+
+  it('is as wide as what is in it, never the whole page, and never wider than its column', () => {
+    for (const html of [render(), render({ comparing: ['staging'] })]) {
+      expect(outer(html)).toEqual(expect.arrayContaining(['w-fit', 'max-w-full']));
+      expect(outer(html)).not.toContain('w-full');
+    }
+  });
+
+  it('keeps the Compare button beside the capsules, not pushed to the far edge', () => {
+    expect(render()).not.toContain('flex-1');
+  });
+});
+
 describe('the legend', () => {
-  it('says which environment is on screen, and how to compare', () => {
+  it('is not drawn while nothing is compared — the ticked capsule says where you are', () => {
     const html = render();
-    expect(html).toMatch(/>Viewing<\/span>/);
-    expect(html).toContain('Choose Compare to see another environment’s values beside these.');
+    expect(html).not.toContain('Viewing');
+    expect(html).not.toContain('Choose Compare');
     expect(html).not.toContain('Comparing with');
     expect(html).not.toContain('Stop comparing');
+    // Which environment is on screen is still marked, for sight and for a
+    // screen reader alike.
+    expect(capsule(html, 'development')).toContain('aria-current="page"');
+    expect(capsule(html, 'development')).toContain('title="You are viewing Development"');
+  });
+
+  it('says which environment is on screen and which are beside it, once one is', () => {
+    const html = render({ comparing: ['staging'] });
+    expect(html).toMatch(/>Viewing<\/span>/);
+    // Ticked, as its capsule is.
+    expect(html).toMatch(/<\/svg>Development<\/span>/);
+    expect(html).toContain('Comparing with');
+    expect(html).not.toContain('Choose Compare');
   });
 
   it('names each compared environment, each with its own way out', () => {

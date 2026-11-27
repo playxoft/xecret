@@ -31,8 +31,7 @@ import { askBeforeLeaving } from '@/components/ui/leave-guard';
 import type { Environment } from './types';
 
 /**
- * Environments as capsules, not a dropdown — with what is on screen said out
- * loud beneath them.
+ * Environments as capsules, not a dropdown, in a strip no wider than they are.
  *
  * ── Why this replaced a `<Select>` ──
  * Switching between dev, staging and production is the single most repeated
@@ -59,8 +58,21 @@ import type { Environment } from './types';
  * The billing toggle went through the same correction for the same reason (see
  * the segmented-control note in `globals.css`): a choice that decides what every
  * value below it means has to be legible at a glance, not inferred from a
- * shadow. The legend under the row then states it as a sentence — "Viewing
- * Development · Comparing with Staging" — with a way out beside each.
+ * shadow. While anything is compared, a legend under the row also states it as
+ * a sentence — "Viewing Development · Comparing with Staging" — with a way out
+ * beside each.
+ *
+ * ── Compact ──
+ * The strip is as wide as the capsules and the Compare button, not as wide as
+ * the page. It used to stretch across the whole of it, the button pushed to the
+ * far edge and a line under the capsules saying "Viewing Staging · Choose
+ * Compare to see another environment's values beside these." on every visit:
+ * an offer read once and then stepped over every time after, and a bar of
+ * mostly empty strip between the capsules and the thing that acts on them.
+ * With nothing compared there is nothing to tell apart — the filled, ticked
+ * capsule is where you are, and says so to a screen reader with
+ * `aria-current` — so the row is the whole of it; the legend appears only once
+ * there is a comparison for it to name.
  *
  * ── Comparing is a button, not a gesture ──
  * "Is this the same value as staging?" is the question the comparison answers:
@@ -305,7 +317,10 @@ export function EnvironmentSwitcher({
   return (
     <div
       className={cn(
-        'border-line bg-canvas-inset flex flex-col gap-2 rounded-lg border p-1.5',
+        // `w-fit` rather than the full width of whatever column it sits in —
+        // see "Compact" above — and never wider than that column, where the
+        // row wraps instead.
+        'border-line bg-canvas-inset flex w-fit max-w-full flex-col gap-2 rounded-lg border p-1.5',
         className,
       )}
     >
@@ -371,7 +386,9 @@ export function EnvironmentSwitcher({
 
         {onCompare !== undefined && current !== undefined ? (
           <>
-            <span className="hidden flex-1 sm:block" />
+            {/* Beside the capsules rather than pushed to the far edge, with a
+                rule between: the environments, then what to do with them. */}
+            <span aria-hidden="true" className="bg-line hidden h-5 w-px sm:block" />
             <CompareMenu
               environments={environments}
               current={current}
@@ -385,7 +402,7 @@ export function EnvironmentSwitcher({
         ) : null}
       </div>
 
-      {onCompare !== undefined && current !== undefined ? (
+      {onCompare !== undefined && current !== undefined && compared.length > 0 ? (
         <CompareLegend
           id={legendId}
           current={current}
@@ -589,6 +606,10 @@ function CompareMenu({
  * once — both through the screen, which asks first when closing them would
  * discard a value typed into one of their cells.
  *
+ * Drawn only while something is compared. It used to be drawn without, as
+ * "Viewing Development" and an offer to choose Compare, and that is the line
+ * the strip lost to become compact — see the header.
+ *
  * Not a live region. The comparison bar above the table already announces
  * which environments are on the page as they change, and two regions saying it
  * would read every change out twice.
@@ -613,54 +634,43 @@ function CompareLegend({
         <CheckIcon className="size-3.5 shrink-0" />
         {current.name}
       </span>
-
-      {compared.length === 0 ? (
-        // The offer, where there is room for it. On a phone the Compare button
-        // above says as much in one word.
-        <span className="text-fg-subtle hidden sm:inline">
-          · Choose Compare to see another environment’s values beside these.
-        </span>
-      ) : (
-        <>
-          <span aria-hidden="true" className="text-fg-subtle">
-            ·
-          </span>
-          <span id={id} className="text-fg-subtle">
-            Comparing with
-          </span>
-          <ul aria-labelledby={id} className="flex flex-wrap items-center gap-1.5">
-            {compared.map((environment) => (
-              <li
-                key={environment.slug}
-                className="border-line-control bg-surface text-fg inline-flex items-center gap-1 rounded-md border border-dashed py-0.5 pr-0.5 pl-2 font-medium"
-              >
-                <ColumnsIcon className="size-3.5 shrink-0" />
-                {environment.isProduction ? (
-                  <span
-                    aria-hidden="true"
-                    className="bg-production inline-block size-1.5 shrink-0 rounded-full"
-                  />
-                ) : null}
-                {environment.name}
-                <button
-                  type="button"
-                  onClick={() => onCompare(environment.slug)}
-                  aria-label={`Stop comparing with ${environment.name}`}
-                  title={`Stop comparing with ${environment.name}`}
-                  className="text-fg-subtle hover:text-fg hover:bg-surface-hover grid size-5 place-items-center rounded transition-colors"
-                >
-                  <CloseIcon className="size-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-          {onStopComparing !== undefined ? (
-            <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onStopComparing}>
-              Stop comparing
-            </Button>
-          ) : null}
-        </>
-      )}
+      <span aria-hidden="true" className="text-fg-subtle">
+        ·
+      </span>
+      <span id={id} className="text-fg-subtle">
+        Comparing with
+      </span>
+      <ul aria-labelledby={id} className="flex flex-wrap items-center gap-1.5">
+        {compared.map((environment) => (
+          <li
+            key={environment.slug}
+            className="border-line-control bg-surface text-fg inline-flex items-center gap-1 rounded-md border border-dashed py-0.5 pr-0.5 pl-2 font-medium"
+          >
+            <ColumnsIcon className="size-3.5 shrink-0" />
+            {environment.isProduction ? (
+              <span
+                aria-hidden="true"
+                className="bg-production inline-block size-1.5 shrink-0 rounded-full"
+              />
+            ) : null}
+            {environment.name}
+            <button
+              type="button"
+              onClick={() => onCompare(environment.slug)}
+              aria-label={`Stop comparing with ${environment.name}`}
+              title={`Stop comparing with ${environment.name}`}
+              className="text-fg-subtle hover:text-fg hover:bg-surface-hover grid size-5 place-items-center rounded transition-colors"
+            >
+              <CloseIcon className="size-3.5" />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {onStopComparing !== undefined ? (
+        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onStopComparing}>
+          Stop comparing
+        </Button>
+      ) : null}
     </div>
   );
 }
