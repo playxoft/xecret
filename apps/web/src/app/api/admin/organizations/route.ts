@@ -1,18 +1,23 @@
 import { requireAdmin } from '@/server/admin';
-import { searchOrganizations } from '@/server/admin-service';
+import { listOrganizations } from '@/server/admin-monitoring';
 import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
-import { adminSearchQuerySchema } from '@/server/schemas/admin';
+import { adminOrganizationsQuerySchema } from '@/server/schemas/admin';
 
 /**
- * `GET /api/admin/organizations?q=` — the organisations a person is in, by
- * their address, or the one organisation with a slug: what it is on, how it is
- * billed, and any complimentary plan it has.
+ * `GET /api/admin/organizations` — every live organisation, newest first, a
+ * page at a time (`?cursor=`, `?limit=` up to 100): what it is on, how it is
+ * billed, who owns it, and how many members, open invitations, projects,
+ * environments and secrets it has — counts, never names.
+ *
+ * `GET /api/admin/organizations?q=` — the search it has always been: the
+ * organisations a person is in, by their address, or the one organisation with
+ * a slug. The same row, and never paged.
  *
  * xecret's admins only (`server/admin.ts`); 404 to everybody else.
  */
 export const GET = authenticatedRoute(async ({ request, principal, services }) => {
-  await requireAdmin(services, principal);
-  const { q } = parseQuery(request, adminSearchQuerySchema);
-  return json({ organizations: await searchOrganizations(services, q) });
+  const admin = await requireAdmin(services, principal);
+  const query = parseQuery(request, adminOrganizationsQuerySchema);
+  return json(await listOrganizations(services, admin, query));
 });

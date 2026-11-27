@@ -1,19 +1,31 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 
 import { AdminScreen } from '../../_components/admin-screen';
 
 export const metadata: Metadata = { title: 'Admin' };
 
 /**
- * The admin page — xecret's own staff, giving organisations free plans and
- * issuing promo codes. A Server Component that renders the client screen, as
- * every dashboard page does: whether the viewer is an admin is the session's
- * answer, read in the browser, and anybody else is shown a 404 by the screen
- * (and by every request it would have made).
+ * The admin page — xecret's own staff, keeping an eye on the service, giving
+ * organisations free plans and issuing promo codes. A Server Component that
+ * renders the client screen, as every dashboard page does: whether the viewer
+ * is an admin is the session's answer, read in the browser, and anybody else
+ * is shown a 404 by the screen (and by every request it would have made).
+ *
+ * `?tab=` names the tab it opens on, read in the browser with
+ * `useSearchParams` — so that a native `replaceState` from the tab bar, and
+ * the browser's Back, are followed without a request to the server — which is
+ * why the screen sits inside a Suspense boundary: the page is prerendered, and
+ * a client hook reading the query has nothing to read until it reaches the
+ * browser.
  *
  * `/app/admin` takes the place of an organisation slug, which is safe only
  * because `admin` is a reserved slug — see `appPath.admin`.
  */
 export default function AdminPage() {
-  return <AdminScreen />;
+  return (
+    <Suspense fallback={null}>
+      <AdminScreen />
+    </Suspense>
+  );
 }

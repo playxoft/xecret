@@ -3,6 +3,7 @@ import { createElement, Fragment } from 'react';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type {
+  AdminAccountPayload,
   AdminGrantPayload,
   AdminOrganizationPayload,
   AdminPromoCodePayload,
@@ -22,17 +23,21 @@ import type { GrantTarget } from './admin-grant-dialogs';
  * nothing here, and which codes can still be revoked.
  */
 
-const viewer = vi.hoisted(() => ({ admin: false }));
+const viewer = vi.hoisted(() => ({ admin: false, query: '' }));
 
 vi.mock('./session', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./session')>()),
   useSession: () => ({ admin: viewer.admin, refresh: async () => {} }),
 }));
 
-/** The tab asks for the router; nothing here navigates through it. `notFound` stays real. */
+/**
+ * The tab asks for the router; nothing here navigates through it. The page
+ * reads its tab from the address, which a case sets. `notFound` stays real.
+ */
 vi.mock('next/navigation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next/navigation')>()),
   useRouter: () => ({ replace: () => {}, push: () => {} }),
+  useSearchParams: () => new URLSearchParams(viewer.query),
 }));
 
 /** What the API was sent, and how it answers — a success unless a case says otherwise. */
@@ -58,13 +63,16 @@ vi.mock('@/lib/api', async (importOriginal) => {
 const served = vi.hoisted(() => ({
   paths: [] as (string | null)[],
   answers: new Map<string, unknown>(),
+  /** Paths the API refuses, and with what. */
+  errors: new Map<string, unknown>(),
 }));
 
 vi.mock('../_lib/use-api-resource', () => ({
   useApiResource: (path: string | null) => {
     served.paths.push(path);
     const data = path === null ? null : (served.answers.get(path) ?? null);
-    return { data, error: null, loading: false, reload: async () => {} };
+    const error = path === null ? null : (served.errors.get(path) ?? null);
+    return { data, error, loading: false, reload: async () => {} };
   },
 }));
 
@@ -95,6 +103,10 @@ const { GrantDialog } = await import('./admin-grant-dialogs');
 const { AddAdminForm, AdminsTab, addAdmin, removalCopy, removeAdmin } =
   await import('./admin-admins');
 const { adminPageState } = await import('./admin-screen');
+const { OverviewTab } = await import('./admin-overview');
+const { UsersTab } = await import('./admin-users');
+const { AdminOrganizationScreen } = await import('./admin-organization-screen');
+const { AdminUserScreen } = await import('./admin-user-screen');
 const { ApiError } = await import('@/lib/api');
 
 function render(element: ReactNode): string {
@@ -103,8 +115,10 @@ function render(element: ReactNode): string {
 
 beforeEach(() => {
   viewer.admin = false;
+  viewer.query = '';
   served.paths = [];
   served.answers = new Map();
+  served.errors = new Map();
   api.posts = [];
   api.answer = () => Promise.resolve(undefined);
 });
@@ -124,20 +138,59 @@ describe('the admin page, for somebody who is not an admin', () => {
 });
 
 describe('the admin page, for an admin', () => {
-  it('opens on finding an organisation, and asks nothing until something is searched for', () => {
+  it('opens on the overview, and asks for the totals and nothing else', () => {
     viewer.admin = true;
     const html = render(createElement(AdminScreen));
 
     expect(html).toContain('>Admin<');
-    expect(html).toContain('>Organisations<');
-    expect(html).toContain('>Grants<');
-    expect(html).toContain('>Promo codes<');
-    expect(html).toContain('>Admins<');
-    expect(html).toContain('Find an organisation');
-    // Said up front: the customer can read what is done here.
+    for (const tab of ['Overview', 'Organisations', 'Users', 'Grants', 'Promo codes', 'Admins']) {
+      expect(html).toContain(`>${tab}<`);
+    }
+    // Said up front: the customer can read what is done here, and nothing of
+    // what they keep is shown but counts.
     expect(html).toContain('audit log as xecret support, with the reason you give');
     expect(html).toContain('Your own address is not shown to them.');
-    expect(served.paths).toEqual([null]);
+    expect(html).toContain('you see counts only');
+    expect(html).toContain('looking leaves no trace there');
+    expect(served.paths).toEqual(['/api/admin/overview']);
+  });
+
+  it('opens on the tab the address names, and on the overview for one it does not have', () => {
+    viewer.admin = true;
+    viewer.query = 'tab=users';
+    render(createElement(AdminScreen));
+    expect(served.paths).toEqual(['/api/admin/users']);
+
+    served.paths = [];
+    viewer.query = 'tab=organizations';
+    render(createElement(AdminScreen));
+    // No search yet, and so the whole list.
+    expect(served.paths).toEqual([null, '/api/admin/organizations']);
+
+    served.paths = [];
+    viewer.query = 'tab=billing';
+    render(createElement(AdminScreen));
+    expect(served.paths).toEqual(['/api/admin/overview']);
+  });
+});
+
+describe('the Overview tab', () => {
+  it('shows every total and the recent sign-ups', () => {
+    served.answers.set('/api/admin/overview', {
+      totals: { users: 1234, organizations: 56, projects: 78, environments: 210, secrets: 4321 },
+      signups: { last7Days: 9, last30Days: 41 },
+    });
+    const html = render(createElement(OverviewTab));
+
+    for (const label of ['Users', 'Organisations', 'Projects', 'Environments', 'Secrets']) {
+      expect(html).toContain(`>${label}<`);
+    }
+    for (const figure of ['1,234', '>56<', '>78<', '>210<', '4,321', '>9<', '>41<']) {
+      expect(html).toContain(figure);
+    }
+    expect(html).toContain('Last 7 days');
+    expect(html).toContain('Last 30 days');
+    expect(html).toContain('never sent to this page');
   });
 });
 
@@ -156,6 +209,8 @@ function organization(over: Partial<AdminOrganizationPayload> = {}): AdminOrgani
     grant: null,
     billedByDodo: false,
     awaitingActivation: false,
+    ownerEmails: ['ada@example.com'],
+    counts: { members: 4, pendingInvitations: 1, projects: 2, environments: 6, secrets: 37 },
     ...over,
   };
 }
@@ -212,6 +267,248 @@ describe('the Organisations tab', () => {
   it('says plainly when nothing matched', () => {
     const html = search([]);
     expect(html).toContain('Nothing found for “ada@example.com”');
+  });
+
+  it('opens each result’s own page, and says who owns it and how much is in it', () => {
+    const html = search([organization({ ownerEmails: ['ada@example.com', 'bob@example.com'] })]);
+    expect(html).toContain('href="/app/admin/organizations/org-1"');
+    expect(html).toContain('Owner: ada@example.com and 1 more');
+    expect(html).toContain('37 secrets');
+    // A search is shown in place of the list, with the way back to it.
+    expect(html).toContain('Show every organisation');
+    expect(served.paths).not.toContain('/api/admin/organizations');
+  });
+
+  it('lists every organisation newest first, with counts, and a way to the next page', () => {
+    served.answers.set('/api/admin/organizations', {
+      organizations: [
+        organization({ plan: 'team', managedBy: 'support', grant: { endsAt: null, note: null } }),
+        organization({ id: 'org-2', name: 'Zebra', slug: 'zebra', ownerEmails: [] }),
+      ],
+      nextCursor: 'next-page',
+    });
+    const html = render(createElement(OrganizationsTab, { query: null, onSearch: () => {} }));
+
+    expect(served.paths).toEqual([null, '/api/admin/organizations']);
+    // The search stays, above the list.
+    expect(html).toContain('Find an organisation');
+    expect(html.indexOf('Acme')).toBeLessThan(html.indexOf('Zebra'));
+    expect(html).toContain('href="/app/admin/organizations/org-1"');
+    expect(html).toContain('href="/app/admin/organizations/org-2"');
+    expect(html).toContain('ada@example.com');
+    expect(html).toContain('No owner');
+    expect(html).toContain('Team · free');
+    for (const heading of ['Owner', 'Plan', 'Members', 'Projects', 'Environments', 'Secrets']) {
+      expect(html).toContain(`>${heading}<`);
+    }
+    expect(html).toContain('>Created<');
+    expect(html).toContain('>37<');
+    expect(html).toContain('Load more');
+  });
+
+  it('says when the list has been read to its end', () => {
+    served.answers.set('/api/admin/organizations', {
+      organizations: [organization()],
+      nextCursor: null,
+    });
+    const html = render(createElement(OrganizationsTab, { query: null, onSearch: () => {} }));
+    expect(html).not.toContain('Load more');
+    expect(html).toContain('That is every one of the organisations.');
+  });
+});
+
+/* ── The Users tab ─────────────────────────────────────────────────────────── */
+
+function account(over: Partial<AdminAccountPayload> = {}): AdminAccountPayload {
+  return {
+    id: 'user-1',
+    email: 'ada@example.com',
+    displayName: 'Ada Lovelace',
+    emailVerified: true,
+    signedUpAt: '2026-10-01T00:00:00.000Z',
+    lastSignInAt: '2026-11-20T00:00:00.000Z',
+    lastSignInMethod: 'passkey',
+    organizationCount: 2,
+    ...over,
+  };
+}
+
+describe('the Users tab', () => {
+  it('lists every account newest first: who, when they signed up and in, how, and in how many organisations', () => {
+    served.answers.set('/api/admin/users', {
+      users: [
+        account(),
+        account({
+          id: 'user-2',
+          email: 'bob@example.com',
+          displayName: null,
+          emailVerified: false,
+          lastSignInAt: null,
+          lastSignInMethod: null,
+          organizationCount: 0,
+        }),
+      ],
+      nextCursor: 'next-page',
+    });
+    const html = render(createElement(UsersTab, { query: null, onSearch: () => {} }));
+
+    expect(served.paths).toEqual(['/api/admin/users']);
+    expect(html).toContain('Find an account');
+    expect(html.indexOf('ada@example.com')).toBeLessThan(html.indexOf('bob@example.com'));
+    expect(html).toContain('href="/app/admin/users/user-1"');
+    expect(html).toContain('href="/app/admin/users/user-2"');
+    expect(html).toContain('Ada Lovelace');
+    expect(html).toContain('>Verified<');
+    expect(html).toContain('>Not verified<');
+    expect(html).toContain('Passkey');
+    expect(html).toContain('>Never<');
+    expect(html).toContain('Load more');
+  });
+
+  it('asks for the accounts whose address contains what was searched for', () => {
+    served.answers.set('/api/admin/users?q=example.org', { users: [], nextCursor: null });
+    const html = render(createElement(UsersTab, { query: 'example.org', onSearch: () => {} }));
+
+    expect(served.paths).toEqual(['/api/admin/users?q=example.org']);
+    expect(html).toContain('No address contains “example.org”');
+    expect(html).toContain('Show every account');
+  });
+});
+
+/* ── One organisation, one account ─────────────────────────────────────────── */
+
+function notFoundOf(element: ReactNode): string | undefined {
+  try {
+    render(element);
+  } catch (cause) {
+    return (cause as { digest?: string }).digest;
+  }
+  return undefined;
+}
+
+const NOT_FOUND = new ApiError({
+  code: 'not_found',
+  message: 'Not found.',
+  status: 404,
+  requestId: 'req-404',
+});
+
+describe('an organisation’s page', () => {
+  const DETAIL = '/api/admin/organizations/org-1';
+
+  it('is the 404 an unknown address is to somebody who is not an admin, and asks nothing', () => {
+    expect(notFoundOf(createElement(AdminOrganizationScreen, { orgId: 'org-1' }))).toBe(
+      'NEXT_HTTP_ERROR_FALLBACK;404',
+    );
+    expect(served.paths).toEqual([]);
+  });
+
+  it('shows the plan, the counts and the members — each opening the account’s page — and the grant actions', () => {
+    viewer.admin = true;
+    served.answers.set(DETAIL, {
+      organization: organization({
+        plan: 'team',
+        managedBy: 'support',
+        grant: { endsAt: null, note: 'Launch partner' },
+      }),
+      members: [
+        {
+          userId: 'user-1',
+          email: 'ada@example.com',
+          displayName: 'Ada Lovelace',
+          role: 'owner',
+          joinedAt: '2026-01-02T00:00:00.000Z',
+        },
+        {
+          userId: 'user-2',
+          email: 'bob@example.com',
+          displayName: null,
+          role: 'developer',
+          joinedAt: '2026-02-02T00:00:00.000Z',
+        },
+      ],
+    });
+    const html = render(createElement(AdminOrganizationScreen, { orgId: 'org-1' }));
+
+    expect(served.paths).toEqual([DETAIL]);
+    expect(html).toContain('href="/app/admin?tab=organizations"');
+    expect(html).toContain('All organisations');
+    expect(html).toContain('>Acme<');
+    expect(html).toContain('owned by ada@example.com');
+    for (const label of ['Members', 'Pending invitations', 'Projects', 'Environments', 'Secrets']) {
+      expect(html).toContain(`>${label}<`);
+    }
+    expect(html).toContain('>37<');
+    expect(html).toContain('Counts only.');
+    expect(html).toContain('Launch partner');
+    expect(html).toContain('href="/app/admin/users/user-1"');
+    expect(html).toContain('href="/app/admin/users/user-2"');
+    expect(html).toContain('>Owner<');
+    expect(html).toContain('>Developer<');
+    expect(html).toContain('Change the free plan');
+    expect(html).toContain('aria-label="End Acme’s free plan"');
+  });
+
+  it('offers a free plan to an organisation on Free, from its own page', () => {
+    viewer.admin = true;
+    served.answers.set(DETAIL, { organization: organization(), members: [] });
+    const html = render(createElement(AdminOrganizationScreen, { orgId: 'org-1' }));
+    expect(html).toContain('Give a free plan');
+    expect(html).not.toContain('End it');
+  });
+
+  it('says when there is no such organisation — or none any more', () => {
+    viewer.admin = true;
+    served.errors.set(DETAIL, NOT_FOUND);
+    const html = render(createElement(AdminOrganizationScreen, { orgId: 'org-1' }));
+    expect(html).toContain('No such organisation');
+    expect(html).toContain('href="/app/admin?tab=organizations"');
+  });
+});
+
+describe('an account’s page', () => {
+  const DETAIL = '/api/admin/users/user-1';
+
+  it('is the 404 an unknown address is to somebody who is not an admin, and asks nothing', () => {
+    expect(notFoundOf(createElement(AdminUserScreen, { userId: 'user-1' }))).toBe(
+      'NEXT_HTTP_ERROR_FALLBACK;404',
+    );
+    expect(served.paths).toEqual([]);
+  });
+
+  it('shows the account and its organisations, each opening the organisation’s page', () => {
+    viewer.admin = true;
+    served.answers.set(DETAIL, {
+      user: account(),
+      organizations: [
+        {
+          id: 'org-1',
+          name: 'Acme',
+          slug: 'acme',
+          role: 'owner',
+          joinedAt: '2026-01-02T00:00:00Z',
+        },
+      ],
+    });
+    const html = render(createElement(AdminUserScreen, { userId: 'user-1' }));
+
+    expect(served.paths).toEqual([DETAIL]);
+    expect(html).toContain('href="/app/admin?tab=users"');
+    expect(html).toContain('All users');
+    expect(html).toContain('ada@example.com');
+    expect(html).toContain('Ada Lovelace');
+    expect(html).toContain('>Verified<');
+    expect(html).toContain('Passkey');
+    expect(html).toContain('href="/app/admin/organizations/org-1"');
+    expect(html).toContain('>Owner<');
+  });
+
+  it('says when there is no such account — or none any more', () => {
+    viewer.admin = true;
+    served.errors.set(DETAIL, NOT_FOUND);
+    const html = render(createElement(AdminUserScreen, { userId: 'user-1' }));
+    expect(html).toContain('No such account');
+    expect(html).toContain('href="/app/admin?tab=users"');
   });
 });
 

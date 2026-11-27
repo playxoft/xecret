@@ -597,6 +597,28 @@ export {
 export type { AdminChangeActor, PlatformAdminListing } from './platform-admins';
 
 export {
+  ADMIN_OWNER_EMAILS_SHOWN,
+  containsPattern,
+  countAdminTotals,
+  figuresOf,
+  findUserForAdmin,
+  listOrganizationMembersForAdmin,
+  listOrganizationsForAdmin,
+  listUserOrganizationsForAdmin,
+  listUsersForAdmin,
+  organizationFiguresForAdmin,
+} from './admin-monitoring';
+export type {
+  AdminCursor,
+  AdminOrganizationFigures,
+  AdminOrganizationMember,
+  AdminPage,
+  AdminTotals,
+  AdminUserListing,
+  AdminUserMembership,
+} from './admin-monitoring';
+
+export {
   applyPlanGrant,
   createPromoCode,
   endPlanGrant,

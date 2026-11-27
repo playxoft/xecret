@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { apiPath, appPath, canonicalProjectAddress, parseDashboardPath, withQuery } from './paths';
+import {
+  adminTabFromQuery,
+  apiPath,
+  appPath,
+  canonicalProjectAddress,
+  parseDashboardPath,
+  withQuery,
+} from './paths';
 
 /**
  * The query builder every paginated screen composes its requests with.
@@ -269,6 +276,60 @@ describe('the admin page', () => {
       isAccountArea: false,
       isAdminArea: true,
     });
+  });
+
+  it('keeps one organisation’s and one account’s pages inside the admin area', () => {
+    const ORG_ID = '0190f5b2-6c1e-7a00-8000-0000000000aa';
+    const USER_ID = '0190f5b2-6c1e-7a00-8000-0000000000bb';
+    expect(appPath.adminOrganization(ORG_ID)).toBe(`/app/admin/organizations/${ORG_ID}`);
+    expect(appPath.adminUser(USER_ID)).toBe(`/app/admin/users/${USER_ID}`);
+    expect(appPath.adminOrganization('org 1/../x')).toBe(
+      '/app/admin/organizations/org%201%2F..%2Fx',
+    );
+
+    // Never "an organisation called admin, its project called organizations":
+    // the shell must not point its sidebar into somebody's organisation.
+    for (const pathname of [
+      appPath.adminOrganization(ORG_ID),
+      appPath.adminUser(USER_ID),
+      `${appPath.adminUser(USER_ID)}/`,
+      '/app/admin/organizations',
+      '/app/admin/some/later/page',
+    ]) {
+      expect(parseDashboardPath(pathname), pathname).toEqual({
+        orgSlug: null,
+        projectId: null,
+        envSlug: null,
+        isAccountArea: false,
+        isAdminArea: true,
+      });
+      expect(
+        canonicalProjectAddress({ pathname, search: '', hash: '' }, ORG_ID),
+        pathname,
+      ).toBeNull();
+    }
+  });
+
+  it('names its tabs in the address, Overview by none', () => {
+    expect(appPath.adminTab('overview')).toBe('/app/admin');
+    expect(appPath.adminTab('users')).toBe('/app/admin?tab=users');
+    expect(appPath.adminTab('promo-codes')).toBe('/app/admin?tab=promo-codes');
+    expect(adminTabFromQuery('organizations')).toBe('organizations');
+    expect(adminTabFromQuery('admins')).toBe('admins');
+    for (const value of [null, undefined, '', 'billing', 'Users', '__proto__']) {
+      expect(adminTabFromQuery(value), String(value)).toBe('overview');
+    }
+  });
+
+  it('keys its monitoring API by id, and encodes it', () => {
+    expect(apiPath.adminOverview()).toBe('/api/admin/overview');
+    expect(apiPath.adminOrganizations()).toBe('/api/admin/organizations');
+    expect(apiPath.adminOrganization('org 1')).toBe('/api/admin/organizations/org%201');
+    expect(apiPath.adminUsers()).toBe('/api/admin/users');
+    expect(apiPath.adminUser('user/1')).toBe('/api/admin/users/user%2F1');
+    expect(withQuery(apiPath.adminUsers(), { q: 'ada@example.com', cursor: 'abc' })).toBe(
+      '/api/admin/users?q=ada%40example.com&cursor=abc',
+    );
   });
 
   it('keys its API by organisation id, and encodes it', () => {
