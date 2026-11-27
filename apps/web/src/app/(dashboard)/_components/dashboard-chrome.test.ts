@@ -60,6 +60,14 @@ describe('the breadcrumb trail', () => {
 
   it('names the admin page, not an organisation called "admin"', () => {
     expect(buildBreadcrumbs(parseDashboardPath('/app/admin'), NAMES)).toEqual([{ label: 'Admin' }]);
+    // Nor one organisation's or account's page beneath it: never a project
+    // called "organizations" in an organisation called "admin".
+    for (const page of [
+      `/app/admin/organizations/${PROJECT_ID}`,
+      `/app/admin/users/${PROJECT_ID}`,
+    ]) {
+      expect(buildBreadcrumbs(parseDashboardPath(page), NAMES), page).toEqual([{ label: 'Admin' }]);
+    }
   });
 });
 

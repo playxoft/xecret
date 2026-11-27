@@ -58,6 +58,26 @@ export function dashboardHost(): string {
   return typeof window === 'undefined' ? '' : window.location.host;
 }
 
+/**
+ * The admin page's tabs, as `?tab=` names them. In the address rather than
+ * only in the page's state, so an organisation's or account's page can link
+ * back to the tab it was opened from, and the browser's Back returns to it.
+ */
+export const ADMIN_TABS = [
+  'overview',
+  'organizations',
+  'users',
+  'grants',
+  'promo-codes',
+  'admins',
+] as const;
+export type AdminTab = (typeof ADMIN_TABS)[number];
+
+/** The tab `?tab=` names, or Overview for none, or for one the page does not have. */
+export function adminTabFromQuery(value: string | null | undefined): AdminTab {
+  return (ADMIN_TABS as readonly string[]).includes(value ?? '') ? (value as AdminTab) : 'overview';
+}
+
 /** Pages. Everything under `/app` requires a session. */
 export const appPath = {
   root: (): string => '/app',
@@ -121,15 +141,27 @@ export const appPath = {
   settingsDevices: (): string => '/app/settings/devices',
   settingsDanger: (): string => '/app/settings/danger',
   /**
-   * The admin page: xecret's own staff giving organisations a free plan and
-   * issuing promo codes. Linked from the account menu only for an admin; for
-   * everybody else it is a 404, as its API is (`server/admin.ts`).
+   * The admin page: xecret's own staff keeping an eye on the service, giving
+   * organisations a free plan and issuing promo codes. `?tab=` names the tab
+   * it opens on (`adminTabFromQuery`). Linked from the account menu only for an
+   * admin; for everybody else it is a 404, as its API is (`server/admin.ts`).
    *
    * At the first position, where an organisation slug would go, which is safe
    * only because `admin` is in the reserved slug list — no organisation can be
    * called `admin` and be shadowed by this, as none can be called `settings`.
    */
   admin: (): string => '/app/admin',
+  /** The admin page with one tab open, e.g. `/app/admin?tab=users`. Overview's is the page's own. */
+  adminTab: (tab: AdminTab): string =>
+    tab === 'overview' ? appPath.admin() : `${appPath.admin()}?tab=${segment(tab)}`,
+  /**
+   * One organisation, and one account, on the admin page — by id, like the
+   * admin API: the admin is not a member, and a slug is the organisation's to
+   * rename. Under `/app/admin`, so the shell reads them as the admin area too.
+   */
+  adminOrganization: (orgId: string): string =>
+    `${appPath.admin()}/organizations/${segment(orgId)}`,
+  adminUser: (userId: string): string => `${appPath.admin()}/users/${segment(userId)}`,
 } as const;
 
 /** API routes, as documented in `docs/architecture/api.md` §4. */
@@ -288,8 +320,19 @@ export const apiPath = {
     `${apiPath.webhook(org, webhookId)}/deliveries`,
 
   // ── The admin page (`server/admin.ts`): 404 to everybody but xecret's staff ──
-  /** `GET ?q=` — organisations by a member's email address or by slug. */
+  /** `GET` — how many accounts, organisations, projects, environments and secrets, and recent sign-ups. */
+  adminOverview: (): string => '/api/admin/overview',
+  /**
+   * `GET` — every organisation, newest first (`?cursor=`); `GET ?q=` —
+   * organisations by a member's email address or by slug.
+   */
   adminOrganizations: (): string => '/api/admin/organizations',
+  /** `GET` — one organisation, with its members. */
+  adminOrganization: (orgId: string): string => `${apiPath.adminOrganizations()}/${segment(orgId)}`,
+  /** `GET` — every account, newest first (`?cursor=`, `?q=` part of an address). */
+  adminUsers: (): string => '/api/admin/users',
+  /** `GET` — one account, with its organisations. */
+  adminUser: (userId: string): string => `${apiPath.adminUsers()}/${segment(userId)}`,
   /**
    * `POST` gives the organisation a free plan, or replaces the one it has.
    * Keyed by id, not slug: the admin is not a member, and a slug is the

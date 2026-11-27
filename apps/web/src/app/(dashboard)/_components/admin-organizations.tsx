@@ -1,14 +1,28 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 
 import { formatAbsoluteTime } from '@/lib/format';
-import { ROLE_LABELS } from '@/components/members/types';
-import { Badge, Button, EmptyState, Field, Input, SearchIcon, Skeleton } from '@/components/ui';
-import type { BadgeTone } from '@/components/ui';
-import type { OrgRole } from '@xecret/core/authz';
+import {
+  Badge,
+  BoxIcon,
+  Button,
+  EmptyState,
+  Field,
+  Input,
+  SearchIcon,
+  Skeleton,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui';
 import type { AdminOrganizationPayload } from '@/server/schemas/admin';
-import { apiPath, withQuery } from '../_lib/paths';
+import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import {
   EndGrantDialog,
@@ -18,47 +32,50 @@ import {
   useDialogTarget,
 } from './admin-grant-dialogs';
 import type { GrantTarget } from './admin-grant-dialogs';
+import {
+  count,
+  LoadMore,
+  Moment,
+  ownersText,
+  PlanBadge,
+  roleLabel,
+  statusOf,
+  useAdminList,
+} from './admin-lists';
 import { ErrorState } from './resource-states';
 
 /**
- * The Organisations tab: find one, and give it a free plan or end the one it
- * has.
+ * The Organisations tab: every organisation, newest first, and a search for
+ * the one somebody wrote in about — and, from a search result or an
+ * organisation's own page, a free plan given or ended.
  *
- * ── Found by an address or a slug, never browsed ──
- * There is no list of every organisation to scroll. An admin arrives with a
- * person ("the owner wrote in from ada@acme.dev") or an organisation's address
- * (`/app/acme`), so the search takes exactly those: an owner's or member's
- * email address, or the slug. Anything shorter than three characters is not
- * either, and is answered here rather than sent.
+ * ── The list ──
+ * Every live organisation, fifty at a time with "Load more": its name and
+ * slug, its owner's address, its plan, and how many members, projects,
+ * environments and secrets it has. Counts, never names — what a customer calls
+ * its projects is theirs, and the server never sends it. Each row opens the
+ * organisation's page (`/app/admin/organizations/{id}`), where its members
+ * are.
  *
- * Each result says what the grant dialog has to know before anybody opens it:
- * the plan and how it came to be, whether Dodo bills it — a grant over that
- * takes it off its subscription — and what it allows now.
+ * ── The search ──
+ * An admin often arrives with a person ("the owner wrote in from
+ * ada@acme.dev") or an organisation's address (`/app/acme`), so the search
+ * takes exactly those: an owner's or member's email address, or the slug.
+ * Anything shorter than three characters is not either, and is answered here
+ * rather than sent.
+ *
+ * Each search result says what the grant dialog has to know before anybody
+ * opens it: the plan and how it came to be, whether Dodo bills it — a grant
+ * over that takes it off its subscription — and what it allows now.
  */
-
-const STATUS: Record<AdminOrganizationPayload['status'], { label: string; tone: BadgeTone }> = {
-  active: { label: 'Active', tone: 'success' },
-  trialing: { label: 'Trial', tone: 'success' },
-  past_due: { label: 'Payment overdue', tone: 'warning' },
-  on_hold: { label: 'Payment failed', tone: 'danger' },
-  cancelled: { label: 'Cancelled', tone: 'neutral' },
-  expired: { label: 'Ended', tone: 'neutral' },
-};
-
-const count = (value: number) => value.toLocaleString('en-GB');
-
-/** The role, as the members screen names it; a role this client does not know, as sent. */
-function roleLabel(role: string): string {
-  return Object.hasOwn(ROLE_LABELS, role) ? ROLE_LABELS[role as OrgRole] : role;
-}
 
 export function OrganizationsTab({
   query,
   onSearch,
 }: {
-  /** What was last searched for — held by the page, so switching tabs keeps it. */
+  /** What was last searched for — held by the page, so switching tabs keeps it. `null` lists every one. */
   query: string | null;
-  onSearch: (query: string) => void;
+  onSearch: (query: string | null) => void;
 }) {
   const [typed, setTyped] = useState(query ?? '');
   const [problem, setProblem] = useState<string | null>(null);
@@ -82,6 +99,12 @@ export function OrganizationsTab({
     // wants the answer as it is now.
     if (q === query) reload();
     else onSearch(q);
+  }
+
+  function clear() {
+    setTyped('');
+    setProblem(null);
+    onSearch(null);
   }
 
   const organizations = results.data?.organizations ?? null;
@@ -111,11 +134,18 @@ export function OrganizationsTab({
             <Button type="submit" variant="secondary" loading={results.loading}>
               Search
             </Button>
+            {query !== null ? (
+              <Button type="button" variant="ghost" onClick={clear}>
+                Show every organisation
+              </Button>
+            ) : null}
           </div>
         </Field>
       </form>
 
-      {query === null ? null : results.error !== null ? (
+      {query === null ? (
+        <OrganizationList />
+      ) : results.error !== null ? (
         <ErrorState subject="organisations" error={results.error} onRetry={reload} />
       ) : organizations === null ? (
         <div aria-busy="true" aria-label="Searching" className="flex flex-col gap-3">
@@ -157,6 +187,92 @@ export function OrganizationsTab({
   );
 }
 
+/** Every live organisation, newest first, a page at a time. */
+function OrganizationList() {
+  const list = useAdminList<'organizations', AdminOrganizationPayload>(
+    apiPath.adminOrganizations(),
+    'organizations',
+  );
+
+  if (list.error !== null) {
+    return <ErrorState subject="the organisations" error={list.error} onRetry={list.reload} />;
+  }
+  if (list.rows === null) {
+    return (
+      <div aria-busy="true" aria-label="Loading the organisations">
+        <Skeleton className="h-64 w-full rounded-xl" />
+      </div>
+    );
+  }
+  if (list.rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<BoxIcon />}
+        title="No organisations yet"
+        description="Every organisation made on this deployment is listed here, the newest first."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <TableContainer aria-label="Every organisation, newest first">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Organisation</TableHead>
+              <TableHead>Owner</TableHead>
+              <TableHead>Plan</TableHead>
+              <TableHead className="text-right">Members</TableHead>
+              <TableHead className="text-right">Projects</TableHead>
+              <TableHead className="text-right">Environments</TableHead>
+              <TableHead className="text-right">Secrets</TableHead>
+              <TableHead>Created</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {list.rows.map((organization) => (
+              <TableRow key={organization.id}>
+                <TableCell>
+                  <Link
+                    href={appPath.adminOrganization(organization.id)}
+                    className="text-fg hover:decoration-fg decoration-line-strong text-sm font-medium underline-offset-4 hover:underline"
+                  >
+                    {organization.name}
+                  </Link>
+                  <p className="text-fg-subtle font-mono text-sm">{organization.slug}</p>
+                </TableCell>
+                <TableCell className="text-fg-muted max-w-64 truncate text-sm">
+                  {ownersText(organization.ownerEmails)}
+                </TableCell>
+                <TableCell>
+                  <PlanBadge organization={organization} />
+                </TableCell>
+                <TableCell className="text-right text-sm tabular-nums">
+                  {count(organization.counts.members)}
+                </TableCell>
+                <TableCell className="text-right text-sm tabular-nums">
+                  {count(organization.counts.projects)}
+                </TableCell>
+                <TableCell className="text-right text-sm tabular-nums">
+                  {count(organization.counts.environments)}
+                </TableCell>
+                <TableCell className="text-right text-sm tabular-nums">
+                  {count(organization.counts.secrets)}
+                </TableCell>
+                <TableCell className="text-sm">
+                  <Moment value={organization.createdAt} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      <LoadMore list={list} noun="organisations" />
+    </div>
+  );
+}
+
 function OrganizationResult({
   organization,
   onGrant,
@@ -166,7 +282,7 @@ function OrganizationResult({
   onGrant: () => void;
   onEnd: () => void;
 }) {
-  const status = STATUS[organization.status];
+  const status = statusOf(organization);
   const granted = organization.grant !== null;
   // An Enterprise contract or another arrangement support made by hand: a paid
   // plan with nothing at Dodo, and no grant record to say how long. A grant
@@ -177,7 +293,12 @@ function OrganizationResult({
     <li className="border-line bg-surface flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <p className="text-fg text-[0.9375rem] font-semibold">{organization.name}</p>
+          <Link
+            href={appPath.adminOrganization(organization.id)}
+            className="text-fg decoration-line-strong hover:decoration-fg text-[0.9375rem] font-semibold underline-offset-4 hover:underline"
+          >
+            {organization.name}
+          </Link>
           <code className="text-fg-subtle font-mono text-sm">{organization.slug}</code>
           {organization.role !== null ? (
             <span className="text-fg-muted text-sm">
@@ -188,9 +309,7 @@ function OrganizationResult({
 
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span className="text-fg">{grantSummary(organization.plan, organization.grant)}</span>
-          {organization.plan !== 'free' && !granted ? (
-            <Badge tone={status.tone}>{status.label}</Badge>
-          ) : null}
+          {status !== null ? <Badge tone={status.tone}>{status.label}</Badge> : null}
           {organization.billedByDodo ? (
             <Badge tone="accent">
               Paid at checkout
@@ -207,6 +326,11 @@ function OrganizationResult({
           Up to {count(organization.seats.limit)} members
           {organization.billedByDodo ? ` · ${count(organization.seats.billed)} seats billed` : ''}
           {' · '}created {formatAbsoluteTime(organization.createdAt)}
+        </p>
+        <p className="text-fg-subtle text-sm">
+          Owner: {ownersText(organization.ownerEmails)} · {count(organization.counts.members)}{' '}
+          members · {count(organization.counts.projects)} projects ·{' '}
+          {count(organization.counts.secrets)} secrets
         </p>
         {organization.grant?.note ? (
           <p className="text-fg-muted text-sm">{organization.grant.note}</p>

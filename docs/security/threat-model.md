@@ -794,6 +794,20 @@ secret reaching a log or an audit row.
   checked it is ours, live, for that plan and that person. Codes are guessable only as fast as
   the rate limiter allows, and one answer covers "no such code", "revoked" and "not for you";
   the admin page makes random ten-character codes by default.
+- **The admin page's monitoring** (`/api/admin/overview`, `…/organizations`, `…/users`, and
+  one of either by id), behind the same `requireAdmin`. An admin can now list every live
+  account and organisation, newest first: what a stolen admin account reads is every customer's
+  address, display name, sign-up and last sign-in, how their latest session signed in, and each
+  organisation's plan, owners and members. Never more than that, by the owner's rule for an
+  open-source staff page: of what a customer put in — where xecret is the processor — only
+  **counts** of projects, environments and secrets, never a name, slug, id, description, note,
+  value or version; never an IP address, user agent, device or session id, token, key or
+  ciphertext, audit-log content, avatar, the address of an invitee who has not signed up, or
+  anything of a soft-deleted account or organisation. Every payload goes through a zod
+  allowlist (`server/schemas/admin.ts`) that drops any key it does not name, and a test sweeps
+  every endpoint's answer for a seeded project, environment, secret, session and invitee.
+  Looking is not written to the customer's audit log; each read is a server log line naming
+  the admin's user id and what they looked at, never a search term.
 - **Seats** follow the membership: the seat-sync debt is written **inside the membership
   change's own transaction**, so it exists even if the push after the commit never runs. One
   push at a time per organisation (a lease), counted under the debt's generation and cleared
