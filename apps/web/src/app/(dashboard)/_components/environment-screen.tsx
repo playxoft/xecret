@@ -379,9 +379,11 @@ export function EnvironmentScreen({
           // dropdown costs two clicks and hides its options until the first.
           //
           // A strip of its own under the heading rather than a cluster in its
-          // actions: it now says which environment is on screen and which are
-          // beside it, in words, and that sentence needs the width the header's
-          // action cluster, sharing a line with the title, does not have.
+          // actions: while a comparison is open it says which environment is
+          // on screen and which are beside it, in words, and that sentence
+          // needs room the header's action cluster, sharing a line with the
+          // title, does not have. Only as wide as its contents, though — see
+          // "Compact" in the switcher.
           <EnvironmentSwitcher
             environments={project.data.environments}
             currentSlug={envSlug}

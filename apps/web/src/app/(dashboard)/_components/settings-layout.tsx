@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/cn';
@@ -21,22 +21,34 @@ import type { SettingsSectionGroup } from './settings-sections';
  * whichever one is open, and only that one. See `settings-sections.ts` for why
  * each section is a route, and for the lists themselves.
  *
- * ── Two measures, one frame ──
- * A section is a column of fields, and a form stretched across a 27-inch
- * display is a worse form, so a section is held to the 42rem every settings
- * screen has always had. The plans are the exception (`wide`): three plan
- * columns and a comparison table that is 52rem before it scrolls, laid out
- * for a page of their own. They take the whole column.
+ * ── One width, on every section ──
+ * Moving from one section to the next changes what is in the column and
+ * nothing about where it is. The column used to have two widths — the 42rem
+ * every form was held to, and the whole of it for the plans — and opening
+ * Plans widened the page under the pointer and leaving it narrowed it again,
+ * which reads as the page jumping however reasonable each width is alone.
  *
- * The frame is sized for the wide section rather than for the forms — 72rem,
- * less the nav's 13 and the gap's 2.5, leaves 56.5rem, which holds the table
- * whole — and it is that width on every section. Widening it only for the
- * plans was the other way to get there, and it moved the nav: the frame is
- * centred, so a wider one starts further left, and the list somebody had just
- * clicked in jumped sideways under their pointer. A form beside a fixed nav,
- * with room to spare on its right on a very wide display, is the cheaper of
- * the two. `settings-layout.test.ts` does the arithmetic, so a wider nav or a
- * narrower frame that would squeeze the table again fails there.
+ * So the column is sized for the widest section and every section has it:
+ * the frame's 72rem, less the nav's 13 and the gap's 2.5, leaves 56.5rem —
+ * room for the plans' three columns side by side, which want 56 (`@4xl` in
+ * `upgrade-screen.tsx`), and for their comparison table's 52 whole. The frame
+ * is that one width for the same reason: it is centred, so a frame that grew
+ * for one section would start further left on it, and the list somebody had
+ * just clicked in would slide sideways. `settings-layout.test.ts` does the
+ * arithmetic, so a wider nav or a narrower frame that would squeeze the plans
+ * again fails there.
+ *
+ * What the width is wrong for is a field: a name box stretched across 56rem,
+ * and a hint read in one 120-character line under it. So the fields keep the
+ * 42rem measure they always had — every `Field` carries `data-field` for the
+ * purpose — while the cards around them, and the tables and lists that are
+ * glad of the room, take the column.
+ *
+ * The last thing that moved the frame sideways was the page's own scrollbar,
+ * there beside a long section and gone beside a short one, which shifted
+ * everything centred by half its width. The root keeps the scrollbar's gutter
+ * whether or not there is anything to scroll — see `scrollbar-gutter` in
+ * `globals.css`.
  *
  * ── The nav beside the content, or above it ──
  * Beside it from `xl`, the first breakpoint with room for the nav next to a
@@ -64,7 +76,6 @@ export function SettingsLayout({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const active = activeSettingsSection(groups, pathname);
 
   useLegacyAnchors(groups, pathname);
 
@@ -75,9 +86,11 @@ export function SettingsLayout({
       <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:gap-10">
         <SettingsNav label={label} groups={groups} />
 
-        {/* `min-w-0` so a wide child — a table, a long unbroken token — shrinks
-            this column instead of pushing the page into a horizontal scroll. */}
-        <div className={cn('min-w-0 flex-1', active?.wide ? null : 'max-w-2xl')}>{children}</div>
+        {/* The same column on every section, its fields held to a form's
+            measure — see the header. `min-w-0` so a wide child — a table, a
+            long unbroken token — shrinks this column instead of pushing the
+            page into a horizontal scroll. */}
+        <div className="min-w-0 flex-1 [&_[data-field]]:max-w-2xl">{children}</div>
       </div>
     </div>
   );
@@ -93,6 +106,15 @@ export function SettingsLayout({
  * marked with `aria-current="page"` as well as colour — and with a bar beside
  * it, so the mark survives greyscale and colour-vision deficiency.
  *
+ * ── One plain list ──
+ * Every section of the area in one list, in order, with no headings over
+ * parts of it. The column used to print its groups' names — "Security",
+ * "Plan and billing" — above them, and with a handful of sections, each named
+ * for what it holds, a heading was one more line to read past on the way to
+ * the link it introduced. A group is now only a little space in the column
+ * before the next one, which is what still sets Danger zone apart from the
+ * sections above it; the row runs them together, as it always did.
+ *
  * Exported for its test; the frame above is what screens render.
  */
 export function SettingsNav({
@@ -106,7 +128,6 @@ export function SettingsNav({
   const active = activeSettingsSection(groups, pathname);
   const visible = visibleSettingsGroups(groups);
   const scroller = useRef<HTMLDivElement>(null);
-  const groupId = useId();
 
   // ── Keeping the current section in view on a narrow screen ──
   //
@@ -149,56 +170,45 @@ export function SettingsNav({
           // The row: one line, scrolling sideways, bled to the edges of the
           // page's gutter so the links scroll under it rather than stopping
           // short of it. `relative` is what `offsetLeft` above is measured from.
-          'relative -mx-4 flex gap-1 overflow-x-auto px-4 sm:-mx-6 sm:px-6',
+          'relative -mx-4 flex overflow-x-auto px-4 sm:-mx-6 sm:px-6',
           // The hairline under the row is a shadow inside it, not a border: a
           // border drawn by the links themselves would overlap it by hanging a
           // pixel out of a box that scrolls, and a pixel of vertical overflow
           // in a scrolling box is a vertical scrollbar.
           'shadow-[inset_0_-1px_0_var(--line-subtle)]',
           // The column.
-          'xl:mx-0 xl:flex-col xl:gap-5 xl:overflow-visible xl:px-0 xl:shadow-none',
+          'xl:mx-0 xl:flex-col xl:overflow-visible xl:px-0 xl:shadow-none',
         )}
       >
-        {visible.map((group, index) => {
-          const headingId = group.label ? `${groupId}-${index}` : undefined;
-          return (
-            <div key={group.label ?? index} className="flex shrink-0 xl:flex-col">
-              {group.label ? (
-                <p
-                  id={headingId}
-                  className="text-fg-subtle hidden px-3 pb-2 text-[0.6875rem] font-semibold tracking-wider uppercase xl:block"
+        <ul className="xl:border-line-subtle flex gap-1 xl:flex-col xl:gap-0 xl:border-l">
+          {visible.flatMap((group, groupIndex) =>
+            group.sections.map((section, index) => {
+              const current = section === active;
+              return (
+                <li
+                  key={section.href}
+                  // The space before a group, in the column: the only trace of
+                  // the groups left in the list.
+                  className={cn('flex shrink-0', groupIndex > 0 && index === 0 && 'xl:mt-3')}
                 >
-                  {group.label}
-                </p>
-              ) : null}
-              <ul
-                aria-labelledby={headingId}
-                className="xl:border-line-subtle flex gap-1 xl:flex-col xl:gap-0 xl:border-l"
-              >
-                {group.sections.map((section) => {
-                  const current = section === active;
-                  return (
-                    <li key={section.href} className="flex shrink-0">
-                      <Link
-                        href={section.href}
-                        aria-current={current ? 'page' : undefined}
-                        className={cn(
-                          'block border-b-2 px-3 py-2 text-sm whitespace-nowrap transition-colors',
-                          'xl:-ml-px xl:min-w-0 xl:flex-1 xl:border-b-0 xl:border-l-2 xl:py-1.5 xl:pr-2 xl:pl-3 xl:whitespace-normal',
-                          current
-                            ? 'border-accent text-fg font-medium'
-                            : 'text-fg-muted hover:text-fg xl:hover:border-line-strong border-transparent',
-                        )}
-                      >
-                        {section.label}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          );
-        })}
+                  <Link
+                    href={section.href}
+                    aria-current={current ? 'page' : undefined}
+                    className={cn(
+                      'block border-b-2 px-3 py-2 text-sm whitespace-nowrap transition-colors',
+                      'xl:-ml-px xl:min-w-0 xl:flex-1 xl:border-b-0 xl:border-l-2 xl:py-1.5 xl:pr-2 xl:pl-3 xl:whitespace-normal',
+                      current
+                        ? 'border-accent text-fg font-medium'
+                        : 'text-fg-muted hover:text-fg xl:hover:border-line-strong border-transparent',
+                    )}
+                  >
+                    {section.label}
+                  </Link>
+                </li>
+              );
+            }),
+          )}
+        </ul>
       </div>
     </nav>
   );

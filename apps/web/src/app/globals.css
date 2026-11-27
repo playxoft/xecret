@@ -453,6 +453,16 @@
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
+    /* The page's scrollbar keeps its room whether or not there is anything to
+       scroll. Where scrollbars take space — Windows, and Linux, and a Mac set
+       to always show them — one appearing beside a long page and going beside
+       a short one narrowed and widened the viewport by its width, and every
+       centred column moved sideways by half of it: going between two settings
+       sections, or from a short list to a long one, read as the page jumping.
+       Overlay scrollbars take no room, and there this does nothing.
+       A dialog's scroll lock would make room for the bar a second time; see
+       `body[data-scroll-locked]` below. */
+    scrollbar-gutter: stable;
   }
 
   body {
@@ -523,6 +533,19 @@
   [data-settings-section] {
     scroll-margin-top: calc(var(--topbar-height) + 1rem);
   }
+}
+
+/* The scroll lock under every modal — a dialog, a menu, a select — takes the
+   page's scrollbar away and pads the body by the bar's measured width so
+   nothing behind the overlay moves. With the gutter kept (`scrollbar-gutter`
+   on `html`, above) the bar's room is never given back, so that pad was the
+   room a second time, and the page slid left by a scrollbar's width whenever
+   anything modal opened. Unlayered, and one element more specific than the
+   lock's own `body[data-scroll-locked]`, which is unlayered and `!important`
+   as well — so specificity alone settles it, without leaning on how
+   important declarations rank across cascade layers. */
+html body[data-scroll-locked] {
+  margin-right: 0 !important;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
