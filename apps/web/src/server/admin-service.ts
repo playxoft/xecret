@@ -6,17 +6,20 @@ import {
   billedByDodo,
   createPromoCode,
   endPlanGrant,
+  figuresOf,
   findOrganizationsForAdmin,
   findPromoCodeById,
   isUniqueViolation,
   listPlanGrants,
   listPromoCodes,
   operatorManaged,
+  organizationFiguresForAdmin,
   promoCodeExists,
   revokePromoCode,
 } from '@xecret/db/repositories';
 import type {
   AdminOrganization,
+  AdminOrganizationFigures,
   GrantListing,
   PromoCodeListing,
   PromoCodeRecord,
@@ -34,6 +37,8 @@ import { ApiError, errors } from './errors';
 import { describeError } from './logging';
 import {
   ADMIN_MAX_DAYS,
+  adminOrganizationPayloadSchema,
+  allowlisted,
   type AdminGrantBody,
   type AdminGrantPayload,
   type AdminOrganizationPayload,
@@ -66,11 +71,19 @@ const LIST_LIMIT = 200;
 
 /* ── organisations ─────────────────────────────────────────────────────────── */
 
-function toOrganizationPayload(org: AdminOrganization): AdminOrganizationPayload {
+/**
+ * One organisation's payload, built field by field — never a row spread — and
+ * then put through its allowlist (`schemas/admin.ts`). The figures are counts
+ * and owners' addresses only: nothing a customer named.
+ */
+function toOrganizationPayload(
+  org: AdminOrganization,
+  figures: AdminOrganizationFigures,
+): AdminOrganizationPayload {
   const row = org.subscription;
   const support = operatorManaged(row);
   const live = row.dodoSubscriptionId !== null && row.dodoProductId !== null && row.plan !== 'free';
-  return {
+  return allowlisted(adminOrganizationPayloadSchema, {
     id: org.id,
     name: org.name,
     slug: org.slug,
@@ -84,7 +97,31 @@ function toOrganizationPayload(org: AdminOrganization): AdminOrganizationPayload
     grant: support ? { endsAt: row.grantEndsAt?.toISOString() ?? null, note: row.grantNote } : null,
     billedByDodo: billedByDodo(row) && !awaitingActivation(row),
     awaitingActivation: awaitingActivation(row),
-  };
+    ownerEmails: [...figures.ownerEmails],
+    counts: {
+      members: figures.members,
+      pendingInvitations: figures.pendingInvitations,
+      projects: figures.projects,
+      environments: figures.environments,
+      secrets: figures.secrets,
+    },
+  });
+}
+
+/**
+ * A page of organisations as payloads: their figures read in two statements
+ * for the whole page (`organizationFiguresForAdmin`), never one per row.
+ */
+export async function organizationPayloads(
+  services: ServiceContext,
+  orgs: readonly AdminOrganization[],
+): Promise<AdminOrganizationPayload[]> {
+  const figures = await organizationFiguresForAdmin(
+    services.db,
+    orgs.map((org) => org.id),
+    new Date(),
+  );
+  return orgs.map((org) => toOrganizationPayload(org, figuresOf(figures, org.id)));
 }
 
 /** An address finds the organisations its person is in; anything else is a slug. */
@@ -97,7 +134,7 @@ export async function searchOrganizations(
     query.includes('@') ? { email: query } : { slug: query.toLowerCase() },
     SEARCH_LIMIT,
   );
-  return found.map(toOrganizationPayload);
+  return organizationPayloads(services, found);
 }
 
 async function organizationPayload(
@@ -106,7 +143,8 @@ async function organizationPayload(
 ): Promise<AdminOrganizationPayload> {
   const [org] = await findOrganizationsForAdmin(services.db, { id: orgId }, 1);
   if (org === undefined) throw errors.notFound('organisation not found after a grant');
-  return toOrganizationPayload(org);
+  const [payload] = await organizationPayloads(services, [org]);
+  return payload!;
 }
 
 /** "until 1 March 2027", or "with no end date". For the audit reason. */

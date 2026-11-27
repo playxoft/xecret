@@ -155,6 +155,27 @@ describe('request descriptions', () => {
     expect(describeRequest('GET', '/api/auth/callback').event).toBe('auth.callback');
   });
 
+  it('names what the admin page read, and never which organisation or account it was', () => {
+    const ORG = '0190f5b2-6c1e-7a00-8000-000000000001';
+    const USER = '0190f5b2-6c1e-7a00-8000-000000000002';
+    expect(sentence('GET', '/api/admin/overview', 200)).toBe(
+      'Read the service’s totals, as an admin',
+    );
+    expect(sentence('GET', '/api/admin/organizations', 200)).toBe(
+      'Listed organisations, as an admin',
+    );
+    expect(sentence('GET', `/api/admin/organizations/${ORG}`, 200)).toBe(
+      'Read an organisation, as an admin',
+    );
+    expect(sentence('POST', `/api/admin/organizations/${ORG}/grant`, 200)).toBe(
+      'Granted a complimentary plan, as an admin',
+    );
+    expect(sentence('GET', '/api/admin/users', 200)).toBe('Listed accounts, as an admin');
+    expect(sentence('GET', `/api/admin/users/${USER}`, 200)).toBe('Read an account, as an admin');
+    expect(describeRequest('GET', `/api/admin/users/${USER}`).event).toBe('admin.user_read');
+    expect(describeRequest('GET', `/api/admin/organizations/${ORG}`).event).toBe('admin.org_read');
+  });
+
   // A route with no entry is a gap in the mapping, not a reason to say nothing.
   it('still names the method and path for an unmapped route', () => {
     expect(sentence('GET', '/api/something/new', 200)).toBe('Served GET /api/something/new');

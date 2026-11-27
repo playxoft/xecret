@@ -1,4 +1,8 @@
 import * as z from 'zod/mini';
+import { fromBase64Url, toBase64Url } from '@xecret/core/crypto';
+import type { AdminCursor } from '@xecret/db/repositories';
+import { errors } from '../errors';
+import { isUuid } from './ids';
 
 /**
  * The admin page's API (`/api/admin/*`): the bodies it accepts and the shapes
@@ -69,16 +73,103 @@ export type AdminGrantBody = z.infer<typeof adminGrantSchema>;
 /** `POST /api/admin/organizations/{orgId}/grant/end`. */
 export const adminEndGrantSchema = z.strictObject({ reason: reasonSchema }, UNEXPECTED_FIELD);
 
-/** `GET /api/admin/organizations?q=` — an email address or an organisation slug. */
-export const adminSearchQuerySchema = z.object({
-  q: z
-    .string()
-    .check(
-      z.trim(),
-      z.minLength(3, 'Search by an email address or an organisation’s slug.'),
-      z.maxLength(320, 'That is longer than any address or slug.'),
+/** How many rows a page of the organisations or users list holds, unless asked for fewer. */
+export const ADMIN_PAGE_DEFAULT = 50;
+/** The most a page may hold. */
+export const ADMIN_PAGE_MAX = 100;
+
+/**
+ * The paging half of a list's query: an opaque cursor from the previous page,
+ * and how many rows to answer with. Plain `z.object` around these, like every
+ * query schema: an unknown parameter is ignored, not refused.
+ */
+const pageFields = {
+  cursor: z.optional(
+    z.string().check(z.maxLength(200, 'The cursor is not one this endpoint issued.')),
+  ),
+  limit: z._default(
+    z.pipe(
+      z.coerce.number(),
+      z
+        .int('A page size is a whole number.')
+        .check(
+          z.gte(1, 'A page holds at least one row.'),
+          z.lte(ADMIN_PAGE_MAX, `A page holds at most ${ADMIN_PAGE_MAX} rows.`),
+        ),
     ),
+    ADMIN_PAGE_DEFAULT,
+  ),
+};
+
+/**
+ * `GET /api/admin/organizations` — every live organisation newest first, a
+ * page at a time; or, with `?q=`, the search it has always been: the
+ * organisations of the person with that email address, or the one with that
+ * slug. A search is not paged (it answers at most fifty), so the paging
+ * parameters are ignored beside `q`.
+ */
+export const adminOrganizationsQuerySchema = z.object({
+  q: z.optional(
+    z
+      .string()
+      .check(
+        z.trim(),
+        z.minLength(3, 'Search by an email address or an organisation’s slug.'),
+        z.maxLength(320, 'That is longer than any address or slug.'),
+      ),
+  ),
+  ...pageFields,
 });
+
+/**
+ * `GET /api/admin/users` — every live account newest first, a page at a time;
+ * with `?q=`, only those whose address contains it, in any case. Matched as
+ * typed: `%` and `_` are characters to find, not wildcards
+ * (`containsPattern`).
+ */
+export const adminUsersQuerySchema = z.object({
+  q: z.optional(
+    z
+      .string()
+      .check(
+        z.trim(),
+        z.minLength(3, 'Type at least three characters of an address.'),
+        z.maxLength(320, 'That is longer than any address.'),
+      ),
+  ),
+  ...pageFields,
+});
+
+/**
+ * A list's keyset cursor, as an opaque string: base64url over `at|id`, where
+ * `at` is the last row's `created_at` to the microsecond (`AdminCursor`).
+ * Encoded so a client cannot mistake it for something to do arithmetic on, and
+ * decoded as strictly as it was written, because a client can still hand back
+ * anything it likes: a malformed cursor is a 400, not a 500 from the database.
+ */
+export function encodeAdminCursor(cursor: AdminCursor): string {
+  return toBase64Url(new TextEncoder().encode(`${cursor.at}|${cursor.id}`));
+}
+
+const CURSOR_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+
+export function decodeAdminCursor(value: string): AdminCursor {
+  const malformed = () => errors.badRequest('The cursor is not one this endpoint issued.');
+
+  let packed: string;
+  try {
+    packed = new TextDecoder('utf-8', { fatal: true }).decode(fromBase64Url(value));
+  } catch {
+    throw malformed();
+  }
+
+  const [at, id, ...rest] = packed.split('|');
+  if (at === undefined || id === undefined || rest.length > 0) throw malformed();
+  if (!CURSOR_AT_PATTERN.test(at) || Number.isNaN(Date.parse(at)) || !isUuid(id)) {
+    throw malformed();
+  }
+  return { at, id };
+}
 
 /**
  * Lower-cased, every one shaped like an address — and printable ASCII, checked
@@ -234,25 +325,169 @@ export const promoCodeBodySchema = z.strictObject(
 
 /* ── what the routes answer with ───────────────────────────────────────────── */
 
-/** An organisation, as the admin page shows it. */
-export interface AdminOrganizationPayload {
-  id: string;
-  name: string;
-  slug: string;
-  /** The searched-for person's role in it; `null` for a search by slug. */
-  role: string | null;
-  createdAt: string;
-  plan: 'free' | 'pro' | 'team' | 'enterprise';
-  status: 'active' | 'trialing' | 'past_due' | 'on_hold' | 'cancelled' | 'expired';
-  interval: 'monthly' | 'yearly' | null;
+/**
+ * Every payload below that the monitoring routes answer with is an
+ * **allowlist**: a zod schema, run over the object the service built before it
+ * is sent (`allowlisted`). `z.object` keeps the keys it names and drops every
+ * other, so a field added to a repository row — or a row spread into a payload
+ * by mistake — never reaches the wire; it would have to be named here first,
+ * where the review of this file is.
+ *
+ * ── What is never named here, by the owner's rule ──
+ * The admin page is in an open-source repository, and nothing on it may break
+ * a customer's trust. The privacy policy makes xecret the processor for what a
+ * customer puts in and the controller only for the account, so:
+ *
+ *  - **Projects, environments and secrets are counts.** No name, slug, id,
+ *    description, note, value or version of any of them.
+ *  - **Accounts are the account data:** the address, the display name, when
+ *    it signed up and last signed in, whether the address is verified, how its
+ *    most recent session signed in, and how many organisations it is in.
+ *  - **Never** an IP address, a user agent, a device or session id, a token, a
+ *    key or any ciphertext, the audit log, an avatar, the address an
+ *    invitation was sent to (a count is fine), or anything about a
+ *    soft-deleted account or organisation.
+ *
+ * Reading any of it is not written to the customer's audit log — a staff
+ * member looking is not something the customer did — but every read is a line
+ * on the server's own log, naming the admin's user id and what they looked at.
+ */
+
+const planSchema = z.enum(['free', 'pro', 'team', 'enterprise']);
+const roleSchema = z.enum(['owner', 'admin', 'developer', 'viewer']);
+const countSchema = z.int().check(z.gte(0));
+
+/** An organisation, as the admin page shows it — in the list, a search, its own page, or a grant's answer. */
+export const adminOrganizationPayloadSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  /** The searched-for person's role in it; `null` for a search by slug, and in the list. */
+  role: z.nullable(z.string()),
+  createdAt: z.string(),
+  plan: planSchema,
+  status: z.enum(['active', 'trialing', 'past_due', 'on_hold', 'cancelled', 'expired']),
+  interval: z.nullable(z.enum(['monthly', 'yearly'])),
   /** As the billing screen says it: bought at checkout, set by an admin, or neither. */
-  managedBy: 'checkout' | 'support' | 'none';
-  seats: { billed: number; limit: number };
+  managedBy: z.enum(['checkout', 'support', 'none']),
+  seats: z.object({ billed: countSchema, limit: countSchema }),
   /** The grant, when `managedBy` is `support`. */
-  grant: { endsAt: string | null; note: string | null } | null;
+  grant: z.nullable(z.object({ endsAt: z.nullable(z.string()), note: z.nullable(z.string()) })),
   /** Whether a grant here needs `overDodo` — Dodo bills it, or a paid checkout is waiting. */
-  billedByDodo: boolean;
-  awaitingActivation: boolean;
+  billedByDodo: z.boolean(),
+  awaitingActivation: z.boolean(),
+  /** Its owners' addresses, the longest-standing first — at most ten (`ADMIN_OWNER_EMAILS_SHOWN`). */
+  ownerEmails: z.array(z.string()),
+  /**
+   * How much is in it. Counts and nothing else: what a project, environment
+   * or secret is called is the customer's, and is never sent.
+   */
+  counts: z.object({
+    /** Members of any status, on live accounts. */
+    members: countSchema,
+    /** Open invitations — not accepted, revoked or expired. Never to whom. */
+    pendingInvitations: countSchema,
+    projects: countSchema,
+    environments: countSchema,
+    secrets: countSchema,
+  }),
+});
+export type AdminOrganizationPayload = z.infer<typeof adminOrganizationPayloadSchema>;
+
+/** A member, on an organisation's page. Links to the account's own page by `userId`. */
+export const adminMemberPayloadSchema = z.object({
+  userId: z.string(),
+  email: z.string(),
+  displayName: z.nullable(z.string()),
+  /** The base role. A custom role's name is the customer's own wording, and is not sent. */
+  role: roleSchema,
+  joinedAt: z.string(),
+});
+export type AdminMemberPayload = z.infer<typeof adminMemberPayloadSchema>;
+
+/** `GET /api/admin/organizations/{orgId}`. */
+export const adminOrganizationDetailPayloadSchema = z.object({
+  organization: adminOrganizationPayloadSchema,
+  /** On live accounts, the longest-standing first; at most `ADMIN_MEMBERS_SHOWN`. */
+  members: z.array(adminMemberPayloadSchema),
+});
+export type AdminOrganizationDetailPayload = z.infer<typeof adminOrganizationDetailPayloadSchema>;
+
+/** `GET /api/admin/organizations`, listed or searched. */
+export const adminOrganizationListPayloadSchema = z.object({
+  organizations: z.array(adminOrganizationPayloadSchema),
+  /** Hand back as `?cursor=` for the next page; `null` on the last, and always for a search. */
+  nextCursor: z.nullable(z.string()),
+});
+export type AdminOrganizationListPayload = z.infer<typeof adminOrganizationListPayloadSchema>;
+
+/** An account, as the Users tab lists it. */
+export const adminAccountPayloadSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  displayName: z.nullable(z.string()),
+  emailVerified: z.boolean(),
+  /** `users.created_at`. */
+  signedUpAt: z.string(),
+  /** `users.last_login_at`; `null` for one that has never signed in since it was recorded. */
+  lastSignInAt: z.nullable(z.string()),
+  /** How its most recent session signed in — the method only, never the session. */
+  lastSignInMethod: z.nullable(
+    z.enum(['password', 'oauth', 'sso', 'magic_auth', 'passkey', 'other']),
+  ),
+  /** Live organisations it is a member of. */
+  organizationCount: countSchema,
+});
+export type AdminAccountPayload = z.infer<typeof adminAccountPayloadSchema>;
+
+/** `GET /api/admin/users`. */
+export const adminAccountListPayloadSchema = z.object({
+  users: z.array(adminAccountPayloadSchema),
+  nextCursor: z.nullable(z.string()),
+});
+export type AdminAccountListPayload = z.infer<typeof adminAccountListPayloadSchema>;
+
+/** One of an account's organisations, on its page. Links to the organisation's page by `id`. */
+export const adminAccountMembershipPayloadSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  role: roleSchema,
+  joinedAt: z.string(),
+});
+export type AdminAccountMembershipPayload = z.infer<typeof adminAccountMembershipPayloadSchema>;
+
+/** `GET /api/admin/users/{userId}`. */
+export const adminAccountDetailPayloadSchema = z.object({
+  user: adminAccountPayloadSchema,
+  /** Live organisations only, the earliest joined first. */
+  organizations: z.array(adminAccountMembershipPayloadSchema),
+});
+export type AdminAccountDetailPayload = z.infer<typeof adminAccountDetailPayloadSchema>;
+
+/** `GET /api/admin/overview`. Live rows only, each inside live parents. */
+export const adminOverviewPayloadSchema = z.object({
+  totals: z.object({
+    users: countSchema,
+    organizations: countSchema,
+    projects: countSchema,
+    environments: countSchema,
+    secrets: countSchema,
+  }),
+  /** Live accounts created in the last seven and thirty days. */
+  signups: z.object({ last7Days: countSchema, last30Days: countSchema }),
+});
+export type AdminOverviewPayload = z.infer<typeof adminOverviewPayloadSchema>;
+
+/**
+ * A payload, through its allowlist: the keys the schema names and no other.
+ * One that does not fit — a new plan or status nobody added here — is a bug
+ * in this server, and answered as one rather than sent half-checked.
+ */
+export function allowlisted<T>(schema: z.ZodMiniType<T>, value: T): T {
+  const result = schema.safeParse(value);
+  if (!result.success) throw errors.internal('an admin payload did not fit its allowlist');
+  return result.data;
 }
 
 /** One of xecret's admins, as the Admins tab lists them. */

@@ -124,15 +124,26 @@ export function describeRequest(method: string, path: string): RequestAction {
  * stays out of the sentence like every other identifier.
  */
 function describeAdmin(verb: string, rest: readonly string[], path: string): RequestAction {
-  const [section, , sub, subsub] = rest;
+  const [section, id, sub, subsub] = rest;
   switch (section) {
+    case 'overview':
+      return action('admin.overview', 'Read', 'read', 'the service’s totals, as an admin');
     case 'organizations':
+      // Listed and searched alike: the search term is in the query string,
+      // which no log line carries.
+      if (id === undefined) {
+        return action('admin.org_list', 'Listed', 'list', 'organisations, as an admin');
+      }
       if (sub === undefined) {
-        return action('admin.org_search', 'Searched', 'search', 'organisations, as an admin');
+        return action('admin.org_read', 'Read', 'read', 'an organisation, as an admin');
       }
       return subsub === 'end'
         ? action('admin.grant_end', 'Ended', 'end', 'a complimentary plan, as an admin')
         : action('admin.grant', 'Granted', 'grant', 'a complimentary plan, as an admin');
+    case 'users':
+      return id === undefined
+        ? action('admin.users_list', 'Listed', 'list', 'accounts, as an admin')
+        : action('admin.user_read', 'Read', 'read', 'an account, as an admin');
     case 'grants':
       return action('admin.grants_list', 'Listed', 'list', 'complimentary plans, as an admin');
     case 'admins':

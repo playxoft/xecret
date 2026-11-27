@@ -98,6 +98,10 @@ const statusRoute = await import('@/app/api/orgs/[orgSlug]/billing/route');
 const meRoute = await import('@/app/api/auth/me/route');
 const adminsRoute = await import('@/app/api/admin/admins/route');
 const removeAdminRoute = await import('@/app/api/admin/admins/[userId]/remove/route');
+const overviewRoute = await import('@/app/api/admin/overview/route');
+const organizationRoute = await import('@/app/api/admin/organizations/[orgId]/route');
+const usersRoute = await import('@/app/api/admin/users/route');
+const userRoute = await import('@/app/api/admin/users/[userId]/route');
 const { DodoApiError } = await import('./billing/client');
 
 let t: TestDatabase;
@@ -418,6 +422,13 @@ const addAdmin = (email: string) =>
   send(adminsRoute.POST, 'POST', '/api/admin/admins', {}, { email });
 const removeAdmin = (userId: string) =>
   send(removeAdminRoute.POST, 'POST', `/api/admin/admins/${userId}/remove`, { userId });
+const overview = () => send(overviewRoute.GET, 'GET', '/api/admin/overview', {});
+const listOrganizations = () => send(searchRoute.GET, 'GET', '/api/admin/organizations', {});
+const organizationDetail = (orgId: string) =>
+  send(organizationRoute.GET, 'GET', `/api/admin/organizations/${orgId}`, { orgId });
+const listUsers = () => send(usersRoute.GET, 'GET', '/api/admin/users', {});
+const userDetail = (userId: string) =>
+  send(userRoute.GET, 'GET', `/api/admin/users/${userId}`, { userId });
 
 /** A grant body the schema accepts; the test overrides what it is about. */
 const grantBody = (overrides: Record<string, unknown> = {}) => ({
@@ -514,6 +525,11 @@ describe('who may reach the admin API', () => {
       await listAdmins(),
       await addAdmin(newcomer.email),
       await removeAdmin(otherAdminId),
+      await overview(),
+      await listOrganizations(),
+      await organizationDetail(orgId),
+      await listUsers(),
+      await userDetail(otherAdminId),
     ];
   }
 
