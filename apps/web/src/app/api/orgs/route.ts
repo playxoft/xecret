@@ -5,6 +5,7 @@ import {
   QuotaExceededError,
   RepositoryError,
 } from '@xecret/db/repositories';
+import { billingConfigured } from '@/server/billing/config';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -78,11 +79,13 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * per minute: a slug is claimed out of a global namespace permanently, deleted
  * or not, and every organisation mints an Org Master Key. No plan limits how
  * many organisations an account holds (each paid one is billed on its own), so
- * the bound is the free tier's: an account's two oldest Free organisations
- * work, a later one waits for a paid plan, and an account may hold one that
- * waits at a time. Creating past the free allowance is allowed, so somebody can
- * start an organisation and then buy it a plan; creating while one already
- * waits is refused, with `organizationAwaitingLimitReached`.
+ * the bound is the free tier's: an account's open Free organisations work up
+ * to two, one created past them waits for a paid plan, and an account may hold
+ * one that waits at a time. Creating past the free allowance is allowed, so
+ * somebody can start an organisation and then buy it a plan; creating one that
+ * would wait while another already waits is refused, with
+ * `organizationAwaitingLimitReached`. None of it applies where this deployment
+ * takes no payments (`billingConfigured`).
  *
  * Decided inside `provisionOrganization`, behind the row lock it takes on the
  * account, so two concurrent requests cannot both read "none waiting". The
@@ -119,6 +122,9 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   const created = await provisionOrganization(services.db, {
     user: principal.user,
     envelope: services.envelope,
+    // Only where a plan can be bought: an organisation created waiting with no
+    // way to pay would be locked for good.
+    freeAllowance: billingConfigured(services.env),
     name: body.name,
     // Two different contracts, and the difference matters:
     //

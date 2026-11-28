@@ -355,10 +355,22 @@ describe('the plan, read once and locked before it is asked', () => {
     expect(chrome).toMatch(/owner=\{canAdminister\(currentOrg \?\? null, 'billing\.manage'\)\}/);
   });
 
-  it('never asks on a timer', () => {
+  it('never asks on a timer, only on focus and on a press', () => {
     const provider = source('../../../components/plans/plan-entitlements.tsx');
     expect(provider).not.toMatch(/setInterval|setTimeout|refetchInterval/);
     expect(provider.match(/useApiResource</g)).toHaveLength(1);
+    expect(provider).toMatch(/window\.addEventListener\('focus', onFocus\)/);
+    expect(provider).toMatch(/rechecksOnFocus\(readAt\.current, now/);
+  });
+
+  it('re-reads the plan when a locked control is pressed', () => {
+    const lock = source('../../../components/plans/plan-lock.tsx');
+    expect(lock).toMatch(
+      /pending\.current = pressAt\(form, Date\.now\(\)\);\s*void view\.recheck\(\);/,
+    );
+    expect(lock).toMatch(
+      /if \(continuesPress\(waiting, lock, Date\.now\(\)\)\) proceed\(waiting\);/,
+    );
   });
 
   // The refusal the project-create flow used to show was the server's own
@@ -374,7 +386,7 @@ describe('the plan, read once and locked before it is asked', () => {
     expect(dialog).toMatch(
       /awaiting\s*\?\s*appPath\.orgPlans\(created\.organization\.slug\)\s*:\s*appPath\.org\(created\.organization\.slug\)/,
     );
-    expect(dialog).toContain('freeAllowanceNotice(view.entitlements.account)');
+    expect(dialog).toContain('freeAllowanceNotice(view.entitlements)');
     expect(dialog).toMatch(/<LockedAction lock=\{createLock\}>\s*<Button\s+type="submit"/);
   });
 

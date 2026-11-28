@@ -181,7 +181,7 @@ async function main(): Promise<void> {
       );
 
       // ── 2. Organisation bootstrap: the org, the membership, the master key ─
-      const account = await provisionOrganization(tx, { user, envelope });
+      const account = await provisionOrganization(tx, { user, envelope, freeAllowance: false });
       step(
         'organisation bootstrapped',
         account.membership.role === 'owner',

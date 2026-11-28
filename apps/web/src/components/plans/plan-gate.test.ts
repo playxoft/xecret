@@ -261,24 +261,38 @@ describe('a refusal that arrived anyway', () => {
 });
 
 describe('organisations per account', () => {
+  const account = (freeOrganizations: number, awaitingOrganizations: number, upgrades = true) =>
+    entitlementsFor('free', { account: { freeOrganizations, awaitingOrganizations }, upgrades });
+
   it('creates freely while the free allowance has room', () => {
-    expect(organizationCreateBlock({ freeOrganizations: 1, awaitingOrganizations: 0 })).toBeNull();
-    expect(freeAllowanceNotice({ freeOrganizations: 1, awaitingOrganizations: 0 })).toBeNull();
+    expect(organizationCreateBlock(account(1, 0))).toBeNull();
+    expect(freeAllowanceNotice(account(1, 0))).toBeNull();
   });
 
   it('says, before creating, that a third Free organisation needs a paid plan', () => {
-    expect(organizationCreateBlock({ freeOrganizations: 2, awaitingOrganizations: 0 })).toBeNull();
-    expect(freeAllowanceNotice({ freeOrganizations: 2, awaitingOrganizations: 0 })).toBe(
+    expect(organizationCreateBlock(account(2, 0))).toBeNull();
+    expect(freeAllowanceNotice(account(2, 0))).toBe(
       'You already have 2 free organisations. This one needs a paid plan before you can use it.',
     );
   });
 
   it('locks creating while one already waits for a plan, offering no upgrade', () => {
-    const block = organizationCreateBlock({ freeOrganizations: 3, awaitingOrganizations: 1 });
+    const block = organizationCreateBlock(account(2, 1));
     expect(block?.kind).toBe('notice');
     expect(block?.reason).toBe(
       'You already have an organisation waiting for a paid plan. Choose a plan for it or delete it, then create another.',
     );
     expect(lockCopy(block as PlanBlock, OWNER).link).toBe(false);
+  });
+
+  it('creates freely, and new, while one waits but the account has fewer than two open', () => {
+    // A lapsed organisation waits; the account has room for an open one again.
+    expect(organizationCreateBlock(account(1, 1))).toBeNull();
+    expect(freeAllowanceNotice(account(1, 1))).toBeNull();
+  });
+
+  it('applies none of it where the deployment takes no payments', () => {
+    expect(organizationCreateBlock(account(2, 1, false))).toBeNull();
+    expect(freeAllowanceNotice(account(2, 0, false))).toBeNull();
   });
 });

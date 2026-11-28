@@ -29,9 +29,9 @@ import type { ServiceContext } from '../context';
 import { describeError } from '../logging';
 import { subscriptionResource, systemAudit } from './audit';
 import { billingProvider, DodoApiError } from './client';
-import { billingSetup } from './config';
+import { billingConfigured, billingSetup } from './config';
 import type { BillingConfig } from './config';
-import { runBillingEffects } from './effects';
+import { awaitingPaidPlanMail, runBillingEffects } from './effects';
 import type { BillingEffect } from './effects';
 import { applySubscriptionSnapshot } from './handlers/subscription';
 import type { SnapshotOutcome } from './handlers/subscription';
@@ -293,7 +293,12 @@ async function endDueGrant(
   now: Date,
 ): Promise<number> {
   const done = await services.db.transaction(async (tx) => {
-    const result = await endPlanGrant(tx, candidate.orgId, { dueBy: now });
+    // The free allowance applies only where a plan can be bought: a grant
+    // ends here whether or not this deployment takes payments.
+    const result = await endPlanGrant(tx, candidate.orgId, {
+      dueBy: now,
+      freeAllowance: billingConfigured(services.env),
+    });
     if (result === null) return null;
     await appendAuditEvents(tx, [
       systemAudit(services, candidate.orgId, 'billing job').success(
@@ -320,6 +325,7 @@ async function endDueGrant(
       occasion: done.previous.grantEndsAt?.toISOString() ?? now.toISOString(),
       reminder: { kind: 'grant_ended', plan: done.previous.plan },
     },
+    ...(done.becameAwaitingPaidPlan ? [awaitingPaidPlanMail(candidate.orgId, now)] : []),
   ]);
   return 1;
 }
@@ -381,9 +387,9 @@ async function endLapsedCancellations(services: ServiceContext, now: Date): Prom
         row.currentPeriodEnd === null ||
         row.currentPeriodEnd.getTime() + CANCELLATION_GRACE_MS > now.getTime()
       ) {
-        return false;
+        return null;
       }
-      await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
+      const written = await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
         billed: 1,
         enforced: FREE_SEAT_LIMIT,
       });
@@ -402,9 +408,13 @@ async function endLapsedCancellations(services: ServiceContext, now: Date): Prom
           },
         ),
       ]);
-      return true;
+      return { awaiting: written?.becameAwaitingPaidPlan === true };
     });
-    if (changed) ended += 1;
+    if (changed === null) continue;
+    ended += 1;
+    if (changed.awaiting) {
+      await runBillingEffects(services, [awaitingPaidPlanMail(candidate.orgId, now)]);
+    }
   }
   return ended;
 }
@@ -439,7 +449,7 @@ async function endLongHolds(services: ServiceContext, now: Date): Promise<number
       if (row === null || row.plan === 'free' || operatorManaged(row)) return null;
       const deadline = holdDeadline(row);
       if (deadline === null || deadline.endsAt > now) return null;
-      await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
+      const written = await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
         billed: 1,
         enforced: FREE_SEAT_LIMIT,
       });
@@ -460,11 +470,15 @@ async function endLongHolds(services: ServiceContext, now: Date): Promise<number
           },
         ),
       ]);
-      return { row, afterTrial: deadline.afterTrial };
+      return {
+        row,
+        afterTrial: deadline.afterTrial,
+        awaiting: written?.becameAwaitingPaidPlan === true,
+      };
     });
     if (endedRow === null) continue;
     ended += 1;
-    const { row: held, afterTrial } = endedRow;
+    const { row: held, afterTrial, awaiting } = endedRow;
     const days = Math.floor((now.getTime() - held.onHoldSince!.getTime()) / DAY_MS);
     await runBillingEffects(services, [
       {
@@ -490,6 +504,8 @@ async function endLongHolds(services: ServiceContext, now: Date): Promise<number
           ...(afterTrial ? { afterTrial: true as const } : {}),
         },
       },
+      // Back on Free past the creator's allowance: it waits for a paid plan.
+      ...(awaiting ? [awaitingPaidPlanMail(held.orgId, now)] : []),
     ]);
   }
   return ended;

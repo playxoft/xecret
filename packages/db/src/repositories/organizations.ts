@@ -1,6 +1,4 @@
 import { and, asc, count, desc, eq, exists, gt, isNull, ne, or, sql } from 'drizzle-orm';
-import type { SQL } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import {
@@ -24,6 +22,7 @@ import { environments, projects } from '../schema/resources';
 import { orgSubscriptions } from '../schema/billing';
 import { customRoles } from '../schema/roles';
 import { orgMembers, organizations, workosHome } from '../schema/tenancy';
+import { countAwaitingOrganizations, countOpenFreeOrganizations } from './free-allowance';
 import { addMember, CUSTOM_ROLE_COLUMNS, customRoleJoin, toCustomRole } from './membership';
 import type { WrittenMemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
@@ -102,11 +101,7 @@ export interface OrganizationWithEntitlements {
  */
 export function organizationBySlugWithEntitlementsQuery(exec: Executor, slug: string) {
   return exec
-    .select({
-      organization: organizations,
-      entitlements: entitlementColumns,
-      awaitingPaidPlan: awaitingPaidPlanSql(),
-    })
+    .select({ organization: organizations, entitlements: entitlementColumns })
     .from(organizations)
     .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
     .where(and(eq(organizations.slug, slug), isNull(organizations.deletedAt)))
@@ -119,10 +114,12 @@ export async function findOrganizationBySlugWithEntitlements(
 ): Promise<OrganizationWithEntitlements | null> {
   const [row] = await organizationBySlugWithEntitlementsQuery(exec, slug);
   if (!row) return null;
-  const awaitingPaidPlan = row.awaitingPaidPlan === true;
+  // Stored on the organisation (migration 0037, `free-allowance.ts`), and only
+  // ever set on a Free one; `resolveEntitlements` asks the plan again anyway.
+  const awaitingPaidPlan = row.organization.awaitingPaidPlanSince !== null;
   // A missing subscription row reads as Free everywhere, and so it does here:
-  // one that is past its creator's allowance is still waiting, so the answer
-  // carries the flag on the Free row the migration would have written.
+  // one that is waiting is still waiting, so the answer carries the flag on
+  // the Free row the migration would have written.
   if (row.entitlements === null) {
     return {
       organization: row.organization,
@@ -144,127 +141,6 @@ const FREE_ROW: SubscriptionEntitlementRow = Object.freeze({
   limitOverrides: null,
   currentPeriodEnd: null,
 });
-
-/* ── The free allowance ───────────────────────────────────────────────────── */
-
-// Aliases, because the expression reads these tables again beneath an outer
-// query that already has `organizations` and `org_subscriptions` in scope. A
-// raw template renders an alias by its name alone, so each is written after
-// its table (`from "org_members" "creator_member"`).
-const heldOrg = alias(organizations, 'held_org');
-const heldMember = alias(orgMembers, 'held_member');
-const heldSubscription = alias(orgSubscriptions, 'held_subscription');
-const creatorMember = alias(orgMembers, 'creator_member');
-
-/**
- * Whether the organisation in the enclosing query is waiting for a paid plan
- * (`Entitlements.awaitingPaidPlan`), as one SQL expression.
- *
- * For a query that reads `organizations` and left-joins `org_subscriptions` on
- * it. It is true when all three hold:
- *
- *  - the organisation is on Free (no subscription row reads as Free, the same
- *    answer `entitlementsFromRow` gives it);
- *  - its creator is still an active member of it, because the allowance is
- *    spent by the organisations an account *created and is still in*, the set
- *    `organizationsHeldByQuery` counts; one whose creator has gone is counted
- *    against nobody;
- *  - the creator holds at least `FREE_ORGANIZATIONS_PER_ACCOUNT` older Free
- *    organisations on the same terms, older meaning created earlier.
- *
- * So the two oldest are open and every later one waits, and the answer moves
- * the moment a row does: buying a plan for any of them, deleting one, or the
- * creator leaving one changes it on the next read, with no column to keep in
- * step. A complimentary grant is a plan on the row, so a granted organisation
- * is paid and spends nothing. Joining somebody else's organisation spends
- * nothing either, because only the creator's own are counted.
- *
- * Asked inside the lookup `resolveOrg` already makes, so it costs no round
- * trip: the inner count reads `organizations_creator_idx` and stops at the
- * allowance.
- */
-export function awaitingPaidPlanSql(): SQL<boolean> {
-  return sql<boolean>`(
-    coalesce(${orgSubscriptions.plan}::text, 'free') = 'free'
-    and exists (
-      select 1 from ${orgMembers} ${creatorMember}
-      where ${creatorMember.orgId} = ${organizations.id}
-        and ${creatorMember.userId} = ${organizations.createdBy}
-        and ${creatorMember.status} = 'active'
-    )
-    and (
-      select count(*) from (
-        select 1 from ${organizations} ${heldOrg}
-        inner join ${orgMembers} ${heldMember}
-          on ${heldMember.orgId} = ${heldOrg.id}
-          and ${heldMember.userId} = ${organizations.createdBy}
-          and ${heldMember.status} = 'active'
-        left join ${orgSubscriptions} ${heldSubscription} on ${heldSubscription.orgId} = ${heldOrg.id}
-        where ${heldOrg.createdBy} = ${organizations.createdBy}
-          and ${heldOrg.deletedAt} is null
-          and coalesce(${heldSubscription.plan}::text, 'free') = 'free'
-          and (${heldOrg.createdAt}, ${heldOrg.id}) < (${organizations.createdAt}, ${organizations.id})
-        limit ${FREE_ORGANIZATIONS_PER_ACCOUNT}
-      ) as older_free
-    ) >= ${FREE_ORGANIZATIONS_PER_ACCOUNT}
-  )`;
-}
-
-/** How far into its free allowance an account is. See `freeOrganizationAllowance`. */
-export interface FreeAllowance {
-  /**
-   * The Free organisations the account created and is still a member of,
-   * counted no further than the allowance plus the one that may wait.
-   */
-  free: number;
-  /** How many of those are past the allowance, waiting for a paid plan. */
-  awaiting: number;
-}
-
-/**
- * The Free organisations an account created and is still in, oldest first,
- * read no further than the allowance plus the one that may be waiting.
- *
- * @internal Exported so the test can read its shape without a database.
- */
-export function freeOrganizationsHeldQuery(exec: Executor, userId: string) {
-  return exec
-    .select({ id: organizations.id })
-    .from(organizations)
-    .innerJoin(orgMembers, eq(orgMembers.orgId, organizations.id))
-    .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
-    .where(
-      and(
-        eq(organizations.createdBy, userId),
-        eq(orgMembers.userId, userId),
-        eq(orgMembers.status, 'active'),
-        isNull(organizations.deletedAt),
-        sql`coalesce(${orgSubscriptions.plan}::text, 'free') = 'free'`,
-      ),
-    )
-    .orderBy(asc(organizations.createdAt), asc(organizations.id))
-    .limit(FREE_ORGANIZATIONS_PER_ACCOUNT + AWAITING_ORGANIZATIONS_PER_ACCOUNT);
-}
-
-/**
- * Where an account stands against its free allowance: how many Free
- * organisations it holds, and how many of them are waiting for a paid plan.
- *
- * What `provisionOrganization` refuses on (one waiting at a time), and what the
- * dashboard reads to say, before somebody creates one, that it will need a plan.
- * The same set and order `awaitingPaidPlanSql` counts against, so the two
- * cannot disagree about which organisation is the one waiting.
- */
-export async function freeOrganizationAllowance(
-  exec: Executor,
-  userId: string,
-): Promise<FreeAllowance> {
-  const rows = await freeOrganizationsHeldQuery(exec, userId);
-  return {
-    free: rows.length,
-    awaiting: Math.max(0, rows.length - FREE_ORGANIZATIONS_PER_ACCOUNT),
-  };
-}
 
 export async function findOrganizationById(
   exec: Executor,
@@ -662,9 +538,10 @@ export interface HeldOrganizations {
  * How many live organisations one account **created and is still in**, and the
  * newest of them.
  *
- * What a refused creation is filed against (`POST /api/orgs`), and the set the
- * free allowance is counted in: `freeOrganizationsHeldQuery` and
- * `awaitingPaidPlanSql` read the same rows, narrowed to the Free ones.
+ * What a refused creation is filed against (`POST /api/orgs`). The free
+ * allowance is counted differently, over every organisation the account
+ * created whether or not it is still in it (`free-allowance.ts`): a place in
+ * that count is not given back by leaving.
  *
  * Both halves of that are load-bearing, and each answers a way the other one
  * alone fails:
@@ -797,6 +674,16 @@ export async function isOrgSlugAvailable(exec: Executor, slug: string): Promise<
 export interface ProvisionOrganizationParams {
   user: Pick<User, 'id' | 'email' | 'displayName'>;
   envelope: EnvelopeService;
+  /**
+   * Whether the free allowance applies here: this deployment takes payments,
+   * so a Free organisation past it can be bought a plan. Where it cannot, no
+   * organisation is created waiting, since nobody could buy the way out.
+   *
+   * Required, and deliberately not defaulted: the one bound on creating an
+   * organisation is this rule, and a caller that forgot to say would silently
+   * get either none or one nobody can satisfy.
+   */
+  freeAllowance: boolean;
   /** Overrides the name derived from the user's profile. */
   name?: string | undefined;
   /**
@@ -878,13 +765,16 @@ export interface ProvisionedOrganization {
  *
  * ── The one bound on creating, and why it is enforced in here ──
  * No plan limits how many organisations an account holds: each paid one is
- * billed on its own. What is bounded is the free tier. An account's two oldest
- * Free organisations work, a later one waits for a paid plan
- * (`awaitingPaidPlanSql`), and an account may hold only one that waits
+ * billed on its own. What is bounded is the free tier. An account's two open
+ * Free organisations work; one created while it already holds two is created
+ * waiting for a paid plan (`organizations.awaiting_paid_plan_since`, see
+ * `free-allowance.ts`); and an account may hold only one that waits
  * (`AWAITING_ORGANIZATIONS_PER_ACCOUNT`). So creating is refused, with
- * `QuotaExceededError`, exactly when the account already holds one waiting:
- * pay for it or delete it, then start another. That is what keeps the number of
- * Org Master Keys an account can mint without paying at three.
+ * `QuotaExceededError`, exactly when the new one would wait and the account
+ * already holds one waiting: pay for it or delete it, then start another. That
+ * is what keeps the number of Org Master Keys an account can mint without
+ * paying bounded. None of it applies where the deployment takes no payments
+ * (`freeAllowance: false`).
  *
  * Counted here, behind `lockAccount`, rather than by the caller. A count one
  * statement before this transaction is check-then-act: every concurrent request
@@ -906,16 +796,23 @@ export async function provisionOrganization(
     // mean anything.
     await lockAccount(tx, user.id);
 
-    // Under the lock, so two creations cannot both read "none waiting". A new
-    // organisation is Free and the newest the account holds, so it waits
-    // exactly when two older Free ones already work.
-    const allowance = await freeOrganizationAllowance(tx, user.id);
-    if (allowance.awaiting >= AWAITING_ORGANIZATIONS_PER_ACCOUNT) {
+    // Under the lock, so two creations (or a creation and a lapse) cannot both
+    // read the same count. A new organisation is Free, so it waits exactly when
+    // the account already holds two open Free ones; and it may not be made at
+    // all while one of the account's organisations already waits.
+    const awaitingPaidPlan =
+      params.freeAllowance &&
+      (await countOpenFreeOrganizations(tx, user.id, {
+        limit: FREE_ORGANIZATIONS_PER_ACCOUNT,
+      })) >= FREE_ORGANIZATIONS_PER_ACCOUNT;
+    if (
+      awaitingPaidPlan &&
+      (await countAwaitingOrganizations(tx, user.id)) >= AWAITING_ORGANIZATIONS_PER_ACCOUNT
+    ) {
       throw new QuotaExceededError(
         'This account already has an organisation waiting for a paid plan.',
       );
     }
-    const awaitingPaidPlan = allowance.free >= FREE_ORGANIZATIONS_PER_ACCOUNT;
 
     const now = new Date();
     const orgId = uuidv7();
@@ -938,6 +835,7 @@ export async function provisionOrganization(
         name: params.name?.trim() || defaultOrganizationName(user),
         slug,
         createdBy: user.id,
+        awaitingPaidPlanSince: awaitingPaidPlan ? now : null,
         createdAt: now,
         updatedAt: now,
       })

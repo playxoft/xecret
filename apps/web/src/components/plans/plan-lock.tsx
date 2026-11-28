@@ -101,7 +101,7 @@ export function PlanLockContent({
  * dismissed, which is what lets a touch user read it and a keyboard user reach
  * the link inside.
  */
-function useLockPopover() {
+function useLockPopover(onPress?: (event: MouseEvent<HTMLElement>) => void) {
   const [open, setOpen] = useState(false);
   const pinned = useRef(false);
   const escaped = useRef(false);
@@ -130,8 +130,10 @@ function useLockPopover() {
   const trigger = {
     onClick: (event: MouseEvent<HTMLElement>) => {
       // The control's own action never runs, and Radix's toggle is skipped:
-      // a click here pins the explanation instead.
+      // a click here pins the explanation instead, and asks whether the lock
+      // still holds.
       event.preventDefault();
+      onPress?.(event);
       if (pinned.current) {
         close();
         return;
@@ -228,6 +230,71 @@ interface ActionProps {
   className?: string | undefined;
   children?: ReactNode;
   disabled?: boolean | undefined;
+  onClick?: ((event: MouseEvent<HTMLButtonElement>) => void) | undefined;
+  type?: 'button' | 'submit' | 'reset' | undefined;
+}
+
+/**
+ * How long after a locked control is pressed its action may still go ahead,
+ * if the re-read shows the lock has gone. Long enough for one request, short
+ * enough that an unrelated change later never fires a press nobody remembers.
+ */
+const CONTINUE_WITHIN_MS = 10_000;
+
+/** A press waiting on a re-read: where to submit, and until when. */
+export interface PendingPress {
+  form: HTMLFormElement | null;
+  until: number;
+}
+
+/**
+ * Whether a press made on a locked control goes ahead now: the re-read has
+ * lifted the lock, and soon enough after the press that it is still the one
+ * somebody meant.
+ */
+export function continuesPress(
+  pending: PendingPress | null,
+  lock: PlanBlock | null,
+  now: number,
+): boolean {
+  return pending !== null && lock === null && now <= pending.until;
+}
+
+/** The press a locked control records, for `continuesPress`. */
+export function pressAt(form: HTMLFormElement | null, now: number): PendingPress {
+  return { form, until: now + CONTINUE_WITHIN_MS };
+}
+
+/**
+ * The re-check every locked control makes when it is pressed, and the press it
+ * carries on with if the lock has gone.
+ *
+ * The plan was read once, and may have moved since: bought in another tab, a
+ * project deleted by a colleague, a seat freed. So pressing a locked control
+ * re-reads it (`recheck`), and when the answer no longer locks it the action
+ * the press was for goes ahead: the button's own handler, or the form it
+ * submits. Within `CONTINUE_WITHIN_MS` of the press only, so a lock that lifts
+ * much later for some other reason never runs it.
+ */
+function useRecheckOnPress(lock: PlanBlock | null, proceed: (pending: PendingPress) => void) {
+  const view = usePlanView();
+  const pending = useRef<PendingPress | null>(null);
+
+  useEffect(() => {
+    const waiting = pending.current;
+    if (lock !== null || waiting === null) return;
+    pending.current = null;
+    if (continuesPress(waiting, lock, Date.now())) proceed(waiting);
+  }, [lock, proceed]);
+
+  return useCallback(
+    (form: HTMLFormElement | null) => {
+      if (view === null) return;
+      pending.current = pressAt(form, Date.now());
+      void view.recheck();
+    },
+    [view],
+  );
 }
 
 /**
@@ -248,14 +315,38 @@ export function LockedAction({
   lock: PlanBlock | null;
   children: ReactElement<ActionProps>;
 }) {
+  const { onClick, type } = children.props;
+  const proceed = useCallback(
+    ({ form }: PendingPress) => {
+      if (onClick !== undefined) (onClick as () => void)();
+      else if (type === 'submit') form?.requestSubmit();
+    },
+    [onClick, type],
+  );
+  const pressed = useRecheckOnPress(lock, proceed);
+
   if (lock === null) return children;
-  return <Locked lock={lock}>{children}</Locked>;
+  return (
+    <Locked lock={lock} onPress={pressed}>
+      {children}
+    </Locked>
+  );
 }
 
-function Locked({ lock, children }: { lock: PlanBlock; children: ReactElement<ActionProps> }) {
+function Locked({
+  lock,
+  onPress,
+  children,
+}: {
+  lock: PlanBlock;
+  onPress: (form: HTMLFormElement | null) => void;
+  children: ReactElement<ActionProps>;
+}) {
   const id = useId();
   const { copy } = useLockCopy(lock);
-  const { open, close, trigger, panel, content } = useLockPopover();
+  const { open, close, trigger, panel, content } = useLockPopover((event) =>
+    onPress((event.currentTarget as HTMLButtonElement).form),
+  );
 
   const control = cloneElement(children, {
     ...trigger,
@@ -293,8 +384,13 @@ function Locked({ lock, children }: { lock: PlanBlock; children: ReactElement<Ac
  * or a tap.
  */
 export function PlanLockBadge({ lock, className }: { lock: PlanBlock; className?: string }) {
+  const view = usePlanView();
   const { copy } = useLockCopy(lock);
-  const { open, close, trigger, panel, content } = useLockPopover();
+  // Pressing it re-reads the plan, so a lock that has gone stale goes with it:
+  // the control beside it then works with nothing more to press.
+  const { open, close, trigger, panel, content } = useLockPopover(() => {
+    void view?.recheck();
+  });
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={(next) => (next ? undefined : close())}>
@@ -323,7 +419,8 @@ export function PlanLockBadge({ lock, className }: { lock: PlanBlock; className?
  * A popover inside a menu would fight the menu for focus, so the reason is
  * written into the item itself, on a second line: readable without hover, on
  * any screen. An owner's locked item is the way to the plans page; anybody
- * else's does nothing when chosen, and the line says to ask an owner.
+ * else's re-reads the plan when chosen and, if the lock has gone, does what it
+ * was for; otherwise nothing, and the line says to ask an owner.
  */
 export function LockedMenuItem({
   lock,
@@ -335,6 +432,8 @@ export function LockedMenuItem({
   children: ReactNode;
 }) {
   const view = usePlanView();
+  const proceed = useCallback(() => onSelect(), [onSelect]);
+  const pressed = useRecheckOnPress(lock, proceed);
   if (lock === null) return <DropdownMenuItem onSelect={onSelect}>{children}</DropdownMenuItem>;
 
   const copy = lockCopy(lock, {
@@ -366,7 +465,10 @@ export function LockedMenuItem({
       aria-disabled
       data-plan-locked=""
       className="items-start"
-      onSelect={(event: Event) => event.preventDefault()}
+      onSelect={(event: Event) => {
+        event.preventDefault();
+        pressed(null);
+      }}
     >
       {body}
     </DropdownMenuItem>

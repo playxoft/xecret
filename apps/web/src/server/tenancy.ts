@@ -24,6 +24,7 @@ import type {
 } from '@xecret/db/repositories';
 import type { CredentialSignIn, Principal } from './actor';
 import type { ServiceContext } from './context';
+import { billingConfigured } from './billing/config';
 import { requireControlPlane } from './entitlements';
 import { errors } from './errors';
 import { isUuid } from './schemas/ids';
@@ -77,18 +78,27 @@ export interface EnvironmentScope extends ProjectScope {
 /**
  * How a route reaches its organisation, beyond the slug.
  *
- * `controlPlane: 'exempt'` is for the few writes an organisation whose control
- * plane is closed must still accept (see `guardControlPlane`). Every other
- * write is gated by default, so a new route cannot forget the gate: leaving it
- * on takes nothing, and taking it off has to be said, at the call, where a
- * reviewer reads it.
+ * `controlPlane: 'exempt'` is for the writes an organisation whose control
+ * plane is closed must still accept (see `guardControlPlane`). A route whose
+ * answer depends on the body (a member's role lowered or raised, a webhook
+ * switched off or edited) passes it too, and asks `requireControlPlane` itself
+ * once it knows the change gives access rather than taking it away. Every
+ * other write is gated by default, so a new route cannot forget the gate:
+ * leaving it on takes nothing, and taking it off has to be said, at the call,
+ * where a reviewer reads it.
  */
 export interface ResolveOrgOptions {
   controlPlane?: 'exempt' | undefined;
 }
 
-/** The methods that only read. Every other request to an organisation writes to it. */
-const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+/**
+ * The methods a closed control plane never refuses: the reads, because the
+ * data plane never closes, and `DELETE`, because every one below an
+ * organisation takes something away (a member, a grant, a token, an
+ * invitation, a key grant, an override, a role, a webhook, a secret, the
+ * organisation itself) and taking away must never wait on a payment.
+ */
+const OPEN_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'DELETE']);
 
 /**
  * Refuses a write to an organisation whose control plane is closed: one
@@ -106,12 +116,16 @@ const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
  * keeps working, and nothing is deleted.
  *
  * ── What stays open ──
- * The routes that pass `controlPlane: 'exempt'`, and only for the reason each
- * states: the billing routes (checkout, plan change, the portal, promo codes),
- * because paying is how the organisation is opened; deleting the organisation;
- * revoking a token, removing a member and withdrawing an invitation, because
- * taking access away must never wait on a payment; and the CLI's device
- * sign-in, because that is how a person reads secrets from a terminal at all.
+ * Every read and every `DELETE` (`OPEN_METHODS`). Then the routes that pass
+ * `controlPlane: 'exempt'`, each for the reason it states:
+ *
+ *  - paying, which is how the organisation is opened: checkout, plan change,
+ *    the portal, promo codes;
+ *  - taking access away that is not a `DELETE`: suspending a member or lowering
+ *    their role, and switching a webhook off (each route refuses anything else
+ *    itself), and rotating an environment's key after somebody leaves;
+ *  - reaching what people may already read: sharing an environment's key with
+ *    a member who holds access to it, and the CLI's device sign-in.
  *
  * After the membership and single sign-on checks, so a stranger still learns
  * nothing about the organisation and a member is told the first thing that
@@ -126,8 +140,24 @@ function guardControlPlane(
   // Absent only from the stubbed contexts of the tenancy unit tests, which
   // resolve without a request; the route wrapper always stamps it.
   const method = (services.meta as ServiceContext['meta'] | undefined)?.method ?? 'GET';
-  if (READ_METHODS.has(method.toUpperCase())) return;
+  if (OPEN_METHODS.has(method.toUpperCase())) return;
   requireControlPlane(entitlements);
+}
+
+/**
+ * The organisation's entitlements as this deployment reads them. Where it takes
+ * no payments, nobody can buy a plan, so the free allowance does not apply: an
+ * organisation recorded as waiting for a paid plan is read as open, rather
+ * than locked with no way out.
+ */
+function resolvedEntitlements(
+  row: Parameters<typeof entitlementsFromRow>[0],
+  services: Pick<ServiceContext, 'env'>,
+): Entitlements {
+  if (row?.awaitingPaidPlan !== true || billingConfigured(services.env)) {
+    return entitlementsFromRow(row);
+  }
+  return entitlementsFromRow({ ...row, awaitingPaidPlan: false });
 }
 
 /**
@@ -152,7 +182,7 @@ export async function resolveOrg(
   if (!found) throw errors.notFound(`no organisation with slug`);
 
   const { organization } = found;
-  const entitlements = entitlementsFromRow(found.entitlements);
+  const entitlements = resolvedEntitlements(found.entitlements, services);
 
   if (principal.kind === 'serviceToken') {
     // A service token carries its organisation; it does not get to name one.
@@ -379,9 +409,10 @@ export async function resolveProjectPath(
   principal: Principal,
   params: { orgSlug: string; projectSlug: string },
   services: ServiceContext,
+  options: ResolveOrgOptions = {},
 ): Promise<ProjectScope> {
   return resolveProject(
-    await resolveOrg(principal, params.orgSlug, services),
+    await resolveOrg(principal, params.orgSlug, services, options),
     params.projectSlug,
     services,
   );
@@ -391,9 +422,10 @@ export async function resolveEnvironmentPath(
   principal: Principal,
   params: { orgSlug: string; projectSlug: string; envSlug: string },
   services: ServiceContext,
+  options: ResolveOrgOptions = {},
 ): Promise<EnvironmentScope> {
   return resolveEnvironment(
-    await resolveProjectPath(principal, params, services),
+    await resolveProjectPath(principal, params, services, options),
     params.envSlug,
     services,
   );

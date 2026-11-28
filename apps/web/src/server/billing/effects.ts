@@ -40,6 +40,21 @@ export interface HandlerOutcome {
 
 export const noOutcome = (): HandlerOutcome => ({ audit: [], effects: [] });
 
+/**
+ * The email an organisation's owners get when it drops back to Free past its
+ * creator's free allowance and starts waiting for a paid plan
+ * (`becameAwaitingPaidPlan`). Once per organisation per day it starts waiting:
+ * a plan bought and lapsed again the same day is told about once.
+ */
+export function awaitingPaidPlanMail(orgId: string, now: Date): BillingEffect {
+  return {
+    kind: 'mail',
+    orgId,
+    occasion: now.toISOString().slice(0, 10),
+    reminder: { kind: 'awaiting_paid_plan' },
+  };
+}
+
 export async function runBillingEffects(
   services: ServiceContext,
   effects: readonly BillingEffect[],

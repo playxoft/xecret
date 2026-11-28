@@ -38,6 +38,7 @@ export function planView(over: Partial<PlanView> = {}): PlanView {
     owner: true,
     plansHref: '/app/acme/settings/plans',
     refresh: () => {},
+    recheck: async () => {},
     ...over,
   };
 }

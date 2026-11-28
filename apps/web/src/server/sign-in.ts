@@ -48,6 +48,7 @@ import type { SignInErrorCode } from '@/lib/sign-in-errors';
 import { DatabaseAuditSink } from './audit-sink';
 import type { Bindings } from './bindings';
 import { MissingBindingError } from './bindings';
+import { billingConfigured } from './billing/config';
 import { scheduleSeatSync } from './billing/seats';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
@@ -436,6 +437,9 @@ async function provisionPersonalOrganization(
   const created = await provisionOrganization(services.db, {
     user,
     envelope: services.envelope,
+    // An account reaching this holds no organisation, so the allowance never
+    // bites here; it is said anyway, as every creation says it.
+    freeAllowance: billingConfigured(services.env),
   });
 
   services.waitUntil(

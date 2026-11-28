@@ -138,7 +138,7 @@ function CreateOrganizationForm({
   const view = usePlanView();
   const createLock = useOrganizationCreateLock();
   const allowanceNotice =
-    view?.entitlements == null ? null : freeAllowanceNotice(view.entitlements.account);
+    view?.entitlements == null ? null : freeAllowanceNotice(view.entitlements);
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');

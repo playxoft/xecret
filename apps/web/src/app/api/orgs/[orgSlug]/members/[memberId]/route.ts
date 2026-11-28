@@ -1,6 +1,11 @@
 import type { AuditAction, AuditBuilder, AuditRecord, AuditResource } from '@xecret/core/audit';
-import { afterRoleChange, auditingDenials, capabilitiesGained } from '@xecret/core/authz';
-import type { Denial } from '@xecret/core/authz';
+import {
+  afterRoleChange,
+  auditingDenials,
+  capabilitiesGained,
+  compareOrgRole,
+} from '@xecret/core/authz';
+import type { Denial, OrgRole } from '@xecret/core/authz';
 import {
   findMemberWithUser,
   listEnvironmentsForOrganization,
@@ -13,7 +18,7 @@ import {
 } from '@xecret/db/repositories';
 import type { MemberChangeGuard, MemberListEntry, MemberRecord } from '@xecret/db/repositories';
 import { scheduleSeatSync } from '@/server/billing/seats';
-import { requireFeature } from '@/server/entitlements';
+import { requireControlPlane, requireFeature } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
@@ -94,7 +99,12 @@ type Params = { orgSlug: string; memberId: string };
 
 export const PATCH = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Resolved open whatever the control plane says: whether this change may
+    // be made on an organisation whose control plane is closed depends on the
+    // body, and is asked once it is read (`takesAccessAway` below).
+    const scope = await resolveOrg(principal, params.orgSlug, services, {
+      controlPlane: 'exempt',
+    });
     const orgId = scope.organization.id;
     const resource: AuditResource = { type: 'member', id: params.memberId };
 
@@ -116,6 +126,11 @@ export const PATCH = authenticatedRoute<Params>(
     }
 
     const body = await parseJsonBody(request, memberPatchSchema);
+
+    // Suspending a member, or lowering their role, takes access away, and that
+    // never waits on a payment. Anything else (a role raised, a reinstatement,
+    // a custom role) needs an open control plane.
+    if (!takesAccessAway(body, target.role)) requireControlPlane(scope.entitlements);
 
     if (body.customRoleId !== undefined) {
       return changeCustomRole({
@@ -282,9 +297,9 @@ export const PATCH = authenticatedRoute<Params>(
 
 export const DELETE = authenticatedRoute<Params>(
   async ({ params, principal, services, audit, record }) => {
-    // Open while the control plane is closed: taking somebody's access away
-    // must never wait on a payment (`guardControlPlane` in `tenancy.ts`).
-    const scope = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
+    // Open while the control plane is closed, as every DELETE is: taking
+    // somebody's access away must never wait on a payment (`guardControlPlane`).
+    const scope = await resolveOrg(principal, params.orgSlug, services);
     const orgId = scope.organization.id;
     const resource: AuditResource = { type: 'member', id: params.memberId };
 
@@ -489,4 +504,19 @@ async function changeCustomRole(params: {
   );
 
   return json({ member });
+}
+
+/**
+ * Whether a member change only takes access away: a suspension, or a role
+ * lowered below the one the member holds. What an organisation whose control
+ * plane is closed still accepts, because removing somebody's access must never
+ * wait on a payment. A custom role is never counted, in either direction: one
+ * may narrow a member, but the plan decides whether roles are assignable at all.
+ */
+function takesAccessAway(
+  body: { role?: OrgRole | undefined; status?: 'active' | 'suspended' | undefined },
+  current: OrgRole,
+): boolean {
+  if (body.status === 'suspended') return true;
+  return body.role !== undefined && compareOrgRole(body.role, current) < 0;
 }

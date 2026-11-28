@@ -288,7 +288,7 @@ describe('Creating an organisation', () => {
       withPlan(
         planView({
           entitlements: entitlementsFor('free', {
-            account: { freeOrganizations: 3, awaitingOrganizations: 1 },
+            account: { freeOrganizations: 2, awaitingOrganizations: 1 },
           }),
         }),
         createElement(OrganizationsScreen, {}),

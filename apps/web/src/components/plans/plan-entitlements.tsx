@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, use, useCallback, useMemo } from 'react';
+import { createContext, use, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { LimitedResource, PlanFeatures } from '@xecret/core/entitlements';
 
@@ -15,11 +15,19 @@ import type { EntitlementsResponse, OrgEntitlements, PlanBlock } from './plan-ga
  *
  * ── One request per organisation, and never on a timer ──
  * The shell mounts this for the organisation it is describing, so the answer is
- * read when that changes and not on every navigation between its pages. A
- * screen that creates or deletes something the answer counts (a project, a
- * token, a webhook, an invitation) calls `refresh` once it has; nothing else
- * asks again. The database the API reads is on a plan where a poll from every
- * open tab would be the largest load the product put on it.
+ * read when that changes and not on every navigation between its pages. It is
+ * read again only when something says it may have moved:
+ *
+ *  - a screen that creates or deletes something the answer counts (a project,
+ *    a token, a webhook, an invitation) calls `refresh` once it has;
+ *  - a locked control that is pressed calls `recheck`, so a lock that has gone
+ *    stale (a plan bought in another tab, a project deleted by a colleague)
+ *    lets the press through rather than explaining a limit that is gone;
+ *  - the window coming back into focus, at most once a minute
+ *    (`FOCUS_RECHECK_MS`), for the same tab left open across a purchase.
+ *
+ * Nothing asks on a timer. The database the API reads is on a plan where a
+ * poll from every open tab would be the largest load the product put on it.
  *
  * ── A convenience, never an authority ──
  * Like the session's `authority`, this decides which controls are drawn
@@ -37,6 +45,22 @@ export interface PlanView {
   plansHref: string;
   /** Re-reads the answer, after a change to something it counts. */
   refresh: () => void;
+  /**
+   * Re-reads the answer and resolves once it is in state: what a locked
+   * control asks when it is pressed, before it explains itself.
+   */
+  recheck: () => Promise<void>;
+}
+
+/** The least time between two reads the window regaining focus may cause. */
+export const FOCUS_RECHECK_MS = 60_000;
+
+/**
+ * Whether the window coming back into view re-reads the plan: only when it is
+ * visible, and only once a minute at most however often focus comes and goes.
+ */
+export function rechecksOnFocus(lastReadAt: number, now: number, hidden: boolean): boolean {
+  return !hidden && now - lastReadAt >= FOCUS_RECHECK_MS;
 }
 
 const PlanContext = createContext<PlanView | null>(null);
@@ -67,7 +91,31 @@ export function PlanEntitlementsProvider({
   const refresh = useCallback(() => {
     void reload();
   }, [reload]);
+  const recheck = useCallback(() => reload(), [reload]);
   const entitlements = resource.data?.entitlements ?? null;
+
+  // When the answer was last read, for the focus re-read's once-a-minute rule.
+  // Moved by every answer, whatever asked for it.
+  const readAt = useRef(0);
+  useEffect(() => {
+    if (entitlements !== null) readAt.current = Date.now();
+  }, [entitlements]);
+
+  useEffect(() => {
+    if (orgSlug === null) return;
+    const onFocus = () => {
+      const now = Date.now();
+      if (!rechecksOnFocus(readAt.current, now, document.visibilityState === 'hidden')) return;
+      readAt.current = now;
+      void reload();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [orgSlug, reload]);
 
   const value = useMemo<PlanView>(
     () => ({
@@ -75,8 +123,9 @@ export function PlanEntitlementsProvider({
       owner,
       plansHref: orgSlug === null ? '/pricing' : appPath.orgPlans(orgSlug),
       refresh,
+      recheck,
     }),
-    [entitlements, owner, orgSlug, refresh],
+    [entitlements, owner, orgSlug, refresh, recheck],
   );
 
   return <PlanViewProvider value={value}>{children}</PlanViewProvider>;
@@ -125,7 +174,7 @@ export function useControlPlaneLock(): PlanBlock | null {
 export function useOrganizationCreateLock(): PlanBlock | null {
   const view = usePlanView();
   if (view?.entitlements == null) return null;
-  return organizationCreateBlock(view.entitlements.account);
+  return organizationCreateBlock(view.entitlements);
 }
 
 /** What the organisation holds of each organisation-wide ceiling, or `null`. */

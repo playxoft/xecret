@@ -325,19 +325,23 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           {paymentsLive ? ', which an owner can move to from the billing page' : ''}. Reaching a
           limit, or a plan lapsing, deletes none of the organisation&rsquo;s projects, environments,
           secrets or tokens: they stay readable and editable, and only adding more is refused. An
-          organisation waiting for a paid plan, past its account&rsquo;s two free ones, also keeps
-          serving its secrets to the CLI and to service tokens and deletes nothing, but refuses
-          every other change until a plan is bought for it, except buying one, deleting it, and
-          revoking a token. A lower plan does stop three things. On a plan that allows no webhooks,
-          existing webhook endpoints are kept but paused: they send nothing, and cannot be edited,
-          switched back on or tested until the plan allows them again, though switching one off or
-          deleting it is never refused. On a plan without new-address read alerts, the alerts stop:
-          new addresses reading an environment are not recorded and no alert or digest is sent until
-          the plan includes them again. And any other feature the plan does not include, such as
-          personal overrides or secret templates, keeps working as it was set but cannot be changed
-          or added to, though what was set can always be removed. The current numbers are on{' '}
-          <LegalLink href="/pricing">the pricing page</LegalLink>, and if they ever disagree with
-          this section, this section is the one you agreed to.
+          organisation waiting for a paid plan deletes nothing and stays readable: its secrets are
+          still served in the dashboard, to the CLI and to service tokens, and the people it already
+          admits can still be given the keys to what they may read. Until a plan is bought for it,
+          it refuses every other change except buying a plan, deleting the organisation, and taking
+          access away: removing or suspending members and lowering their roles, revoking tokens,
+          grants and invitations, rotating keys, and switching webhooks off. An organisation that
+          drops back to Free from a paid plan waits only when the account that created it already
+          has two other Free organisations open. A lower plan does stop three things. On a plan that
+          allows no webhooks, existing webhook endpoints are kept but paused: they send nothing, and
+          cannot be edited, switched back on or tested until the plan allows them again, though
+          switching one off or deleting it is never refused. On a plan without new-address read
+          alerts, the alerts stop: new addresses reading an environment are not recorded and no
+          alert or digest is sent until the plan includes them again. And any other feature the plan
+          does not include, such as personal overrides or secret templates, keeps working as it was
+          set but cannot be changed or added to, though what was set can always be removed. The
+          current numbers are on <LegalLink href="/pricing">the pricing page</LegalLink>, and if
+          they ever disagree with this section, this section is the one you agreed to.
         </>,
         clauses.refunds,
       ],
@@ -440,10 +444,15 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         <>
           The version of 28 November 2026 is not a material change. It says that a plan covers the
           one organisation it is bought for, with every organisation on a paid plan billed on its
-          own, and it raises the free allowance from one organisation to two for every account: a
-          Free organisation past those two can still be created, and waits for a paid plan before it
-          can be used. It also sets Team at 60 projects. When it was published no organisation was
-          on a paid plan billed through live payments, so it changes nothing anybody pays for.
+          own. Before it, how many organisations an account could hold followed the best plan among
+          the ones it had created: one on Free, three on Pro and ten on Team. Now every account gets
+          two Free organisations and as many paid ones as it pays for. That is one more for an
+          account on Free alone, and can be fewer for an account that held a paid plan, whose
+          organisations beyond its paid ones and two Free ones now need plans of their own. A Free
+          organisation past the two can still be created, and waits for a paid plan before it can be
+          changed. It also sets Team at 60 projects. When it was published no organisation was on a
+          paid plan billed through live payments, and no account held more than one Free
+          organisation it had created, so it changes nothing anybody pays for or already holds.
         </>,
         <>
           The version of 27 November 2026 was not a material change either.{' '}

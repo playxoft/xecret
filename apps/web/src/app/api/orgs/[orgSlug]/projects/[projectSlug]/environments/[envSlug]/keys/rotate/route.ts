@@ -47,7 +47,12 @@ interface Params {
 
 export const POST = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
-    const scope = await resolveEnvironmentPath(principal, params, services);
+    // Open while the control plane is closed: rotating the key is how an
+    // environment is secured after somebody with access leaves, and taking
+    // access away never waits on a payment (`guardControlPlane`).
+    const scope = await resolveEnvironmentPath(principal, params, services, {
+      controlPlane: 'exempt',
+    });
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
 

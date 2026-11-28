@@ -399,8 +399,9 @@ export function assertSlugImmutable(
  * plan, and asks for another (`provisionOrganization`).
  *
  * No plan limits how many organisations an account holds; each paid one is
- * billed on its own. An account's two oldest Free organisations work, a later
- * one waits for a paid plan, and an account may hold one that waits at a time.
+ * billed on its own. An account's open Free organisations work up to two, one
+ * created past them waits for a paid plan, and an account may hold one that
+ * waits at a time.
  * This is that bound, and the sentence says the two ways past it.
  *
  * ── Why a 409 and not the `plan_limit` 403 every other ceiling answers ──

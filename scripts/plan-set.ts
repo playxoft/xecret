@@ -101,7 +101,10 @@ import {
   operatorBillingEdit,
   raiseCurrentUsageAllowance,
 } from '../packages/db/src/repositories/billing.ts';
+import { settleAwaitingPaidPlan } from '../packages/db/src/repositories/free-allowance.ts';
 import { findOrganizationBySlugWithEntitlements } from '../packages/db/src/repositories/organizations.ts';
+import { billingConfigured } from '../apps/web/src/server/billing/config.ts';
+import type { Bindings } from '../apps/web/src/server/bindings.ts';
 import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
 import { orgSubscriptions } from '../packages/db/src/schema/billing.ts';
 import { subscriptionStatusEnum } from '../packages/db/src/schema/enums.ts';
@@ -738,6 +741,18 @@ async function main(): Promise<void> {
       // is only ever raised, so clearing the override later re-bills nothing.
       if (patch.limitOverrides !== undefined || patch.plan !== undefined) {
         await raiseCurrentUsageAllowance(tx, org.id);
+      }
+
+      // A plan set by hand moves the free allowance as a subscription would: a
+      // paid plan stops the organisation waiting, and Free past its creator's
+      // two open Free organisations starts it, where this deployment takes
+      // payments (read from the same variables the Worker reads).
+      if (patch.plan !== undefined) {
+        await settleAwaitingPaidPlan(tx, org.id, {
+          previousPlan: existing?.plan ?? 'free',
+          plan: row.plan,
+          applies: billingConfigured(process.env as unknown as Bindings),
+        });
       }
 
       await appendAuditEvents(tx, [event]);

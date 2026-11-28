@@ -106,6 +106,23 @@ export const organizations = pgTable(
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
+    /**
+     * When this Free organisation started waiting for a paid plan, or `null`
+     * while it works (migration 0037).
+     *
+     * An account's Free organisations work up to `FREE_ORGANIZATIONS_PER_ACCOUNT`.
+     * This is set on the one that goes past it, at the moment it does: when it
+     * is created while its creator already has two open Free ones, or when it
+     * drops back to Free from a paid plan or a grant while its creator has two
+     * other open Free ones. It is cleared when the organisation is bought a
+     * plan or given a grant, and by nothing else: a membership change (the
+     * creator removed, suspended, re-added, or ownership moving) never sets or
+     * clears it, so the rule cannot be stepped round by leaving, and an
+     * organisation that worked yesterday never starts waiting because another
+     * one changed. Stored rather than worked out on each read for exactly that
+     * reason. See `free-allowance.ts`.
+     */
+    awaitingPaidPlanSince: timestamp('awaiting_paid_plan_since', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

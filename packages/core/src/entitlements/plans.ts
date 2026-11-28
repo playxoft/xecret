@@ -448,12 +448,13 @@ export const DEFAULT_PLAN: PlanId = 'free';
  * A plan is bought for one organisation and covers that one only, so no plan
  * says anything about how many organisations an account may hold: every paid
  * one is billed on its own, and an account may hold as many as it pays for.
- * What is limited is the free tier. Of the Free organisations an account
- * created and is still a member of, the two oldest are open. A later one (a
- * third created, or a paid one that came back to Free while two older Free ones
- * exist) is *awaiting a paid plan* (`Entitlements.awaitingPaidPlan`): its
- * control plane is closed until it is bought a plan or deleted, and its data
- * plane keeps working.
+ * What is limited is the free tier. An account's open Free organisations (the
+ * ones it created, on Free and not waiting, whether or not it is still a member)
+ * work up to two. One created while it holds two, or one that drops back to
+ * Free from a paid plan while it holds two others, is *awaiting a paid plan*
+ * (`Entitlements.awaitingPaidPlan`, stored by the repository, migration 0037):
+ * its control plane is closed until it is bought a plan or deleted, and its
+ * data plane keeps working. No other organisation ever changes when one does.
  *
  * Joining somebody else's Free organisation never spends this, because only
  * the organisations an account *created* are counted, and a complimentary grant

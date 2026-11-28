@@ -175,15 +175,12 @@ export type { MintPinPepperParams, PinAttemptOutcome, PinDeviceRecord } from './
 
 export {
   accountLockQuery,
-  awaitingPaidPlanSql,
   countNonSsoAccess,
   countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlugWithEntitlements,
   findOrgByWorkosOrgId,
   findWorkosHome,
-  freeOrganizationAllowance,
-  freeOrganizationsHeldQuery,
   generateUniqueOrgSlug,
   organizationBySlugWithEntitlementsQuery,
   isOrgSlugAvailable,
@@ -202,7 +199,6 @@ export {
 export type {
   AccessOutsideSso,
   Environment,
-  FreeAllowance,
   HeldOrganizations,
   Organization,
   OrganizationMembership,
@@ -215,6 +211,15 @@ export type {
   ProvisionedOrganization,
   ProvisionOrganizationParams,
 } from './organizations';
+
+export {
+  countAwaitingOrganizations,
+  countOpenFreeOrganizations,
+  freeOrganizationAllowance,
+  openFreeOrganizationsQuery,
+  settleAwaitingPaidPlan,
+} from './free-allowance';
+export type { AllowanceSettlement, FreeAllowance } from './free-allowance';
 
 export {
   accountMembershipSummary,

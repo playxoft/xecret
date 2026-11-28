@@ -7,7 +7,14 @@ import { Button } from '@/components/ui';
 import { featureBlock, limitBlock, lockCopy } from './plan-gate';
 import type { PlanBlock } from './plan-gate';
 import { AwaitingPlanBanner } from './awaiting-plan-banner';
-import { LockedAction, PlanLockBadge, PlanLockContent, PlanLockNotice } from './plan-lock';
+import {
+  continuesPress,
+  LockedAction,
+  PlanLockBadge,
+  PlanLockContent,
+  PlanLockNotice,
+  pressAt,
+} from './plan-lock';
 import { entitlementsFor, planView, withPlan } from './plan-test-view';
 
 /**
@@ -193,11 +200,18 @@ describe('the banner on an organisation awaiting a paid plan', () => {
     );
   }
 
-  it('says why, and offers an owner the plans page', () => {
+  it('says what, and offers an owner the plans page', () => {
     const html = banner(true, false);
-    expect(html).toContain('This organisation needs a paid plan to start');
-    expect(html).toContain('Its secrets stay readable and nothing is deleted.');
+    expect(html).toContain('This organisation needs a paid plan to start.');
     expect(html).toContain('href="/app/acme/settings/plans"');
+  });
+
+  // Why it waits is a fact about the account that created it, which its
+  // members are not told; its owners get the reason by email.
+  it('never says why to the members who read it', () => {
+    for (const html of [banner(true, false), banner(false, false), banner(true, true)]) {
+      expect(html).not.toMatch(/two|free organisations|account that created/i);
+    }
   });
 
   it('points at the plans below rather than linking to the page it is on', () => {
@@ -212,5 +226,25 @@ describe('the banner on an organisation awaiting a paid plan', () => {
 
   it('is absent from an organisation that is open', () => {
     expect(banner(true, false, entitlementsFor('free'))).toBe('');
+  });
+});
+
+describe('a locked control pressed after its lock went stale', () => {
+  const at = 1_000_000;
+
+  it('goes ahead once the re-read lifts the lock', () => {
+    expect(continuesPress(pressAt(null, at), null, at + 400)).toBe(true);
+  });
+
+  it('stays explained while the lock holds', () => {
+    expect(continuesPress(pressAt(null, at), PROJECTS, at + 400)).toBe(false);
+  });
+
+  it('never runs a press long forgotten, when the lock lifts for another reason later', () => {
+    expect(continuesPress(pressAt(null, at), null, at + 60_000)).toBe(false);
+  });
+
+  it('runs nothing nobody pressed', () => {
+    expect(continuesPress(null, null, at)).toBe(false);
   });
 });

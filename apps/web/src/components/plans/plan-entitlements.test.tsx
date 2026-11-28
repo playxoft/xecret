@@ -17,7 +17,8 @@ vi.mock('@/app/(dashboard)/_lib/use-api-resource', () => ({
   },
 }));
 
-const { PlanEntitlementsProvider, usePlanLimit } = await import('./plan-entitlements');
+const { FOCUS_RECHECK_MS, PlanEntitlementsProvider, rechecksOnFocus, usePlanLimit } =
+  await import('./plan-entitlements');
 
 function Probe() {
   // With nothing read yet, nothing is locked.
@@ -45,5 +46,19 @@ describe('PlanEntitlementsProvider', () => {
       </PlanEntitlementsProvider>,
     );
     expect(resource.paths).toEqual([null]);
+  });
+});
+
+describe('the window coming back into focus', () => {
+  const read = 5_000_000;
+
+  it('re-reads the plan at most once a minute, never on a timer', () => {
+    expect(FOCUS_RECHECK_MS).toBe(60_000);
+    expect(rechecksOnFocus(read, read + 59_999, false)).toBe(false);
+    expect(rechecksOnFocus(read, read + 60_000, false)).toBe(true);
+  });
+
+  it('never re-reads for a tab that is hidden', () => {
+    expect(rechecksOnFocus(read, read + 600_000, true)).toBe(false);
   });
 });

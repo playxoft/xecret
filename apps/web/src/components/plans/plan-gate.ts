@@ -234,12 +234,17 @@ export function featureLockFrom(
 /* ── Organisations per account ─────────────────────────────────────────────── */
 
 /**
- * Whether the asking account may create another organisation: not while it
- * holds one still waiting for a paid plan. No purchase on the organisation
- * being looked at lifts this (the one waiting may be another), so it is a
- * `notice`, offering no upgrade.
+ * Whether the asking account may create another organisation: not when the new
+ * one would wait for a paid plan (it already has two open Free ones) while one
+ * of its organisations already waits. The same rule `provisionOrganization`
+ * refuses on. No purchase on the organisation being looked at lifts it (the
+ * one waiting may be another), so it is a `notice`, offering no upgrade. Where
+ * this deployment takes no payments the allowance does not apply at all.
  */
-export function organizationCreateBlock(account: OrgEntitlements['account']): PlanBlock | null {
+export function organizationCreateBlock(entitlements: OrgEntitlements): PlanBlock | null {
+  const { account, upgrades } = entitlements;
+  if (!upgrades) return null;
+  if (account.freeOrganizations < FREE_ORGANIZATIONS_PER_ACCOUNT) return null;
   if (account.awaitingOrganizations < AWAITING_ORGANIZATIONS_PER_ACCOUNT) return null;
   return {
     kind: 'notice',
@@ -251,9 +256,12 @@ export function organizationCreateBlock(account: OrgEntitlements['account']): Pl
 
 /**
  * The sentence the create dialog says before an organisation that would wait
- * for a paid plan is created, or `null` when the next one is free.
+ * for a paid plan is created, or `null` when the next one is free (or the
+ * allowance does not apply here).
  */
-export function freeAllowanceNotice(account: OrgEntitlements['account']): string | null {
+export function freeAllowanceNotice(entitlements: OrgEntitlements): string | null {
+  const { account, upgrades } = entitlements;
+  if (!upgrades) return null;
   if (account.freeOrganizations < FREE_ORGANIZATIONS_PER_ACCOUNT) return null;
   if (account.awaitingOrganizations >= AWAITING_ORGANIZATIONS_PER_ACCOUNT) return null;
   return `You already have ${FREE_ORGANIZATIONS_PER_ACCOUNT} free organisations. This one needs a paid plan before you can use it.`;

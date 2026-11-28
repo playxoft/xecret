@@ -202,13 +202,13 @@ export interface Entitlements {
    * Whether this is a Free organisation past its creator's free allowance,
    * waiting for a paid plan before it can be used.
    *
-   * Every account gets `FREE_ORGANIZATIONS_PER_ACCOUNT` Free organisations
-   * that work: the oldest of the Free ones it created and is still a member
-   * of. A later Free one (a third created, or a paid one that returned to Free
-   * while two older Free ones exist) is held here until somebody buys it a
-   * plan or deletes it. Worked out from the rows on every read, never stored:
-   * buying a plan, deleting an older organisation or leaving one changes the
-   * answer at once, with nothing to keep in step.
+   * Every account gets `FREE_ORGANIZATIONS_PER_ACCOUNT` open Free
+   * organisations. One created while the account holds two, or one that drops
+   * back to Free from a paid plan while it holds two others, is held here
+   * until somebody buys it a plan or deletes it. Stored on the organisation at
+   * that moment (migration 0037) rather than worked out on each read, so no
+   * other organisation starts waiting because one lapsed, and no membership
+   * change (the creator leaving, or being removed) can lift it.
    *
    * It closes the control plane exactly as a lapsed subscription does, so it
    * is folded into `controlPlaneActive`, and it is carried separately only so
@@ -250,9 +250,9 @@ export interface SubscriptionState {
    */
   readonly limitOverrides?: Readonly<Record<string, number | null>> | undefined;
   /**
-   * Whether the organisation is past its creator's free allowance. Not a
-   * column: the repository works it out from the organisations the creator
-   * holds (see `Entitlements.awaitingPaidPlan`). Absent is `false`.
+   * Whether the organisation is recorded as waiting for a paid plan
+   * (`organizations.awaiting_paid_plan_since`; see
+   * `Entitlements.awaitingPaidPlan`). Absent is `false`.
    */
   readonly awaitingPaidPlan?: boolean | undefined;
   /**

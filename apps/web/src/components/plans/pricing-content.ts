@@ -1127,7 +1127,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     id: 'stopping',
     question: 'What happens to my data if I stop paying?',
     answer:
-      'Your organisation drops to the Free plan. Nothing is deleted: every secret is still readable, still exportable and still injectable by the CLI. If you are over the free limits, new members, projects and environments are blocked until you are back inside them or you export and self-host. If your account already has two free organisations, this one waits for a paid plan before it can be changed again, and it keeps serving its secrets meanwhile. We will not hold a credential hostage over a billing dispute.',
+      'Your organisation drops to the Free plan. Nothing is deleted: every secret is still readable, still exportable and still injectable by the CLI. If you are over the free limits, new members, projects and environments are blocked until you are back inside them or you export and self-host. If the account that created it already has two other free organisations open, it waits for a paid plan before it can be changed again: it keeps serving its secrets meanwhile, and its members can still be removed, its tokens revoked and the organisation deleted. We will not hold a credential hostage over a billing dispute.',
   },
   {
     id: 'discounts',

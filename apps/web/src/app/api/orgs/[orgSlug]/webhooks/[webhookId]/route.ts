@@ -8,6 +8,7 @@ import {
   updateWebhook,
 } from '@xecret/db/repositories';
 import { actorId } from '@/server/actor';
+import { requireControlPlane } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -64,7 +65,12 @@ export const PATCH = authenticatedRoute<Params>(
     refuseServiceTokens(principal);
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
 
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Resolved open whatever the control plane says: switching an endpoint off
+    // stops what an organisation sends out, which never waits on a payment,
+    // and is told apart from any other edit once the body is read.
+    const scope = await resolveOrg(principal, params.orgSlug, services, {
+      controlPlane: 'exempt',
+    });
     const orgId = scope.organization.id;
     const builder = audit(orgId);
     requireWebhookId(params.webhookId);
@@ -76,6 +82,8 @@ export const PATCH = authenticatedRoute<Params>(
     );
 
     const patch = await parseJsonBody(request, webhookPatchSchema);
+    const onlySwitchesOff = Object.keys(patch).length === 1 && patch.enabled === false;
+    if (!onlySwitchesOff) requireControlPlane(scope.entitlements);
     const existing = await findWebhook(services.db, orgId, params.webhookId);
     if (existing === null) throw errors.notFound('no webhook with id in organisation');
 
