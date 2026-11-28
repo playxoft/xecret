@@ -6,8 +6,8 @@ A specification nobody can test is a document; a specification with vectors is a
 
 Two independent implementations consume them:
 
-- **TypeScript** — `packages/core/src/crypto/client/**`, running in the browser and in Workers.
-- **Go** — `cli/internal/e2ee/**`, running on developer machines and CI runners.
+- **TypeScript**: `packages/core/src/crypto/client/**`, running in the browser and in Workers.
+- **Go**: `cli/internal/e2ee/**`, running on developer machines and CI runners.
 
 The same JSON files are read by both suites. A blob written by the CLI must open in the
 browser and vice versa, and the way that stops being an aspiration is that both are checked
@@ -23,18 +23,18 @@ other than a real implementation.
 
 The order of work is:
 
-1. **Phase 0** — the schema and this README. The *shape* of a vector file was fixed first, so
+1. **Phase 0**: the schema and this README. The *shape* of a vector file was fixed first, so
    that Phase 1 had something to generate into and Phase 4 has something to read.
-2. **Phase 1 (done)** — the TypeScript implementation landed, and `build.ts` produces
+2. **Phase 1 (done)**: the TypeScript implementation landed, and `build.ts` produces
    `e2ee-vectors.json` from it. The values are whatever that implementation actually computes,
    and the TypeScript suite checks every one of them back.
-3. **Phase 4** — the Go implementation reads the same file and must reproduce every value
+3. **Phase 4**: the Go implementation reads the same file and must reproduce every value
    independently. Any disagreement is a bug in one of them or an ambiguity in the spec, and
    all three get fixed before either ships.
 
 A hand-written expected value would encode a guess about the spec into a file that then
 *validates* the guess. Generating from an implementation and cross-checking with a second,
-independently written one is what actually tests the specification — the vectors are a
+independently written one is what actually tests the specification: the vectors are a
 consistency check between two readings of the same document, not an oracle handed down from
 above.
 
@@ -48,7 +48,7 @@ If a vector and the spec disagree, the spec wins and the vector is regenerated.
 |---|---|
 | `e2ee-vectors.schema.json` | JSON Schema (2020-12) describing a vector file. Normative for the file's shape. |
 | `e2ee-vectors.json` | The vectors themselves. Generated from the TypeScript implementation. |
-| `build.ts` | Builds the vector object from `crypto/client/`. Pure — it writes nothing, so it stays browser-safe and inside the test suite's coverage. The pinned randomness lives here. |
+| `build.ts` | Builds the vector object from `crypto/client/`. Pure: it writes nothing, so it stays browser-safe and inside the test suite's coverage. The pinned randomness lives here. |
 
 The generator that puts `build.ts`'s output on disk is
 [`packages/core/scripts/generate-vectors.ts`](../../../../scripts/generate-vectors.ts): a shell
@@ -59,7 +59,7 @@ The schema is validated in CI against the vector file, so a generator that drift
 documented shape fails a test rather than quietly producing something the Go side cannot read.
 
 It is JSON Schema draft 2020-12, and it compiles under Ajv in strict mode with
-`strictRequired: false` — that one relaxation is needed because the schema uses `if`/`then` to
+`strictRequired: false`. That one relaxation is needed because the schema uses `if`/`then` to
 require `lookupHashHex` on recovery wraps and `credentialIdB64Url` on PRF wraps, a pattern
 Ajv's `strictRequired` lint flags but the specification permits. The schema does more than
 describe shape: it pins the Argon2 parameter bounds from spec §3.1, the full set of HKDF info
@@ -116,8 +116,8 @@ whole point is that the *stored string* matches byte for byte.
 
 Strings destined for a KDF or an AEAD (passphrases, secret values, notes) appear as ordinary
 JSON strings. The generator writes them already NFC-normalised, and at least one vector per
-such kind MUST carry a string where NFC normalisation actually changes the bytes — a decomposed
-`é`, for instance — because that is the case an implementation silently gets wrong.
+such kind MUST carry a string where NFC normalisation actually changes the bytes (a decomposed
+`é`, for instance), because that is the case an implementation silently gets wrong.
 
 ---
 
@@ -127,8 +127,8 @@ Every construction in the spec generates fresh randomness: AES-GCM IVs, Argon2 s
 ephemeral X25519 keypairs, recovery-code entropy. A vector cannot be reproduced unless that
 randomness is pinned.
 
-So each vector's `input` carries **the exact random values the generator used** — `ivHex`,
-`ephemeralPrivateKeyHex`, `saltHex`, and so on — and the implementation under test is expected
+So each vector's `input` carries **the exact random values the generator used** (`ivHex`,
+`ephemeralPrivateKeyHex`, `saltHex`, and so on), and the implementation under test is expected
 to expose an internal entry point that accepts them rather than generating its own.
 
 This matters, and it is the one place a test suite can quietly defeat itself: **that
@@ -176,16 +176,16 @@ first-class vector rather than an ad-hoc unit test on one side.
 The schema enforces shape. These are the cases the *generator* is responsible for producing,
 and they belong here rather than in a code comment because the Go implementer reads this file:
 
-- **Boundaries** — an empty-string secret value, a value at exactly `MAX_SECRET_VALUE_BYTES`,
+- **Boundaries**: an empty-string secret value, a value at exactly `MAX_SECRET_VALUE_BYTES`,
   a recovery code whose 125-bit value is small enough to need left-padding to 25 characters.
-- **Non-ASCII** — at least one passphrase, one secret value, and one note containing
+- **Non-ASCII**: at least one passphrase, one secret value, and one note containing
   characters outside ASCII, including one whose NFC form differs from its input form.
-- **Both grant recipients that are not a member** — service token and invitation, since
+- **Both grant recipients that are not a member**: service token and invitation, since
   `recipientKind` is part of both the AAD and the signing payload and is the field most likely
   to be hard-coded to `member` by accident.
-- **A rotation pair** — an `edk-grant` at version 1 and at version 2 for the same environment
+- **A rotation pair**: an `edk-grant` at version 1 and at version 2 for the same environment
   and recipient, whose AADs and signatures must differ.
-- **A check-character failure** — a `recovery-code` vector that is a single-character
+- **A check-character failure**: a `recovery-code` vector that is a single-character
   substitution away from a valid code, so the Luhn mod-32 implementation is tested for
   rejection and not only for agreement.
 
@@ -194,12 +194,12 @@ and they belong here rather than in a code comment because the Go implementer re
 ## The one carve-out: Argon2 parameters
 
 `argon2id` vectors run **below** the OWASP floor the specification requires of production
-records — `m = 8 MiB, t = 1` and `m = 16 MiB, t = 2`, where production is `m = 64 MiB, t = 3`.
+records: `m = 8 MiB, t = 1` and `m = 16 MiB, t = 2`, where production is `m = 64 MiB, t = 3`.
 
 That is deliberate, and it is the only place a vector's input is not a value the product would
 write. Pure-JS Argon2id costs around a second per derivation at the production parameters (ADR
 0009's measurement section), and a test suite that spends several seconds proving a library
-computes a specified function is a suite people learn to skip — which costs more than the
+computes a specified function is a suite people learn to skip, which costs more than the
 coverage it buys. The parameters are an input to Argon2id, not part of its definition: the
 same function, the same encoding, and the same NFC normalisation are exercised either way.
 
@@ -210,7 +210,7 @@ The vector generator reaches the Argon2id provider directly, beneath that policy
 that the two concerns stay separable.
 
 The schema carves this out as `testArgon2Params`, whose memory range is **disjoint** from the
-production `argon2Params` — strictly below 19456 KiB — so a production parameter set can never
+production `argon2Params` (strictly below 19456 KiB), so a production parameter set can never
 validate as a test one by accident, and the carve-out is visible in the file that would
 otherwise be the thing enforcing the floor. An implementation must never accept these bounds
 from a server.

@@ -9,4 +9,4 @@ xecret init
 xecret run -- next dev
 ```
 
-No `.env.local`, no loader — `process.env` is populated before Next starts.
+No `.env.local`, no loader: `process.env` is populated before Next starts.

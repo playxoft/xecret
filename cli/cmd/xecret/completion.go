@@ -24,10 +24,10 @@ const completionUsage = `Usage:
 
 Install it for the current shell:
 
-  # bash — for this session, or append to ~/.bashrc
+  # bash: for this session, or append to ~/.bashrc
   source <(xecret completion bash)
 
-  # zsh — needs a directory on $fpath
+  # zsh: needs a directory on $fpath
   xecret completion zsh > "${fpath[1]}/_xecret"
 
   # fish
@@ -184,7 +184,7 @@ func cmdCompletion(args []string) error {
 	case "help", "--help", "-h":
 		_, _ = io.WriteString(os.Stdout, completionUsage)
 	default:
-		return fmt.Errorf("no completion for %q — xecret supports bash, zsh and fish", positional[0])
+		return fmt.Errorf("no completion for %q: xecret supports bash, zsh and fish", positional[0])
 	}
 	return nil
 }

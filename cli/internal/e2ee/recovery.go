@@ -45,7 +45,7 @@ var ErrRecoveryFormat = errors.New("that is not a valid code")
 // "that code has a typo" instead of "invalid recovery code", which is the
 // difference between a user retyping one character and a user concluding their
 // Emergency Kit is worthless.
-var ErrRecoveryChecksum = errors.New("that code has a typo — check it against your Emergency Kit")
+var ErrRecoveryChecksum = errors.New("that code has a typo. Check it against your Emergency Kit")
 
 // symbolValue is the zero-based index into the alphabet, or -1.
 func symbolValue(character byte) int {

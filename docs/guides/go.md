@@ -2,7 +2,7 @@
 
 ## Local development
 
-Go reads configuration from `os.Getenv` — no loader library needed, which
+Go reads configuration from `os.Getenv` (no loader library needed), which
 makes this the shortest guide:
 
 ```go
@@ -21,7 +21,7 @@ xecret run -- go test ./...
 ```
 
 If the project currently uses `godotenv`, delete the import and the `.env`
-file — `xecret import .env` first, so nothing is lost.
+file, but `xecret import .env` first, so nothing is lost.
 
 ## CI
 
@@ -53,6 +53,6 @@ xecret run -- docker run --rm -e DATABASE_URL -e API_KEY my-app
 ```
 
 `-e NAME` with no value forwards the variable from `xecret run`'s environment
-into the container — the value never appears in the command line or the image.
+into the container. The value never appears in the command line or the image.
 The full set of Docker patterns, including BuildKit secret mounts for the rare
 build-time secret, is in [`examples/ci/docker/`](../../examples/ci/docker/README.md).

@@ -83,7 +83,7 @@ func (l *Listener) Wait(ctx context.Context) (Callback, error) {
 	select {
 	case <-ctx.Done():
 		return Callback{}, errors.New(
-			"timed out waiting for approval in the browser — run 'xecret login' to try again",
+			"timed out waiting for approval in the browser. Run 'xecret login' to try again",
 		)
 	case result := <-l.results:
 		return result.callback, result.err
@@ -113,7 +113,7 @@ func (l *Listener) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondPage(w, "You're signed in", "Return to your terminal — you can close this tab.")
+	respondPage(w, "You're signed in", "Return to your terminal. You can close this tab.")
 
 	// The hand-off rides the same redirect, as a query parameter rather than a
 	// fragment: a fragment is never transmitted, which is why browsers use one

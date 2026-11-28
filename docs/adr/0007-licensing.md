@@ -1,4 +1,4 @@
-# 0007 — AGPL-3.0 for the server, MIT for the CLI, CLA required
+# 0007. AGPL-3.0 for the server, MIT for the CLI, CLA required
 
 **Status:** Accepted
 **Date:** 2026-08-10
@@ -27,7 +27,7 @@ xecret is open source. Two goals are in tension:
 **AGPL-3.0** closes the "SaaS loophole" in GPL: providing modified software over a network
 counts as distribution, so modifications must be published.
 
-**BSL/FSL** go further and forbid competing commercial services outright — but they are not
+**BSL/FSL** go further and forbid competing commercial services outright, but they are not
 open source, may not be described as such, and provoke real backlash. HashiCorp's move to BSL
 produced the OpenTofu fork within weeks.
 
@@ -42,7 +42,7 @@ produced the OpenTofu fork within weeks.
 | Contributions | **CLA required** | Contributors grant a sublicensable licence broad enough to relicense. [^assign] |
 
 The CLA is the load-bearing part and the one most often skipped. Without it, once external
-contributors exist, the licence can **never** be changed — not to BSL, not to a dual
+contributors exist, the licence can **never** be changed: not to BSL, not to a dual
 commercial licence, not at all. With it, those options stay open.
 
 ## Consequences
@@ -64,8 +64,8 @@ commercial licence, not at all. With it, those options stay open.
   (single click on the pull request).
 
 ### Implementation
-- `/LICENSE` — AGPL-3.0-only full text
-- `/cli/LICENSE` — MIT full text
+- `/LICENSE`: AGPL-3.0-only full text
+- `/cli/LICENSE`: MIT full text
 - Root `README.md` states the split unambiguously, above the fold
 - `package.json` files declare matching SPDX identifiers; `cli/go.mod` accompanied by its own
   `LICENSE`
@@ -73,12 +73,12 @@ commercial licence, not at all. With it, those options stay open.
 
 ### Revisit when
 A competitor runs an unmodified xecret as a commercial service at meaningful scale. At that
-point the CLA makes an FSL or BSL migration legally possible — expect community backlash and
+point the CLA makes an FSL or BSL migration legally possible. Expect community backlash and
 budget for it.
 
 [^assign]: **Correction, 2026-08-19.** This decision originally read "Contributors
     assign the rights needed for us to relicense". `CLA.md` does not take an
-    assignment and never did — clause 2 is a non-exclusive licence, and the
+    assignment and never did: clause 2 is a non-exclusive licence, and the
     contributor keeps their copyright. The relicensing capability comes from the
     word *sublicense* in that grant, not from a transfer of ownership. The
     outcome the decision describes is unaffected; the instrument named was

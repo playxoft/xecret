@@ -8,7 +8,7 @@
       `go vet ./... && go test ./...` in `cli/` if the CLI changed)
 - [ ] No secret value can reach a log, an error message, a URL, or an audit
       record through this change (standing rule 4)
-- [ ] Authorization still flows through `can()` — no route grew its own check
+- [ ] Authorization still flows through `can()`, and no route grew its own check
       (standing rule 5)
 - [ ] Security-sensitive behaviour comes with a test that fails without the
       change (CONTRIBUTING rule 6)
@@ -22,5 +22,5 @@
 ---
 
 By submitting, you agree to the [CLA](../CLA.md), which grants rights beyond the
-repository's current licences. Read it rather than this line — this is a
+repository's current licences. Read it rather than this line. This is a
 pointer, not the terms.

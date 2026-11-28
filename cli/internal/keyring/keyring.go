@@ -55,7 +55,7 @@ type Warner func(format string, args ...any)
 // Two verbs and two sentences. The first names what is happening; the second
 // names the stakes, in the order they get worse — acting as the account is
 // recoverable by revoking a credential, and reading its environments is not.
-const fallbackWarning = "%s credentials in %s (0600). Anyone who can read that file can act as you — " +
+const fallbackWarning = "%s credentials in %s (0600). Anyone who can read that file can act as you, " +
 	"and it holds your vault key, so they can also decrypt every end-to-end encrypted environment " +
 	"you hold a key for, which revoking this login does not undo."
 

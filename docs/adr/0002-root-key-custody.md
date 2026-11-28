@@ -1,4 +1,4 @@
-# 0002 — Root key custody: Phase.dev as source of truth, Cloudflare Secrets Store at runtime
+# 0002. Root key custody: Phase.dev as source of truth, Cloudflare Secrets Store at runtime
 
 **Status:** Accepted
 **Date:** 2026-08-10
@@ -24,7 +24,7 @@ Constraints:
 Zero latency, zero subrequests, one vendor. Cloudflare holds the material. No HSM.
 
 ### B. Root KEK wrapped by an external KMS (AWS/GCP), unwrapped once per isolate
-Split trust — neither Cloudflare nor AWS alone can decrypt. Costs a cold-start round-trip,
+Split trust: neither Cloudflare nor AWS alone can decrypt. Costs a cold-start round-trip,
 SigV4 signing inside a Worker, and an extra vendor for self-hosters.
 
 ### C. Per-request KMS unwrap
@@ -33,9 +33,9 @@ provides little real benefit: an attacker with code execution in the Worker can 
 KMS themselves.
 
 ### D. Worker fetches the Root KEK from Phase.dev at runtime
-Rejected, for four independent reasons — any one of which is disqualifying:
+Rejected, for four independent reasons, any one of which is disqualifying:
 1. There is no `.env` to fetch *into*; Workers bind config at deploy time.
-2. A Phase.dev outage becomes a total xecret outage — no secret is decryptable for anyone.
+2. A Phase.dev outage becomes a total xecret outage: no secret is decryptable for anyone.
 3. It is circular: calling Phase requires a Phase service token, itself a secret needing
    storage in the Worker. The problem is relocated, not solved, and a network hop is added.
 4. It consumes the connection budget and adds cold-start latency to the hot path.
@@ -57,12 +57,12 @@ Phase.dev  ──── deploy time, once per release ────▶  Cloudflar
 - **Deploy:** `phase run -- wrangler deploy`, or Phase's Cloudflare Workers sync integration.
 - **Runtime:** binding only. The Worker never contacts Phase.dev.
 
-> **Note, 2026-08-17 — the commands moved; the decision did not.** Deploying is now
+> **Note, 2026-08-17: the commands moved; the decision did not.** Deploying is now
 > `phase run -- sh scripts/deploy-web.sh <env>`, and the Secrets Store entry is created once
 > by `scripts/deploy-bootstrap.sh` rather than by the deploy. Two things forced the split. A
 > `wrangler deploy` *binds* a Secrets Store entry, it does not create one, so the arrow above
 > was never a single command's work. And a deployment turned out to be a build plus an upload
-> that have to agree about which environment they are — the prerendered pages bake the
+> that have to agree about which environment they are: the prerendered pages bake the
 > deployment's origin in, and only the script reads it out of `wrangler.toml` and hands it to
 > the build. Neither touches what this ADR decided: Phase.dev is still the system of record,
 > the runtime is still a binding, and the Worker still never contacts Phase.dev. The bullets
@@ -95,7 +95,7 @@ interface KeyProvider {
 - **Phase.dev becomes a permanent architectural dependency.** This is inherent, not
   incidental: xecret cannot store xecret's own root key, because reading it would require
   already having it. Every secret manager has this bootstrap problem (Doppler uses AWS KMS).
-- **A lost Phase.dev account would be catastrophic** without escrow — every customer's data
+- **A lost Phase.dev account would be catastrophic** without escrow: every customer's data
   becomes permanently unrecoverable, and a database backup does not help, because ciphertext
   without the key is worthless.
 

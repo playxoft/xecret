@@ -68,7 +68,7 @@ func cmdLogin(args []string) error {
 	// the plan's ceiling on devices per person would fill with them.
 	previous, err := cred.Load(a.store)
 	if err == nil {
-		a.printer.Infof("Currently signed in as %s — a successful login will replace that credential.", previous.Email)
+		a.printer.Infof("Currently signed in as %s. A successful login will replace that credential.", previous.Email)
 	} else {
 		previous = nil
 	}
@@ -117,7 +117,7 @@ func cmdLogin(args []string) error {
 	// on this terminal exactly when the page is sealing to this process.
 	if handoffFingerprint, err := handoff.Fingerprint(); err == nil {
 		a.printer.Infof("This device's hand-off key is %s.", a.printer.Bold(handoffFingerprint))
-		a.printer.Infof("The approval page shows the same eight characters. If they differ, cancel it — " +
+		a.printer.Infof("The approval page shows the same eight characters. If they differ, cancel it: " +
 			"something else asked for your vault key.")
 	}
 
@@ -137,7 +137,7 @@ func cmdLogin(args []string) error {
 	result, err := client.ExchangeCode(ctx, callback.Code, verifier)
 	if err != nil {
 		if apiErr, ok := api.AsError(err); ok && apiErr.Code == "unauthenticated" {
-			return errors.New("the login could not be completed — the approval may have expired. Run 'xecret login' again")
+			return errors.New("the login could not be completed. The approval may have expired. Run 'xecret login' again")
 		}
 		return err
 	}
@@ -256,7 +256,7 @@ func (a *app) acceptHandoff(
 
 	if blob == "" {
 		return errors.New(
-			"the consent screen did not hand over a vault key — it may be an older deployment",
+			"the consent screen did not hand over a vault key. It may be an older deployment",
 		)
 	}
 
@@ -304,7 +304,7 @@ func (a *app) acceptHandoff(
 		a.printer.Warnf("could not store this account's vault material: %v", wrapErr)
 	}
 
-	a.printer.Infof("Vault key stored — end-to-end encrypted environments will open on this machine.")
+	a.printer.Infof("Vault key stored. End-to-end encrypted environments will open on this machine.")
 	return nil
 }
 
@@ -323,7 +323,7 @@ func cmdLogout(args []string) error {
 		// token is neither: it was minted in the dashboard and is revoked
 		// there. Guessing which of the two credentials the user meant would
 		// get one of them wrong.
-		return errors.New("XECRET_TOKEN is set — unset it first; service tokens are revoked from the dashboard")
+		return errors.New("XECRET_TOKEN is set. Unset it first; service tokens are revoked from the dashboard")
 	}
 
 	credentials, err := cred.Load(a.store)
@@ -366,7 +366,7 @@ func cmdLogout(args []string) error {
 		return err
 	}
 
-	a.printer.Successf("Signed out %s — credential revoked, vault key and offline cache wiped.", credentials.Email)
+	a.printer.Successf("Signed out %s: credential revoked, vault key and offline cache wiped.", credentials.Email)
 	return nil
 }
 
@@ -486,7 +486,7 @@ func organisationLine(name, id string) string {
 func (a *app) unlockWithPassphrase() error {
 	if a.usingServiceToken() {
 		return errors.New(
-			"XECRET_TOKEN is a service token, which has no vault — its key travels in the token itself",
+			"XECRET_TOKEN is a service token, which has no vault: its key travels in the token itself",
 		)
 	}
 
@@ -594,7 +594,7 @@ func readPassphrase(a *app) (string, error) {
 		}
 		entered := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
 		if entered == "" {
-			return "", errors.New("stdin was empty — pipe the passphrase in, or run interactively for a prompt")
+			return "", errors.New("stdin was empty. Pipe the passphrase in, or run interactively for a prompt")
 		}
 		return entered, nil
 	}

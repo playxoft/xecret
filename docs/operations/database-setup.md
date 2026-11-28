@@ -47,7 +47,7 @@ phase run -- npm run db:migrate
 ```
 
 `phase run --` is what supplies the environment; the script itself reads plain environment
-variables and has no idea Phase.dev exists. That is deliberate — a self-hoster using Doppler, a
+variables and has no idea Phase.dev exists. That is deliberate: a self-hoster using Doppler, a
 `.env` file, or their platform's own secret store runs the identical command without `phase run`,
 and CI does the same. Hardcoding `phase run` into `package.json` would couple an open-source
 project to one vendor for no gain.
@@ -59,7 +59,7 @@ This creates the 18 tables, partitions `audit_logs` by quarter into the `audit_p
 creates the **`xecret_app_permissions` role** with its grants.
 
 `xecret_app_permissions` is deliberately **`NOLOGIN`**. It is a *group* role: it holds privileges and nothing
-else. You cannot connect as it, and that is the point — see step 3.
+else. You cannot connect as it, and that is the point (see step 3).
 
 ---
 
@@ -74,10 +74,10 @@ This indirection is worth one extra step:
   is `ALTER ROLE ... PASSWORD`, and it touches no grants. Revoking a privilege is a `REVOKE` on
   `xecret_app_permissions`, and it touches no credential.
 - **You can run more than one.** A read-only analytics connection, or a second application
-  instance with its own rotatable credential, is another member — not another copy of the grants,
+  instance with its own rotatable credential, is another member, not another copy of the grants,
   which would drift.
 
-**`xecret_app_login` below is just a name.** Call it whatever you like — what matters is that it is a
+**`xecret_app_login` below is just a name.** Call it whatever you like. What matters is that it is a
 LOGIN role and a member of `xecret_app_permissions`. If you already created a role in the Neon console, use
 that name and skip the `CREATE ROLE` line (but do read the warning underneath).
 
@@ -106,7 +106,7 @@ GRANT xecret_app_permissions TO xecret_app_login;
 > ERROR: permission denied to revoke role "neon_superuser" (SQLSTATE 42501)
 > ```
 >
-> Check first — if this returns anything other than `xecret_app_permissions`, the role is unusable as an
+> Check first. If this returns anything other than `xecret_app_permissions`, the role is unusable as an
 > application login:
 >
 > ```sql
@@ -116,7 +116,7 @@ GRANT xecret_app_permissions TO xecret_app_login;
 > WHERE u.rolname = 'your_role_name';
 > ```
 >
-> The fix is to **delete the role in the Neon console** — the same screen that created it — and
+> The fix is to **delete the role in the Neon console** (the same screen that created it) and
 > create a replacement with the `CREATE ROLE` statement above. A role created by SQL gets no
 > `neon_superuser`, which is the entire reason to create it this way.
 
@@ -128,7 +128,7 @@ postgresql://xecret_app_login:THAT_PASSWORD@ep-cool-name-12345.us-east-2.aws.neo
 ```
 
 > **Pooled vs direct, again.** For local development, either works. For the deployed Worker this
-> string goes into **Hyperdrive**, which does its own connection pooling — so give Hyperdrive the
+> string goes into **Hyperdrive**, which does its own connection pooling, so give Hyperdrive the
 > **direct** endpoint and let it pool. Pointing a pooler at a pooler is not an optimisation.
 
 ---
@@ -140,7 +140,7 @@ npx wrangler hyperdrive create xecret-db --connection-string="$DATABASE_URL"
 ```
 
 Put the returned id into `apps/web/wrangler.toml` and uncomment the `hyperdrive` binding. In a
-deployed Worker, `DATABASE_URL` is then unused — the binding supplies the connection string, and
+deployed Worker, `DATABASE_URL` is then unused: the binding supplies the connection string, and
 `connectionString()` in `apps/web/src/server/bindings.ts` prefers it.
 
 ---
@@ -173,7 +173,7 @@ WHERE u.rolname = 'xecret_app_login';
 ```
 
 The only row should be `xecret_app_permissions`. **If `neon_superuser` appears, the role was created through
-the console** and has far more power than intended — drop it and recreate it with the SQL above.
+the console** and has far more power than intended. Drop it and recreate it with the SQL above.
 
 If `CREATE TABLE` succeeds, stop and fix it before storing a real secret. A least-privilege role
 that turns out not to be least-privilege is worse than none, because it is documented as a control
@@ -186,11 +186,11 @@ people will rely on.
 `audit_logs` is partitioned by quarter, with the child tables in the `audit_parts` schema.
 Migration 0010 pre-creates eight quarters. **Nothing extends that automatically.** When the runway
 runs out, audit writes land in `audit_parts.audit_logs_default`, and a quarter with rows sitting in
-the default partition can no longer be given a real partition — the `CREATE TABLE ... PARTITION OF`
+the default partition can no longer be given a real partition: the `CREATE TABLE ... PARTITION OF`
 fails, because the rows would violate the default partition's constraint.
 
-Run this before the runway ends, **as the owner of the audit tables** — it issues `CREATE TABLE`
-and `GRANT`, and the application role holds neither:
+Run this before the runway ends, **as the owner of the audit tables** (it issues `CREATE TABLE`
+and `GRANT`, and the application role holds neither):
 
 ```sql
 SELECT create_audit_log_partition(d::date)
@@ -202,10 +202,10 @@ FROM generate_series(
 ```
 
 It fills every quarter from the current one to the end of the runway, not only the last one, and it
-is idempotent — so the cadence does not matter as long as it is **shorter than 21 months**. The
+is idempotent, so the cadence does not matter as long as it is **shorter than 21 months**. The
 statement always creates eight quarters, which reach between 21 and 24 months out depending on
 where in the current quarter you run it; 21 is the bound you can rely on. Extending only the far
-quarter — `create_audit_log_partition((now() + interval '21 months')::date)` on its own — is correct
+quarter (`create_audit_log_partition((now() + interval '21 months')::date)` on its own) is correct
 only at an exactly quarterly cadence, and leaves permanently uncoverable gaps at any other.
 
 `AT TIME ZONE 'UTC'` is not decoration. Partition bounds are UTC, and `date_trunc` on a
@@ -213,7 +213,7 @@ only at an exactly quarterly cadence, and leaves permanently uncoverable gaps at
 the wrong quarter.
 
 If **any** quarter in that range already has rows in the default partition, the statement aborts as
-a whole and no quarter is created — it is one statement, so it is one transaction. Repair the
+a whole and no quarter is created: it is one statement, so it is one transaction. Repair the
 partitions first, with the procedure below, which extends the runway on its way through.
 
 ### Repairing the partitions
@@ -234,7 +234,7 @@ fail if it holds a single row belonging to that range. So the default partition 
 before anything is created, and goes back **last**. Repairing one quarter at a time with the default
 still attached is what fails, and it fails in exactly the case you are trying to repair.
 
-First find out what needs repairing. The procedure needs the **complete** set up front — parking
+First find out what needs repairing. The procedure needs the **complete** set up front, since parking
 one partition and discovering a second mid-transaction wastes the whole maintenance window:
 
 ```sql
@@ -265,7 +265,7 @@ ORDER BY quarter;
 ```
 
 Then, as the table owner, in one transaction. **Steps 2 and 4a and the second `UNION` arm exist only
-if something needs parking** — in the common case, rows stranded in the default partition with every
+if something needs parking**. In the common case, rows stranded in the default partition with every
 partition attached and correctly bounded, omit those three and run the rest as printed:
 
 ```sql
@@ -276,8 +276,8 @@ ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_default;
 
 -- 2. Park every partition the queries above listed as detached or mis-bounded,
 --    one pair of statements each. Omit this step if there were none. For a
---    partition that is ALREADY detached, omit its DETACH and keep the rename —
---    detaching it again errors and poisons the transaction.
+--    partition that is ALREADY detached, omit its DETACH and keep the rename.
+--    Detaching it again errors and poisons the transaction.
 ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_2028q3;
 ALTER TABLE audit_parts.audit_logs_2028q3 RENAME TO audit_logs_2028q3_old;
 
@@ -320,7 +320,7 @@ append-only log, and it is why the whole thing is one transaction rather than a 
 stop halfway.
 
 If a parked table's rows had already reached the parent before an earlier attempt was interrupted,
-step 4 does not duplicate them — the primary key is `(id, created_at)`, so the replay fails on a
+step 4 does not duplicate them: the primary key is `(id, created_at)`, so the replay fails on a
 unique violation and the transaction rolls back. Confirm with a `count(*)` against the same range in
 `public.audit_logs`, then drop the parked table instead of replaying it.
 
@@ -331,9 +331,9 @@ by how many rows are parked and in the default partition.
 
 ### If the migration refuses: too many rows to rewrite
 
-Migration 0010 rewrites the whole of `audit_logs` — it detaches every partition, re-inserts every
+Migration 0010 rewrites the whole of `audit_logs`: it detaches every partition, re-inserts every
 row through the parent, and rebuilds the primary key and four indexes. That is free on a small table
-and an outage on a large one, so it measures first — before taking any lock that blocks writers —
+and an outage on a large one, so it measures first, before taking any lock that blocks writers,
 and refuses above about a million rows. It checks the planner's row estimate before that, and
 refuses outright above four million, so the message you see may say "estimated at N rows"; the
 estimate is deliberately the looser of the two, because `reltuples` is stale by nature.
@@ -349,12 +349,12 @@ XECRET_ALLOW_AUDIT_REWRITE=on npm run db:migrate
 ```
 
 `migrate.ts` turns that into a session-scoped `SET xecret.allow_audit_rewrite = 'on'` on its own
-connection, and it applies to that run only — there is nothing to reset afterwards.
+connection, and it applies to that run only. There is nothing to reset afterwards.
 
 Point `MIGRATION_DATABASE_URL` at the **direct** endpoint, not a pooled one, as step 1 already says.
 Under transaction pooling the `SET` is its own transaction and the backend can be handed to someone
 else before the migration's own transaction begins, which would leave the override unset and the
-guard armed. It fails closed — you get the refusal, not a surprise rewrite — but it fails.
+guard armed. It fails closed (you get the refusal, not a surprise rewrite), but it fails.
 
 It is deliberately not `ALTER DATABASE ... SET xecret.allow_audit_rewrite`. That would be the
 obvious way to do it, and it does not work here: `xecret.*` is a *custom placeholder* parameter, and
@@ -363,7 +363,7 @@ Supabase all withhold superuser, so the `ALTER` fails with `permission denied to
 `ALTER ROLE ... SET` fails identically. Setting it in a session has no such restriction.
 
 There is no alternative that consists of skipping it. Nothing in the application names a partition,
-so 0001's monthly layout would serve perfectly well — but drizzle applies pending migrations in one
+so 0001's monthly layout would serve perfectly well, but drizzle applies pending migrations in one
 transaction, so a 0010 that keeps aborting keeps every later migration from applying too. Declining
 it is not "stay on monthly"; it is "no migrations from here on". 0010 is currently the last one, so
 that cost is invisible until the next release.
@@ -374,7 +374,7 @@ that cost is invisible until the next release.
 
 **A new table in a future migration needs an explicit grant.** Migration 0002 lists the tenant
 tables by name, and nothing grants anything on a table added later. Migration 0010 revokes the
-`ALTER DEFAULT PRIVILEGES` rule in `public` that used to paper over this — it existed only to cover
+`ALTER DEFAULT PRIVILEGES` rule in `public` that used to paper over this. It existed only to cover
 audit partitions, which now live in `audit_parts` and are granted explicitly by
 `create_audit_log_partition()`. With that rule gone, a migration that adds an ordinary table and
 forgets its `GRANT` fails loudly on first use rather than half-working with read-and-insert but no
@@ -382,7 +382,7 @@ update-or-delete.
 
 That revoke is best-effort, and there is one case where it does not happen. A default-privilege rule
 belongs to the role that created it, and removing it means being that role or a member of it. If you
-applied migration 0002 as one role — `postgres` during bootstrap, say — and later migrations under a
+applied migration 0002 as one role (`postgres` during bootstrap, say) and later migrations under a
 dedicated migration role, 0010 cannot remove it. It does not fail; it warns, naming the role and the
 statement to run:
 
@@ -398,9 +398,9 @@ adding a table must add its own `GRANT`.
 
 **`CREATE ROLE` may need the account owner.** On some managed providers role creation is
 restricted. If migration 0002 fails on `CREATE ROLE`, create `xecret_app_permissions` through the provider's
-console and re-run — the `GRANT` statements are idempotent.
+console and re-run: the `GRANT` statements are idempotent.
 
 **None of this has been run against a live Neon instance yet.** The SQL is standard PostgreSQL and
 the grants are tested by shape, but the first person to follow this document is also the first
-person to test it. If a step does not behave as written, that is a bug in this document — report
+person to test it. If a step does not behave as written, that is a bug in this document. Report
 it.

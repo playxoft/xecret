@@ -6,7 +6,7 @@ about the things that actually matter in a security product.
 ## Before anything else
 
 **Found a security vulnerability?** Do not open an issue.
-Email **security@playxoft.com** — see [SECURITY.md](SECURITY.md).
+Email **security@playxoft.com** (see [SECURITY.md](SECURITY.md)).
 
 ## Getting set up
 
@@ -43,7 +43,7 @@ never asks again. Everyone whose commits are in the pull request signs, not just
 whoever opened it. Bot accounts are exempt.
 
 It is the [Harmony][harmony] Individual CLA, used as published rather than
-rewritten — see [CLA.md](CLA.md). It cuts both ways, and that is the point:
+rewritten (see [CLA.md](CLA.md)). It cuts both ways, and that is the point:
 
 - **We** get the right to release your contribution under other licences later,
   including commercial ones. Without that, the licence could never change once
@@ -78,7 +78,7 @@ asked to change, however good the rest of it is.
 5. **No dependency that cannot run on Cloudflare Workers.** Prefer Web APIs.
    `@workos-inc/authkit-nextjs` (built around middleware, which this deployment
    cannot have) and the retired Firebase packages are blocked by lint rule and
-   are not up for discussion — WorkOS is reached through `@workos-inc/node`, in
+   are not up for discussion. WorkOS is reached through `@workos-inc/node`, in
    `apps/web/src/server/workos.ts`. See
    [ADR 0010](docs/adr/0010-workos-as-identity-provider.md) and
    [ADR 0008](docs/adr/0008-no-middleware.md).
@@ -88,7 +88,7 @@ asked to change, however good the rest of it is.
 
 Significant decisions live in [`docs/adr/`](docs/adr/). If you are proposing a
 change that contradicts one, write a new ADR that supersedes it rather than
-quietly diverging — an ADR is immutable once accepted.
+quietly diverging: an ADR is immutable once accepted.
 
 If you are unsure whether something is "significant": if reversing it in six
 months would be expensive, it is.
@@ -96,7 +96,7 @@ months would be expensive, it is.
 ## Pull requests
 
 - Branch from `main`, named `feat/…`, `fix/…`, or `docs/…`.
-- [Conventional Commits](https://www.conventionalcommits.org/) — this drives the
+- [Conventional Commits](https://www.conventionalcommits.org/): this drives the
   changelog.
 - Describe *why*, not just *what*. The diff already shows what.
 - Keep them focused. A 2,000-line PR touching six areas will sit unreviewed, and

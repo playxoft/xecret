@@ -51,7 +51,7 @@ CLI ──▶ xecret login ──▶ xecret run -- npm run dev ─────�
 ## Teach your AI agent
 
 One document covers the commands, the scoping rules, the CI story and the
-conventions an agent should respect — never print a value, prefer `xecret run`
+conventions an agent should respect: never print a value, prefer `xecret run`
 over a `.env` file, ask before touching production.
 
 ```bash
@@ -76,7 +76,7 @@ nothing real: [AI agents](https://xecret.playxoft.com/docs/ai-agents).
 encrypted: the dashboard (Web Crypto) or the CLI encrypts each one with
 AES-256-GCM under a per-environment key the client generates, and that key is
 sealed (X25519) to every member and service token allowed to read it. Private
-keys leave your devices only encrypted — wrapped under a User Key that your
+keys leave your devices only encrypted, wrapped under a User Key that your
 master passphrase (Argon2id, run on your device), a passkey or a one-time
 recovery code unlocks. A CI service token carries its own private key, so CI
 decrypts on the runner. The server stores ciphertext; a database breach, an
@@ -85,7 +85,7 @@ insider or a court order gets nothing that opens it.
 What the server does see: secret **names**, project and environment names,
 members, the audit log of who read what, and billing details. Names are
 deliberately plaintext so listing and search stay server-side. And the
-guarantee has edges — the dashboard is JavaScript we serve, public keys are
+guarantee has edges: the dashboard is JavaScript we serve, public keys are
 trusted on first use, grant signatures are not yet verified. We list them
 rather than bury them: [what xecret can and cannot see](https://xecret.playxoft.com/docs/security/trust-model) ·
 [ADR 0009](docs/adr/0009-zero-knowledge-encryption.md) ·
@@ -95,7 +95,7 @@ rather than bury them: [what xecret can and cannot see](https://xecret.playxoft.
 ## Stack
 
 Next.js 16 on Cloudflare Workers · Neon PostgreSQL via Hyperdrive · Drizzle ·
-WorkOS AuthKit (identity only — sessions are ours) · Go CLI · end-to-end
+WorkOS AuthKit (identity only; sessions are ours) · Go CLI · end-to-end
 encryption (AES-256-GCM, X25519, Argon2id)
 
 Every significant decision is written down in [`docs/adr/`](docs/adr/), including
@@ -108,14 +108,14 @@ git clone https://github.com/playxoft/xecret.git
 cd xecret
 npm install
 
-# Secrets come from Phase.dev — there is no .env file to create.
+# Secrets come from Phase.dev, so there is no .env file to create.
 phase run -- npm run dev
 ```
 
 | Command | What it does |
 |---|---|
 | `npm run dev` | Next.js dev server |
-| `npm run verify` | format, lint, typecheck, test — run before pushing |
+| `npm run verify` | format, lint, typecheck, test (run before pushing) |
 | `npm run db:generate` | Generate a migration from schema changes |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run cli:build` | Build the Go CLI |
@@ -127,7 +127,7 @@ Requires Node ≥ 20.9 and Go ≥ 1.25.
 
 ```
 apps/web/        Next.js application on Cloudflare Workers   (AGPL-3.0)
-cli/             Go CLI — single static binary                (MIT)
+cli/             Go CLI (single static binary)                (MIT)
 packages/core/   crypto · authz · audit · validation          (AGPL-3.0)
 packages/db/     Drizzle schema and migrations                (AGPL-3.0)
 docs/            ADRs, threat model, architecture
@@ -150,4 +150,4 @@ Reasoning and alternatives considered: [ADR 0007](docs/adr/0007-licensing.md).
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues go to
-security@playxoft.com — please do not open a public issue.
+security@playxoft.com. Please do not open a public issue.

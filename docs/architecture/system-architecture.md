@@ -40,8 +40,8 @@ they fit together.
 ```
 
 External services touched **at deploy time only**: Phase.dev.
-External services touched **at sign-in only**: WorkOS — one authenticated code exchange per
-sign-in, plus a read of the organisation's verified domains for an SSO sign-in. The vault
+External services touched **at sign-in only**: WorkOS (one authenticated code exchange per
+sign-in, plus a read of the organisation's verified domains for an SSO sign-in). The vault
 reset's emailed code is the only other call, and only on that path.
 External services touched **on the secret-read path**: none.
 
@@ -60,7 +60,7 @@ Every protected route runs the same five stages, in this order, with no exceptio
 3. VALIDATE       Zod schema on every input, including path params
                   → 400 with field-level messages
 4. ACT            business logic; decryption happens here if at all
-5. AUDIT          emit an event — success, denial, or error alike
+5. AUDIT          emit an event on success, denial, or error alike
 ```
 
 **Why 404 rather than 403 for cross-tenant access:** a 403 confirms the resource exists,
@@ -87,12 +87,12 @@ GET /api/auth/login?next=…
 GET /api/auth/callback?code=…&state=…  ◀─────────────┘
    │
    ├─ rate limit (IP); verify the state cookie (MAC, age, constant-time match); clear it
-   ├─ authenticateWithCode(code, code_verifier)  — one authenticated call to WorkOS
+   ├─ authenticateWithCode(code, code_verifier)  (one authenticated call to WorkOS)
    ├─ refuse impersonation · unverified email · SSO outside the org's verified domains
    ├─ rate limit (IP + WorkOS user id)
    ├─ link: workos_user_id → else the verified address → else create (upsertUserFromWorkosIdentity)
    ├─ sso_required · just-in-time membership · personal organisation if none
-   ├─ insert sessions row  (store SHA-256 of a 256-bit opaque token — never the token)
+   ├─ insert sessions row  (store SHA-256 of a 256-bit opaque token, never the token)
    ├─ Set-Cookie: __Host-xecret_session; HttpOnly; Secure; SameSite=Lax; Path=/
    └─ 303 → next
 ```
@@ -107,9 +107,9 @@ provider proves who somebody is, once, and every session after that is ours.
 The linking pass is the one piece of logic that decides which account a returning person
 lands in: match `workos_user_id` (deleted accounts are refused, not skipped); else adopt the
 account holding the same **verified** address, under ASCII-only case folding; else create one.
-Everything after it — the session row, the cookie — is the same as it was under Firebase.
+Everything after it (the session row, the cookie) is the same as it was under Firebase.
 
-### 3.2 CLI — loopback + PKCE against *our* server
+### 3.2 CLI: loopback + PKCE against *our* server
 
 ```
 xecret login
@@ -123,10 +123,10 @@ xecret login
 ```
 
 The one-time code is single-use, expires in 60 seconds, and is bound to the challenge.
-Identity-provider tokens are never used as CLI credentials — none is ever kept. Nothing is
+Identity-provider tokens are never used as CLI credentials. None is ever kept. Nothing is
 ever printed to the terminal.
 
-### 3.3 CI — service token
+### 3.3 CI: service token
 
 ```
 XECRET_TOKEN=xct_… xecret run -- npm run build
@@ -145,8 +145,8 @@ This is the hot path and the one to protect from regressions.
 CLI ──GET /api/v1/secrets?project=…&environment=…──▶ Worker
                                                        │
   1. resolve actor from Bearer token (single indexed lookup by token hash)
-  2. can(actor, 'secret.read', environment)  — one query, joins membership + grants
-  3. load env_key (wrapped) + all secret_versions for the environment  — one query
+  2. can(actor, 'secret.read', environment)  (one query, joins membership + grants)
+  3. load env_key (wrapped) + all secret_versions for the environment  (one query)
   4. unwrap: Root KEK (in memory) → Org key → Env key
   5. decrypt each ciphertext with AES-256-GCM, verifying AAD
   6. emit ONE audit event: secret.read, N secrets, actor, env, IP
@@ -163,7 +163,7 @@ customer's secret count grows. See [ADR 0002](../adr/0002-root-key-custody.md).
 
 **AAD binding.** Each ciphertext is authenticated against
 `org_id ‖ environment_id ‖ secret_id ‖ version`. Moving a ciphertext row to another
-environment or secret makes decryption *fail* rather than silently succeed — a database-write
+environment or secret makes decryption *fail* rather than silently succeed, so a database-write
 attacker cannot relocate a production secret into an environment they can read.
 
 ---
@@ -183,7 +183,7 @@ attacker cannot relocate a production secret into an environment they can read.
 
 ## 6. Rate limiting
 
-Cloudflare's native rate-limit binding (GA) — no Redis, no database counters on the hot path.
+Cloudflare's native rate-limit binding (GA). No Redis, no database counters on the hot path.
 
 | Bucket | Limit | Keyed on |
 |---|---|---|
@@ -191,12 +191,12 @@ Cloudflare's native rate-limit binding (GA) — no Redis, no database counters o
 | CLI token exchange | strict | IP |
 | Invitation accept | strict | IP + token |
 | Secret read (interactive) | moderate | user |
-| Secret read (service token) | generous | token — CI must not be throttled into failure |
+| Secret read (service token) | generous | token (CI must not be throttled into failure) |
 | Dashboard reads | moderate | user |
 | Mutations | moderate | user |
 
-Slow-moving abuse that a request-rate limiter cannot see — invitation spam, failed logins
-across many IPs — is counted in the database and evaluated per action, not per request.
+Slow-moving abuse that a request-rate limiter cannot see (invitation spam, failed logins
+across many IPs) is counted in the database and evaluated per action, not per request.
 
 ---
 
@@ -218,7 +218,7 @@ only and holds no values.
 The deploy is a script rather than a bare `wrangler deploy` for one reason worth stating here:
 a deployment is a *build* and an *upload*, and only the upload can read `wrangler.toml`. The
 documentation and marketing pages are prerendered, so each one's canonical URL, its sitemap
-entry and the `Host` line in `robots.txt` are decided while `next build` runs — before any
+entry and the `Host` line in `robots.txt` are decided while `next build` runs, before any
 binding exists. The script closes that gap by resolving the environment's `vars` itself and
 exporting them into the build, which is what makes the origin in the HTML and the origin the
 Worker answers on the same string rather than two strings kept in step by hand.
@@ -230,7 +230,7 @@ var in `wrangler.toml`, which the script refuses to deploy without, and `WORKOS_
 derived from `XECRET_PUBLIC_URL` at runtime rather than configured.
 
 The account's Secrets Store entry and the Hyperdrive resource are created once by
-`scripts/deploy-bootstrap.sh`, not by a deploy — a deploy binds those resources and fails if
+`scripts/deploy-bootstrap.sh`, not by a deploy. A deploy binds those resources and fails if
 they are absent. See [key recovery §3](../security/key-recovery.md) for why that separation is
 deliberate.
 
@@ -243,10 +243,10 @@ deliberate.
 | Neon unavailable | API down; **CLI falls back to its encrypted local cache** with a loud warning | Neon failover; cache keeps developers working |
 | WorkOS unavailable | New sign-ins and vault resets fail, and the sign-in page says sign-in is unavailable; existing sessions and all CLI/CI operations continue | Wait |
 | ZeptoMail unavailable, or refusing | **Vault resets are refused** (503, nothing reset): the escape archive is emailed before every reset, and a failed send stops it. Invitations fall back to a shareable link; PIN-reset mail is not sent. A production deployment with no mail configured at all refuses every reset | Wait; each retry needs a fresh sign-in and code |
-| Cron Trigger missing or failing | **Nothing is purged**: reset vaults stay in the database past their seven days. Nothing is exposed — every read filters by the window, so an expired vault is unreachable — but the retention promise is broken until it runs | Restore `[env.production.triggers]` and redeploy; the next run purges the backlog in batches (the deployment-check skill's post-deploy step) |
-| Phase.dev unavailable | No effect on runtime; deploys blocked | Wait — see key-recovery §4.1 |
-| Cloudflare Secrets Store entry deleted | **Total outage** — nothing decryptable | Re-deploy from Phase.dev |
-| Root KEK lost | **Permanent, total data loss** | Escrow only — see [key-recovery](../security/key-recovery.md) |
+| Cron Trigger missing or failing | **Nothing is purged**: reset vaults stay in the database past their seven days. Nothing is exposed (every read filters by the window, so an expired vault is unreachable), but the retention promise is broken until it runs | Restore `[env.production.triggers]` and redeploy; the next run purges the backlog in batches (the deployment-check skill's post-deploy step) |
+| Phase.dev unavailable | No effect on runtime; deploys blocked | Wait (see key-recovery §4.1) |
+| Cloudflare Secrets Store entry deleted | **Total outage**: nothing decryptable | Re-deploy from Phase.dev |
+| Root KEK lost | **Permanent, total data loss** | Escrow only (see [key-recovery](../security/key-recovery.md)) |
 
 The CLI's encrypted offline cache is what prevents an xecret outage from becoming an outage
 for every customer's local development and CI. It is a core feature, not a convenience.

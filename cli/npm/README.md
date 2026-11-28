@@ -2,7 +2,7 @@
 
 Open-source, developer-first secret management. `xecret run` fetches your
 secrets, injects them into your process, and exits with whatever your command
-exited with — the values never touch disk, argv or stdout.
+exited with. The values never touch disk, argv or stdout.
 
 ```bash
 npm install -g @playxoft/xecret
@@ -17,7 +17,7 @@ Full documentation: **https://xecret.playxoft.com/docs**
 ## What this package is
 
 The `xecret` binary is a single static executable written in Go. This package
-installs it — it is a small wrapper whose `optionalDependencies` are six
+installs it: it is a small wrapper whose `optionalDependencies` are six
 platform packages holding one executable each, and npm installs exactly the one
 that matches your machine.
 
@@ -35,7 +35,7 @@ curl -fsSL https://xecret.playxoft.com/install.sh | sh
 ```
 
 Both install the same executable, checksum-verified. For long-running processes
-— `xecret run -- npm run dev` — the standalone binary is the better choice: the
+(`xecret run -- npm run dev`) the standalone binary is the better choice: the
 npm wrapper keeps a Node process alive alongside your command for the life of
 the run.
 
@@ -52,7 +52,7 @@ xecret import .env --dry-run       # see the plan before writing
 xecret help
 ```
 
-In CI, set `XECRET_TOKEN` and nothing else — the token's own scope answers which
+In CI, set `XECRET_TOKEN` and nothing else: the token's own scope answers which
 organisation, project and environment to use:
 
 ```bash
@@ -62,7 +62,7 @@ XECRET_TOKEN=xst_… xecret run -- npm run build
 ## Requirements
 
 Node 18 or newer, on macOS, Linux or Windows (x64 or arm64). The binary itself
-has no runtime dependencies — it is `CGO_ENABLED=0`, so it runs in scratch,
+has no runtime dependencies. It is `CGO_ENABLED=0`, so it runs in scratch,
 distroless and Alpine images alike.
 
 ## Licence

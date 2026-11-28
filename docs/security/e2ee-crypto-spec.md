@@ -5,8 +5,8 @@
 
 This document defines every cryptographic artifact xecret stores or transmits under the
 zero-knowledge model, at the byte level. It is written to be sufficient for an independent
-implementation — the Go CLI is one such implementation and is developed against this text,
-not against the TypeScript source — and for a third-party audit.
+implementation (the Go CLI is one such implementation and is developed against this text,
+not against the TypeScript source) and for a third-party audit.
 
 **Conformance language.** MUST, MUST NOT, SHOULD, and MAY are used in the RFC 2119 sense.
 Where this document and any implementation disagree, this document is wrong or the
@@ -35,8 +35,8 @@ unchanged by this document and is retired at the end of the migration, not by th
 **IV generation.** Every AES-256-GCM IV in this specification is 12 fresh bytes from a
 cryptographically secure random source, generated at the moment of encryption. **No exported
 function MAY accept an IV as a parameter**, and no implementation may derive one from a
-counter or reuse one. IV reuse under one key breaks GCM completely — it leaks the XOR of the
-two plaintexts and enables forgery — which is why `crypto/aead.ts` generates it internally and
+counter or reuse one. IV reuse under one key breaks GCM completely (it leaks the XOR of the
+two plaintexts and enables forgery), which is why `crypto/aead.ts` generates it internally and
 offers no way to supply one.
 
 The single exception is the test-vector suite, which must pin randomness to be reproducible.
@@ -53,13 +53,13 @@ a heap snapshot yields a usable key; it does not close it, and it is not a contr
 
 ### 1.2 Notation
 
-- `a ‖ b` — byte concatenation.
-- `u32be(n)` — `n` as a 4-byte unsigned big-endian integer.
-- `utf8(s)` — the UTF-8 bytes of string `s`, with no BOM and no terminator.
-- `b64url(x)` — base64url per RFC 4648 §5, **without padding**. This is `toBase64Url` in
+- `a ‖ b`: byte concatenation.
+- `u32be(n)`: `n` as a 4-byte unsigned big-endian integer.
+- `utf8(s)`: the UTF-8 bytes of string `s`, with no BOM and no terminator.
+- `b64url(x)`: base64url per RFC 4648 §5, **without padding**. This is `toBase64Url` in
   `crypto/encoding.ts`. Decoders MUST reject any input containing a character outside
   `[A-Za-z0-9_-]`, and MUST reject padding characters.
-- `random(n)` — `n` CSPRNG bytes.
+- `random(n)`: `n` CSPRNG bytes.
 - UUIDs are always written in **canonical lowercase 36-character text form**
   (`8-4-4-12` hexadecimal with hyphens), never as 16 raw bytes. This is deliberate: the text
   form has no byte-order question, which removes an entire class of TypeScript/Go
@@ -67,7 +67,7 @@ a heap snapshot yields a usable key; it does not close it, and it is not a contr
 
 ### 1.3 Encoding of text inputs
 
-Any human-supplied string entering a KDF — the master passphrase above all — MUST be
+Any human-supplied string entering a KDF (the master passphrase above all) MUST be
 **Unicode NFC-normalised and then encoded as UTF-8** before use.
 
 This is not decoration. A passphrase containing `é` is two code points on macOS (NFD) and one
@@ -87,7 +87,7 @@ xk2.<algo>.<b64url payload>
 
 Three dot-separated fields. Neither the version nor the algorithm tag can contain a dot, and
 the base64url alphabet excludes it, so the encoding is unambiguous without escaping or length
-prefixes — the same reasoning as the `xecret-share-v1.` format in `crypto/escrow.ts`.
+prefixes (the same reasoning as the `xecret-share-v1.` format in `crypto/escrow.ts`).
 
 **Parsers MUST reject anything they do not recognise, loudly.** An unknown version prefix, an
 unknown algorithm tag, a payload shorter than the minimum for its type, or a payload that is
@@ -125,16 +125,16 @@ in §4; `HKDF` info strings in §3.
 | 8 | Grant signature | `env_key_grants.signature` | `xk2.ed25519.` | Ed25519 by the creator's signing key | n/a (§6) |
 | 9 | Secret value ciphertext | `secret_versions.ciphertext` | `xk2.gcm.` | `EDK` | `secret-value` |
 | 10 | Secret note ciphertext | `secrets.encNote` | `xk2.gcm.` | `EDK` | `secret-note` |
-| 11 | CLI hand-off UK wrap | **nowhere** — loopback URL only (§13.2) | `xk2.x25519.` | sealed box to the CLI's ephemeral X25519 public key | `cli-handoff` |
-| 12 | Device PIN UK wrap | **one browser's `localStorage`** only (§13.3) — never this server | `xk2.gcm.` | `HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap", 32)` | `pin-wrap` |
-| 13 | Personal override value | `personal_overrides.ciphertext` | `xk2.gcm.` | `HKDF(ownerX25519PrivateKey, "xecret.v2.override-key", 32)` — the **owner's own** override key | `override-value` |
+| 11 | CLI hand-off UK wrap | **nowhere**: loopback URL only (§13.2) | `xk2.x25519.` | sealed box to the CLI's ephemeral X25519 public key | `cli-handoff` |
+| 12 | Device PIN UK wrap | **one browser's `localStorage`** only (§13.3), never this server | `xk2.gcm.` | `HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap", 32)` | `pin-wrap` |
+| 13 | Personal override value | `personal_overrides.ciphertext` | `xk2.gcm.` | `HKDF(ownerX25519PrivateKey, "xecret.v2.override-key", 32)`, the **owner's own** override key | `override-value` |
 
 Types 6 and 7 are the same construction to the same public key with different AAD and
 different plaintext. They are stored in separate columns rather than as one sealed pair
 because the EHK is re-sealed unchanged across an EDK rotation while the EDK is replaced.
 
 **Plaintexts.** Types 1–3 encrypt the 32-byte UK. Types 4–5 encrypt the 32-byte private key
-(the X25519 scalar, and the Ed25519 32-byte seed respectively — not the 64-byte expanded
+(the X25519 scalar, and the Ed25519 32-byte seed respectively, not the 64-byte expanded
 form). Type 6 encrypts the 32-byte EDK, type 7 the 32-byte EHK. Types 9–10 encrypt the
 NFC-normalised UTF-8 bytes of the value or note. Type 11 encrypts the 32-byte UK, like types
 1–3, but asymmetrically and to a key that exists for one login and is then discarded. Type 12
@@ -145,14 +145,14 @@ type 9, and is subject to the same UTF-8 rule below.
 **Type 13 is made by the person it belongs to, for them, and for nobody else** (P19 §2). A
 personal override replaces one value on one person's machine, and it is deliberately *not* under
 the environment's EDK: every reader of the environment holds the EDK, and an override must not be
-readable by another member — as a property of the ciphertext, not only of the route that refuses
+readable by another member, as a property of the ciphertext and not only of the route that refuses
 to serve it. It is AES-256-GCM under the owner's **override key**, HKDF-SHA256 of their own X25519
 private scalar with info `xecret.v2.override-key` (§3.3) and an empty salt.
 
 The key is symmetric on purpose. The first draft of this type was a §5 sealed box to the owner's
 public key, which hides the value and proves nothing about who made it: the public key is
 published, so the server could have sealed a box the owner's own CLI would open and inject into a
-process — `NODE_OPTIONS`, a different `DATABASE_URL`. A key only the owner can derive makes GCM's
+process (`NODE_OPTIONS`, a different `DATABASE_URL`). A key only the owner can derive makes GCM's
 tag a proof of authorship as well as integrity, and the only party that ever needs to *write* an
 override is the one that reads it. A client MUST derive the key from its own private key and MUST
 NOT open an override under any other construction.
@@ -194,7 +194,7 @@ compares against this; a client refuses the oversized plaintext long before it g
 
 ## 3. Key derivation
 
-### 3.1 Argon2id — passphrase to Stretched Key
+### 3.1 Argon2id: passphrase to Stretched Key
 
 ```
 SK = Argon2id(
@@ -251,7 +251,7 @@ hostile, and in both cases refusing is correct.
 **Upgrade path.** A stored `kdfParams` that differs from the current defaults in **any**
 field marks the record as needing an upgrade. On the next successful unlock the client
 re-derives `SK` at the current parameters with a fresh salt and re-wraps the UK. `!==`, not
-`<`, deliberately — the same reasoning the retired `pinNeedsRehash` had: an upgrade must
+`<`, deliberately, by the same reasoning the retired `pinNeedsRehash` had: an upgrade must
 also be able to *lower* a cost, if a parameter was ever set to a value some platform cannot
 reach.
 
@@ -259,7 +259,7 @@ reach.
 
 All derivations use HKDF-SHA256 with an **empty salt** unless stated otherwise, because every
 input keying material in this specification is already a uniformly-random 32-byte value or a
-KDF output — none is a password or otherwise low-entropy. The one exception is the sealed box
+KDF output (none is a password or otherwise low-entropy). The one exception is the sealed box
 (§5), which puts the two public keys in the salt.
 
 Output length `L` is 32 bytes throughout.
@@ -283,13 +283,13 @@ appear here**, and every string is written exactly as shown, ASCII, no trailing 
 | `xecret.v2.override-key` | the member's own X25519 private scalar (32B) | empty | 32 | The AES-256-GCM key of that member's **personal overrides** (blob type 13) |
 | *(the blob's full AAD string)* | X25519 shared secret (32B) | `ephemeralPub ‖ recipientPub` (64B) | 32 | AES-256-GCM key for one sealed box (§5) |
 
-Two branches from `SK` — the wrap key and the verifier — is the reason `SK` is HKDF input
+Two branches from `SK` (the wrap key and the verifier) is the reason `SK` is HKDF input
 rather than a key. The verifier is handed to the server; if it were the wrap key, or derived
 from it by anything invertible, a server holding verifiers would hold wrap keys. It is a
 sibling branch, and HKDF's guarantee is that one branch reveals nothing about another.
 
 The UK has two uses: it is an AES-256-GCM key for blob types 4 and 5, with distinct AAD for
-each, and it is the IKM for exactly one HKDF branch — `xecret.v2.uk-unlock-verifier`. That
+each, and it is the IKM for exactly one HKDF branch, `xecret.v2.uk-unlock-verifier`. That
 branch exists because **an unlock does not always involve a passphrase.** A passkey unlock
 opens blob type 3, and blob type 3 holds the UK; there is no derivation from the UK back to
 `SK`, by construction, because that one-way relationship is what makes a passphrase change a
@@ -299,7 +299,7 @@ decrypt everything and still not be able to tell the server it had unlocked.
 
 **Deriving an unlock proof from the UK gives away nothing**, and this is the point worth being
 precise about rather than taking on trust. The server's own gate is not what protects a secret
-under this model — the wraps are. Anyone who can produce `HKDF(UK, "", "xecret.v2.uk-unlock-verifier", 32)`
+under this model; the wraps are. Anyone who can produce `HKDF(UK, "", "xecret.v2.uk-unlock-verifier", 32)`
 already holds the UK, and therefore already holds every private key and every environment key
 the account can reach. The proof is strictly weaker than the capability it attests to, so a
 server storing its digest learns nothing it could use, and a client presenting it claims
@@ -337,21 +337,21 @@ xecret.aad.v2.<purpose>|<component>|<component>|…
 The AAD is the **UTF-8 bytes of that string**, with no terminator. It is passed as
 `additionalData` to AES-256-GCM, which authenticates it without encrypting it, so a ciphertext
 moved to a different row fails to decrypt rather than silently succeeding. This is the v1
-mechanism from `crypto/aad.ts`, with v2 purposes and the same rationale — see that file's
+mechanism from `crypto/aad.ts`, with v2 purposes and the same rationale. See that file's
 header for the concrete attack it defeats.
 
 **The delimiter invariant is load-bearing.** Every interpolated component MUST match
 `^[0-9a-zA-Z_-]+$`. `|` cannot appear inside a component, so the encoding is unambiguous and
 needs no length prefixes. An implementation MUST assert this on every component before
-constructing the AAD, and MUST throw without including the offending value in the message —
+constructing the AAD, and MUST throw without including the offending value in the message:
 these paths handle secret identifiers and error messages reach logs. UUIDs satisfy it
 (`[0-9a-f-]`), as do lowercase-hex hashes, base64url strings, and the fixed enum words below.
 
 **Enumerated component values**, all lowercase ASCII:
 
-- `recipientKind` ∈ { `member`, `token`, `invite` } — corresponding to
+- `recipientKind` ∈ { `member`, `token`, `invite` }, corresponding to
   `env_key_grants.memberUserId`, `.serviceTokenId`, `.invitationId`.
-- `wrapKind` ∈ { `passphrase`, `recovery`, `prf` } — `user_key_wraps.kind`.
+- `wrapKind` ∈ { `passphrase`, `recovery`, `prf` } (`user_key_wraps.kind`).
 
 Integers (`version`, `edkVersion`) are rendered as base-10 ASCII with no sign, no padding, and
 no separators, and MUST be non-negative.
@@ -390,13 +390,13 @@ Notes on the less obvious choices:
   and a device PIN wrap is never stored on the server at all; giving it a kind there would put a
   fourth value into a column CHECK for a ciphertext that column will never hold. Its `deviceId`
   is what stops a wrap being copied between two enrolments of the *same* account, where the PIN
-  may well be identical — `userId` alone would not catch that.
+  may well be identical. `userId` alone would not catch that.
 - **The `orgId` in `secret-value` and `secret-note`** is redundant given `environmentId`, and
   is included anyway to match `xecret.aad.v1.secret` exactly. The v1 AAD binds the org, and
   dropping it in v2 would make the migration's before/after comparison harder to reason about
   for no gain.
-- **`override-value` binds the row's whole unique key** — organisation, environment, owner and
-  name — and no version, because an override is replaced in place rather than versioned. `name`
+- **`override-value` binds the row's whole unique key** (organisation, environment, owner and
+  name) and no version, because an override is replaced in place rather than versioned. `name`
   is a secret name (`[A-Za-z_][A-Za-z0-9_]*`), which the component pattern admits. It is the
   first purpose whose last component is not an identifier minted by this system, and that is
   deliberate: the name is what the override *means*, so a box moved to another name must fail.
@@ -404,15 +404,15 @@ Notes on the less obvious choices:
 
 ### 4.3 The client-write contract
 
-An AAD component chosen by a client is a promise about bytes that already exist. Two of them —
-`secretId` and `version` on `secret-value` — name a database row the client has not written
+An AAD component chosen by a client is a promise about bytes that already exist. Two of them
+(`secretId` and `version` on `secret-value`) name a database row the client has not written
 yet, and the server decides where that row actually lands. When the two disagree, AES-GCM does
 its job perfectly and the outcome is still total loss: the row commits, the response is `200`,
 and the ciphertext authenticates against an AAD nobody will ever reconstruct.
 
 That failure has no repair. On a `server`-mode environment an operator holds the key and can
-re-encrypt from a backup. Here nobody does — the plaintext existed only inside a client that
-has moved on — so the loss is permanent at the instant of the write, and silent.
+re-encrypt from a backup. Here nobody does: the plaintext existed only inside a client that
+has moved on, so the loss is permanent at the instant of the write, and silent.
 
 It is also easy to reach without an attacker. Two clients writing one secret; one client whose
 listing is a page old; one screen holding a snapshot across its own earlier write.
@@ -424,7 +424,7 @@ Therefore:
 
 | Write | States | Server derives it from |
 |---|---|---|
-| create | the `secretId` it minted; target version is 1 by definition | — |
+| create | the `secretId` it minted; target version is 1 by definition | n/a |
 | update | `expectedVersion` | `MAX(version) + 1` of the stored secret |
 | restore | `expectedVersion`, distinct from the `version` being restored *from* | the same |
 | import (per entry) | the entry's `id` **and** its `expectedVersion` | the row the entry's name resolves to |
@@ -451,7 +451,7 @@ Three rules make it exact:
 ## 5. Sealed box
 
 The construction used to seal the EDK and the EHK to a member, a service token, or an
-invitation. It is anonymous — the recipient learns nothing about who sealed it from the box
+invitation. It is anonymous: the recipient learns nothing about who sealed it from the box
 itself, which is what the grant signature (§6) is for.
 
 ### 5.1 Seal
@@ -496,19 +496,19 @@ open(recipientPriv, blob, aad):
     return AES-256-GCM.decrypt(key, iv, ct, aad)               // uniform failure
 ```
 
-Every failure that **depends on key material** — wrong recipient, wrong AAD, flipped bit,
-forged tag, an ephemeral key yielding an all-zero shared secret — MUST surface as one
+Every failure that **depends on key material** (wrong recipient, wrong AAD, flipped bit,
+forged tag, an ephemeral key yielding an all-zero shared secret) MUST surface as one
 indistinguishable error carrying no detail, exactly as `DecryptionError` does in
 `crypto/types.ts`. Distinguishing them tells an attacker probing the API which part of their
 guess was wrong.
 
 Failures of **format** are the one exception, and they are a separate class: a string that is
-not a well-formed `xk2.x25519` blob — unknown version, unknown algorithm tag, payload below
-the minimum, invalid base64url — is rejected by the parser of §2 before any key is touched,
+not a well-formed `xk2.x25519` blob (unknown version, unknown algorithm tag, payload below
+the minimum, invalid base64url) is rejected by the parser of §2 before any key is touched,
 loudly and with a distinct error type. Nothing is learned from that rejection: it is a fact
 about a string the attacker already holds, derivable by reading §2. Collapsing it into the
-uniform decryption error would trade a real diagnostic — the one that tells an operator a
-column holds the wrong kind of value — for no security at all, and would sit badly with §2's
+uniform decryption error would trade a real diagnostic (the one that tells an operator a
+column holds the wrong kind of value) for no security at all, and would sit badly with §2's
 requirement that a parser reject what it does not recognise *loudly*. The vector schema records
 the distinction as `expected.errorClass`, `format` or `decryption`.
 
@@ -517,12 +517,12 @@ the distinction as `expected.errorClass`, `format` or `decryption`.
 **The public keys go in the HKDF salt.** A plain `HKDF(shared, "", info, 32)` would derive the
 same key for any pair producing the same shared secret, and would leave the transmitted
 `ephPub` outside the KDF's view. Binding `ephPub ‖ recipientPub` into the salt makes the
-derived key specific to the exact ephemeral/recipient pair — the same property libsodium's
+derived key specific to the exact ephemeral/recipient pair, the same property libsodium's
 `crypto_box_seal` gets by hashing both keys into its nonce, and the same one HPKE gets through
 its KEM context. The order is fixed as **ephemeral first, recipient second**; reversing it
 produces a different, non-interoperable key.
 
-**The AAD is used twice, deliberately** — as the HKDF `info` and as the GCM `additionalData`.
+**The AAD is used twice, deliberately**: as the HKDF `info` and as the GCM `additionalData`.
 The first binds the *key* to the context, so a relocated blob derives the wrong key. The
 second binds the *ciphertext*, so a relocated blob also fails authentication. Either alone
 would be sufficient; both cost nothing and mean an implementation that drops one still fails
@@ -543,7 +543,7 @@ carrying the whole separation.
 ## 6. Grant signatures
 
 Every `env_key_grants` row is signed by its creator at creation. Verification is deferred
-(ADR 0009, trade-off 3); **creation is not** — a row written by the new code path without a
+(ADR 0009, trade-off 3); **creation is not**. A row written by the new code path without a
 signature is a defect.
 
 ### 6.1 Canonical signing payload
@@ -577,7 +577,7 @@ against `user_keys.signPublicKey` for `env_key_grants.signedByUserId`.
 **`recipientPublicKey` is stored on the row**, in `env_key_grants.recipient_public_key`, exactly
 as the client stated it. It is the only field of the payload that is not otherwise a column, and
 recording it is what makes "from the row's own columns" true rather than aspirational. The
-alternative — reading the key from the principal's own table at verification time — fails twice
+alternative, reading the key from the principal's own table at verification time, fails twice
 over. It is *wrong*: `user_keys.enc_public_key` is replaced by a vault reset and an invitation's
 key is deleted at acceptance, so honest grants written before either event would recompute to a
 different payload and verify as forged. And it is *backwards*: the reason this field is in the
@@ -585,14 +585,14 @@ payload at all is that a server must not be able to move a grant between two pri
 verifier that takes the key from a table the server writes has handed that back.
 
 A verifier MAY additionally compare the recorded key against the principal's current one. That
-is a separate question with a separate answer — "this grant was sealed to a key this account no
-longer has" is not "this grant's signature does not verify" — and the two MUST NOT be collapsed
+is a separate question with a separate answer ("this grant was sealed to a key this account no
+longer has" is not "this grant's signature does not verify"), and the two MUST NOT be collapsed
 into one result.
 
 ### 6.2 Why it is shaped this way
 
-**Uniform `u32be` length prefixes, even on fixed-width fields.** The alternative — prefixing
-only the variable-length fields — requires every implementation to agree on which fields are
+**Uniform `u32be` length prefixes, even on fixed-width fields.** The alternative, prefixing
+only the variable-length fields, requires every implementation to agree on which fields are
 fixed, and that agreement is exactly the sort of thing that holds until someone changes a UUID
 representation. Four redundant bytes per field removes the question. The payload is
 unambiguously parseable, which also means it is unambiguously *constructible*, which is the
@@ -610,7 +610,7 @@ signature; and it means a verifier does not have to re-encode anything, which is
 place for the two implementations to differ.
 
 **Both sealed blobs, not one.** ADR 0009's source design named "the sealed blob" singular, but
-the row carries two — `edkSealed` and `ehkSealed`. Signing only the EDK would leave the EHK
+the row carries two: `edkSealed` and `ehkSealed`. Signing only the EDK would leave the EHK
 unauthenticated in a row that claims to be authenticated, which is worse than not signing at
 all.
 
@@ -643,8 +643,8 @@ Symbol value is the zero-based index into that string.
 
 **Decoding is forgiving in exactly the ways Crockford specifies, and no others.** A parser
 MUST, in this order: strip all hyphens and Unicode whitespace; upper-case; then map `I` → `1`,
-`L` → `1`, `O` → `0`. Any remaining character outside the alphabet — including `U`, which is
-excluded precisely because it is confusable and is never valid in any position — is a parse
+`L` → `1`, `O` → `0`. Any remaining character outside the alphabet (including `U`, which is
+excluded precisely because it is confusable and is never valid in any position) is a parse
 error.
 
 **"Unicode whitespace" means Unicode's `White_Space` property plus U+FEFF.** Naming the set
@@ -662,8 +662,8 @@ U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF
 A code is printed by one implementation and typed into whichever the user reaches for on the
 day they need it, so a character one side strips and the other keeps is a code that looks right
 on the printed sheet and is refused by the client in front of them, with nothing on screen to
-explain why. U+2007 (FIGURE SPACE) is the one this rule most plausibly meets — a typesetter
-puts it between digit groups — and it is invisible to whoever copies the code off the page.
+explain why. U+2007 (FIGURE SPACE) is the one this rule most plausibly meets (a typesetter
+puts it between digit groups), and it is invisible to whoever copies the code off the page.
 
 `U` is rejected rather than aliased. Crockford reserves it as part of the mod-37 check-symbol
 set, which this specification does not use (§7.4), so it has no meaning here at all.
@@ -680,7 +680,7 @@ generateRecoveryCode():
     return data ‖ check
 ```
 
-`codeBytes` is `b` — the full 16 bytes, top three bits zero. That is the canonical byte form
+`codeBytes` is `b`: the full 16 bytes, top three bits zero. That is the canonical byte form
 of a code, and it is what §3.3 and §7.5 take as input.
 
 **125 bits, not 128.** Twenty-five base32 characters carry exactly 125 bits, and 25 characters
@@ -711,7 +711,7 @@ case, without hyphens, or grouped differently, and it will be accepted.
 
 The check character detects transcription errors so a mistyped code produces *"that code has a
 typo"* rather than *"invalid recovery code"*. It is a **usability control, not a security
-control** — a code that passes the check is still verified by the server's lookup hash and
+control**: a code that passes the check is still verified by the server's lookup hash and
 then by GCM authentication, and the check character adds nothing to either.
 
 Let `v(c)` be the symbol value of character `c` (0–31), and `s(k)` the symbol for value `k`.
@@ -748,8 +748,8 @@ substitution and the large majority of adjacent transpositions.
 
 ### 7.4 Why Luhn mod 32 and not Crockford's own mod-37
 
-Crockford base32 specifies a check *symbol* computed mod 37, using five additional symbols —
-`*`, `~`, `$`, `=`, and `U` — beyond the 32 data symbols. Mod 37 is arithmetically the
+Crockford base32 specifies a check *symbol* computed mod 37, using five additional symbols
+(`*`, `~`, `$`, `=`, and `U`) beyond the 32 data symbols. Mod 37 is arithmetically the
 stronger choice: 37 is prime, so it catches all transpositions rather than most.
 
 It is rejected here because of what it drags in. The alphabet was chosen so a human can
@@ -759,7 +759,7 @@ trims trailing characters, and prone to mangling by the chat and email clients a
 Kit passes through. The fifth is `U`, which the data alphabet excludes for being confusable
 with `V`. A single alphabet, typed on a single keyboard, with a single normalisation rule
 covering every character including the check, is worth more than the transposition cases mod
-37 additionally catches — especially for a control whose job is a better error message.
+37 additionally catches, especially for a control whose job is a better error message.
 
 ### 7.5 Server-side storage
 
@@ -778,7 +778,7 @@ The domain-separation prefix ensures this digest can never collide with another 
 over the same bytes.
 
 Lookups MUST be rate-limited and audited. Use the `nextUnlockFailure` backoff from
-`auth/vault.ts` — five free attempts, then exponential 60 s → 60 min — against a counter kept
+`auth/vault.ts` (five free attempts, then exponential 60 s → 60 min) against a counter kept
 **separate** from the passphrase one, so a mistyped code cannot spend the budget protecting the
 passphrase. Emit
 `vault.recovery_used` on success.
@@ -812,12 +812,12 @@ server stores `SHA-256(unlockVerifier)` and compares in constant time (`timingSa
 ukUnlockVerifier = HKDF(ikm = UK, salt = "", info = "xecret.v2.uk-unlock-verifier", L = 32)
 ```
 
-Sent by an unlock that opened the User Key **without deriving `SK`** — today, a passkey
+Sent by an unlock that opened the User Key **without deriving `SK`**: today, a passkey
 unlock (blob type 3). The client sends it at vault setup as well, alongside the passphrase
 verifier, so both are recorded from the same ceremony; the server stores
 `SHA-256(ukUnlockVerifier)` in its own column and compares it the same way.
 
-Both verifiers attest to the same thing — *this client can open this vault* — so a server
+Both verifiers attest to the same thing (*this client can open this vault*), so a server
 MUST apply **one** attempt counter and one lockout across both. Counting them separately would
 hand an attacker two budgets against one gate.
 
@@ -833,15 +833,15 @@ and a server MUST NOT expect one.
 ### 8.3 What a verifier is, and is not
 
 **Why a plain SHA-256 is enough on the server side.** The input is already a 32-byte KDF
-output — an Argon2id derivation for §8.1, a random 32-byte key for §8.2 — uniformly random from
+output (an Argon2id derivation for §8.1, a random 32-byte key for §8.2), uniformly random from
 the server's point of view, with no structure to attack. An attacker holding the stored hashes
 gains nothing usable against the wraps, because each verifier is a *sibling* HKDF branch of the
 wrap key rather than a parent of it: HKDF's guarantee is that learning one branch reveals
 nothing about another.
 
 **What they are and are not for.** Neither is the thing that decrypts anything, and possessing
-either opens no vault. Unlock is fundamentally a client-side question — *can I unwrap the UK?*
-— and the answer never leaves the browser. A verifier exists so the server can maintain
+either opens no vault. Unlock is fundamentally a client-side question (*can I unwrap the UK?*),
+and the answer never leaves the browser. A verifier exists so the server can maintain
 `vaultUnlockedAt` for API gating, apply the `nextUnlockFailure` backoff to unlock attempts, and
 record an audit trail. That is defence in depth and audit fidelity, exactly as `isUnlocked()`
 does today, and nothing more.
@@ -863,8 +863,8 @@ previous version's `valueHmac` to detect a no-op write, exactly as it does today
 learns the plaintext.
 
 **Keyed, not a bare digest.** A plain `SHA-256(plaintext)` would be an offline brute-force
-oracle: most secrets are structured or low-entropy enough — short API keys, connection strings
-with dictionary passwords — that an attacker holding a database dump could confirm guesses at
+oracle: most secrets are structured or low-entropy enough (short API keys, connection strings
+with dictionary passwords) that an attacker holding a database dump could confirm guesses at
 high speed. Keying it makes the tag useless without the key hierarchy while still answering
 *"is this the same value?"* server-side.
 
@@ -885,7 +885,7 @@ property that is already guaranteed.
 ## 10. The invite key fragment
 
 Invitations are split across two channels (ADR 0009 and the invitation flow): the emailed link
-carries only the `xin_…` token, and the **key fragment** travels separately — copied from the
+carries only the `xin_…` token, and the **key fragment** travels separately, copied from the
 UI and sent over a different medium. A leaked email alone decrypts nothing.
 
 The fragment is generated by the inviter's client and **never reaches the server**. It is
@@ -894,7 +894,7 @@ not transmit.
 
 ```
 generateInviteFragment():
-    seed  = random(16)                        // 128 bits, all of them — no bit clearing
+    seed  = random(16)                        // 128 bits, all of them (no bit clearing)
     data  = Crockford-base32(seed) as exactly 26 characters, left-padded with '0'
     check = luhnMod32(data)                   // §7.3, over the 26 data characters
     return data ‖ check
@@ -908,7 +908,7 @@ deriveInviteKey(seed):
 ```
 
 The display form is six groups: `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XC`. Normalisation on input is
-exactly §7.1 — strip hyphens and whitespace, upper-case, alias `I`/`L` → `1` and `O` → `0`,
+exactly §7.1: strip hyphens and whitespace, upper-case, alias `I`/`L` → `1` and `O` → `0`,
 reject anything else including `U`.
 
 The inviter uploads `invitePublicKey` with the invitation and seals the relevant EDK and EHK
@@ -922,7 +922,7 @@ leaked fragment was useful to the acceptance itself. That is the right instinct 
 destroyed the flow: the primary population of an invitation link is somebody who has no vault
 yet, has no key of their own to re-seal to, and cannot obtain one before the response that
 showed them the grants has already deleted the rows. So consumption moved to the act that makes
-each row redundant — `POST …/keys/grants` carries the invitation it is claiming, and the server
+each row redundant: `POST …/keys/grants` carries the invitation it is claiming, and the server
 deletes that invitation's grants **for that one environment** in the same transaction as the
 insert. Per environment, so an invitee whose second environment fails to re-seal keeps its row
 and can claim it later; in one transaction, so a failure after the insert cannot destroy the
@@ -931,19 +931,19 @@ finds nothing to do.
 
 The residual is stated rather than argued away: between acceptance and the claim, a grant
 openable by the fragment remains in the database. It is bounded by the invitee claiming
-(normally seconds later), by any rotation of the environment — which retires the key the grant
-carries — and by the fact that the fragment was always the weaker half of a two-channel scheme.
+(normally seconds later), by any rotation of the environment, which retires the key the grant
+carries, and by the fact that the fragment was always the weaker half of a two-channel scheme.
 An unclaimed grant is re-served to the account that accepted the invitation, and to nobody
 else, so the code can be entered from a later session; the blob is sealed to a key the server
 has never held, on the same terms `myGrant` is served under.
 
-**"The relevant grants" is enforced, not assumed.** Every route that writes an `invite` grant —
-`POST …/keys/grants` and `POST …/keys/rotate` alike — refuses one unless the invitation is this
+**"The relevant grants" is enforced, not assumed.** Every route that writes an `invite` grant
+(`POST …/keys/grants` and `POST …/keys/rotate` alike) refuses one unless the invitation is this
 organisation's, still open, **and** its `initial_grants` (or, where none were selected, its
 invited role's defaults) will actually confer read access to that environment once accepted.
 Without the last condition any member holding an environment's key could seal it to any open
 invitation, and the invitee would arrive holding key bytes for an environment their role and
-selection never entitled them to — denied by every route that reads secrets while holding the
+selection never entitled them to, denied by every route that reads secrets while holding the
 one thing a route cannot take back. Acceptance is deterministic, so the check runs the same
 `can()` the invitee will meet on their first request rather than a second rule that could drift.
 
@@ -960,7 +960,7 @@ expires, is single-use, and its token half is independently rate-limited server-
 attacker needs the token *and* the fragment, and the fragment's window is the invitation's
 lifetime. Raising it would lengthen a string a human copies into a chat message, which is the
 one part of this flow where friction translates directly into people sending both halves down
-the same channel — the failure this design exists to prevent.
+the same channel, the failure this design exists to prevent.
 
 The fragment uses the same alphabet, grouping, and check character as a recovery code so that
 one normalisation routine and one "you mistyped this" message serve both. Its `seed` uses all
@@ -980,13 +980,13 @@ packages/core/src/crypto/client/
 **Rules for everything under that directory:**
 
 - **No Node-only APIs.** No `node:crypto`, no `Buffer`, no `fs`, no `process`. Web Crypto,
-  `@noble/hashes`, `@noble/curves`, and plain JavaScript only — the same discipline
-  `crypto/encoding.ts` already documents, now enforced by directory.
+  `@noble/hashes`, `@noble/curves`, and plain JavaScript only (the same discipline
+  `crypto/encoding.ts` already documents, now enforced by directory).
 - **Tree-shakeable.** This code ships to browsers. Named exports, no side effects at module
   scope, no barrel that pulls in the whole subtree for one function.
 - **The server-side envelope code stays untouched beside it.** `keys.ts`, `secrets.ts`,
   `envelope-service.ts`, and `key-provider.ts` continue to serve `server`-mode environments
-  until the migration completes, and are removed then — not now.
+  until the migration completes, and are removed then, not now.
 
 **Subpath export.** `packages/core/package.json` exposes each area as its own subpath
 (`"./crypto"`, `"./authz"`, `"./audit"`, …). The client subtree gets one more, in the same
@@ -997,8 +997,8 @@ style:
 ```
 
 A separate subpath rather than a re-export from `"./crypto"`, so that importing the client
-primitives cannot drag the server envelope — and its `KeyProvider` and Secrets Store binding
-types — into a browser bundle.
+primitives cannot drag the server envelope (and its `KeyProvider` and Secrets Store binding
+types) into a browser bundle.
 
 **This change is Phase 1, not Phase 0.** `package.json` is deliberately not modified by the
 commit that introduces this specification; the export is added alongside the first module it
@@ -1018,7 +1018,7 @@ Every construction defined above has a corresponding vector kind, and both imple
 MUST pass all of them before either ships.
 
 **One carve-out, recorded here so the file and this document do not appear to disagree.** The
-`argon2id` vectors run at parameters *below* the §3.1 floor — `m = 8 MiB` and `m = 16 MiB` —
+`argon2id` vectors run at parameters *below* the §3.1 floor (`m = 8 MiB` and `m = 16 MiB`)
 because a pure-JS derivation at the production parameters costs about a second, and a suite
 that spends several of those is a suite people skip. The parameters are an input to Argon2id,
 not part of its definition, so the vectors still exercise the same function, encoding, and
@@ -1040,7 +1040,7 @@ between an unlocked client and a headless one, and neither may be reconstructed 
 
 A service token is the only principal in this system that holds an environment's keys without
 a person behind it. It therefore carries its own X25519 private key, and the only place that
-key can live is in the token string itself — a CI runner has no vault, no passphrase, and
+key can live is in the token string itself: a CI runner has no vault, no passphrase, and
 nowhere to keep a secret that the token string is not already keeping.
 
 ```
@@ -1078,7 +1078,7 @@ around; the key half reaches the key machinery by a path that is not the request
 transmits `xst_<env>_<authHalf>` and nothing else. The full string is a credential
 *and* a key; the half that authenticates is the only half any endpoint ever sees. An
 implementation that sends the whole token in an `Authorization` header has handed the server
-every secret in the environment and defeated the entire model — this is the single most
+every secret in the environment and defeated the entire model. This is the single most
 important sentence in this section.
 
 **The key half is the X25519 private scalar directly**, not a seed run through a KDF. X25519
@@ -1087,15 +1087,15 @@ clamps internally, so any 32 bytes are a valid scalar; this is exactly what
 registered HKDF branch, which §3.3 forbids without a change to that table, and would buy
 nothing: the input is already 32 uniformly random bytes with no other use.
 
-**Token creation.** The creator's browser holds an unlocked vault, so it — not the server —
+**Token creation.** The creator's browser holds an unlocked vault, so it, not the server,
 mints the token string, derives `publicKey = X25519.publicKeyOf(keyHalf)`, uploads
 `publicKey` and `keyAlgorithm = "X25519"` alongside the token record, and seals and signs an
 EDK+EHK grant to that public key through the ordinary §5/§6 machinery with
 `recipientKind = "token"`. For a `server`-mode environment none of that happens and the token
 carries no key half, which is what keeps the legacy shape working.
 
-**The legacy shape stays valid.** A token minted before this section — `xst_<env>_<43>`, with
-no separator and no key half — is still a well-formed service token and still authenticates. It
+**The legacy shape stays valid.** A token minted before this section (`xst_<env>_<43>`, with
+no separator and no key half) is still a well-formed service token and still authenticates. It
 simply has no `public_key`, so no grant can be sealed to it, and it cannot read an e2ee
 environment. Rotation excludes such tokens from its required set deliberately: a credential
 nobody can re-key must not block a rotation for ever.
@@ -1103,7 +1103,7 @@ nobody can re-key must not block a rotation for ever.
 ### 13.2 The CLI hand-off wrap
 
 `xecret login` ends with a CLI process that holds a bearer token and no key material. Under
-this model that is not enough — a CLI token acts as its user, and its user's grants are sealed
+this model that is not enough: a CLI token acts as its user, and its user's grants are sealed
 to a public key whose private half is wrapped under the User Key. The UK has to cross from the
 browser, which has just unlocked it, to the CLI process, which cannot.
 
@@ -1112,8 +1112,8 @@ It crosses sealed, over the loopback redirect that already carries the authoriza
 
 1. The CLI generates an ephemeral X25519 keypair and puts the public half in the authorize URL
    as `handoff=<b64url(32)>`, alongside the existing `challenge`, `port`, `device`, and `state`.
-2. The consent screen, with the vault unlocked, seals the 32-byte UK to that public key —
-   an ordinary §5 sealed box — under
+2. The consent screen, with the vault unlocked, seals the 32-byte UK to that public key
+   (an ordinary §5 sealed box) under
    `xecret.aad.v2.cli-handoff|<codeChallenge>|<handoffPublicKey>`.
 3. The resulting `xk2.x25519.` blob rides the loopback redirect as a `handoff` query parameter:
    `http://127.0.0.1:<port>/callback?code=…&state=…&handoff=xk2.x25519.…`
@@ -1127,7 +1127,7 @@ leaves the machine, and the value is a sealed box that is useless without a priv
 only by the process listening on that port.
 
 **The AAD binds the two things that identify this login.** The PKCE code challenge names the
-authorization attempt — only the process holding the verifier can complete it — and the
+authorization attempt (only the process holding the verifier can complete it), and the
 hand-off public key names the recipient. A wrap captured from one login cannot be replayed into
 another, and a hostile page cannot substitute a wrap sealed to a key it chose, because it would
 have to know a challenge it never saw. Neither component is a UUID, so both are carried as
@@ -1141,11 +1141,11 @@ to the server.
 
 **What the AAD does not bind, and what is done about it.** The two components name an
 authorization attempt and a recipient key. Neither names *which process* generated that key, and
-neither could — both exist before anybody has authenticated. So an unprivileged process running
+neither could: both exist before anybody has authenticated. So an unprivileged process running
 as the same user can start its own flow, put its own hand-off public key in an authorize URL,
 and open a browser at it; a person who approves that consent screen because they had just typed
 `xecret login` seals the UK to the impostor and posts it to the impostor's loopback port. The
-cryptography is not defeated — the consent is. The CLI therefore prints the fingerprint of its
+cryptography is not defeated; the consent is. The CLI therefore prints the fingerprint of its
 own hand-off public key before opening the browser, and the consent screen renders the
 fingerprint of the key it is about to seal to; they match exactly when the page is sealing to
 the process the user started.
@@ -1159,20 +1159,20 @@ a shared value: the 32 bytes `0x00…0x1f` render as `CC6W-TAB6`.
 
 **The sealed blob outlives the login.** It rides the redirect as a query parameter, so a copy
 lands in the browser's history and in anything that syncs it. It is useless without the
-ephemeral private key, which is wiped when the login ends and never written down — so what
+ephemeral private key, which is wiped when the login ends and never written down, so what
 persists is ciphertext to an attacker who would also have needed memory access to a process that
 has since exited. It is stated because "the User Key never touches disk" is a claim people make
 about this flow, and this is the footnote on it.
 
 **What the CLI keeps afterwards.** Step 4 stores the UK in the OS keyring. It stores
-`encPrivateKeyEnc` and `signPrivateKeyEnc` beside it as well — the wraps from
-`GET /api/auth/vault`, verbatim and already sealed under the UK — because a CLI that fetches
+`encPrivateKeyEnc` and `signPrivateKeyEnc` beside it as well (the wraps from
+`GET /api/auth/vault`, verbatim and already sealed under the UK), because a CLI that fetches
 them on every command is a CLI whose `--offline` flag makes a network request, and that flag's
 entire promise is that it does not. Nothing else from `material` is kept: `passphraseWrap`,
 `kdfSalt` and `kdfParams` are the UK under a *human* secret, and storing them would put an
 offline guessing target on disk for material that is not needed to go from the UK to a private
 key. Deleting the UK entry deletes both, so cryptographic erasure stays a single act. §8's
-prohibition is untouched — nothing is *sent* anywhere.
+prohibition is untouched: nothing is *sent* anywhere.
 
 **A hand-off is optional.** A CLI that omits `handoff` gets the old behaviour and can still read
 `server`-mode environments; it simply cannot open a member grant. The consent screen omits the
@@ -1228,13 +1228,13 @@ blob := xk2.gcm of UK under HKDF(pinKey ‖ nextPepper, "xecret.v2.pin-wrap")
 The re-wrap is not optional and it is not deferred: the pepper the browser just used is already
 dead on the row, so the blob beside it is dead too until it is replaced. The client holds the UK
 at exactly that moment, which is the only moment it can do this. If the write fails, the client
-MUST erase the record rather than keep it — a wrap nothing can open is worse than no wrap,
+MUST erase the record rather than keep it: a wrap nothing can open is worse than no wrap,
 because it goes on offering a PIN box that can only fail. `salt`, `deviceId` and the verifier are
 untouched, so the same six digits keep working and the enrolment keeps its identity.
 
 **The five-attempt limit is the entire security budget**, and it is spent rather than paused. At
 five the pepper row is deleted, which leaves the blob in that browser unopenable by anyone who
-never saw the pepper it was built under — the holder of the correct PIN included — and leaves the
+never saw the pepper it was built under (the holder of the correct PIN included), and leaves the
 master passphrase as the only way in. The qualification is load-bearing: a pepper is released to
 the client on every successful unlock, so the server MUST replace it in the same transaction and
 the client MUST re-wrap the User Key under the replacement before reporting success. Without that
@@ -1253,14 +1253,14 @@ in the way. Every other credential in this specification is safe against a compr
 construction; this one is not. That is why it is opt-in per browser, why the passphrase wrap
 always exists and cannot be removed, why nothing enables it by default, and why the settings UI
 states the trade in the same words. What it does *not* concede is anything to a server acting
-alone — the blob never reaches it — or to anyone holding the device alone, for whom the blob is a
+alone (the blob never reaches it) or to anyone holding the device alone, for whom the blob is a
 ciphertext with nothing to attack.
 
 **Revocation.** A passphrase change, a recovery and a vault reset each destroy every pepper row
 for the account, in the same transaction as the rotation. A reset replaces the UK outright, so
 every PIN blob becomes a ciphertext of a key that no longer exists; the server cannot delete those
 blobs, and removing the pepper is the only act available that makes them unopenable. For a
-passphrase change and a recovery the UK is unchanged and the blobs would still open — the
+passphrase change and a recovery the UK is unchanged and the blobs would still open. The
 revocation there is policy, on the grounds that both acts are somebody re-deciding who may reach
 the account.
 
@@ -1271,7 +1271,7 @@ the account.
 A vault reset (ADR 0009, trade-off 6) retires a User Key, and with it every environment key the
 account held. The escape archive is what the account keeps afterwards: every ciphertext and wrap
 the server already stores for that vault, **still sealed**, in one file that the passphrase or
-one of the recovery codes opens offline — with no xecret account, no network, and no version of
+one of the recovery codes opens offline, with no xecret account, no network, and no version of
 this service still running. The server assembles it from rows it holds and never opens any of
 it; it holds no key that could.
 
@@ -1312,8 +1312,8 @@ So a reader:
 - MUST locate entries through the end-of-central-directory record and the central directory,
   and MUST reject a multi-disk archive, a ZIP64 archive, and an entry count that disagrees
   with the directory;
-- MUST find **exactly one** entry named `archive.json` — byte-exact, at the root,
-  case-sensitive. None, or more than one, is a format error;
+- MUST find **exactly one** entry named `archive.json` (byte-exact, at the root,
+  case-sensitive). None, or more than one, is a format error;
 - MUST accept method `0` or `8` (deflate) for that entry and reject any other; MUST reject it
   when bit 0 of its flags (encrypted) is set; MUST reject an uncompressed size above
   **64 MiB** (67 108 864 bytes) before inflating; and MUST check, after inflating, that both
@@ -1348,19 +1348,19 @@ It **never** holds, and a writer MUST NOT add:
 | Excluded | Why |
 |---|---|
 | Any plaintext value or note, in any encoding | The archive's whole claim. The server cannot produce one, and a test sweeps every built archive for every encoding of every plaintext it was built from. |
-| Any key in the clear — `SK`, the UK, a wrap key, an EDK, an EHK, a private key | The same claim, one level up. |
+| Any key in the clear (`SK`, the UK, a wrap key, an EDK, an EHK, a private key) | The same claim, one level up. |
 | The encrypted **Ed25519** private key (blob type 5) | Not needed to read anything. Whoever cracks the passphrase would otherwise also be able to sign grants as the retired identity. |
 | `unlock_verifier_hash`, `uk_unlock_verifier_hash` | Not needed to open anything, and each is one more offline-checkable value. |
 | Passkey PRF wraps (blob type 3) | A PRF output needs the authenticator and the relying party; no offline reader can produce one. |
 | Superseded passphrase wraps; redeemed recovery codes | Old credentials of a retired key, each one more thing to attack. |
-| `server`-mode environments | A reset does not touch them — the server's envelope still opens them — and including them would mean plaintext. |
-| Grants to anyone else — tokens, invitations, other members | Not the account's. |
+| `server`-mode environments | A reset does not touch them (the server's envelope still opens them), and including them would mean plaintext. |
+| Grants to anyone else (tokens, invitations, other members) | Not the account's. |
 | Deleted secrets, environments and projects; versions before the latest | An escape hatch, not a backup. Size grows with history; the latest value is what a person needs back. |
 
 **A writer writes only what every reader accepts (§14.4).** The rows an archive is assembled
 from were validated when they were written, but under the rules of their day. So the reference
-writer cleans each display name — removes the characters §14.4 refuses, replaces a lone
-surrogate with U+FFFD, clamps to 256 code points, and writes `-` for one left empty; keeps a
+writer cleans each display name (removes the characters §14.4 refuses, replaces a lone
+surrogate with U+FFFD, clamps to 256 code points, and writes `-` for one left empty); keeps a
 slug that is in the product's grammar and otherwise writes `x-` followed by the entity's id
 without its hyphens (34 characters, valid in both grammars, and as unique as the id, so a
 replaced slug cannot make two environments share a path); leaves out a secret whose name or
@@ -1372,10 +1372,10 @@ environment. A secret under a key version left out opens as `no-key`, which it w
 UTF-8, LF line endings. Its wording is not normative and a reader MUST NOT parse it, but a
 writer MUST say, in plain language:
 
-1. what the file is, for which account (by `userId`), made when, and — for a split archive —
+1. what the file is, for which account (by `userId`), made when, and (for a split archive)
    which part of how many;
 2. that every value inside is encrypted and opens only with **that vault's master passphrase or
-   one of its unused recovery codes**, and that nobody — not xecret — can open it otherwise;
+   one of its unused recovery codes**, and that nobody, not xecret, can open it otherwise;
 3. **the offline-attack warning**, in these terms or stronger: anyone who obtains this file can
    try passphrases against it on their own hardware for as long as they like, with no rate
    limit and no lockout, and no deletion or revocation will ever take that ability away; a
@@ -1389,7 +1389,7 @@ writer MUST say, in plain language:
 UTF-8 JSON (RFC 8259), no byte-order mark. The writer emits fields in the order below with
 two-space indentation; a reader MUST accept any valid JSON regardless of order and whitespace,
 and MUST reject a document with a missing field, a field of the wrong type, or **a field this
-section does not define** — at every level. A document written by a future format version must
+section does not define**, at every level. A document written by a future format version must
 fail to parse rather than be half-read as this one. Duplicate keys MUST NOT be written; both
 reference readers take the last occurrence.
 
@@ -1416,7 +1416,7 @@ canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
 | `parts` | integer | `1` … `64`. |
 | `createdAt` | timestamp | When the archive was made. |
 | `reason` | string | Exactly `"vault-reset"`. |
-| `account` | object | `{ "userId": UUID }` — the account the wraps and grants are bound to. Every AAD below that names a user names this one. |
+| `account` | object | `{ "userId": UUID }`: the account the wraps and grants are bound to. Every AAD below that names a user names this one. |
 | `vault` | object | Below. |
 | `environments` | array | Below. May be empty. |
 
@@ -1451,7 +1451,7 @@ canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
 | `secretId` | UUID | AAD component. |
 | `name` | string | Matches `^[A-Za-z_][A-Za-z0-9_]*$`, at most 256 characters. |
 | `valueType` | string | 1 … 32 characters of `[a-z0-9]`. A hint for an importer; never checked against the value. |
-| `version` | integer | ≥ 1. AAD component — the version this ciphertext is bound to. |
+| `version` | integer | ≥ 1. AAD component: the version this ciphertext is bound to. |
 | `envDataKeyId` | UUID | The key the value was written under. It MAY name a key absent from `keys`: the account was never given that version (it joined after the write, say). That is not a format error; §14.5 reports the value as `no-key`. |
 | `valueBlob` | blob | `xk2.gcm.`, type 9, at most `MAX_SECRET_BLOB_LENGTH` (§2.2) characters. |
 | `noteBlob` | blob or `null` | `xk2.gcm.`, type 10, same bound, or `null` for no note. Notes carry no key reference on the server either; §14.5 says how one is found. |
@@ -1461,8 +1461,8 @@ canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
 `<orgSlug>/<projectSlug>/<environmentSlug>` paths: two entries for one environment would let
 one shadow the other wherever a reader prints or files them.
 
-A field that fails §2's blob parse — unknown version, unknown algorithm, short payload, bad
-base64url — is a format error of the whole document, raised before any key is derived.
+A field that fails §2's blob parse (unknown version, unknown algorithm, short payload, bad
+base64url) is a format error of the whole document, raised before any key is derived.
 
 ### 14.5 Opening an archive
 
@@ -1473,12 +1473,12 @@ Given the document and **one credential**, a reader:
      `SK = Argon2id(utf8(NFC(passphrase)), kdfSalt, kdfParams)`, then
      `wrapKey = HKDF(SK, "", "xecret.v2.uk-wrap", 32)`, and opens `passphraseWrapBlob` under the
      AAD `uk-wrap|<userId>|passphrase`.
-   - *With a recovery code*: parses it (§7.1–7.3 — a bad check character is reported as a typo,
+   - *With a recovery code*: parses it (§7.1–7.3; a bad check character is reported as a typo,
      not as a wrong code), computes `lookupHashHex` (§7.5), finds the `recoveryWraps` entry with
      that value, derives `RCK` (§7.6), and opens its `wrapBlob` under
      `uk-wrap|<userId>|recovery|<lookupHashHex>`. **A code with no matching entry is the same
-     outcome as a code that fails to open one** — the uniform decryption error, carrying no
-     detail — exactly as the server answers a recovery lookup.
+     outcome as a code that fails to open one** (the uniform decryption error, carrying no
+     detail), exactly as the server answers a recovery lookup.
 
    A wrong passphrase and a wrong code are the uniform `DecryptionError` of §5.2. Nothing is
    learned about which part was wrong.
@@ -1487,7 +1487,7 @@ Given the document and **one credential**, a reader:
    then **requires** `X25519.publicKeyOf(encPriv) = encPublicKey`. A mismatch is a format
    error: the file is internally inconsistent, and continuing would report every grant as
    damaged for a reason that has nothing to do with them. An `encPrivateKeyBlob` that does not
-   open — tampered, or from another vault — is reported as the **uniform decryption failure**
+   open (tampered, or from another vault) is reported as the **uniform decryption failure**
    of step 1: it is opened under the User Key, so from the outside it is indistinguishable from
    a credential that opened the wrong thing, and a reader does not pretend otherwise.
 
@@ -1508,7 +1508,7 @@ Given the document and **one credential**, a reader:
 
 5. **Finds each note** by trying, under the AAD `secret-note|<orgId>|<environmentId>|<secretId>`,
    the opened key its value was written under first and then the environment's other opened
-   keys **highest `edkVersion` first** — **at most 16 keys in all** — and taking the first that
+   keys **highest `edkVersion` first** (**at most 16 keys in all**) and taking the first that
    authenticates. The cap is what stops a file with many keys and many notes from costing keys ×
    notes decryptions. A note none of them opens is *unavailable*, which is reported and is not
    an error: the value is what matters, and a note written under a key the account never held
@@ -1539,7 +1539,7 @@ splits only when it must. Five mebibytes is a delivery choice, not a format limi
 base64-encoded (about 7 MB) into a message, stays under the 15 MB the sending provider allows
 and under the 10 MB many receiving mail gateways still enforce. It refuses to produce more than
 64 parts. The product's own reset sends at most **two**, and never emails an archive whose
-documents it estimates at over **8 MiB** — sized in SQL before anything is loaded, from a
+documents it estimates at over **8 MiB**, sized in SQL before anything is loaded, from a
 measured live peak of about 70 MiB of heap for 8 MiB of ciphertext in a Worker's 128 MB
 (`apps/web/src/server/vault-archive-service.ts`). Such a vault is reset only when the person
 explicitly chooses to go without the archive (owner decision, PR #121 round 1).
@@ -1548,8 +1548,8 @@ explicitly chooses to go without the archive (owner decision, PR #121 round 1).
 
 **The archive is an offline target, permanently.** Online, the passphrase is defended by the
 server's backoff and lockout (§7.5, §8). An archive has neither: whoever holds the file can
-run Argon2id at the vault's own parameters — 64 MiB and three passes per guess at the current
-ones — on their own hardware, for as long as they like. That cost makes a strong passphrase
+run Argon2id at the vault's own parameters (64 MiB and three passes per guess at the current
+ones) on their own hardware, for as long as they like. That cost makes a strong passphrase
 (the setup ceremony enforces at least twelve characters and a zxcvbn score of 4) infeasible to
 guess and a weak one a matter of time. No revocation reaches a copy of a file. This is the risk
 the product owner accepted when deciding to **email** the archive (2026-10-12); it is stated in
@@ -1560,14 +1560,14 @@ the passphrase wrap, salt and parameters (`GET /api/auth/vault`), because the lo
 them, so an offline attack on the passphrase was always open to it; what it cannot reach is the
 ciphertext, which only an *unlocked* session reads. An unlocked session reads the ciphertext and,
 during the seven-day window, a reset vault's wraps too (`GET /api/auth/vault/retained/{id}`).
-The archive puts both together, permanently, in a mailbox — and whoever controls that mailbox
+The archive puts both together, permanently, in a mailbox. And whoever controls that mailbox
 even briefly, with the sign-in that comes with it (threat model T11), can trigger a reset and
 receive the archive themselves.
 
 **What a cracked passphrase yields is the environment keys themselves.** Opening the archive
 opens each environment's data key (EDK), not merely an account's access: those keys decrypt every
-value written under them — what the archive holds, and anything written later under the same key
-version, wherever that ciphertext is found. So **if an archive may have been exposed, rotate the
+value written under them (what the archive holds, and anything written later under the same key
+version, wherever that ciphertext is found). So **if an archive may have been exposed, rotate the
 environment keys of every environment it covers**: rotation replaces the key that encrypts what
 is written next. It cannot take back what the archive already holds.
 
@@ -1577,19 +1577,19 @@ lost the passphrase open the archive.
 
 **An archive is confidential, not authenticated.** Nothing in it is signed by a key the reader
 could check, and nothing could be: the server writes it, and the server holds no key of the
-account's. Anyone able to alter the file before it is opened — and the account's X25519 public
-key is in it — can add an environment whose grant is sealed to that key and whose values say
+account's. Anyone able to alter the file before it is opened (and the account's X25519 public
+key is in it) can add an environment whose grant is sealed to that key and whose values say
 whatever they like, and a reader will open them. This is ADR 0009's trade-off 3 (grant
 signatures are created but not yet verified) seen from a file rather than from the API, and the
-mitigation is the same: treat what an archive yields as what it is — a copy, received over
-email — and review it before importing it anywhere that matters. The import screen offers its
+mitigation is the same: treat what an archive yields as what it is (a copy, received over
+email) and review it before importing it anywhere that matters. The import screen offers its
 Import only after a preview that lists every name and value it would write, each value masked
 until revealed.
 
 **An archive is an end-to-end-encrypted source.** Every value in it came out of an `e2ee`
 environment, so an importer MUST NOT write it anywhere the values would reach a server readable:
-the reference import refuses a `server`-mode target outright — shown with its mode, never
-confirmed past — and refuses a target whose mode the browser saw as `e2ee` and the server now
+the reference import refuses a `server`-mode target outright (shown with its mode, never
+confirmed past) and refuses a target whose mode the browser saw as `e2ee` and the server now
 calls `server`, as every write does. An archive environment is preselected only for the
 environment with the **same id**, never by matching slugs, which repeat across projects.
 
@@ -1601,21 +1601,21 @@ everywhere else (audit records, listings); the archive does not change that.
 
 `packages/core/src/vault-archive/vectors/vault-archive-vectors.json`, generated by
 `npm run -w @xecret/core archive-vectors:generate` from the TypeScript writer with pinned
-randomness, and read by both suites — the same discipline as §12. They pin the **bytes of the
+randomness, and read by both suites (the same discipline as §12). They pin the **bytes of the
 ZIP file** (so a writer that drifts fails), the document, and the outcome of opening it with the
 passphrase and with a recovery code: every value, every note, every `no-key` and `damaged`
 case. Negative vectors pin rejection of an unknown `formatVersion`, an unknown field,
 `kdfParams` out of range, a ZIP with two `archive.json` entries, a CRC mismatch, a wrong
-passphrase, and an unknown recovery code; and — because two readers can only be held to the
-same container rules by the same bytes — a ZIP64 end record, a multi-disk end record, a size
+passphrase, and an unknown recovery code; and (because two readers can only be held to the
+same container rules by the same bytes) a ZIP64 end record, a multi-disk end record, a size
 mismatch, a deflate stream that inflates past its declared size, a newline in a slug, a slug one
 character too long, control and line-separator characters in names, a lone surrogate escape, and
 duplicate environments by id and by slug path. A deflated re-zip with an extra entry is a positive
-vector, and so is the document with its integers written as `1.0`, `1e0` and `6.5536e4` —
+vector, and so is the document with its integers written as `1.0`, `1e0` and `6.5536e4`,
 inside `kdfParams` too, where a strict integer decoder would otherwise refuse what the other
 reader accepts. Its deflate streams use stored blocks, so the bytes do not depend on a compressor. The
 Argon2id parameters are the §3.1 floor
-(`m = 19456`, `t = 2`) — inside the production range, so the reader under test runs its real
+(`m = 19456`, `t = 2`): inside the production range, so the reader under test runs its real
 validator, and cheap enough that the suite does not get skipped.
 
 ---
@@ -1627,10 +1627,10 @@ validator, and cheap enough that the suite does not get skipped.
 | 2026-09-08 | Initial version. Phase 0 of the zero-knowledge migration; normative for ADR 0009. |
 | 2026-09-08 | Phase 1 (TypeScript implementation). Three clarifications, all found by writing the code against this text: §2.2 now derives the server's ciphertext bound rather than calling it "slightly larger"; §5.2 separates format failures from key-dependent ones, which the vector schema's `errorClass` already assumed and the prose did not; §12 records the Argon2 parameter carve-out the vector file uses. No format, no derivation, and no byte layout changed. |
 | 2026-09-08 | Phase 2a (server side of the user vault). The two references to `nextPinFailure` in `auth/pin.ts` now name `nextUnlockFailure` in `auth/vault.ts`, which replaced it when the PIN was retired, and §7.5 records that the recovery counter is kept separate from the passphrase one. No format, no derivation, and no byte layout changed. |
-| 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 — the first and only HKDF branch taking the UK as input keying material — and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |
-| 2026-09-08 | Phase 4 (Go CLI and service-token E2EE). Adds §13, which specifies two strings the earlier phases had no headless client to need: the service token's `xst_<env>_<43>k<43>` layout, parsed by offset because `k` is in the base64url alphabet, with only the auth half ever transmitted; and the CLI hand-off wrap that carries the User Key from an unlocked browser to a `xecret login` process over the loopback redirect. The hand-off adds blob type 11 to §2.2 and the `cli-handoff` purpose to §4.2, both reusing the §5 sealed box unchanged. No existing format, derivation, or byte layout changed; the additions are additive, the legacy service-token shape stays valid, and no new HKDF branch was introduced — the token's key half is the X25519 scalar directly, precisely so §3.3's closed registry did not have to grow. |
-| 2026-09-10 | Review fixes, second batch — lifecycle. §10 moves invite-grant consumption from acceptance to the write that stores the re-sealed grant, per environment and in one transaction, and states the residual window that buys: deleting the grants on the acceptance response bounded a leaked fragment but destroyed the flow for the people it exists for, who arrive with no vault and therefore no key to re-seal to. §7.1 enumerates the whitespace class a parser must strip, because JavaScript's `\s` and Go's `unicode.IsSpace` miss opposite halves of it (U+FEFF and U+0085) and a recovery code that one side prints and the other refuses has nothing on screen to explain itself. §2.2 assigns authenticated-but-invalid-UTF-8 to the format-error class and forbids U+FFFD substitution. §13.2 states what the hand-off AAD does *not* bind — which process holds the recipient key — specifies the fingerprint both sides display so a person can compare them, records that the sealed blob persists in browser history, and documents the vault material the CLI keeps in the OS keyring so that `--offline` is offline. No format, no derivation, and no byte layout changed; the fingerprint is a display format and everything else is prose about existing bytes. |
-| 2026-09-11 | Phase 3 of the unlock-convenience work (device PIN). Adds §13.3, blob type 12 to §2.2, two branches to §3.3 and the `pin-wrap` purpose to §4.2. The one construction here that is new in kind is a wrap key whose input keying material is split between two parties — `HKDF(pinKey ‖ pepper)`, with the pepper held only by the server and released only under a five-attempt counter — which is what makes it defensible to wrap a User Key under six digits. §13.3 states the concession this makes and the exact adversary it makes it to: a server colluding with whoever holds the device, and nobody else. No existing format, derivation, or byte layout changed; the additions are additive, and blob type 12 is the first in §2.2 that is never stored by or transmitted to this server. |
-| 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes — closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |
-| 2026-10-12 | P23 (vault escape archive). Adds §14, written before the code that implements it: the archive's ZIP container byte for byte, the `archive.json` document field by field, the opening procedure with its three per-value outcomes (`ok`, `no-key`, `damaged`), split archives, and the security considerations — above all that an archive is a permanent offline target, which the product owner accepted when deciding to email it, and that it is confidential but not authenticated. No new blob type, AAD purpose or HKDF branch: an archive is a container of existing blobs, opened by existing constructions. The review log moves to §15. |
-| 2026-10-20 | P19 (paid secret features). Adds blob type 13 to §2.2, the `override-value` purpose to §4.2 and one branch to §3.3's registry, `xecret.v2.override-key`: a personal override is AES-256-GCM under a key HKDF-derived from its owner's *own* X25519 private scalar, so no teammate holding the EDK can open it, no rotation has to touch it, and — the reason it is not a sealed box to the owner's public key, which an earlier draft of this entry specified — nobody but the owner, the server included, can *make* one the owner's client will accept. Two `override-value` vectors join §12, carrying the derived key so a second implementation can tell a derivation fault from an encryption fault. Secret references and environment inheritance add **no** construction: a reference is plaintext metadata the writer declares beside an ordinary type 9 ciphertext, and resolution happens after each value is opened under its own environment's key, so every ciphertext stays bound to the row that holds it. No existing format, derivation, or byte layout changed. |
+| 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 (the first and only HKDF branch taking the UK as input keying material) and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |
+| 2026-09-08 | Phase 4 (Go CLI and service-token E2EE). Adds §13, which specifies two strings the earlier phases had no headless client to need: the service token's `xst_<env>_<43>k<43>` layout, parsed by offset because `k` is in the base64url alphabet, with only the auth half ever transmitted; and the CLI hand-off wrap that carries the User Key from an unlocked browser to a `xecret login` process over the loopback redirect. The hand-off adds blob type 11 to §2.2 and the `cli-handoff` purpose to §4.2, both reusing the §5 sealed box unchanged. No existing format, derivation, or byte layout changed; the additions are additive, the legacy service-token shape stays valid, and no new HKDF branch was introduced (the token's key half is the X25519 scalar directly, precisely so §3.3's closed registry did not have to grow). |
+| 2026-09-10 | Review fixes, second batch: lifecycle. §10 moves invite-grant consumption from acceptance to the write that stores the re-sealed grant, per environment and in one transaction, and states the residual window that buys: deleting the grants on the acceptance response bounded a leaked fragment but destroyed the flow for the people it exists for, who arrive with no vault and therefore no key to re-seal to. §7.1 enumerates the whitespace class a parser must strip, because JavaScript's `\s` and Go's `unicode.IsSpace` miss opposite halves of it (U+FEFF and U+0085) and a recovery code that one side prints and the other refuses has nothing on screen to explain itself. §2.2 assigns authenticated-but-invalid-UTF-8 to the format-error class and forbids U+FFFD substitution. §13.2 states what the hand-off AAD does *not* bind (which process holds the recipient key), specifies the fingerprint both sides display so a person can compare them, records that the sealed blob persists in browser history, and documents the vault material the CLI keeps in the OS keyring so that `--offline` is offline. No format, no derivation, and no byte layout changed; the fingerprint is a display format and everything else is prose about existing bytes. |
+| 2026-09-11 | Phase 3 of the unlock-convenience work (device PIN). Adds §13.3, blob type 12 to §2.2, two branches to §3.3 and the `pin-wrap` purpose to §4.2. The one construction here that is new in kind is a wrap key whose input keying material is split between two parties (`HKDF(pinKey ‖ pepper)`, with the pepper held only by the server and released only under a five-attempt counter), which is what makes it defensible to wrap a User Key under six digits. §13.3 states the concession this makes and the exact adversary it makes it to: a server colluding with whoever holds the device, and nobody else. No existing format, derivation, or byte layout changed; the additions are additive, and blob type 12 is the first in §2.2 that is never stored by or transmitted to this server. |
+| 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes, closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |
+| 2026-10-12 | P23 (vault escape archive). Adds §14, written before the code that implements it: the archive's ZIP container byte for byte, the `archive.json` document field by field, the opening procedure with its three per-value outcomes (`ok`, `no-key`, `damaged`), split archives, and the security considerations, above all that an archive is a permanent offline target, which the product owner accepted when deciding to email it, and that it is confidential but not authenticated. No new blob type, AAD purpose or HKDF branch: an archive is a container of existing blobs, opened by existing constructions. The review log moves to §15. |
+| 2026-10-20 | P19 (paid secret features). Adds blob type 13 to §2.2, the `override-value` purpose to §4.2 and one branch to §3.3's registry, `xecret.v2.override-key`: a personal override is AES-256-GCM under a key HKDF-derived from its owner's *own* X25519 private scalar, so no teammate holding the EDK can open it, no rotation has to touch it, and (the reason it is not a sealed box to the owner's public key, which an earlier draft of this entry specified) nobody but the owner, the server included, can *make* one the owner's client will accept. Two `override-value` vectors join §12, carrying the derived key so a second implementation can tell a derivation fault from an encryption fault. Secret references and environment inheritance add **no** construction: a reference is plaintext metadata the writer declares beside an ordinary type 9 ciphertext, and resolution happens after each value is opened under its own environment's key, so every ciphertext stays bound to the row that holds it. No existing format, derivation, or byte layout changed. |

@@ -87,7 +87,7 @@ func cmdUpgrade(args []string) error {
 		a.printer.Successf("xecret %s is the latest release.", buildinfo.Release())
 		return nil
 	default:
-		a.printer.Warnf("xecret %s is out of date — %s is available.", buildinfo.Release(), latest.TagName)
+		a.printer.Warnf("xecret %s is out of date: %s is available.", buildinfo.Release(), latest.TagName)
 	}
 
 	installBase, _ := a.deploymentOrigin()
@@ -96,7 +96,7 @@ func cmdUpgrade(args []string) error {
 	fmt.Fprintln(a.printer.Out, "  # Homebrew")
 	fmt.Fprintln(a.printer.Out, "  brew upgrade playxoft/tap/xecret")
 	fmt.Fprintln(a.printer.Out, "")
-	fmt.Fprintln(a.printer.Out, "  # anywhere else — the installer verifies the SHA-256 before unpacking")
+	fmt.Fprintln(a.printer.Out, "  # anywhere else (the installer verifies the SHA-256 before unpacking)")
 	fmt.Fprintln(a.printer.Out, "  curl -fsSL "+installBase+"/install.sh | sh")
 	fmt.Fprintln(a.printer.Out, "")
 	a.printer.Infof("Release notes: %s", latest.HTMLURL)
@@ -128,7 +128,7 @@ func latestRelease(ctx context.Context) (*release, error) {
 	defer response.Body.Close()
 
 	if response.StatusCode == http.StatusNotFound {
-		return nil, errors.New("no published release yet — you are running a pre-release build")
+		return nil, errors.New("no published release yet: you are running a pre-release build")
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		// Most often GitHub's unauthenticated rate limit, which is per IP and

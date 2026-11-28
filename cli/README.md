@@ -1,7 +1,7 @@
 # xecret CLI
 
 The xecret command-line interface. Written in Go for a single static binary with
-no runtime dependency — see [ADR 0004](../docs/adr/0004-cli-language-go.md).
+no runtime dependency (see [ADR 0004](../docs/adr/0004-cli-language-go.md)).
 
 > **Licence:** this directory is **MIT**, unlike the rest of the repository which
 > is AGPL-3.0. The CLI is embedded in users' Docker images and CI pipelines, where
@@ -9,12 +9,12 @@ no runtime dependency — see [ADR 0004](../docs/adr/0004-cli-language-go.md).
 
 ## Status
 
-**Phase 8 — the full command set plus CI support.** Every endpoint the API
+**Phase 8: the full command set plus CI support.** Every endpoint the API
 offers a CLI-shaped credential is reachable from here; the two that are not are
 listed below and are browser-only server-side. In CI, set `XECRET_TOKEN=xst_…`
 and nothing else: the token's own pinned scope answers which organisation,
 project and environment to use, no login flow runs, no keychain is touched,
-and no offline cache is ever written — a runner is ephemeral and a cache that
+and no offline cache is ever written, because a runner is ephemeral and a cache that
 outlived a token's revocation would be a revocation bypass. `--project` /
 `--environment` flags and `.xecret.yaml` still win when present; the server
 enforces the pin either way.
@@ -40,14 +40,14 @@ xecret whoami / logout / cache clear
 Version history, resources and administration:
 
 ```bash
-xecret secrets versions NAME             # history — metadata only, deliberately
+xecret secrets versions NAME             # history: metadata only, deliberately
 xecret secrets get NAME --version 3 --plain
 xecret secrets restore NAME --version 3  # re-append an old value; history intact
 xecret secrets annotate NAME --note "…"  # metadata; appends no version
 
 xecret orgs / orgs use ORG-ID            # which organisation commands address
 xecret projects delete checkout-api      # soft delete; there is no 'create'
-xecret environments delete pr-412        # same — environments are made in the dashboard
+xecret environments delete pr-412        # same: environments are made in the dashboard
 xecret audit --action secret.revealed --since 7d
 xecret members
 xecret tokens list / tokens revoke ID --kind service
@@ -70,7 +70,7 @@ Some things are deliberately *not* here:
 - **Creating a project or an environment.** Both arrive end-to-end encrypted
   under keys generated in a browser and sealed to their creator. This CLI opens
   grants and encrypts secrets; it implements no sealing, so there is nothing it
-  could send. There are no `create` subcommands to run — listing and deleting
+  could send. There are no `create` subcommands to run: listing and deleting
   work here, and creation lives in the dashboard.
 
 ## Organisations, projects and `.xecret.yaml`
@@ -111,12 +111,12 @@ slug, which the CLI still stores but no longer prints.
 ## How authentication works
 
 `xecret login` is an OAuth-style loopback flow (RFC 8252) with PKCE against the
-xecret server — never the identity provider directly. The browser shows a consent screen
+xecret server, never the identity provider directly. The browser shows a consent screen
 naming this device; approval sends a one-time code to a listener on
 `127.0.0.1`; the code plus the in-memory PKCE verifier are exchanged for a
 `xct_` token, which is stored in the **OS keychain** (macOS Keychain, Windows
 Credential Manager, Linux Secret Service). Machines without a keyring fall
-back to a `0600` file — with a visible warning, never silently.
+back to a `0600` file, with a visible warning, never silently.
 
 ## Offline behaviour
 
@@ -127,7 +127,7 @@ age. `--offline` forces it; `--no-cache` disables it; `logout` and
 `cache clear` destroy the files *and* the key.
 
 The cache only ever stands in for **unavailability** (network failure, 5xx).
-A 401/403/404 never falls back — a revoked token that kept working out of a
+A 401/403/404 never falls back: a revoked token that kept working out of a
 local file would make revocation meaningless.
 
 ## Development
@@ -148,7 +148,7 @@ From the repository root: `npm run cli:build`, `npm run cli:test`.
 
 1. **A secret value never leaves the process boundary incidentally.** Values go
    into the child process environment and nowhere else. The deliberate
-   exceptions — `pull`, `export` and `secrets get [--version N] --plain` — exist
+   exceptions (`pull`, `export` and `secrets get [--version N] --plain`) exist
    to produce a value on request, write it raw to stdout (or, for `export`, to
    one named `0600` file), and warn on stderr.
 2. **Credentials live in the OS keychain**, never in a dotfile a user might
@@ -161,7 +161,7 @@ From the repository root: `npm run cli:build`, `npm run cli:test`.
 ```
 cli/
 ├── cmd/xecret/          entry point + one file per command
-├── npm/                 the npm distribution — wrapper, resolver, publisher
+├── npm/                 the npm distribution: wrapper, resolver, publisher
 └── internal/
     ├── api/             HTTP client, typed endpoints, error mapping, retries
     ├── auth/            PKCE, loopback listener, browser open
@@ -177,7 +177,7 @@ cli/
 ## Release
 
 Two stages, because nothing a package manager serves should exist before a
-human has read the release — npm because publishing there cannot be undone, and
+human has read the release: npm because publishing there cannot be undone, and
 Homebrew because a formula is only usable once the assets it names are public.
 
 **On a `v*` tag.** GoReleaser builds darwin/linux/windows × amd64/arm64,
@@ -190,15 +190,15 @@ a **draft** for a human to read, and nothing has reached the tap.
 **On publishing that draft.** The `publish` job downloads the release's own
 assets and verifies the cosign signatures over both `checksums.txt` and
 `xecret.rb`, pinning the certificate to this workflow, this tag *and* the commit
-the build ran on. It then checks that the formula describes this release — one
+the build ran on. It then checks that the formula describes this release (one
 `version` line matching the tag, four platform archives, every URL inside this
-release, every hash present in the signed `checksums.txt` — commits it to
+release, every hash present in the signed `checksums.txt`), commits it to
 `playxoft/homebrew-tap`, and publishes seven npm packages: `xecret` plus one per
 platform, each binary verified against the same signed checksums.
 
 The tap commit runs *before* npm on purpose: it is idempotent, and `npm publish`
 is not. If the run dies between them, re-running finds the tap already correct
-and retries npm. Prereleases skip the tap entirely — it holds one formula, and
+and retries npm. Prereleases skip the tap entirely: it holds one formula, and
 `brew install xecret` reads it.
 
 `scripts/install-cli.sh` is the `curl | sh` installer (it verifies the checksum
@@ -207,7 +207,7 @@ before unpacking).
 ### The npm distribution
 
 `cli/npm/` holds a wrapper package with six platform packages as
-`optionalDependencies` — the esbuild shape. No postinstall, nothing downloaded
+`optionalDependencies` (the esbuild shape). No postinstall, nothing downloaded
 at install time: `npm ci --ignore-scripts` is a reasonable thing to run, and the
 binary belongs under npm's own integrity hash rather than behind a fetch we
 would have to verify ourselves. The reasoning is written out at the top of
@@ -219,7 +219,7 @@ node publish.mjs --version v1.2.3 --archives /tmp/release --dry-run
 ```
 
 `lib/resolve.test.js` reads `.goreleaser.yaml` and `publish.mjs` and asserts all
-three agree on the platform list — a target added to the build matrix and
+three agree on the platform list: a target added to the build matrix and
 forgotten in one of them is a machine that installs xecret and is told it has no
 build.
 
@@ -232,7 +232,7 @@ Secrets to set once, before the first release:
 
 > **The origin is settled: `https://xecret.playxoft.com`.** It is compiled into
 > every distributed binary (`internal/buildinfo`), which is why it had to be
-> decided before the first release rather than after — changing it later breaks
+> decided before the first release rather than after: changing it later breaks
 > every installed CLI, including ones nobody can reach to update. There is no
 > planned move; a self-hoster overrides it per-machine with `XECRET_API_URL` or
 > `xecret login --api-url`, which is what that flag is for.

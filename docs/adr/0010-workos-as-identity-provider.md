@@ -1,10 +1,10 @@
-# 0010 — WorkOS AuthKit as identity provider; xecret still issues its own sessions
+# 0010. WorkOS AuthKit as identity provider; xecret still issues its own sessions
 
 **Status:** Accepted
 **Date:** 2026-10-12
 **Supersedes:** [0003](0003-firebase-as-identity-provider.md)
-**Amends:** [0009](0009-zero-knowledge-encryption.md), trade-off 6 — the vault reset's
-re-authentication, which 0009 placed on a fresh Firebase ID token, becomes the two locks below
+**Amends:** [0009](0009-zero-knowledge-encryption.md), trade-off 6 (the vault reset's
+re-authentication, which 0009 placed on a fresh Firebase ID token, becomes the two locks below)
 
 ## Context
 
@@ -12,7 +12,7 @@ re-authentication, which 0009 placed on a fresh Firebase ID token, becomes the t
 and kept sessions our own. It named two reasons to revisit:
 
 > Self-hosting friction shows up repeatedly in issues, or an enterprise customer requires
-> SAML/OIDC — at which point a second `IdentityProvider` implementation is the answer, not a
+> SAML/OIDC, at which point a second `IdentityProvider` implementation is the answer, not a
 > rewrite.
 
 The second has arrived. Enterprise customers buy a secrets manager through their identity
@@ -23,8 +23,8 @@ running a second identity system for the customers who matter most.
 
 Firebase had also become expensive in ways 0003 did not foresee:
 
-- A 544-line client module and about forty `@firebase/*` packages in the browser bundle — at
-  one point 310 KB of it on the public landing page.
+- A 544-line client module and about forty `@firebase/*` packages in the browser bundle (at
+  one point 310 KB of it on the public landing page).
 - A Content Security Policy that had to allow Google's script loader, two reCAPTCHA paths and
   the project's own Firebase domain, because the sign-in popup and the email/password flows
   load them. `script-src` could not be `'self'`.
@@ -79,9 +79,9 @@ Three constraints shape the choice:
 - ❌ We own the redirect flow: state, PKCE, redirect validation and the callback's order of
   operations. Well understood, and written down below.
 
-WorkOS rather than another hosted provider because enterprise SSO is its core product —
-organisations, connections, an Admin Portal the customer's IT admin configures themselves, and
-AuthKit routing a person to the right connection by email domain — while AuthKit's
+WorkOS rather than another hosted provider because enterprise SSO is its core product
+(organisations, connections, an Admin Portal the customer's IT admin configures themselves, and
+AuthKit routing a person to the right connection by email domain), while AuthKit's
 consumer-side sign-in is free up to one million monthly active users.
 
 ## Decision
@@ -96,14 +96,14 @@ Browser ──AuthKit hosted pages: password · Google · MFA · SSO ───�
 Browser ──GET /api/auth/callback?code=…&state=… ───────────────────▶ Worker
 Worker  ──rate limit (IP)
         ──verify the state cookie: MAC, age, state match in constant time; always clear it
-        ──authenticateWithCode(code, code_verifier)    — one authenticated call to WorkOS
+        ──authenticateWithCode(code, code_verifier)    (one authenticated call to WorkOS)
         ──refuse: impersonation · unverified email · SSO outside the org's verified domains
         ──rate limit (IP + identity)
         ──link or create the user, JIT-join, refuse only if no organisation is usable,
           provision a personal org
         ──came back through an organisation the flow did not ask for, or a reused session?
           → park it (sealed cookie), 303 → /sign-in/confirm; its POST continues below
-        ──one transaction: insert sessions row (SHA-256 of a 256-bit opaque token — never the
+        ──one transaction: insert sessions row (SHA-256 of a 256-bit opaque token, never the
           token; how it signed in, for per-request sso_required) and, for a reauth sign-in
           that counts, its reauthentications row
         ──revoke this browser's previous session of the same account, last
@@ -121,18 +121,18 @@ re-authentication. Each opens with the argument; this ADR records the decisions.
 Every fact about a person comes back from an authenticated API call this server makes with its
 own secret key:
 
-- `authenticateWithCode` — once per sign-in, with the flow's PKCE verifier.
-- `getOrganization` — on an SSO sign-in only, to read the organisation's verified domains. An
+- `authenticateWithCode`: once per sign-in, with the flow's PKCE verifier.
+- `getOrganization`: on an SSO sign-in only, to read the organisation's verified domains. An
   SSO sign-in therefore makes two calls; every other sign-in makes one.
-- `createMagicAuth` and `authenticateWithMagicAuth` — on the vault-reset path only.
-- `challengeFactor` on the account's TOTP factor, then `authenticateWithTotp` — on the
+- `createMagicAuth` and `authenticateWithMagicAuth`: on the vault-reset path only.
+- `challengeFactor` on the account's TOTP factor, then `authenticateWithTotp`: on the
   vault-reset path only, when WorkOS answers the emailed code with `mfa_challenge` because the
   account has an authenticator app enrolled.
 
 `GET /api/auth/login` makes no call: the AuthKit URL is built locally. *(WS-5:)* The
 organisation SSO settings call `createOrganization`, `getOrganization`, `listConnections`
-(every page) and `generateLink` to manage an organisation's WorkOS organisation — never to
-decide who a request is — and the link they make records which WorkOS environment it was made
+(every page) and `generateLink` to manage an organisation's WorkOS organisation (never to
+decide who a request is), and the link they make records which WorkOS environment it was made
 in, since an organisation id means nothing in another.
 
 The session model is exactly 0003's: a 256-bit opaque token in `__Host-xecret_session`, only
@@ -142,7 +142,7 @@ Firebase's.
 
 ### Why `@workos-inc/node`, and why the other package is banned
 
-`@workos-inc/authkit-nextjs` is middleware plus a sealed session — both of which this
+`@workos-inc/authkit-nextjs` is middleware plus a sealed session, both of which this
 deployment has decided against, one of them because it cannot build. What xecret needs from
 WorkOS is the handful of HTTP calls listed above, and `@workos-inc/node` makes them: it is fetch-based, resolves to its
 workerd build under OpenNext, and has no dependencies of its own. Both `eslint.config.mjs`
@@ -152,16 +152,16 @@ files ban `@workos-inc/authkit-nextjs`, beside `firebase`, `firebase-admin` and
 ### The state cookie, and PKCE on a confidential client
 
 The callback is a top-level navigation back from WorkOS's domain, so the double-submit CSRF
-check cannot apply to it — there is no page of ours that could have read the token. What stops
+check cannot apply to it: there is no page of ours that could have read the token. What stops
 login CSRF (an attacker completing *their* sign-in in *your* browser, so that whatever you
 store lands in their account) is the OAuth `state`, bound to the browser that started the
 flow. The binding is `__Host-xecret_oauth_state` (`packages/core/src/auth/oauth-state.ts`):
 
 - **Contents.** A fresh 256-bit `state`, a 256-bit PKCE verifier, the `next` path, the
   purpose (`sign-in` or `reauth`), the time it was issued, and *(WS-5)* the WorkOS organisation
-  the flow asked for, or `null` — see *What `state` cannot see* below.
+  the flow asked for, or `null` (see *What `state` cannot see* below).
 - **Signed, not encrypted.** `v1.<payload>.<mac>`, HMAC-SHA-256. Nothing in it is secret from
-  the browser that holds it, but nothing in it may be changed either — a rewritten `next`, a
+  the browser that holds it, but nothing in it may be changed either: a rewritten `next`, a
   purpose promoted to `reauth`. Signing also means there is no table of pending sign-ins.
 - **The key** is derived with HKDF-SHA-256 from `WORKOS_COOKIE_PASSWORD` under a label naming
   this one use, so the same operator secret could back a second cookie later without the two
@@ -175,11 +175,11 @@ flow. The binding is `__Host-xecret_oauth_state` (`packages/core/src/auth/oauth-
   that the attempt expired. The cookie is cleared on every callback response, so a state is
   used at most once per browser.
 - **`next` is validated three times.** At the login route, before it is written, with the
-  same `safeRedirectPath` the dashboard uses — which re-checks its own normalised output, so a
+  same `safeRedirectPath` the dashboard uses, which re-checks its own normalised output, so a
   value that only becomes `//host` or carries a `\` after normalising is refused rather than
   passed. The state cookie itself refuses a `next` that starts with `//`. And the callback runs
   `safeRedirectPath` again on what the cookie says before it redirects. (Since WS-5's reviews,
-  the login route and the callback — and the sign-in confirmation, which came later — use
+  the login route and the callback, and the sign-in confirmation, which came later, use
   `safePostSignInPath`: the same check, refusing any API route and any sign-in screen as well;
   `docs/architecture/api.md` has the rule.) The signature already
   means only this server can write `next`; the repetition is there because one bug in one
@@ -190,7 +190,7 @@ PKCE is used although this is a confidential client, as OAuth 2.1 recommends. Th
 lives only in the HttpOnly cookie, so a code lifted from a history entry, a referrer or a proxy
 log cannot be exchanged by anybody who does not also hold that cookie.
 
-The redirect URI is derived — `XECRET_PUBLIC_URL` + `/api/auth/callback` — never configured
+The redirect URI is derived (`XECRET_PUBLIC_URL` + `/api/auth/callback`), never configured
 separately, so the two cannot drift.
 
 ### Linking a WorkOS identity to an account
@@ -204,26 +204,26 @@ the organisation's verified domains** (below). Then `upsertUserFromWorkosIdentit
    account is refused as deleted rather than skipped and created around.
 2. **Else the row holding the verified address** (citext, deleted rows included). A deleted
    holder is refused; a holder already linked to a different identity is a conflict. Adoption
-   happens only when the two addresses are the same under ASCII-only case folding — never
-   through a Unicode fold — and it backfills `workos_user_id` and is audited
+   happens only when the two addresses are the same under ASCII-only case folding (never
+   through a Unicode fold), and it backfills `workos_user_id` and is audited
    `auth.identity_linked`. This is the step that carries every Firebase-era account across.
 3. **Else create** the user (and a personal organisation), audited `auth.signup`. A concurrent
    create of the same identity is a sign-in, not a second signup.
 
 An ordinary sign-in is audited `auth.login`. `auth.identity_linked` is written at the moment
-the link is, **even if that sign-in is then refused** — by `sso_required`, or for want of a
-seat — because the link outlives the refusal and its record must not depend on what follows;
+the link is, **even if that sign-in is then refused** (by `sso_required`, or for want of a
+seat), because the link outlives the refusal and its record must not depend on what follows;
 an adopted sign-in that does complete records `auth.login` as well. Every one of these events
 carries the sign-in method (`password`, `oauth`, `sso`, `magic_auth`, `passkey`, `other`). The
 linker's refusals become a 403 "verify your email", a 403 "this account was deleted", and a 409
 that names neither the other account nor how it signs in. It runs at READ COMMITTED with no
 wrapping transaction, because its lost-race handling re-reads to see the winner's committed row. It accepts only an identity
-`workosIdentity()` minted from the API response — checked at runtime against a private set,
+`workosIdentity()` minted from the API response, checked at runtime against a private set,
 so a parsed body, a spread or a cast is refused even where the compiler let it through.
 
 **Email verification is an invariant of the WorkOS environments, not of this code.** Step 2
 adopts an account on the strength of a verified address. AuthKit verifies email addresses
-unconditionally — there is no dashboard switch at the time of writing — and that has to stay
+unconditionally (there is no dashboard switch at the time of writing), and that has to stay
 true in both WorkOS environments. Note also that `user.emailVerified` describes the WorkOS
 *user*, not this particular sign-in.
 
@@ -242,11 +242,11 @@ organisation's identity provider vouched for anybody.
 
 - **`sso_required`.** ~~Every organisation the account belongs to that requires SSO must be
   the one whose SSO this was; an account in two such organisations is refused.~~ *(WS-5,
-  review round 1 — superseded:)* the requirement was checked at sign-in only, which left a
+  review round 1, superseded:)* the requirement was checked at sign-in only, which left a
   session issued before the flag went on, a CLI token minted from one, and a password newcomer
   accepting an invitation all outside it; and one organisation's flag refused the whole
   sign-in, locking a contractor out of every other organisation. It is now **enforced per
-  request**, in `resolveOrg`, against how the presenting credential signed in — the session
+  request**, in `resolveOrg`, against how the presenting credential signed in: the session
   records its method and SSO organisation (migration 0022), and a CLI token inherits the
   approving session's. A credential that did not come through an organisation's own SSO cannot
   reach that organisation (403 `sso_required`) and keeps every other; invitation acceptance and
@@ -255,14 +255,14 @@ organisation's identity provider vouched for anybody.
   identity provider cannot lock the organisation out of itself. That is a deliberate
   break-glass and a **trade-off, not a free one**: an owner's password stays a way into the
   organisation its identity provider does not govern. (The earlier wording here, "gives an
-  owner's password nothing it lacked", was wrong — an owner who must switch the flag off first
+  owner's password nothing it lacked", was wrong: an owner who must switch the flag off first
   leaves a record, and one who need not leaves only a sign-in.) Every sign-in that uses the
   exemption is audited in each exempting organisation as `auth.sso_exemption_used`.
 - **Just-in-time membership.** An SSO sign-in through an organisation's connection makes a
   newcomer a member at `viewer`, under the seat limit, decided under the organisation's row
-  lock the way an invitation acceptance is — *(WS-5:)* **only if the organisation opted in**
+  lock the way an invitation acceptance is, *(WS-5:)* **only if the organisation opted in**
   (`jit_join_enabled`, off by default). Audited `member.jit_joined`, or `member.jit_denied`
-  when there is no seat — in which case the sign-in fails. It never reinstates a suspended
+  when there is no seat, in which case the sign-in fails. It never reinstates a suspended
   membership, and *(review round 1)* never re-admits somebody the organisation **removed**:
   removal leaves a record (`org_member_removals`) that only an accepted invitation clears, and
   the refusal is `member.jit_denied` with reason `removed`.
@@ -272,7 +272,7 @@ organisation by its id; a legacy slug, in a link made before organisations were 
 still works. The redirect has to carry the WorkOS organisation id, so it reveals which
 organisations have SSO; the lookup is therefore rate limited per address (`RL_LOGIN`), and
 over the limit the parameter is silently
-ignored and the ordinary screen opens — a refusal would be an oracle of its own. It is ignored
+ignored and the ordinary screen opens. A refusal would be an oracle of its own. It is ignored
 altogether on a `reauth=1` sign-in, which is about this account, not an organisation.
 *(WS-5:)* It is honoured only from a same-origin navigation (to a document: `Sec-Fetch-Mode`
 and `-Dest` are checked where sent); from anywhere else it lands on `/sign-in?org=<id>`,
@@ -285,19 +285,19 @@ login-CSRF: the victim signed in to the attacker's account.
 `state` binds the callback to the browser that started the flow; it says nothing about *whose*
 authentication comes back. AuthKit reuses a session it already holds without asking, so an
 attacker who owns an organisation here, wired to an identity provider they control, can plant
-their own AuthKit session in a victim's browser — a hidden navigation to AuthKit's authorize URL
+their own AuthKit session in a victim's browser (a hidden navigation to AuthKit's authorize URL
 for their organisation, or their provider's IdP-initiated sign-in through the initiate-login
-URI — and the victim's next plain sign-in is answered as the attacker, against the victim's own
+URI), and the victim's next plain sign-in is answered as the attacker, against the victim's own
 valid state and PKCE. The deep-link confirmation above does not touch this: the victim never
 followed a deep link.
 
 So the state cookie also seals **which organisation the flow asked for** (`null` for a plain
 sign-in), and the callback **issues no session** when the authentication comes back through a
-different one — any single sign-on on a plain sign-in included — or from an authentication
+different one (any single sign-on on a plain sign-in included) or from an authentication
 WorkOS dates before the flow began (`auth_time`: a reused session). It parks the outcome in a
 second sealed cookie, `__Host-xecret_sign_in_confirm` (`packages/core/src/auth/
 sign-in-confirmation.ts`: its own HKDF label, `HttpOnly`, five minutes, holding the linked
-account and the facts about the sign-in — never the WorkOS identity, which `workosIdentity()`
+account and the facts about the sign-in, never the WorkOS identity, which `workosIdentity()`
 mints only from WorkOS's response), and `/sign-in/confirm` asks "Continue as …?", naming the
 organisation as the claim it is. Only a same-origin, CSRF-checked POST from that page issues the
 session, and its nonce is spent once in `sign_in_confirmations`. The cost is one extra question
@@ -308,8 +308,8 @@ the benefit is that the attack needs the victim to read "Continue as mallory@…
 
 The callback is a page load, so it answers every refusal with a 303 to
 `/sign-in?error=<code>`, which renders a fixed sentence for that code and nothing for a code it
-does not know. The callback's request log line reads the same whatever happened — "Completed a
-sign-in callback" — with the outcome and the status it stands for (403, 409, 429, 503) bound as
+does not know. The callback's request log line reads the same whatever happened: "Completed a
+sign-in callback", with the outcome and the status it stands for (403, 409, 429, 503) bound as
 fields, so the message never claims a success the fields contradict, or the reverse. The
 sentences keep the anti-enumeration discipline the old forms kept.
 
@@ -320,7 +320,7 @@ redirects to `/sign-in?error=unavailable` rather than answering a JSON 503 on a 
 
 People no longer see AuthKit's hosted page to sign in, sign up or reset a password. `/sign-in`
 takes an email and password, with "Forgot password?" beside it; `/sign-up` takes an email and a
-password, then the six-digit code WorkOS emails (Magic Auth) — the code proves the inbox and signs
+password, then the six-digit code WorkOS emails (Magic Auth). The code proves the inbox and signs
 in, and only then, and only on an account the linker says this sign-up `created`, is the password
 set (`updateUser`). So no password ever sits on an address nobody has proven (the pre-account
 takeover PR #100's note 12 rules out), an existing account's credentials are never changed by a
@@ -329,17 +329,17 @@ consequences), and an address that already has an account is answered exactly li
 not until the code is accepted. `createUser` is never called: it would set the password first, and its
 `email_not_available` would split the answer. A forgotten password is reset in-app
 (`createPasswordReset`, which emails a link built from the environment's password reset URL, and
-`resetPassword`), after which the person signs in — the reset never signs them in itself, which
+`resetPassword`), after which the person signs in: the reset never signs them in itself, which
 would make a reset link a login-CSRF primitive. Sign-in and sign-up are checked by WorkOS's
 headless User Management API (`authenticateWithPassword`, `createMagicAuth` +
 `authenticateWithMagicAuth`), posted by the page's `fetch` to
 `POST /api/auth/sign-in/{password,code}` and `POST /api/auth/sign-up`
 (`apps/web/src/server/in-app-sign-in.ts`; `POST /api/auth/sign-in/code/verify`, a code alone,
 is still served but linked from nowhere). Those routes refuse anything that is not this origin
-posting JSON — login CSRF, the in-app twin of the planted-session attack (not a bot defence: a
-script outside a browser sets any `Origin`) — spend `RL_LOGIN` per address and per subject,
+posting JSON. That stops login CSRF, the in-app twin of the planted-session attack (not a bot defence: a
+script outside a browser sets any `Origin`). They spend `RL_LOGIN` per address and per subject,
 and count every attempt **first** in a durable throttle in the database (`sign_in_failures`,
-migration 0034: one statement counts, refuses while locked, and opens the next lockout — five
+migration 0034: one statement counts, refuses while locked, and opens the next lockout; five
 free, then 30 s doubling to a 15-minute ceiling; cleared by a success, refunded when WorkOS
 never judged the attempt). Attempts are counted per **pool**: a browser that has signed in to
 the address before carries a sealed `__Host-xecret_known_device` cookie (OWASP's device
@@ -347,7 +347,7 @@ cookie) and has its own; everybody else shares the address's, so an attacker can
 shared pool. Rows are keyed by an HMAC under the cookie secret, never the address. The routes
 answer JSON with the same sentence `/sign-in?error=` shows.
 WorkOS answers that would say something about an address before the credential is known to be
-right — `email_verification_required`, `organization_authentication_methods_required` — are
+right (`email_verification_required`, `organization_authentication_methods_required`) are
 answered and counted exactly like a wrong password; the email-verification step
 (`POST /api/auth/sign-in/verify-email`, with WorkOS's pending token sealed beside the address
 in an `HttpOnly`, `SameSite=Strict` cookie) is built and tested but stays off until Staging
@@ -356,8 +356,8 @@ google`: the state cookie and PKCE as before, WorkOS's Google OAuth instead of A
 callback unchanged. Every path hands its exchange, minted in `workos.ts`, to the one
 `completeSignIn` (`sign-in-completion.ts`): `prepareSignIn`, the confirmation question,
 `issueSignIn`. WorkOS's organisation selection, which AuthKit used to ask the person, is
-finished with the first organisation listed — nothing here reads a non-SSO sign-in's
-organisation — and the sign-in is held back for confirmation as before. An authenticator
+finished with the first organisation listed (nothing here reads a non-SSO sign-in's
+organisation), and the sign-in is held back for confirmation as before. An authenticator
 challenge (`mfa_challenge`) is refused with its own sentence until the page can take one;
 no account has MFA today. Every WorkOS call a person waits on uses a ten-second timeout and no
 retries. Nothing on a sign-in page links to AuthKit's hosted page; it remains reachable through
@@ -374,20 +374,20 @@ browser-held token in the new flow, that mechanism goes; the requirement stays, 
 check is added. **Both** of the following, **in this order**:
 
 1. **A sign-in again.** `GET /api/auth/login?reauth=1` sends AuthKit `max_age=0`. The callback
-   records a row in `reauthentications` against the **new** session it issues — in the same
-   transaction that inserts the session — and only for a method on an explicit allowlist of
-   named constants: `Password`, `Passkey`, `GoogleOAuth` and `SSO`. Anything else — another
-   OAuth provider, `MagicAuth`, a method WorkOS adds later or one it does not name — does not
+   records a row in `reauthentications` against the **new** session it issues (in the same
+   transaction that inserts the session), and only for a method on an explicit allowlist of
+   named constants: `Password`, `Passkey`, `GoogleOAuth` and `SSO`. Anything else (another
+   OAuth provider, `MagicAuth`, a method WorkOS adds later or one it does not name) does not
    count, and adding one is a deliberate edit. A sign-in completed with an emailed code is
    excluded on purpose, or the two locks would be one inbox twice.
 
    **And only for an authentication that happened during this flow.** The access token WorkOS
    returns with the code carries `auth_time`, which WorkOS documents as the person's most recent
    *active* authentication: it does not move on a refresh or when AuthKit reuses a session it
-   already holds (checked against Staging on 2026-10-14 — a password sign-in sets it, a refresh
-   keeps it, a second sign-in moves it). The callback reads that one claim from the token —
-   decoded, not verified, because the token came back in the server's own authenticated call
-   to WorkOS beside the user it describes — and counts lock one only when `auth_time` is no
+   already holds (checked against Staging on 2026-10-14; a password sign-in sets it, a refresh
+   keeps it, a second sign-in moves it). The callback reads that one claim from the token
+   (decoded, not verified, because the token came back in the server's own authenticated call
+   to WorkOS beside the user it describes) and counts lock one only when `auth_time` is no
    earlier than the moment the flow began (the state cookie's `issuedAt`), less 30 seconds for
    the difference between two clocks. A token without a readable `auth_time` does not count.
    This is what makes `max_age=0` something the server checks rather than trusts.
@@ -395,12 +395,12 @@ check is added. **Both** of the following, **in this order**:
    **What lock one proves depends on the method, and it is less than "a fresh credential".**
    WorkOS documents `max_age` only for AuthKit's own sign-in (`provider=authkit`): it can make
    AuthKit ask for a password or a passkey again. It does not make Google or an enterprise
-   identity provider ask for anything — if the browser still holds a session there, the person
+   identity provider ask for anything: if the browser still holds a session there, the person
    is signed straight back in without seeing a prompt. For a Google or SSO account, lock one
    therefore proves a live session at Google or the identity provider *in this browser*, not
    knowledge of a credential, and it can pass silently.
 2. **An emailed one-time code** (WorkOS Magic Auth). `POST /api/auth/reauth/start` has WorkOS
-   email it — only within ten minutes of lock one, only from the session lock one issued, and
+   email it, only within ten minutes of lock one, only from the session lock one issued, and
    at most three times per attempt, reserved before WorkOS is asked so that lock one cannot be
    turned into a stream of mail to the account's inbox.
    WorkOS delivers the code; xecret drops its copy unread. `POST /api/auth/reauth/verify` checks
@@ -408,8 +408,8 @@ check is added. **Both** of the following, **in this order**:
    nobody was impersonating them. A good one mints a one-time, five-minute **reauth proof**,
    stored as its SHA-256 and bound to the session and the user.
 
-   **The guess budget.** Every guess — the emailed code and the authenticator step below alike
-   — is reserved atomically *before* WorkOS is called, so it is spent whether or not the client
+   **The guess budget.** Every guess (the emailed code and the authenticator step below alike)
+   is reserved atomically *before* WorkOS is called, so it is spent whether or not the client
    waits for the answer: at most **five per attempt**, and at most **ten per account in any
    rolling 24 hours** across all its attempts, the second counted under the user's row lock so
    that concurrent guesses cannot overrun it. A guess is accepted only on an attempt whose code
@@ -424,8 +424,8 @@ check is added. **Both** of the following, **in this order**:
    The client posts `{ totp, mfaToken }` to the same endpoint; the token must match this
    attempt's stored hash, the server challenges the TOTP factor and authenticates with the code,
    and only that success mints the proof. The other authentication errors WorkOS can raise on
-   Magic Auth are refused with a specific 403 each — organisation selection required, email
-   verification required, SSO required, MFA enrolment required, a Radar challenge — and Magic
+   Magic Auth are refused with a specific 403 each (organisation selection required, email
+   verification required, SSO required, MFA enrolment required, a Radar challenge), and Magic
    Auth disabled is a 503. **The TOTP branch is unit-tested against WorkOS's documented error
    shape only**: MFA is not enabled in the Staging WorkOS environment, so it has not been
    exercised against WorkOS yet, and that live check is pending.
@@ -434,7 +434,7 @@ check is added. **Both** of the following, **in this order**:
 UPDATE before anything is destroyed; every failure is the same 403.
 
 The reset screen sends the browser away for lock one and gets it back on a new session. On that
-return it shows its warning — what a reset destroys and what it does not — again, rather than
+return it shows its warning (what a reset destroys and what it does not) again, rather than
 resuming at the next step, and it refuses to continue if the account that came back is not the
 one that left.
 
@@ -446,7 +446,7 @@ it: a sign-in by emailed code is a sign-in, but never the first lock.
 
 Why both: the code alone reduces the most destructive button in the product to the strength of
 somebody's inbox, which is routinely the weakest credential they own; the sign-in alone leaves a
-stolen live session — with AuthKit's, Google's or the identity provider's session beside it —
+stolen live session (with AuthKit's, Google's or the identity provider's session beside it)
 one click from the same outcome. Together they stop a stolen session cookie used from another
 browser, which holds none of the victim's sessions elsewhere and cannot read their mail. For an
 account that signs in with a password or a passkey, they also stop somebody at an unlocked
@@ -463,14 +463,14 @@ at an unlocked laptop whose victim signs in with Google or SSO.
   enterprise identity provider whose session is live and whose mail is reachable.
 - **Lock one is only as strong as the account's credential recovery.** Somebody in full control
   of the victim's inbox alone can use AuthKit's "Forgot password" to set a new password, sign in
-  with it — which counts, because it is a password — and then receive the emailed code. For that
+  with it (which counts, because it is a password) and then receive the emailed code. For that
   attacker both locks are inbox-strength.
 - **`auth_time` is only as fresh as WorkOS's idea of an active authentication.** `max_age=0`
   rides in a URL the browser follows, and somebody at an unlocked laptop can strip it; the
   `auth_time` check is why that no longer passes lock one with a reused AuthKit session. But
   whatever WorkOS counts as an active authentication is fresh as far as the check can tell, and
   a silent pass through Google or an identity provider that still holds a session is, by every
-  sign, one of those — which is the first residual above, not a new one.
+  sign, one of those, which is the first residual above, not a new one.
 - **What a reset hands such an attacker is not only destruction.** After resetting, they set up
   a new vault on the victim's account, which unlocks the session they hold. Through it they can
   **read** every server-mode (not end-to-end encrypted) environment the account can read. And
@@ -479,33 +479,33 @@ at an unlocked laptop whose victim signs in with Google or SSO.
   that environment's keys to the attacker's new vault.
 
 WorkOS MFA is the mitigation available today. With an authenticator app enrolled, lock two
-also needs the TOTP code, which an inbox — or an open Gmail tab — does not supply; it is
+also needs the TOTP code, which an inbox (or an open Gmail tab) does not supply; it is
 recommended for organisation owners, whose vaults and teammates matter most. That this closes
 the paths above rests on the TOTP branch, whose live check against WorkOS is still pending.
 
 The product owner has decided against a waiting period before a reset (2026-10-12): a reset
-takes effect at once, here and in what follows. Follow-up P23 adds the rest of that decision —
+takes effect at once, here and in what follows. Follow-up P23 adds the rest of that decision:
 the old vault kept for seven days, recoverable in that window and purged automatically after
 it, and an archive of the account's still-encrypted secrets emailed to its address when the
 reset happens. None of it is built in this change, and P23 records its own risks, among them
 that whoever reads the inbox receives that archive and can attack the passphrase offline.
 
 *P23 has since built it* (2026-10-12): the reset now emails the escape archive after the
-proof is spent and before anything changes, then retains the vault for seven days — migration
-0020, ADR 0009 trade-off 6, spec §14, and threat model T11 and T12.
+proof is spent and before anything changes, then retains the vault for seven days (migration
+0020, ADR 0009 trade-off 6, spec §14, and threat model T11 and T12).
 
 ### Logout, and the AuthKit session it leaves behind
 
 `DELETE /api/auth/session` is CSRF-checked, revokes the row and clears both cookies, as it
 always was. *Amended in WS-5 review round 2 (2026-10-18):* it now also ends the session AuthKit
 keeps on WorkOS's own domain. The code exchange's access token is read for one more claim, `sid`
-— the AuthKit session — which is kept on the session row (`sessions.workos_session_id`,
+(the AuthKit session), which is kept on the session row (`sessions.workos_session_id`,
 migration 0023), and sign-out answers `200 { logoutUrl }` with WorkOS's logout URL for it; the
 dashboard navigates there, and WorkOS returns to `/sign-in`. The original acceptance ("a
-returning person may pass AuthKit without entering a credential — most OAuth applications
+returning person may pass AuthKit without entering a credential; most OAuth applications
 behave the same way") stopped holding once the sign-in confirmation existed: nearly every
 returning person was answered from that AuthKit session, held back as a reused session, and
-asked "Is this you?" — and a question asked on every return is one people stop reading. A
+asked "Is this you?" A question asked on every return is one people stop reading. A
 session with no recorded `sid` (every one issued before 0023) signs out exactly as before.
 "Sign out other devices" and "sign out everywhere" still revoke only xecret sessions; the
 AuthKit sessions on those other browsers end on their own. The vault reset still sends
@@ -513,8 +513,8 @@ AuthKit sessions on those other browsers end on their own. The vault reset still
 not reach a Google or identity-provider session.
 
 A sign-in in a browser that already holds a live session *of the same account* revokes that
-session once the new one is issued — last, after the new session and any reauthentication
-record have committed: nothing can present the old one any more, so all it could still do is be
+session once the new one is issued (last, after the new session and any reauthentication
+record have committed): nothing can present the old one any more, so all it could still do is be
 stolen, and it would sit in the device list looking like a second browser. If revoking it fails,
 the sign-in still succeeds and the failure is logged as an error: answering with an error page
 would leave the new, committed session live and handed to nobody.
@@ -524,8 +524,8 @@ would leave the new, committed session live and handed to nobody.
 `verifyToken(idToken)` became `exchangeCode(code, context)`, returning the identity and the
 three facts about *this* sign-in that the identity cannot carry: the organisation, the
 authentication method, and the impersonator if any (`packages/core/src/auth/types.ts`).
-`authTime` is the moment of the exchange — a code is minted by an authentication that has just
-happened, and can be exchanged once — and it is required, so an alternative provider has to
+`authTime` is the moment of the exchange (a code is minted by an authentication that has just
+happened, and can be exchanged once), and it is required, so an alternative provider has to
 answer the question rather than omit it.
 
 ### Configuration
@@ -533,24 +533,24 @@ answer the question rather than omit it.
 | Variable | Kind | Where |
 |---|---|---|
 | `WORKOS_CLIENT_ID` | Plain var, per environment | `wrangler.toml`: local development and `env.staging` name the WorkOS **Staging** environment, `env.production` the **Production** one. `scripts/deploy-web.sh` refuses to build an environment that does not declare a `client_…` value. |
-| `WORKOS_API_KEY` | Secret | Phase.dev → Worker secret. It must come from the same WorkOS environment as the client id. Its prefix is not a reliable guide to which environment that is — WorkOS issues keys in more than one format — so nothing infers the environment from it. |
+| `WORKOS_API_KEY` | Secret | Phase.dev → Worker secret. It must come from the same WorkOS environment as the client id. Its prefix is not a reliable guide to which environment that is (WorkOS issues keys in more than one format), so nothing infers the environment from it. |
 | `WORKOS_COOKIE_PASSWORD` | Secret | Phase.dev → Worker secret. At least 32 random characters; independent of the API key. |
 
-Without any of the three, nobody can sign in, and both sign-in routes say so — each redirects
-to `/sign-in?error=unavailable` — rather than guess.
+Without any of the three, nobody can sign in, and both sign-in routes say so (each redirects
+to `/sign-in?error=unavailable`) rather than guess.
 
 The pairing of key and client id is checked by asking WorkOS, not by reading a prefix.
 `npm run check:env`, when the WorkOS values are set, makes one network call: it presents WorkOS's
 authenticate endpoint with a deliberately bogus authorization code, the client id and the API
 key. `invalid_grant` means WorkOS accepted the client and the key together and refused only the
-code — they belong together; `invalid_client` or a 401 means they do not. `--offline` skips the
+code: they belong together; `invalid_client` or a 401 means they do not. `--offline` skips the
 call. `npm run check:deploy` compares the `WORKOS_CLIENT_ID` Phase.dev holds with the one
 `wrangler.toml` declares for the environment being deployed.
 
 **Gone:** the `JWKS_CACHE` KV namespace, `FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_CONFIG`
 and the deploy script's cross-check between the two. The client bundle carries no
 identity-provider configuration, so the build needs none. The CSP is strictly smaller: no
-Google script loader, no reCAPTCHA, no Firebase domain, no Google identity endpoints — and
+Google script loader, no reCAPTCHA, no Firebase domain, no Google identity endpoints, and
 nothing added for WorkOS, because the browser only navigates there.
 
 ### Not in this change
@@ -560,7 +560,7 @@ nothing added for WorkOS, because the browser only navigates there.
   setter with an owner exemption for a misconfigured identity provider. The callback already
   enforces `sso_required`; nothing can set it yet, which is the safe order. *(Since landed:
   `api.md` → Single sign-on, with the just-in-time opt-in and the deep-link confirmation it
-  needed — and after review round 1: SSO administration owners-only (`sso.manage`) with a
+  needed. After review round 1: SSO administration owners-only (`sso.manage`) with a
   fresh sign-in in front of the credential-grade portal link, `sso_required` per request, the
   planted-session confirmation, removed members never re-admitted, and the link recording its
   WorkOS environment.)*
@@ -578,8 +578,8 @@ nothing added for WorkOS, because the browser only navigates there.
 - **A provider that is not WorkOS**, for self-hosters who want none.
 - **Decommissioning `users.firebase_uid`.** It is nullable, read and written by nothing, and
   kept as the import's join key and the rollback until a deliberate migration drops it.
-  Dropping it silently drops `users_identity_present_check`, which that migration must replace
-  — in practice with `workos_user_id SET NOT NULL`, once the rows without one have been dealt
+  Dropping it silently drops `users_identity_present_check`, which that migration must replace,
+  in practice with `workos_user_id SET NOT NULL`, once the rows without one have been dealt
   with.
 
 ## Consequences
@@ -617,9 +617,9 @@ nothing added for WorkOS, because the browser only navigates there.
   end-to-end-encrypted ones.
 - Email verification, and Magic Auth with WorkOS's own Magic Auth email, are settings in a
   vendor's dashboard that the code relies on. They have to be checked, in both environments, by
-  the deployment check — no test in this repository can.
+  the deployment check: no test in this repository can.
 - Enabling Magic Auth for the vault reset also makes an emailed code a way to sign in.
-- **Never point a Staging-environment deployment — local development included — at a database
+- **Never point a Staging-environment deployment (local development included) at a database
   whose accounts sign in through Production.** The first sign-in with an existing person's
   address there links that account to a *Staging* WorkOS user; from then on their real sign-in
   is a different identity holding a linked address, which the linker refuses as a conflict, and
@@ -645,6 +645,6 @@ nothing added for WorkOS, because the browser only navigates there.
 - The TOTP branch of lock two has been exercised against a WorkOS environment with MFA
   enabled. Until then it is tested only against WorkOS's documented error shape.
 - P23 lands the seven-day recoverable reset and the emailed archive: the vault-reset residuals
-  above change with it — a reset can then be undone within seven days, and the emailed archive
+  above change with it. A reset can then be undone within seven days, and the emailed archive
   adds an offline attack on the passphrase for whoever reads the inbox.
 - Two weeks after the production cutover: the decommission migration for `firebase_uid`.

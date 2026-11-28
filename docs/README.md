@@ -2,9 +2,9 @@
 
 ## User-facing documentation lives on the site
 
-Everything a user of xecret needs — quickstart, core concepts, the full CLI
+Everything a user of xecret needs (quickstart, core concepts, the full CLI
 reference, framework and CI guides, the HTTP API, the security model and
-self-hosting — is published at **`/docs`** on the deployment itself, and its
+self-hosting) is published at **`/docs`** on the deployment itself, and its
 source is `apps/web/public/docs/`.
 
 That is one copy, published twice: the markdown files are rendered into pages
@@ -18,8 +18,8 @@ and keywords. `docs-content.test.ts` fails the build on a page nobody linked, a
 link that resolves nowhere, or a heading anchor that stopped existing.
 
 > **Note on the overlap.** The user-facing pages that used to live in this
-> directory — `quickstart.md`, `cli/reference.md`, `guides/`, `self-hosting.md`
-> — are still here and are now superseded by their published counterparts.
+> directory (`quickstart.md`, `cli/reference.md`, `guides/`, `self-hosting.md`)
+> are still here and are now superseded by their published counterparts.
 > They should be deleted once someone has confirmed nothing external links to
 > them; keeping two copies of the same instructions is how the two disagree.
 
@@ -40,7 +40,7 @@ Engineering documentation, for people working on xecret rather than with it.
 | [Billing](operations/billing.md) | Payments through Dodo: setting it up in test mode, the jobs, and what to do when an alert fires. |
 | [WorkOS user migration](operations/workos-user-migration.md) | Moving Firebase users to WorkOS with their passwords: the cutover runbook. |
 | [Colour system](design/colour-system.md) | The token palette, with measured WCAG ratios in both themes. |
-| [Architecture decisions](adr/README.md) | ADRs 0001–0010 — the choices that are settled, and why. |
+| [Architecture decisions](adr/README.md) | ADRs 0001–0010: the choices that are settled, and why. |
 | [Roadmap](ROADMAP.md) | What is built, what is left, and the reasoning behind the order. |
 
 ## Contributing

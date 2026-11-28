@@ -1,7 +1,7 @@
 # Root Key: Ceremony, Escrow, Recovery, and Rotation
 
 **Status:** Required before any cryptographic code is written. This is a hard gate on Phase 2.
-**Owner:** Nitheesh (Playxoft) · **Last drill:** _never — schedule before first production key_
+**Owner:** Nitheesh (Playxoft) · **Last drill:** _never (schedule before first production key)_
 
 ---
 
@@ -40,12 +40,12 @@ Every level carries a version number, so any level can be rotated without touchi
 below it.
 
 **Recovering the Root KEK recovers everything.** Losing it loses everything. Nothing else in
-the system needs to be escrowed — the wrapped keys are all in ordinary database backups and
+the system needs to be escrowed: the wrapped keys are all in ordinary database backups and
 are worthless on their own.
 
 ---
 
-## 2. Key ceremony — generating the Root KEK
+## 2. Key ceremony: generating the Root KEK
 
 Performed **once** per environment (production, staging). Repeat only when rotating.
 
@@ -76,7 +76,7 @@ Performed **once** per environment (production, staging). Repeat only when rotat
    |---|---|---|---|
    | 1 | Encrypted USB | Office safe | Nitheesh |
    | 2 | Archival paper, sealed envelope | Bank deposit box / off-site | Nitheesh |
-   | 3 | Encrypted USB | Second trusted holder, different building | _TBD — must not be blank_ |
+   | 3 | Encrypted USB | Second trusted holder, different building | _TBD (must not be blank)_ |
 
    **Rules:** never two shares in one physical location · never all three digital · never a
    share in Phase.dev, a password manager, cloud storage, email, or chat.
@@ -95,7 +95,7 @@ the Phase.dev TLS session · let one person hold two shares · skip the fingerpr
 
 ---
 
-## 3. Normal operation — how the key reaches production
+## 3. Normal operation: how the key reaches production
 
 ```
 Phase.dev                    ← system of record. Humans read it only here.
@@ -112,7 +112,7 @@ Worker memory                ← unwraps Org key → Env key → secret. No netw
 That top arrow is deliberately not part of a release. `phase run -- sh
 scripts/deploy-web.sh production` builds and uploads the Worker and *binds* the Secrets Store
 entry; it never writes it. So a release neither refreshes the key nor can corrupt it, and the
-key crossing from Phase.dev to Cloudflare is a separate, deliberate act — which is also why
+key crossing from Phase.dev to Cloudflare is a separate, deliberate act, which is also why
 §4.3 is a procedure rather than "redeploy".
 
 **The Worker never contacts Phase.dev at runtime.** See
@@ -125,7 +125,7 @@ never affect secret retrieval.
 
 ### 4.1 Phase.dev is temporarily unavailable
 **Impact:** none on running production. Deploys are blocked.
-**Action:** wait. Do not fetch the key from escrow for a transient outage — every escrow
+**Action:** wait. Do not fetch the key from escrow for a transient outage: every escrow
 access increases exposure. If a deploy is truly urgent, the key is already in Cloudflare
 Secrets Store and the existing binding continues to work.
 
@@ -144,11 +144,11 @@ clean redeploys are blocked.
 **Action:** re-create the entry from Phase.dev with `phase run -- sh
 scripts/deploy-bootstrap.sh`, which is idempotent and pipes the value over stdin rather than
 argv. Redeploying does **not** fix this: the deploy binds the entry, it does not write it, and
-wrangler refuses a deploy whose binding names something that no longer exists — so the attempt
+wrangler refuses a deploy whose binding names something that no longer exists, so the attempt
 fails without telling you the key is what is missing. Expect minutes, not hours. If Phase.dev
 is *also* gone, go to §4.4.
 
-### 4.4 Both Phase.dev and Cloudflare are lost — full disaster recovery
+### 4.4 Both Phase.dev and Cloudflare are lost: full disaster recovery
 **Impact:** total outage. This is what escrow exists for.
 **Action:**
 1. Convene both share holders.
@@ -157,12 +157,12 @@ is *also* gone, go to §4.4.
    garbage; do not write anything with it.
 4. Rebuild infrastructure, load the key, restore the database from backup, verify with the
    canary value.
-5. Full incident report. Rotate the Root KEK (§6) — the key has been handled by humans.
+5. Full incident report. Rotate the Root KEK (§6), because the key has been handled by humans.
 
 ### 4.5 Root KEK suspected compromised
 **Impact:** assume all customer secrets are readable by the attacker.
 **Action:**
-1. Rotate the Root KEK immediately (§6) — this is fast, because it only re-wraps org keys.
+1. Rotate the Root KEK immediately (§6). This is fast, because it only re-wraps org keys.
 2. Notify all customers. They must rotate the underlying credentials themselves; xecret
    cannot rotate a Stripe key on their behalf.
 3. Revoke all sessions, CLI tokens, and service tokens.
@@ -170,7 +170,7 @@ is *also* gone, go to §4.4.
 
 ---
 
-## 5. Reconstruction procedure — and the quarterly drill
+## 5. Reconstruction procedure, and the quarterly drill
 
 **Run this every quarter. Put it in the calendar. A drill that is skipped twice means the
 escrow does not exist.**
@@ -184,24 +184,24 @@ one during a drill invalidates it.
    npx tsx scripts/keygen.ts --verify --share "<share-1>" --share "<share-2>"
    ```
 3. Compare the printed fingerprint with §7. It must match exactly.
-4. Decrypt the canary ciphertext (`docs/security/canary.json` — a known plaintext encrypted
+4. Decrypt the canary ciphertext (`docs/security/canary.json`, a known plaintext encrypted
    under the production Root KEK, safe to commit because it proves nothing without the key).
    **This file does not exist yet**: it can only be produced during the real ceremony, since
    creating it requires the production key. Producing it is a ceremony step, not a
-   prerequisite — see §8.
+   prerequisite (see §8).
 5. Confirm the plaintext is the expected value.
 6. Wipe the machine. Return both shares to their locations.
 7. Record the drill in §7, signed.
 
 **Drill success criteria:** fingerprint matches, canary decrypts, total elapsed time under 4
 hours, and it was completed **without** consulting anyone not present. If a step required
-knowledge that only one person had, that is a finding — write it down and fix the runbook.
+knowledge that only one person had, that is a finding: write it down and fix the runbook.
 
 ---
 
 ## 6. Rotation
 
-### Root KEK rotation — routine, cheap
+### Root KEK rotation: routine, cheap
 Because secrets are not encrypted directly under the Root KEK, rotation only re-wraps the org
 keys. No secret ciphertext is touched.
 
@@ -210,7 +210,7 @@ phase run -- npx tsx scripts/rotate-root-key.ts --from N-1 --to N
 ```
 
 1. Generate a new Root KEK by the §2 ceremony. It becomes version N.
-2. Load into Phase.dev alongside the old version — **both must be readable during rotation.**
+2. Load into Phase.dev alongside the old version. **Both must be readable during rotation.**
 3. Push the updated map to the Secrets Store, then deploy so a fresh isolate reads it. Note
    that `scripts/deploy-bootstrap.sh` will *not* do this: it skips a secret that already
    exists, which is correct for a bootstrap and wrong here. Update the entry in place with
@@ -224,7 +224,7 @@ phase run -- npx tsx scripts/rotate-root-key.ts --from N-1 --to N
 
 **Cadence:** annually, or immediately on suspected compromise or staff departure with access.
 
-### Environment key rotation — expensive
+### Environment key rotation: expensive
 Re-encrypts every secret in that environment. Used on customer request or after a suspected
 environment-level compromise. Runs in a transaction per environment; the old key is retained
 until every secret version is confirmed re-encrypted.
@@ -241,8 +241,8 @@ honoured even where backups still hold the rows.
 ### Key fingerprints
 | Environment | Key version | SHA-256 (first 16 hex) | Created | Ceremony by | Retired |
 |---|---|---|---|---|---|
-| production | — | _not yet generated_ | — | — | — |
-| staging | — | _not yet generated_ | — | — | — |
+| production | not yet | _not yet generated_ | not yet | not yet | not yet |
+| staging | not yet | _not yet generated_ | not yet | not yet | not yet |
 
 ### Escrow share register
 | Share | Carrier | Location | Holder | Placed | Last verified present |
@@ -265,7 +265,7 @@ honoured even where backups still hold the rows.
 - [ ] Choose and document the off-site location for share 2.
 - [x] Write `scripts/keygen.ts` and `scripts/rotate-root-key.ts` (Phase 2). The share format,
       the fingerprint, and the verification live in `packages/core/src/crypto/escrow.ts` and
-      are covered by 29 tests — including a single mistyped character in a share, shares from
+      are covered by 29 tests, including a single mistyped character in a share, shares from
       two different ceremonies, and the same share presented twice. They are in the package
       rather than in the script because recovery logic that nothing imports is recovery logic
       that nothing tests.
@@ -273,7 +273,7 @@ honoured even where backups still hold the rows.
       production ceremony. Never rehearse for the first time on production.
 - [ ] Add the quarterly drill to a shared calendar with a second reminder to the witness.
 - [ ] Produce `docs/security/canary.json` during the ceremony and commit it. Without a canary
-      the drill can only prove that the shares reconstruct *a* key whose fingerprint matches
-      — not that the key still decrypts real data. Both checks are needed: the fingerprint
+      the drill can only prove that the shares reconstruct *a* key whose fingerprint matches,
+      not that the key still decrypts real data. Both checks are needed: the fingerprint
       catches a mistyped share, the canary catches a key that is correct but no longer the
       one production is actually using.

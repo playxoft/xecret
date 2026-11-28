@@ -14,10 +14,10 @@ const tokensUsage = `Usage:
   xecret tokens list             [--kind cli|service] [--json]
   xecret tokens revoke <ID>      [--kind cli|service] [--yes]
 
-'xecret tokens' with no argument prints this. With a flag first — 'xecret tokens
---json' — it lists, as the other resource commands do.
+'xecret tokens' with no argument prints this. With a flag first ('xecret tokens
+--json') it lists, as the other resource commands do.
 
-'cli' tokens are devices — the credentials 'xecret login' writes. The listing is
+'cli' tokens are devices: the credentials 'xecret login' writes. The listing is
 your own devices only: a CLI token acts as its user and confers nothing of its
 own, so your device list is yours in the same way your session list is.
 
@@ -26,7 +26,7 @@ organisation rather than to a person, and revoking one takes the same authority
 that could have minted it.
 
 Minting a service token is deliberately not here. The server requires a browser
-session for it — a token that could mint another token would turn one leaked
+session for it: a token that could mint another token would turn one leaked
 credential into a permanent foothold, so the chain has to start with a person.
 Create them on the organisation's Tokens page, <server>/app/<organisation>/tokens.
 `
@@ -41,12 +41,12 @@ func cmdTokens(args []string) error {
 		// Answered here rather than by the server's 403, because the reason is
 		// a design decision and the fix is a URL.
 		return errors.New(
-			"service tokens are created in the dashboard, on the organisation's Tokens page — minting one requires a browser session")
+			"service tokens are created in the dashboard, on the organisation's Tokens page, because minting one requires a browser session")
 	case "help":
 		_, _ = io.WriteString(os.Stdout, tokensUsage)
 		return nil
 	default:
-		return fmt.Errorf("unknown tokens subcommand %q — run 'xecret tokens help'", args[0])
+		return fmt.Errorf("unknown tokens subcommand %q. Run 'xecret tokens help'", args[0])
 	}
 }
 
@@ -77,7 +77,7 @@ func tokensList(args []string) error {
 		// Under XECRET_TOKEN the device half is skipped rather than failed:
 		// asking for "both" in CI should not be an error.
 		if a.usingServiceToken() && *kind == "" {
-			a.printer.Infof("Skipping devices — a service token has none.")
+			a.printer.Infof("Skipping devices: a service token has none.")
 		} else {
 			tokens, listErr := client.CliTokens(ctx, credentials.OrgRef())
 			if listErr != nil {
@@ -134,7 +134,7 @@ func tokensRevoke(args []string) error {
 	if err != nil {
 		return err
 	}
-	tokenID, err := oneArgument(positional, "a token id — 'xecret tokens list' shows them")
+	tokenID, err := oneArgument(positional, "a token id ('xecret tokens list' shows them)")
 	if err != nil {
 		return err
 	}
@@ -176,9 +176,9 @@ func checkKind(kind string, allowEmpty bool) error {
 		if allowEmpty {
 			return nil
 		}
-		return errors.New("pass --kind cli or --kind service — the two are revoked through different paths")
+		return errors.New("pass --kind cli or --kind service: the two are revoked through different paths")
 	default:
-		return fmt.Errorf("unknown kind %q — use cli or service", kind)
+		return fmt.Errorf("unknown kind %q. Use cli or service", kind)
 	}
 }
 

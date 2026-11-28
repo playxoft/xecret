@@ -1,4 +1,4 @@
-# 0008 — No middleware: route protection lives in the API layer
+# 0008. No middleware: route protection lives in the API layer
 
 **Status:** Accepted
 **Date:** 2026-08-11
@@ -8,7 +8,7 @@
 The dashboard lives under `/app/**`. A visitor with no session should land on the sign-in
 page rather than on a shell that renders, fetches, fails, and only then redirects.
 
-The obvious tool is Next.js middleware — renamed to **Proxy** in Next 16. A `proxy.ts` doing
+The obvious tool is Next.js middleware, renamed to **Proxy** in Next 16. A `proxy.ts` doing
 exactly this was written, and then removed. It cannot run on this stack.
 
 ## The constraint
@@ -22,7 +22,7 @@ Two facts that do not compose:
    > available in Proxy files. Setting the `runtime` config option in Proxy will throw an
    > error.
 
-   The version history in the same file records it: `v16.0.0 — Middleware is deprecated and
+   The version history in the same file records it: `v16.0.0: Middleware is deprecated and
    renamed to Proxy. Proxy defaults to the Node.js runtime.`
 
 2. **`@opennextjs/cloudflare` refuses to build a Node middleware.** In
@@ -36,7 +36,7 @@ Two facts that do not compose:
    ```
 
    `useNodeMiddleware()` returns false only when the build emitted an *edge* middleware
-   entry — which, per (1), Next 16 will not do.
+   entry, which, per (1), Next 16 will not do.
 
 So the build fails, and no configuration fixes it. This was found by running the build, not
 by reading ahead; it is exactly the class of breakage `AGENTS.md` warns about.
@@ -72,21 +72,21 @@ Next's own documentation argues for this arrangement independently of our constr
 **Good**
 
 - One place decides who may do what, and it is the place that can see the database.
-- No matcher to drift out of sync with the route tree — the failure Next warns about is not
+- No matcher to drift out of sync with the route tree, so the failure Next warns about is not
   available to us.
 - One fewer component on the deploy path, and one fewer Next/OpenNext compatibility surface.
 
-**Bad — state these plainly**
+**Bad: state these plainly**
 
 - A signed-out visitor navigating straight to `/app/playxoft/default/production` briefly sees
   the dashboard's loading skeleton before the redirect. It is a skeleton, not another
   tenant's data, but it is a worse first impression than an immediate bounce.
 - The redirect depends on client-side JavaScript. With scripting disabled the visitor sees an
-  empty shell and no redirect. Nothing is *disclosed* — the shell has no data in it, and
-  every fetch it would make is a 401 — but it is a dead end rather than a signpost.
+  empty shell and no redirect. Nothing is *disclosed* (the shell has no data in it, and
+  every fetch it would make is a 401), but it is a dead end rather than a signpost.
 - A full-document navigation on 401 discards the router cache. That is deliberate (the cache
   was rendered for a session that no longer exists) but it is slower than a soft navigation.
 
 **Revisit when** OpenNext supports Node middleware, or Next restores an edge Proxy runtime.
-If it is restored, add it as a redirect only — never as a security boundary. Anything that
+If it is restored, add it as a redirect only, never as a security boundary. Anything that
 reads a cookie without consulting the database is guessing.

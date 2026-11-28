@@ -1,4 +1,4 @@
-# 0004 — Go for the CLI
+# 0004. Go for the CLI
 
 **Status:** Accepted
 **Date:** 2026-08-10
@@ -19,7 +19,7 @@ a fresh container on every pipeline run.
 - ✅ Trivial cross-compilation to darwin/linux/windows × amd64/arm64 from one machine.
 - ✅ ~5–15 ms startup. Small download (~8–15 MB).
 - ✅ Works in `alpine`, `distroless`, and scratch-based CI images with no dependencies.
-- ✅ Excellent stdlib for HTTP, process spawning, and signal handling — the three things this
+- ✅ Excellent stdlib for HTTP, process spawning, and signal handling, the three things this
   CLI actually does.
 - ✅ Mature ecosystem for exactly this shape of tool (cobra, goreleaser, keyring).
 - ❌ A second language in the repo.
@@ -36,7 +36,7 @@ a fresh container on every pipeline run.
 
 ### C. TypeScript / Node
 - ✅ One language across the repo; shared types with the API for free.
-- ❌ **Requires Node on the user's machine** — unacceptable when the target includes Go, Rust,
+- ❌ **Requires Node on the user's machine**, which is unacceptable when the target includes Go, Rust,
   Python, and Java developers, plus minimal CI containers.
 - ❌ ~100 ms+ startup, felt on every single `xecret run`.
 - ❌ Bundling to a standalone binary (`pkg`, `bun build --compile`) produces 40–90 MB
@@ -58,9 +58,9 @@ Node requirement alone.
 Module path: `github.com/playxoft/xecret/cli`
 
 Planned dependencies, kept deliberately few:
-- `spf13/cobra` — command structure
-- `zalando/go-keyring` — OS credential storage
-- `goreleaser` — release automation (build-time only)
+- `spf13/cobra`: command structure
+- `zalando/go-keyring`: OS credential storage
+- `goreleaser`: release automation (build-time only)
 - stdlib for everything else
 
 ## Consequences
@@ -72,10 +72,10 @@ Planned dependencies, kept deliberately few:
 
 ### Negative
 - Two languages to maintain. The API contract between Go and TypeScript is not
-  compile-time checked — it is enforced by integration tests against a running API and by
+  compile-time checked. It is enforced by integration tests against a running API and by
   shared JSON Schema fixtures in `packages/core/validation`.
 - Contributors comfortable in TypeScript may not be comfortable in Go. Mitigated by keeping
   the CLI small and conventional.
 
 ### Neutral
-- The CLI is MIT-licensed while the server is AGPL-3.0 — see [0007](0007-licensing.md).
+- The CLI is MIT-licensed while the server is AGPL-3.0 (see [0007](0007-licensing.md)).

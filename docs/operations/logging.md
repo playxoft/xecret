@@ -27,15 +27,15 @@ stream look identical until you expand it.
 | Cloudflare log tail | yes | `wrangler tail`, local development, and the case where log shipping is the outage |
 | Better Stack | when configured | Retention, search, dashboards, alerting |
 
-Better Stack is **optional**. A self-hoster with no token still gets everything on the console —
-the same call this codebase makes for email. See `apps/web/src/server/logging/index.ts`.
+Better Stack is **optional**. A self-hoster with no token still gets everything on the console,
+which is the same call this codebase makes for email. See `apps/web/src/server/logging/index.ts`.
 
 ### Configuration
 
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `BETTERSTACK_SOURCE_TOKEN` | no | A credential. Set with `wrangler secret put`, never committed. |
-| `BETTERSTACK_INGEST_URL` | no | A source created after mid-2024 has its own `https://<id>.betterstackdata.com`. **Posting to the shared default with such a token answers 401 with nothing explaining why** — the same regional trap as ZeptoMail. |
+| `BETTERSTACK_INGEST_URL` | no | A source created after mid-2024 has its own `https://<id>.betterstackdata.com`. **Posting to the shared default with such a token answers 401 with nothing explaining why**. It is the same regional trap as ZeptoMail. |
 | `XECRET_LOG_LEVEL` | no | `debug` \| `info` \| `warn` \| `error`. Defaults to `debug` in development, `info` elsewhere. |
 
 `npm run check:env` validates all three.
@@ -45,17 +45,17 @@ the same call this codebase makes for email. See `apps/web/src/server/logging/in
 ## 2. The schema
 
 Every line carries these. Fields appear as soon as they are known and stay for the rest of the
-request — the request context is shared by reference, so binding the principal completes lines
+request: the request context is shared by reference, so binding the principal completes lines
 from loggers that already existed.
 
 ### Always
 
 | Field | Example | Notes |
 | --- | --- | --- |
-| `dt` | `2026-08-15T09:00:00.000Z` | Event time. Better Stack reads this — without it a batch flushed after the response would all land on one millisecond. |
+| `dt` | `2026-08-15T09:00:00.000Z` | Event time. Better Stack reads this. Without it a batch flushed after the response would all land on one millisecond. |
 | `level` | `error` | `debug` \| `info` \| `warn` \| `error` |
 | `message` | `Revealed the secret DATABASE_URL in acme/api/production` | A sentence. See §3. |
-| `event` | `secret.reveal` | **Stable key — group and alert on this, never on `message`.** Prose gets rephrased; this does not. Mirrors the audit log's action names. |
+| `event` | `secret.reveal` | **Stable key: group and alert on this, never on `message`.** Prose gets rephrased; this does not. Mirrors the audit log's action names. |
 | `service` | `xecret-web` | |
 | `env` | `production` | One Better Stack source usually receives staging *and* production. |
 | `requestId` | `0198…` | **UUIDv7.** Time-ordered, so `ORDER BY requestId` is chronological. Also returned on `x-xecret-request-id`, and stamped on every audit record. |
@@ -71,7 +71,7 @@ from loggers that already existed.
 | `actorType` | `user` \| `cli_token` \| `service_token` |
 | `userId` | Absent for a service token, which acts as nobody. |
 | `sessionId`, `tokenId` | Whichever credential was presented. |
-| `credentialKind` | `cookie` \| `bearer`. Named with the `kind` suffix on purpose — `credential` is a word the redactor hides, so a field by that name would be `[redacted]` on every line. |
+| `credentialKind` | `cookie` \| `bearer`. Named with the `kind` suffix on purpose: `credential` is a word the redactor hides, so a field by that name would be `[redacted]` on every line. |
 | `accessLevel` | Service tokens only. |
 
 ### Once the path is resolved
@@ -113,7 +113,7 @@ route remembering to say so.
 "Refused" and "Failed" are different incidents. A reader should not have to check a status code
 to tell an authorization decision from a broken system.
 
-A route with no entry in the mapping still gets a sentence — `Served GET /api/something/new`
+A route with no entry in the mapping still gets a sentence: `Served GET /api/something/new`
 with `event: http.request`. That is a gap in the mapping to fill, not a silent line.
 
 ### Everything else
@@ -125,7 +125,7 @@ function is already in `fn`; repeating it in the message wastes the sentence:
 > rotation was completed before every row had been re-wrapped; restore that version to
 > `XECRET_ROOT_KEYS` to make these secrets readable.
 
-Not `root key version unavailable`. Where a remedy is known, the message says it — the person
+Not `root key version unavailable`. Where a remedy is known, the message says it: the person
 reading at 3am is not necessarily the person who wrote the code.
 
 Messages are scrubbed and capped at 512 characters like any other string, because a sentence
@@ -139,7 +139,7 @@ built from a request contains a path the caller chose.
 | --- | --- | --- |
 | `debug` | Request start; a 4xx rejection | off |
 | `info` | Request completion | on |
-| `warn` | Authorization denied, vault unlock failed, identity verification failed — expected traffic worth a pattern | on |
+| `warn` | Authorization denied, vault unlock failed, identity verification failed (expected traffic worth a pattern) | on |
 | `error` | 5xx, audit write/flush failure, missing binding, decryption failure, mail failure | on, **alertable** |
 
 One completion line per request, not a start/finish pair. A start line that is never followed by a
@@ -147,7 +147,7 @@ finish is indistinguishable from a finish that was dropped, and `durationMs` ans
 line was there for.
 
 **An `error` line does not imply a 5xx.** The completion line takes its level and its `outcome` from
-the status, but a request can be answered correctly and still report a broken guarantee — and the
+the status, but a request can be answered correctly and still report a broken guarantee, and the
 sentence on the completion line, being past tense below 400, will describe the happy path. An
 invitation on a deployment with no mail configured is the worked example: **200** with `sent:
 false`, `outcome: success`, and an `error` line beside it saying nothing was sent, because every
@@ -156,25 +156,25 @@ never see it.
 
 ### Suggested alerts
 
-Query on `event` and `level`, never on `message` — the prose is meant to be improved.
+Query on `event` and `level`, never on `message`: the prose is meant to be improved.
 
-- `level:error` — any. These are broken guarantees, not traffic. The superset: some of these ride on
+- `level:error`: any. These are broken guarantees, not traffic. The superset: some of these ride on
   a 2xx, so this is the alert, and the next one is a refinement of it.
 - `outcome:server_error` rate over 5 minutes.
-- `reason:mail_not_configured` — the deployment cannot send invitations, and every person who
+- `reason:mail_not_configured`: the deployment cannot send invitations, and every person who
   tries is told to find an operator.
-- `error:MailDeliveryError` — the provider refused a send. The sibling of the alert above and the
+- `error:MailDeliveryError`: the provider refused a send. The sibling of the alert above and the
   one that fires while mail *is* configured: read `status` and `detail` on the same line for which
   of quota, credentials or sending domain is at fault.
-- `event:secret.pull` — one request, every plaintext in an environment. The most sensitive read in the product.
-- `event:secret.pull AND isProduction:true` grouped by `userId` — who bulk-read production, and how often.
-- `level:error AND fn:settle` — the audit log is missing entries.
-- `level:error AND fn:rethrowCryptoFailure` — tampering or a key mismatch.
-- `fn:assertVerifierMatches` grouped by `userId` — a master-passphrase brute force. Its sibling
+- `event:secret.pull`: one request, every plaintext in an environment. The most sensitive read in the product.
+- `event:secret.pull AND isProduction:true` grouped by `userId`: who bulk-read production, and how often.
+- `level:error AND fn:settle`: the audit log is missing entries.
+- `level:error AND fn:rethrowCryptoFailure`: tampering or a key mismatch.
+- `fn:assertVerifierMatches` grouped by `userId`: a master-passphrase brute force. Its sibling
   `fn:failRecovery` is somebody working through recovery codes, which is far more interesting: a
   legitimate owner redeems one, not a series.
-- `level:warn AND fn:failure` grouped by `userId` — an account probing for resources it cannot reach.
-- `signInOutcome:refused` grouped by `signInRefusal` — refused sign-ins, which `outcome` counts
+- `level:warn AND fn:failure` grouped by `userId`: an account probing for resources it cannot reach.
+- `signInOutcome:refused` grouped by `signInRefusal`: refused sign-ins, which `outcome` counts
   as successes because the callback answers with a redirect. Each code reads differently: a rise
   in `expired` is replayed or stale codes (or a clock problem); `rate-limited` is somebody
   hammering the callback; `unavailable` is WorkOS down or misconfigured and already a
@@ -197,7 +197,7 @@ services.log
   );
 ```
 
-`at()` stamps `fn`. Name the function you are actually in — messages get copy-pasted between call
+`at()` stamps `fn`. Name the function you are actually in: messages get copy-pasted between call
 sites, function names do not.
 
 For an error, `describeError` gives name, scrubbed message and the top four stack frames:
@@ -206,7 +206,7 @@ For an error, `describeError` gives name, scrubbed message and the top four stac
 services.log.at('writeEvents').error('audit write failed', { error: describeError(cause) });
 ```
 
-Use `errorName(cause)` instead where the message is known to embed a person's data — a mail
+Use `errorName(cause)` instead where the message is known to embed a person's data: a mail
 delivery failure embeds the recipient address.
 
 Write the message as a sentence a colleague would understand without opening the file. State the
@@ -220,11 +220,11 @@ held.
 
 `redact.ts` is defence in depth behind that, not a substitute for it:
 
-- a field whose *name* suggests a credential is replaced with `[redacted]`, whatever it holds —
+- a field whose *name* suggests a credential is replaced with `[redacted]`, whatever it holds,
   and identifier-shaped names (`tokenId`, `sessionId`, `keyVersion`, `secretName`) survive, because
   those are what an investigation is conducted with;
 - connection-string credentials, bearer tokens and inline `password=` pairs are stripped out of
-  free text by pattern — the two documented leaks are a postgres.js message carrying the DSN and an
+  free text by pattern: the two documented leaks are a postgres.js message carrying the DSN and an
   `Authorization` header landing inside a fetch failure;
 - strings are capped at 512 bytes, objects at 4 levels and 48 keys, arrays at 32 items.
 
@@ -239,13 +239,13 @@ Lines accumulate in memory for the life of the request and leave in **one** POST
   one. A POST per line would exhaust that on any request logging more than five times.
 - Nothing about shipping is in front of the user.
 - The flush waits for the request's deferred work first. An audit-flush failure, a sign-in event
-  that could not be recorded, an invitation email that never left — all of those log from inside
+  that could not be recorded, an invitation email that never left: all of those log from inside
   `waitUntil`, **after** the response. Draining the batch the moment the response was returned
   would leave every one of those lines in a buffer nothing flushes again, which would silently
   disarm the `level:error` alerts below.
 - A batch is capped at 256 lines per request; drops are counted and reported *in* the batch, so a
   truncated request is visible as truncated.
-- A failed flush — network, 401, timeout — logs one line saying so. It does not replay the batch:
+- A failed flush (network, 401, timeout) logs one line saying so. It does not replay the batch:
   the console sink is unconditional, so every line is already on the Cloudflare tail and a replay
   would only print each one twice. **What a shipping failure costs is the retention and the search,
   never the record.**
@@ -260,7 +260,7 @@ Lines accumulate in memory for the life of the request and leave in **one** POST
    its stack.
 3. The same id is on the `audit_logs` row, so "what did this request change?" is one query against
    the database.
-4. `rayId` crosses into Cloudflare's own logs for anything below the application — TLS, edge, a
+4. `rayId` crosses into Cloudflare's own logs for anything below the application: TLS, edge, a
    Worker that never started.
 
 Widening from there: `userId` for everything one person did, `orgId` for everything that touched one
