@@ -338,7 +338,7 @@ describe('checkout', () => {
       productId: 'pdt_pro_y',
       quantity: 3,
       customer: { email: owner.email, name: 'Owner' },
-      returnUrl: `${ORIGIN}/app/${slug}/settings/billing?checkout=returned`,
+      returnUrl: `${ORIGIN}/app/${orgId}/settings/billing?checkout=returned`,
       orgId,
       // 128 random bits, base64url: what binds the subscription to this checkout.
       nonce: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
@@ -807,7 +807,7 @@ describe('the customer portal', () => {
     expect(answer.body).toEqual({ link });
     expect(dodo.createPortalSession).toHaveBeenCalledWith(
       `cus_example0001-${orgId.slice(0, 8)}`,
-      `${ORIGIN}/app/${slug}/settings/billing`,
+      `${ORIGIN}/app/${orgId}/settings/billing`,
     );
     expect(audit.some((record) => record.action === 'billing.portal_opened')).toBe(true);
     expect(JSON.stringify(audit)).not.toContain(link);

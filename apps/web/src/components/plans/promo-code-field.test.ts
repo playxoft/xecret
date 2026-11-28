@@ -49,7 +49,7 @@ describe('a code as typed', () => {
 function render(applied: PromoCodePreviewPayload | null): string {
   return renderToStaticMarkup(
     createElement(PromoCodeField, {
-      orgSlug: 'acme',
+      orgId: 'acme',
       applied,
       onApplied: () => {},
       onRedeemed: () => {},

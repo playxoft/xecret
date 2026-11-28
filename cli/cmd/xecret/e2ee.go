@@ -8,6 +8,7 @@ import (
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/cache"
+	"github.com/playxoft/xecret/cli/internal/config"
 	"github.com/playxoft/xecret/cli/internal/cred"
 	"github.com/playxoft/xecret/cli/internal/e2ee"
 	"github.com/playxoft/xecret/cli/internal/envkeys"
@@ -22,16 +23,24 @@ import (
 // decrypts here. An environment that changes mode changes behaviour on the next
 // command, with no configuration to update.
 
-// principal resolves how this process opens grants.
+// principal resolves how this process opens grants, for the organisation the
+// scope addresses.
 //
 // Two shapes, and the difference is where the key comes from. A service token
 // carries its X25519 scalar in its own token string, so this costs nothing. A
 // login opens its user's private key with the User Key the browser handed over,
 // which costs one request for the vault material.
+//
+// The principal's OrgID is the scope's organisation, not necessarily the
+// credential's: a `.xecret.yaml` can name another one, and every ciphertext in
+// it binds that organisation's id. A principal carrying the credential's id
+// there would fail to open anything, and would seal every write to an AAD no
+// reader in that organisation could verify.
 func (a *app) principal(
 	ctx context.Context,
 	client *api.Client,
 	credentials *cred.Credentials,
+	resolved scope,
 ) (*envkeys.Principal, error) {
 	if a.usingServiceToken() {
 		if a.tokenScope == nil {
@@ -43,13 +52,17 @@ func (a *app) principal(
 	// A credential written before this build carries no ids. Filled in on first
 	// use rather than refused: the alternative is telling somebody who is signed
 	// in to sign in again for a field they never knew existed.
-	if credentials.UserID == "" || credentials.OrgID == "" {
+	if credentials.UserID == "" {
 		if err := a.backfillIdentity(ctx, client, credentials); err != nil {
 			return nil, err
 		}
 	}
+	orgID, _, err := a.orgIdentity(ctx, client, credentials, resolved, true)
+	if err != nil {
+		return nil, err
+	}
 
-	return envkeys.MemberPrincipal(ctx, client, a.store, credentials.UserID, credentials.OrgID)
+	return envkeys.MemberPrincipal(ctx, client, a.store, credentials.UserID, orgID)
 }
 
 // offlinePrincipal resolves the same identity from what this machine holds,
@@ -64,52 +77,203 @@ func (a *app) principal(
 // online command fixes it for ever, which is the true statement: the hand-off
 // gave this machine the User Key and nothing else, and the wrap it opens was
 // fetched fresh on every command until now.
-func (a *app) offlinePrincipal(credentials *cred.Credentials) (*envkeys.Principal, error) {
+func (a *app) offlinePrincipal(credentials *cred.Credentials, resolved scope) (*envkeys.Principal, error) {
 	if a.usingServiceToken() {
 		if a.tokenScope == nil {
 			return nil, errors.New("the service token has not been introspected")
 		}
 		return envkeys.ServicePrincipal(serviceTokenFromEnv(), a.tokenScope)
 	}
-	return envkeys.OfflineMemberPrincipal(a.store, credentials.UserID, credentials.OrgID)
+	orgID, _, err := a.orgIdentity(context.Background(), nil, credentials, resolved, true)
+	if err != nil {
+		return nil, err
+	}
+	return envkeys.OfflineMemberPrincipal(a.store, credentials.UserID, orgID)
 }
 
-// backfillIdentity records the ids a pre-Phase-4 login never stored.
+// backfillIdentity records what an older login never stored: the user's id
+// (before Phase 4), and the organisation's id and name (before organisation
+// ids replaced slugs). Such a credential has been addressing the API by its
+// slug, and does from here on by the id.
 func (a *app) backfillIdentity(
 	ctx context.Context,
 	client *api.Client,
 	credentials *cred.Credentials,
 ) error {
-	me, err := client.FetchMe(ctx)
+	me, err := a.fetchMe(ctx, client)
 	if err != nil {
 		return err
 	}
 
-	credentials.UserID = me.User.ID
-	for _, organization := range me.Organizations {
-		if organization.Slug == credentials.OrgSlug {
-			credentials.OrgID = organization.ID
-		}
-	}
+	a.recordIdentity(credentials, me)
 	if credentials.UserID == "" || credentials.OrgID == "" {
 		return errors.New("this deployment did not identify the account; upgrade the server")
-	}
-
-	// Saved so the next command does not repeat the round trip. A failure to
-	// persist is not fatal — the ids are correct in memory for this command.
-	if err := cred.Save(a.store, *credentials); err != nil {
-		a.printer.Warnf("could not record this account's identity for next time: %v", err)
 	}
 	return nil
 }
 
-// cacheScope is the identity a mode pin and an offline copy are filed under.
-func cacheScope(credentials *cred.Credentials, resolved scope) cache.Scope {
+// recordIdentity adopts what GET /api/auth/me says into the credential and,
+// when that changed anything, saves it so the next command does not repeat
+// the round trip. A failure to persist is not fatal: the ids are correct in
+// memory for this command.
+func (a *app) recordIdentity(credentials *cred.Credentials, me *api.Me) {
+	if !adoptIdentity(credentials, me) {
+		return
+	}
+	if err := cred.Save(a.store, *credentials); err != nil {
+		a.printer.Warnf("could not record this account's identity for next time: %v", err)
+	}
+}
+
+// adoptIdentity fills in what a credential is missing from GET /api/auth/me,
+// and reports whether anything changed.
+func adoptIdentity(credentials *cred.Credentials, me *api.Me) bool {
+	changed := false
+	if credentials.UserID == "" && me.User.ID != "" {
+		credentials.UserID = me.User.ID
+		changed = true
+	}
+	if adoptOrganization(credentials, me.Organizations) {
+		changed = true
+	}
+	return changed
+}
+
+// adoptOrganization finds the credential's organisation in a listing of its
+// memberships (by id once it has one, by slug before) and fills in its id and
+// slug where missing. The name is refreshed rather than filled: it is free
+// text that can be edited, and the stored copy exists only to be printed.
+func adoptOrganization(credentials *cred.Credentials, organizations []api.Organization) bool {
+	for _, organization := range organizations {
+		if !credentials.IsOrg(organization.ID, organization.Slug) {
+			continue
+		}
+		changed := false
+		if credentials.OrgID == "" && organization.ID != "" {
+			credentials.OrgID = organization.ID
+			changed = true
+		}
+		if credentials.OrgSlug == "" && organization.Slug != "" {
+			credentials.OrgSlug = organization.Slug
+			changed = true
+		}
+		if organization.Name != "" && organization.Name != credentials.OrgName {
+			credentials.OrgName = organization.Name
+			changed = true
+		}
+		return changed
+	}
+	return false
+}
+
+// orgIdentity names the organisation a scope addresses in the two ways the
+// end-to-end paths need it: the id every one of its ciphertexts binds into its
+// AAD, and the legacy slugs this machine may have filed mode pins and offline
+// copies under before ids were the key.
+//
+// client nil means offline: only what this machine holds is consulted, and
+// nothing is fetched. Online, at most one GET /api/auth/me is made in an
+// invocation, and only for what cannot be known locally: the id of a
+// credential from before organisation ids, when needID says the caller is
+// about to bind it into an AAD, or anything about an organisation other than
+// the credential's that a `.xecret.yaml` names, including the slug this
+// machine would need to find that organisation's older pins.
+//
+// The error concerns the id alone. The slugs are best effort: past what the
+// credential and the file hold, the server is their only source, and a server
+// that wanted to hide one could as easily name a different one.
+func (a *app) orgIdentity(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+	needID bool,
+) (string, []string, error) {
+	if a.usingServiceToken() {
+		if a.tokenScope == nil {
+			return "", nil, errors.New("the service token has not been introspected")
+		}
+		organization := a.tokenScope.Organization
+		return organization.ID, []string{organization.Slug}, nil
+	}
+
+	if resolved.inCredentialOrg(credentials) {
+		// A credential from before ids keeps its pins and copies under the slug
+		// until something needs the id; from then on they are found under the
+		// id and carried from the slug, so asking early would buy nothing but a
+		// request.
+		if credentials.OrgID == "" && client != nil && needID {
+			if err := a.backfillIdentity(ctx, client, credentials); err != nil {
+				return "", []string{credentials.OrgSlug}, err
+			}
+		}
+		// Offline under a credential that predates ids, this is "", and the
+		// key read that follows says what one online command fixes.
+		return credentials.OrgID, []string{credentials.OrgSlug, resolved.OrgSlug}, nil
+	}
+
+	// Another organisation: the one the directory's .xecret.yaml names.
+	id, slugs := resolved.OrgID, []string{resolved.OrgSlug}
+	var lookupErr error
+	if client != nil && (id == "" || resolved.OrgSlug == "") {
+		me, err := a.fetchMe(ctx, client)
+		if err == nil {
+			a.recordIdentity(credentials, me)
+			for _, organization := range me.Organizations {
+				if (id != "" && organization.ID == id) || (id == "" && organization.Slug == resolved.OrgSlug) {
+					id = organization.ID
+					slugs = append(slugs, organization.Slug)
+					break
+				}
+			}
+		}
+		lookupErr = err
+	}
+	if id != "" {
+		return id, slugs, nil
+	}
+
+	source := resolved.orgSource
+	if source == "" {
+		source = config.Filename
+	}
+	switch {
+	case client == nil:
+		return "", slugs, fmt.Errorf(
+			"%s names its organisation by a legacy slug, which cannot be resolved to an id offline; "+
+				"rerun 'xecret init' to pin it by id", source)
+	case lookupErr != nil:
+		return "", slugs, fmt.Errorf("could not resolve the organisation %s names: %w", source, lookupErr)
+	}
+	return "", slugs, fmt.Errorf(
+		"you are not a member of the organisation %s names; 'xecret orgs' lists the ones you are in", source)
+}
+
+// cacheScope is the identity a mode pin and an offline copy are filed under:
+// the organisation by its id, carrying every legacy slug this machine knows for
+// it, so that what a slug-keyed build filed is still found (see cache.Scope).
+//
+// client nil means offline, and nothing is fetched. A scope whose id this
+// machine does not hold yet (a credential that predates ids, until a command
+// needs the id and records it) is filed under the slug, as every scope was
+// before.
+func (a *app) cacheScope(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+) cache.Scope {
+	id, slugs, _ := a.orgIdentity(ctx, client, credentials, resolved, false)
+	org := id
+	if org == "" {
+		org = resolved.Org
+	}
 	return cache.Scope{
 		Host:        credentials.APIURL,
-		Org:         resolved.Org,
+		Org:         org,
 		Project:     resolved.Project,
 		Environment: resolved.Environment,
+		LegacyOrgs:  slugs,
 	}
 }
 
@@ -129,7 +293,17 @@ func cacheScope(credentials *cred.Credentials, resolved scope) cache.Scope {
 // Recording is skipped under a service token for the reason `run` gives about
 // the cache generally: a CI credential must leave nothing behind on a runner it
 // does not own.
-func (a *app) checkMode(credentials *cred.Credentials, resolved scope, mode string) error {
+//
+// The pin is looked up under the organisation's id and under every legacy slug
+// known for it (see cacheScope), so a pin a slug-keyed build recorded still
+// refuses, and is recorded under the id from then on.
+func (a *app) checkMode(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+	mode string,
+) error {
 	if a.usingServiceToken() {
 		parsed, err := e2ee.SplitServiceToken(serviceTokenFromEnv())
 		if err == nil {
@@ -148,7 +322,7 @@ func (a *app) checkMode(credentials *cred.Credentials, resolved scope, mode stri
 		return nil
 	}
 
-	key := cacheScope(credentials, resolved)
+	key := a.cacheScope(ctx, client, credentials, resolved)
 	if err := cache.CheckMode(key, mode); err != nil {
 		return err
 	}
@@ -171,13 +345,14 @@ func (a *app) openEnvironment(
 	ctx context.Context,
 	client *api.Client,
 	credentials *cred.Credentials,
+	resolved scope,
 	pulled *api.Pulled,
 ) (map[string]string, error) {
 	if pulled.Bundle == nil {
 		return nil, errors.New("this environment is not end-to-end encrypted")
 	}
 
-	principal, err := a.principal(ctx, client, credentials)
+	principal, err := a.principal(ctx, client, credentials, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +382,7 @@ func (a *app) keyState(
 	// Before the mode is believed. A `server` answer sends this command down the
 	// plaintext path, which is correct for an environment that is in that mode
 	// and a disclosure for one that is not — see `cache/mode.go`.
-	if err := a.checkMode(credentials, resolved, keys.EncryptionMode); err != nil {
+	if err := a.checkMode(ctx, client, credentials, resolved, keys.EncryptionMode); err != nil {
 		return nil, err
 	}
 	return keys, nil
@@ -246,7 +421,7 @@ func (a *app) openKeyState(
 		return keys, nil, nil
 	}
 
-	principal, err := a.principal(ctx, client, credentials)
+	principal, err := a.principal(ctx, client, credentials, resolved)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -347,7 +522,7 @@ func (a *app) exportDocument(
 		return nil, err
 	}
 
-	secrets, openErr := a.openEnvironment(ctx, client, credentials, pulled)
+	secrets, openErr := a.openEnvironment(ctx, client, credentials, resolved, pulled)
 	if openErr != nil {
 		return nil, withE2eeHint(openErr)
 	}

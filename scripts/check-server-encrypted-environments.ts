@@ -65,7 +65,7 @@ import { sql } from 'drizzle-orm';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
 
 interface OrgRow {
-  slug: string;
+  org_id: string;
   org_deleted: boolean;
   owners: string | null;
   members: string;
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
 async function printDetails(db: ReturnType<typeof createDatabaseHandle>['db']): Promise<void> {
   const rows = (await db.execute(sql`
     SELECT
-      o.slug,
+      o.id::text AS org_id,
       (o.deleted_at IS NOT NULL) AS org_deleted,
       (
         SELECT string_agg(u.email::text, ', ' ORDER BY u.email)
@@ -219,7 +219,7 @@ async function printDetails(db: ReturnType<typeof createDatabaseHandle>['db']): 
     const login =
       row.last_login === null ? 'never' : new Date(row.last_login).toISOString().slice(0, 10);
     console.warn(
-      `  ${row.slug}${row.org_deleted ? ' (deleted)' : ''} — owners: ${row.owners ?? 'none'}; ` +
+      `  ${row.org_id}${row.org_deleted ? ' (deleted)' : ''}, owners: ${row.owners ?? 'none'}; ` +
         `members ${row.members} (${row.members_with_vault} with a vault); last sign-in ${login}; ` +
         `server-mode envs ${row.server_envs}, e2ee envs ${row.e2ee_envs}; ` +
         `live secrets ${row.live_secrets}; live service tokens on them ${row.live_tokens}`,

@@ -63,7 +63,6 @@ import type { SecretSummary } from './types';
 import type { WrittenNote } from './use-opened-notes';
 
 export interface SecretTableProps {
-  orgSlug: string;
   orgId: string;
   projectId: string;
   envSlug: string;
@@ -165,7 +164,6 @@ type SortDirection = 'asc' | 'desc';
  * and so does the count of unsaved changes.
  */
 export function SecretTable({
-  orgSlug,
   orgId,
   projectId,
   envSlug,
@@ -205,12 +203,12 @@ export function SecretTable({
   });
   const scrollLoads = infiniteScrollSupported();
 
-  const revealAll = useRevealAll(orgSlug, projectId, envSlug, io);
+  const revealAll = useRevealAll(orgId, projectId, envSlug, io);
   /**
    * The per-row decryptions, held above the rows so they survive a row
    * unmounting — which is what a filter keystroke does to fifty of them.
    */
-  const plaintexts = usePlaintextCache(`${orgSlug}/${projectId}/${envSlug}`);
+  const plaintexts = usePlaintextCache(`${orgId}/${projectId}/${envSlug}`);
   const [hoverReveal, setHoverReveal] = useState(false);
   /**
    * The rows hover mode has shown so far.
@@ -278,7 +276,7 @@ export function SecretTable({
   const [actionError, setActionError] = useState<unknown>(null);
 
   const staged = useStagedChanges(io);
-  const compared = useComparedSecrets(orgSlug, orgId, projectId, comparedEnvironments);
+  const compared = useComparedSecrets(orgId, projectId, comparedEnvironments);
   const secretPolicy = useSecretPolicy();
 
   // Compared during render rather than in an effect: an effect runs after paint,
@@ -735,7 +733,7 @@ export function SecretTable({
   }
 
   async function deleteOne(name: string) {
-    await api.delete(apiPath.secret(orgSlug, projectId, envSlug, name));
+    await api.delete(apiPath.secret(orgId, projectId, envSlug, name));
     setSelected(new Set());
     // The snapshot "Reveal all" is holding describes an environment that no
     // longer exists. See `RevealAll.forget` for what a stale one does.
@@ -757,7 +755,7 @@ export function SecretTable({
     // outcome is always describable.
     for (const name of names) {
       try {
-        await api.delete(apiPath.secret(orgSlug, projectId, envSlug, name));
+        await api.delete(apiPath.secret(orgId, projectId, envSlug, name));
         staged.closeEdit(name);
       } catch {
         // The individual failure is not surfaced: it is one of a batch, and the
@@ -1411,7 +1409,7 @@ export function SecretTable({
 
       {history !== null ? (
         <VersionHistoryDialog
-          orgSlug={orgSlug}
+          orgId={orgId}
           projectId={projectId}
           envSlug={history.envSlug}
           isProduction={environmentIsProduction(history.envSlug)}

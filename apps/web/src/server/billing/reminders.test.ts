@@ -105,8 +105,10 @@ describe('sendBillingReminder', () => {
     );
     expect(sent.messages).toHaveLength(2);
     expect(sent.messages[0]!.text).toContain(
-      `https://xecret.playxoft.com/app/${slug}/settings/billing`,
+      `https://xecret.playxoft.com/app/${orgId}/settings/billing`,
     );
+    // Linked by id: the slug is shown to nobody, so no mail carries it.
+    expect(sent.messages[0]!.text + sent.messages[0]!.html).not.toContain(slug);
 
     // The same payment, delivered again by a retried webhook: nothing more.
     expect(await sendBillingReminder(services(), { orgId, occasion: 'pay_1', reminder })).toBe(

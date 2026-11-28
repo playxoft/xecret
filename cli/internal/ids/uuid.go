@@ -42,3 +42,37 @@ func UUIDv7() (string, error) {
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" +
 		encoded[16:20] + "-" + encoded[20:32], nil
 }
+
+// Canonical reports whether value is a UUID in its textual 8-4-4-4-12 form, and
+// returns it in the canonical lowercase spelling.
+//
+// The version is not checked. This is what tells an organisation's id from the
+// legacy slug a hand-written `.xecret.yaml` may hold in the same field, and an
+// id minted before UUIDv7 is still that organisation's id. Lowercase matters
+// beyond tidiness: the id is a component of every secret's AAD, and an AAD is
+// compared byte for byte.
+func Canonical(value string) (string, bool) {
+	if len(value) != 36 {
+		return "", false
+	}
+	lowered := make([]byte, len(value))
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return "", false
+			}
+		default:
+			switch {
+			case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
+			case c >= 'A' && c <= 'F':
+				c += 'a' - 'A'
+			default:
+				return "", false
+			}
+		}
+		lowered[i] = c
+	}
+	return string(lowered), true
+}

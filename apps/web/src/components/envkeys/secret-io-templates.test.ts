@@ -34,7 +34,7 @@ import { decryptValue, encryptValue } from './secret-crypto';
 const ORG_ID = '018f3f6a-0000-7000-8000-0000000000a1';
 const ENVIRONMENT_ID = '018f3f6a-0000-7000-8000-0000000000b1';
 const EDK_ID = '018f3f6a-0000-7000-8000-0000000000c1';
-const BASE = '/api/orgs/acme/projects/api/environments/production';
+const BASE = `/api/orgs/${ORG_ID}/projects/api/environments/production`;
 
 const sent: { method: string; path: string; body: unknown }[] = [];
 const responses = new Map<string, unknown>();
@@ -57,7 +57,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
   };
 });
 
-const context = { orgSlug: 'acme', orgId: ORG_ID, projectId: 'api', envSlug: 'production' };
+const context = { orgId: ORG_ID, projectId: 'api', envSlug: 'production' };
 let material: EnvKeyMaterial;
 
 beforeEach(() => {

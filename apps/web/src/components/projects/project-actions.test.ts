@@ -67,7 +67,7 @@ function render(org: SessionOrganization, environments: readonly Environment[] =
       Toaster,
       null,
       createElement(ProjectActions, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         project: {
           id: '018f3f6a-0000-7000-8000-000000000a01',
           name: 'API',
@@ -275,7 +275,7 @@ function renderForm(
         Dialog,
         { open: true },
         createElement(form, {
-          orgSlug: 'acme',
+          orgId: 'acme',
           project: { ...PROJECT, description },
           onOpenChange: () => {},
           onSaved: () => {},

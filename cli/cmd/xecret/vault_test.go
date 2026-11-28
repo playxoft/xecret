@@ -16,6 +16,10 @@ import (
 
 const archiveVectorsPath = "../../../packages/core/src/vault-archive/vectors/vault-archive-vectors.json"
 
+// archiveOrgID is the id of the vector archive's organisation, Acme Corp, whose
+// legacy slug is acme.
+const archiveOrgID = "0192f0a1-0000-7000-8000-00000000a001"
+
 type archiveFixture struct {
 	path          string
 	passphrase    string
@@ -88,17 +92,22 @@ func TestOpenArchivePrintsTheValuesAndFailsOnDamage(t *testing.T) {
 	run := runOpener(t, fixture.passphrase+"\n", false, fixture.path, "--passphrase-stdin")
 
 	for _, want := range []string{
-		"# acme/payments-api/production",
+		"# Acme Corp / payments-api / production",
 		"DATABASE_URL=postgres://app:example-not-a-real-key@db.internal:5432/payments?sslmode=require",
 		"LEGACY_TOKEN=legacy-token-example-not-a-real-key",
 		"EMPTY_FLAG=",
 		"#   NOTE_UNDER_OLD_KEY: This note was written under key version 1.",
-		"# acme/web/staging",
+		"# Acme Corp / web / staging",
 		"API_URL=https://staging.example.com/api",
 	} {
 		if !strings.Contains(run.stdout, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, run.stdout)
 		}
+	}
+	// The organisation is named for people by its name; its slug is printed
+	// nowhere.
+	if strings.Contains(run.stdout, "acme/") || strings.Contains(run.stderr, "acme/") {
+		t.Errorf("the organisation's slug was printed:\n%s\n%s", run.stdout, run.stderr)
 	}
 	for _, absent := range []string{"this value must not be returned", "bot-token-example-not-a-real-key"} {
 		if strings.Contains(run.stdout, absent) {
@@ -108,7 +117,7 @@ func TestOpenArchivePrintsTheValuesAndFailsOnDamage(t *testing.T) {
 	if !strings.Contains(run.stderr, "plaintext secrets") {
 		t.Error("the plaintext warning must go to stderr")
 	}
-	if !strings.Contains(run.stderr, "acme/payments-api/production NEVER_HELD") {
+	if !strings.Contains(run.stderr, "Acme Corp / payments-api / production NEVER_HELD") {
 		t.Errorf("a no-key value must be reported:\n%s", run.stderr)
 	}
 	if run.err == nil || !strings.Contains(run.err.Error(), "2 value(s) in this archive are damaged") {
@@ -120,23 +129,36 @@ func TestOpenArchiveForOneCleanEnvironmentSucceeds(t *testing.T) {
 	fixture := loadArchiveFixture(t)
 	code := strings.ToLower(strings.ReplaceAll(fixture.recoveryCodes[0], "-", ""))
 
-	run := runOpener(t, code, false, fixture.path, "--recovery-code", "--passphrase-stdin",
-		"--environment", "acme/web/staging", "--format", "json")
+	// Every spelling of the one environment selects it: the id path --list
+	// prints (in either case), the project and environment, and the slug path
+	// an older build printed, so a command copied from that output still works.
+	for _, selector := range []string{
+		archiveOrgID + "/web/staging",
+		strings.ToUpper(archiveOrgID) + "/web/staging",
+		"web/staging",
+		"acme/web/staging",
+	} {
+		t.Run(selector, func(t *testing.T) {
+			run := runOpener(t, code, false, fixture.path, "--recovery-code", "--passphrase-stdin",
+				"--environment", selector, "--format", "json")
 
-	if run.err != nil {
-		t.Fatalf("got %v\n%s", run.err, run.stderr)
-	}
-	var document map[string]map[string]string
-	if err := json.Unmarshal([]byte(run.stdout), &document); err != nil {
-		t.Fatalf("json output is not one document: %v\n%s", err, run.stdout)
-	}
-	staging := document["acme/web/staging"]
-	if staging["API_URL"] != "https://staging.example.com/api" ||
-		staging["MULTILINE"] != "line one\nline two\n\ttabbed \"quoted\" \\ backslash" {
-		t.Errorf("unexpected values: %#v", staging)
-	}
-	if len(document) != 1 {
-		t.Errorf("--environment must narrow the output to one environment, got %d", len(document))
+			if run.err != nil {
+				t.Fatalf("got %v\n%s", run.err, run.stderr)
+			}
+			var document map[string]map[string]string
+			if err := json.Unmarshal([]byte(run.stdout), &document); err != nil {
+				t.Fatalf("json output is not one document: %v\n%s", err, run.stdout)
+			}
+			// Keyed by the organisation's id, which is unique where its name is not.
+			staging := document[archiveOrgID+"/web/staging"]
+			if staging["API_URL"] != "https://staging.example.com/api" ||
+				staging["MULTILINE"] != "line one\nline two\n\ttabbed \"quoted\" \\ backslash" {
+				t.Errorf("unexpected values: %#v", staging)
+			}
+			if len(document) != 1 {
+				t.Errorf("--environment must narrow the output to one environment, got %d", len(document))
+			}
+		})
 	}
 }
 
@@ -146,10 +168,18 @@ func TestOpenArchiveListsWithoutACredential(t *testing.T) {
 	if run.err != nil {
 		t.Fatal(run.err)
 	}
-	for _, want := range []string{"Acme Corp / Payments API / Production  [production]", "acme/web/staging", "DATABASE_URL", "2 recovery code(s)"} {
+	for _, want := range []string{
+		"Acme Corp / Payments API / Production  [production]",
+		archiveOrgID + "/web/staging: ",
+		"DATABASE_URL",
+		"2 recovery code(s)",
+	} {
 		if !strings.Contains(run.stdout, want) {
 			t.Errorf("--list lacks %q:\n%s", want, run.stdout)
 		}
+	}
+	if strings.Contains(run.stdout, "acme/") {
+		t.Errorf("--list printed the organisation's slug:\n%s", run.stdout)
 	}
 	if strings.Contains(run.stdout, "example-not-a-real-key") {
 		t.Error("--list must not open anything")
@@ -167,9 +197,14 @@ func TestOpenArchiveWritesFilesUnderOutDir(t *testing.T) {
 	if !strings.Contains(run.stderr, "input hidden") {
 		t.Error("a terminal must be prompted on stderr")
 	}
-	written, err := os.ReadFile(filepath.Join(dir, "acme", "web", "staging.env"))
+	// The organisation's folder is its id, and the line reporting the file
+	// names the organisation for the person reading it.
+	written, err := os.ReadFile(filepath.Join(dir, archiveOrgID, "web", "staging.env"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(run.stderr, "(Acme Corp / web / staging, mode 0600)") {
+		t.Errorf("the written file is not reported by organisation name:\n%s", run.stderr)
 	}
 	if !strings.Contains(string(written), "API_URL=https://staging.example.com/api") {
 		t.Errorf("unexpected file:\n%s", written)
@@ -320,7 +355,7 @@ func TestSplitPartsIntoOneOutDirKeepEverySecret(t *testing.T) {
 	}
 
 	var production []string
-	err = filepath.WalkDir(filepath.Join(dir, "acme", "payments-api"), func(path string, entry os.DirEntry, err error) error {
+	err = filepath.WalkDir(filepath.Join(dir, archiveOrgID, "payments-api"), func(path string, entry os.DirEntry, err error) error {
 		if err == nil && !entry.IsDir() {
 			production = append(production, filepath.Base(path))
 		}
@@ -340,7 +375,7 @@ func TestSplitPartsIntoOneOutDirKeepEverySecret(t *testing.T) {
 
 	all := ""
 	for _, name := range production {
-		content, err := os.ReadFile(filepath.Join(dir, "acme", "payments-api", name))
+		content, err := os.ReadFile(filepath.Join(dir, archiveOrgID, "payments-api", name))
 		if err != nil {
 			t.Fatal(err)
 		}

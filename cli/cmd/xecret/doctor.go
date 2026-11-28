@@ -73,7 +73,7 @@ func glyph(status string) string {
 //
 // Every check is read-only and none of them prints a credential: the keyring
 // probe writes and deletes a value of its own rather than reading the stored
-// token, the config check prints slugs, and the reachability check calls the
+// token, the config check prints identifiers, and the reachability check calls the
 // one endpoint that needs no authentication. What the output does contain is
 // paths, hostnames and a decision trail — enough to paste into an issue.
 func cmdDoctor(args []string) error {
@@ -122,9 +122,17 @@ func cmdDoctor(args []string) error {
 			say(statusFail, "signedIn", "stored credential unreadable: %v", err)
 		} else {
 			credentials = loaded
-			say(statusOK, "signedIn", "signed in as %s, organisation %s", loaded.Email, loaded.OrgSlug)
+			if loaded.OrgLabel() != "" {
+				say(statusOK, "signedIn", "signed in as %s, organisation %s",
+					loaded.Email, organisationLine(loaded.OrgName, loaded.OrgID))
+			} else {
+				// A credential from before organisation ids, not yet used by a
+				// command that records the id. It still works, by its slug.
+				say(statusOK, "signedIn", "signed in as %s", loaded.Email)
+			}
 			report["email"] = loaded.Email
-			report["organization"] = loaded.OrgSlug
+			report["organization"] = loaded.OrgName
+			report["organizationId"] = loaded.OrgID
 		}
 	}
 
@@ -163,8 +171,9 @@ func cmdDoctor(args []string) error {
 				"could not check the credential — the server did not answer: %v", clientErr)
 		case serviceToken:
 			pin := a.tokenScope
-			say(statusOK, "credentialAccepted", "service token %q is live, pinned to %s/%s/%s",
-				pin.Token.Name, pin.Organization.Slug, pin.Project.Slug, pin.Environment.Slug)
+			say(statusOK, "credentialAccepted", "service token %q is live, pinned to %s/%s in %s",
+				pin.Token.Name, pin.Project.Slug, pin.Environment.Slug,
+				organisationLine(pin.Organization.Name, pin.Organization.ID))
 		default:
 			switch _, meErr := client.FetchMe(credCtx); {
 			case meErr == nil:
@@ -191,7 +200,18 @@ func cmdDoctor(args []string) error {
 			report["configPath"] = path
 			report["project"] = file.Project
 			report["environment"] = file.Environment
-			say(statusOK, "config", "%s → %s/%s", path, file.Project, file.Environment)
+			switch id := file.OrganizationID(); {
+			case id != "":
+				report["configOrganizationId"] = id
+				say(statusOK, "config", "%s → %s/%s in organisation %s", path, file.Project, file.Environment, id)
+			case file.Organization != "":
+				// A hand-written legacy slug. It works, and is not repeated here:
+				// nothing should be built on a slug any more.
+				say(statusOK, "config", "%s → %s/%s, organisation named by a legacy slug; "+
+					"rerun 'xecret init' to pin it by id", path, file.Project, file.Environment)
+			default:
+				say(statusOK, "config", "%s → %s/%s", path, file.Project, file.Environment)
+			}
 		}
 	}
 

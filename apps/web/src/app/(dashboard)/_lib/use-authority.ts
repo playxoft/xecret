@@ -34,9 +34,9 @@ export type GrantableLevel = (
  *
  * Pass `null` to ask nothing, for a viewer who manages nobody.
  */
-export function useGrantable(orgSlug: string | null): GrantableLevel {
+export function useGrantable(orgId: string | null): GrantableLevel {
   const authority = useApiResource<AuthorityResponse>(
-    orgSlug === null ? null : apiPath.authority(orgSlug),
+    orgId === null ? null : apiPath.authority(orgId),
   );
 
   return useMemo(() => {

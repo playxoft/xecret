@@ -83,7 +83,7 @@ function render(initialChoice?: { plan?: 'pro' | 'team'; interval?: 'monthly' | 
       Toaster,
       null,
       createElement(BillingScreen, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         returnedFromCheckout: false,
         ...(initialChoice === undefined ? {} : { initialChoice }),
       }),

@@ -99,7 +99,7 @@ export async function listOrganizations(
 ): Promise<AdminOrganizationListPayload> {
   if (query.q !== undefined) {
     const organizations = await searchOrganizations(services, query.q);
-    // Not the term itself: it is as often somebody's address as a slug.
+    // Not the term itself: it is as often somebody's address as an id.
     services.log.at('listOrganizations').info('An admin searched the organisations', {
       adminUserId: admin.user.id,
       found: organizations.length,

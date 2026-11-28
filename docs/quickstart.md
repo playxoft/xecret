@@ -43,7 +43,8 @@ xecret login     # opens the browser; approve this device
 xecret init      # pick project + environment; writes .xecret.yaml
 ```
 
-`.xecret.yaml` holds two slugs and no secrets — commit it, and everyone who
+`.xecret.yaml` holds three identifiers (the organisation's ID, the project's
+Project ID and the environment) and no secrets. Commit it, and everyone who
 clones the repository is one `xecret run` away from a working app.
 
 ## 5. Run your app

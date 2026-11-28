@@ -92,7 +92,7 @@ function render(): string {
     createElement(
       TooltipProvider,
       null,
-      createElement(Toaster, null, createElement(ProjectsScreen, { orgSlug: 'acme' })),
+      createElement(Toaster, null, createElement(ProjectsScreen, { orgId: 'acme' })),
     ),
   );
 }
@@ -138,7 +138,7 @@ describe('ProjectsScreen', () => {
     const html = render();
 
     expect(html).toContain('aria-label="Filter projects"');
-    expect(html).toContain('placeholder="Filter by name, slug or description"');
+    expect(html).toContain('placeholder="Filter by name, Project ID or description"');
     expect(html).toContain('aria-label="Sort projects"');
     expect(html).toContain('role="group" aria-label="Layout"');
     expect(html).toContain('3 projects');
@@ -232,7 +232,7 @@ describe('ProjectRows while a search is narrowing the list', () => {
   function rows(revealDescriptions: boolean): string {
     return renderToStaticMarkup(
       createElement(ProjectRows, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         revealDescriptions,
         projects: [
           { ...project('web', '2026-03-01T00:00:00.000Z'), description: 'Storefront and checkout' },

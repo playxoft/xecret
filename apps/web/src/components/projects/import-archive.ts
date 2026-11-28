@@ -5,6 +5,7 @@ import {
   admitEncryptionMode,
   clientSecretIo,
   fetchEnvironmentKeys,
+  fetchModePinAliases,
   fetchRecipients,
   openEnvironmentKeys,
 } from '@/components/envkeys';
@@ -85,7 +86,6 @@ export type TargetState =
  * builds it — the mode pin included — or why there is none.
  */
 export async function ioForEnvironment(context: {
-  orgSlug: string;
   orgId: string;
   projectId: string;
   /**
@@ -109,9 +109,22 @@ export async function ioForEnvironment(context: {
   }
   const environmentId = keys.environmentId;
 
-  const admitted = await admitEncryptionMode(context, keys.encryptionMode, async () => [
-    context.projectSlug,
-  ]);
+  // The organisation's legacy slug is read from the server when it could
+  // matter (a `server` answer with no pin of its own); a read that fails is a
+  // failure here, never a reason to believe `server`.
+  let admitted: boolean;
+  try {
+    admitted = await admitEncryptionMode(context, keys.encryptionMode, () =>
+      fetchModePinAliases(context, { projectSlug: context.projectSlug }),
+    );
+  } catch (cause) {
+    return {
+      status: 'unavailable',
+      environmentId,
+      reason: 'failed',
+      detail: errorMessage(cause),
+    };
+  }
   if (!admitted) return { status: 'unavailable', environmentId, reason: 'downgraded' };
 
   if (keys.encryptionMode !== 'e2ee') {
@@ -136,7 +149,7 @@ export async function ioForEnvironment(context: {
  * teammate" rather than claiming the key is lost.
  */
 async function nobodyHoldsKey(context: {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
 }): Promise<boolean> {

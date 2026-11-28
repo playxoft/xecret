@@ -3,7 +3,7 @@ title: HTTP API overview
 navTitle: Overview
 description: The contract the dashboard, CLI and CI all speak — authentication, request shape, error codes, pagination, rate limits and CSRF.
 keywords: [xecret api, secrets rest api, bearer token api, api error codes, rate limits, csrf]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Everything the dashboard does, the CLI does, and CI does, it does through this
@@ -17,19 +17,33 @@ is here, documented, for tooling you build yourself.
 Base path `/api`. JSON in, JSON out, and `Cache-Control: no-store` on every
 response.
 
-Resources are addressed by **slug**, never by id:
+Every resource is addressed by its path through the organisation that owns it:
 
 ```http
-GET /api/orgs/acme/projects/checkout-api/environments/production/secrets/DATABASE_URL
+GET /api/orgs/0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f/projects/checkout-api/environments/production/secrets/DATABASE_URL
 ```
 
-This is a security property rather than an aesthetic one. A slug only means
-something inside its parent, so the path itself carries the ownership chain and
-every handler must resolve it top-down through your membership. An
-id-addressed route (`/api/secrets/{uuid}`) invites the opposite: one lookup by
-primary key, with the ownership check as a separate step somebody can forget.
-That omission is the classic broken-access-control bug, and it is the one this
-product cannot afford.
+- **An organisation** by its id: the part after `/app/` in the dashboard's
+  address, also shown on the organisation's settings General page as
+  *Organisation ID*. A legacy slug, from before organisations were named by id,
+  is still accepted in the same segment for older CLIs and integrations; the
+  membership, scope and service-token checks are identical either way.
+- **A project** by its id or by its **Project ID**, the short identifier chosen
+  when it was created (`checkout-api`; its `slug` in the API).
+- **An environment** by its slug (`production`).
+- **A secret** by its name.
+
+This is a security property rather than an aesthetic one. Below the
+organisation, every segment only means something inside its parent, so the path
+itself carries the ownership chain and every handler must resolve it top-down
+through your membership: the organisation first, then the project inside it,
+then the environment inside that. Even a project's id is looked up inside the
+organisation the path names, so another organisation's project answers 404
+exactly as one that does not exist. A route addressed by a bare id
+(`/api/secrets/{uuid}`) invites the opposite: one lookup by primary key, with
+the ownership check as a separate step somebody can forget. That omission is
+the classic broken-access-control bug, and it is the one this product cannot
+afford.
 
 The cost is one join per level, paid once per request.
 
@@ -100,7 +114,7 @@ A leaked CI token must not be able to grow itself into a permanent one.
 | `unauthenticated` | 401 | No credential, or an invalid one |
 | `forbidden` | 403 | Authenticated, membership established, action not permitted |
 | `not_found` | 404 | Does not exist, is in another organisation, **or** is not visible to you |
-| `conflict` | 409 | Name or slug taken; version race |
+| `conflict` | 409 | Name, Project ID or environment slug taken; version race |
 | `payload_too_large` | 413 | Body over 1 MB, or a secret over 64 KB |
 | `rate_limited` | 429 | Bucket exhausted |
 | `csrf_failed` | 403 | Double-submit pair missing or mismatched |
@@ -128,7 +142,7 @@ value. `requestId` is what correlates a report with the server's logs.
 Keyset, not offset:
 
 ```http
-GET /api/orgs/acme/.../secrets?limit=50&cursor=<opaque>
+GET /api/orgs/{orgId}/.../secrets?limit=50&cursor=<opaque>
 ```
 
 ```json

@@ -66,7 +66,7 @@ function renderForm(canManage: boolean): string {
       Toaster,
       null,
       createElement(OrganizationForm, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         organization: ORGANIZATION,
         canManage,
         onSaved: () => {},
@@ -113,7 +113,7 @@ describe('the organisation’s Danger zone', () => {
   function render(role: OrgRole): string {
     viewer.organization = member(role);
     return renderToStaticMarkup(
-      createElement(Toaster, null, createElement(OrganizationDangerSettings, { orgSlug: 'acme' })),
+      createElement(Toaster, null, createElement(OrganizationDangerSettings, { orgId: 'acme' })),
     );
   }
 

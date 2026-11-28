@@ -10,9 +10,9 @@ import { adminOrganizationsQuerySchema } from '@/server/schemas/admin';
  * billed, who owns it, and how many members, open invitations, projects,
  * environments and secrets it has — counts, never names.
  *
- * `GET /api/admin/organizations?q=` — the search it has always been: the
- * organisations a person is in, by their address, or the one organisation with
- * a slug. The same row, and never paged.
+ * `GET /api/admin/organizations?q=` — the search: the organisations a person
+ * is in, by their address, or the one organisation with an id, or with a
+ * legacy slug. The same row, and never paged.
  *
  * xecret's admins only (`server/admin.ts`); 404 to everybody else.
  */

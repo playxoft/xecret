@@ -24,7 +24,7 @@ import {
 import type { EnvironmentDetail } from './types';
 
 export interface EnvironmentSettingsFormProps {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   environment: EnvironmentDetail;
   /**
@@ -78,7 +78,7 @@ export function environmentDetailsChanged(
  * values would be offering to send the new ones again.
  */
 export function EnvironmentSettingsForm({
-  orgSlug,
+  orgId,
   projectId,
   environment,
   canManage,
@@ -106,7 +106,7 @@ export function EnvironmentSettingsForm({
    */
   const [crossing, setCrossing] = useState<{ next: boolean; warning: string } | null>(null);
 
-  const path = apiPath.environment(orgSlug, projectId, environment.slug);
+  const path = apiPath.environment(orgId, projectId, environment.slug);
 
   async function saveDetails(event: React.FormEvent) {
     event.preventDefault();
@@ -317,7 +317,7 @@ export function EnvironmentSettingsForm({
 }
 
 export interface DeleteEnvironmentCardProps {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   environment: EnvironmentDetail;
 }
@@ -328,7 +328,7 @@ export interface DeleteEnvironmentCardProps {
  * anybody else (`settings-sections.ts`).
  */
 export function DeleteEnvironmentCard({
-  orgSlug,
+  orgId,
   projectId,
   environment,
 }: DeleteEnvironmentCardProps) {
@@ -341,11 +341,11 @@ export function DeleteEnvironmentCard({
     // accepts the field on any environment. Sending it only where it is required
     // keeps the client's rule identical to the server's.
     await api.delete(
-      apiPath.environment(orgSlug, projectId, environment.slug),
+      apiPath.environment(orgId, projectId, environment.slug),
       environment.isProduction ? { confirm: environment.slug } : undefined,
     );
     toast({ variant: 'success', title: `Deleted ${environment.name}` });
-    router.push(appPath.project(orgSlug, projectId));
+    router.push(appPath.project(orgId, projectId));
   }
 
   return (

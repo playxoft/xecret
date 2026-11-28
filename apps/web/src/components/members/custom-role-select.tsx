@@ -77,12 +77,12 @@ const NONE = '__none__';
  * would be a control that only ever answers 409.
  */
 export function CustomRoleSelect({
-  orgSlug,
+  orgId,
   member,
   choices,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   member: Member;
   choices: CustomRoleChoices;
   onChanged: () => void;
@@ -112,7 +112,7 @@ export function CustomRoleSelect({
     if (next === current || pending) return;
     setPending(true);
     try {
-      await api.patch(apiPath.member(orgSlug, member.id), {
+      await api.patch(apiPath.member(orgId, member.id), {
         customRoleId: next === NONE ? null : next,
       });
       const chosen = choices.roles.find((role) => role.id === next);

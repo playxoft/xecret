@@ -34,7 +34,7 @@ import {
 import type { CreateProjectResponse } from './types';
 
 export interface CreateProjectDialogProps {
-  orgSlug: string;
+  orgId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -43,32 +43,34 @@ const NAME_MAX_LENGTH = 100;
 const DESCRIPTION_MAX_LENGTH = 500;
 
 /**
- * Validates a slug against the same rules the server applies.
+ * Validates a Project ID (the project's slug) against the same rules the server
+ * applies.
  *
  * `slugSchema` lives in `@xecret/core/validation` and this reproduces its
  * clauses rather than importing it, because a zod `safeParse` returns an issue
  * list written for a developer and this needs one sentence written for the
  * person typing. The rules themselves — pattern, ceiling, UUID shape, reserved
  * list — come from those modules, so there is still only one definition of what
- * a valid slug is; only the wording differs.
+ * a valid slug is; only the wording differs, and it says "Project ID" because
+ * that is what the field is called.
  */
-function validateSlug(slug: string): string | null {
+export function validateProjectId(slug: string): string | null {
   if (slug.length === 0) {
     return 'Enter a name that contains at least one letter or digit.';
   }
   if (slug.length > SLUG_MAX_LENGTH) {
-    return `A slug can be at most ${SLUG_MAX_LENGTH} characters.`;
+    return `A Project ID can be at most ${SLUG_MAX_LENGTH} characters.`;
   }
   if (!SLUG_PATTERN.test(slug)) {
-    return 'Use lowercase letters, digits and single hyphens.';
+    return 'Use lowercase letters, digits and single hyphens, with no hyphen at either end.';
   }
   // A project's address takes its id or its slug in the same segment, and a
   // UUID-shaped slug would be read as an id — see `checkSlug`.
   if (isUuid(slug)) {
-    return 'A slug cannot be shaped like a UUID: that shape is how an id is written.';
+    return 'A Project ID cannot be shaped like a UUID: that shape is how an internal id is written.';
   }
   if (isReservedSlug(slug)) {
-    return 'That slug is reserved. Choose a different one.';
+    return 'That Project ID is reserved. Choose a different one.';
   }
   return null;
 }
@@ -76,14 +78,17 @@ function validateSlug(slug: string): string | null {
 /**
  * Creates a project and its three default environments.
  *
- * ── Why the slug is a field and not a detail ──
- * A project slug is permanent. It goes into `--project`, into `.xecret.yaml`, and
- * into the CI configuration of everyone who consumes the project, so the API
- * refuses to change it later — a rename would break every consumer that is not
- * redeployed in the same instant. (The dashboard's own addresses name a project
- * by its id, so they no longer depend on it.) Something a user cannot undo should not be
- * decided for them behind a disclosure triangle, so it is shown, derived live
- * from the name, and editable until they touch it.
+ * ── Why the Project ID is a field and not a detail ──
+ * A project's slug is shown to people as its **Project ID**, and it is
+ * permanent. It goes into `--project`, into `.xecret.yaml`, and into the CI
+ * configuration of everyone who consumes the project, so the API refuses to
+ * change it later — a change would break every consumer that is not redeployed
+ * in the same instant. (The dashboard's own addresses name a project by its
+ * internal id, so they do not depend on it.) Something a person cannot undo
+ * should not be decided for them behind a disclosure triangle, so it is shown,
+ * prefilled from the name, editable until the project exists, and explained in
+ * plain words under the field. Unique within the organisation, which the server
+ * settles; a clash is reported on this field.
  *
  * ── Why this needs an unlocked vault ──
  * A project is not an empty container that gets environments later: it arrives
@@ -97,7 +102,7 @@ function validateSlug(slug: string): string | null {
  * against one; `projectEnvironmentInitSchema` explains why the server insists on
  * receiving them rather than minting its own.
  */
-export function CreateProjectDialog({ orgSlug, open, onOpenChange }: CreateProjectDialogProps) {
+export function CreateProjectDialog({ orgId, open, onOpenChange }: CreateProjectDialogProps) {
   const [submitting, setSubmitting] = useState(false);
 
   return (
@@ -108,7 +113,7 @@ export function CreateProjectDialog({ orgSlug, open, onOpenChange }: CreateProje
             effect resetting it after a render in which the previous values were
             still on screen. */}
         <CreateProjectForm
-          orgSlug={orgSlug}
+          orgId={orgId}
           onOpenChange={onOpenChange}
           onSubmittingChange={setSubmitting}
         />
@@ -162,11 +167,11 @@ async function generateEnvironmentKeys(
 }
 
 function CreateProjectForm({
-  orgSlug,
+  orgId,
   onOpenChange,
   onSubmittingChange,
 }: {
-  orgSlug: string;
+  orgId: string;
   onOpenChange: (open: boolean) => void;
   onSubmittingChange: (submitting: boolean) => void;
 }) {
@@ -191,7 +196,7 @@ function CreateProjectForm({
   }
 
   const effectiveSlug = slugEdited ? slug : slugify(name);
-  const slugProblem = name.trim().length === 0 ? null : validateSlug(effectiveSlug);
+  const slugProblem = name.trim().length === 0 ? null : validateProjectId(effectiveSlug);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -203,7 +208,7 @@ function CreateProjectForm({
     if (trimmedName.length > NAME_MAX_LENGTH) {
       nextErrors['name'] = `A name can be at most ${NAME_MAX_LENGTH} characters.`;
     }
-    const slugError = validateSlug(effectiveSlug);
+    const slugError = validateProjectId(effectiveSlug);
     if (slugError !== null) nextErrors['slug'] = slugError;
 
     setErrors(nextErrors);
@@ -233,7 +238,7 @@ function CreateProjectForm({
     }
 
     try {
-      const created = await api.post<CreateProjectResponse>(apiPath.projects(orgSlug), {
+      const created = await api.post<CreateProjectResponse>(apiPath.projects(orgId), {
         name: trimmedName,
         slug: effectiveSlug,
         ...(description.trim().length === 0 ? {} : { description: description.trim() }),
@@ -251,15 +256,18 @@ function CreateProjectForm({
       });
 
       onOpenChange(false);
-      router.push(appPath.project(orgSlug, created.project.id));
+      router.push(appPath.project(orgId, created.project.id));
     } catch (cause) {
       setBusy(false);
       if (isApiError(cause)) {
         // 409 is the partial unique index on (org_id, slug) refusing a
-        // duplicate. It is a property of the slug, so it is shown on that field
-        // rather than at the bottom of the form where it reads as unrelated.
+        // duplicate. It is a property of the Project ID, so it is shown on that
+        // field rather than at the bottom of the form where it reads as
+        // unrelated.
         if (cause.code === 'conflict') {
-          setErrors({ slug: 'A project with this slug already exists in this organisation.' });
+          setErrors({
+            slug: 'Another project in this organisation already has this Project ID. Choose a different one.',
+          });
           return;
         }
         const fieldErrors = cause.fieldErrors();
@@ -309,9 +317,19 @@ function CreateProjectForm({
         </Field>
 
         <Field
-          label="Slug"
+          label="Project ID"
           error={errors['slug'] ?? slugProblem}
-          hint="Permanent. It is what --project takes, what .xecret.yaml records and what CI configuration names, so it cannot be changed later."
+          hint={
+            <>
+              What the CLI and CI use to name this project, for example{' '}
+              <code className="font-mono">
+                xecret pull --project {effectiveSlug || 'payments-api'}
+              </code>
+              . Lowercase letters, digits and single hyphens, unique in this organisation. Filled in
+              from the name; change it now if you like, because it cannot be changed once the
+              project is created.
+            </>
+          }
         >
           <Input
             value={effectiveSlug}

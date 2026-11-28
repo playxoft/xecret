@@ -89,7 +89,7 @@ function organization(role: OrgRole, allowedActions?: readonly Action[]): Sessio
 function render(org: SessionOrganization): string {
   viewer.organization = org;
   return renderToStaticMarkup(
-    createElement(Toaster, null, createElement(TokensScreen, { orgSlug: 'acme' })),
+    createElement(Toaster, null, createElement(TokensScreen, { orgId: 'acme' })),
   );
 }
 

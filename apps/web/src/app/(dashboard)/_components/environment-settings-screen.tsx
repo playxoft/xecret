@@ -30,7 +30,7 @@ import { environmentSettingsSections } from './settings-sections';
  */
 
 interface EnvironmentSettingsValue {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
   environment: EnvironmentDetail;
@@ -63,27 +63,27 @@ function useEnvironmentSettings(): EnvironmentSettingsValue {
 }
 
 export function EnvironmentSettingsLayout({
-  orgSlug,
+  orgId,
   projectId,
   envSlug,
   children,
 }: {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
   children: ReactNode;
 }) {
-  const organization = useOrganization(orgSlug);
+  const organization = useOrganization(orgId);
   // This area needs the secret count, which only the environment detail
   // endpoint returns — the delete confirmation says how much is about to become
   // unreachable, and "some secrets" is not an answer anybody can act on.
   const environment = useApiResource<EnvironmentResponse>(
-    apiPath.environment(orgSlug, projectId, envSlug),
+    apiPath.environment(orgId, projectId, envSlug),
   );
   const { reload } = environment;
 
   const canManage = canAdminister(organization, 'environment.update');
-  const settingsHref = appPath.environmentSettings(orgSlug, projectId, envSlug);
+  const settingsHref = appPath.environmentSettings(orgId, projectId, envSlug);
   const groups = useMemo(
     () => environmentSettingsSections(settingsHref, organization),
     [settingsHref, organization],
@@ -95,14 +95,14 @@ export function EnvironmentSettingsLayout({
       loaded === null
         ? null
         : {
-            orgSlug,
+            orgId,
             projectId,
             envSlug,
             environment: loaded,
             canManage,
             reload: () => void reload(),
           },
-    [orgSlug, projectId, envSlug, loaded, canManage, reload],
+    [orgId, projectId, envSlug, loaded, canManage, reload],
   );
 
   return (
@@ -136,12 +136,12 @@ export function EnvironmentSettingsLayout({
 
 /** General — the name, the slug, the display order, and whether it is production. */
 export function EnvironmentGeneralSettings() {
-  const { orgSlug, projectId, environment, canManage, reload } = useEnvironmentSettings();
+  const { orgId, projectId, environment, canManage, reload } = useEnvironmentSettings();
   const { refreshTrail } = useSession();
 
   return (
     <EnvironmentSettingsForm
-      orgSlug={orgSlug}
+      orgId={orgId}
       projectId={projectId}
       environment={environment}
       canManage={canManage}
@@ -162,11 +162,11 @@ export function EnvironmentGeneralSettings() {
  * should not wait on.
  */
 export function EnvironmentEncryptionSettings() {
-  const { orgSlug, projectId, envSlug, environment, canManage } = useEnvironmentSettings();
+  const { orgId, projectId, envSlug, environment, canManage } = useEnvironmentSettings();
 
   return (
     <EnvironmentKeyCard
-      orgSlug={orgSlug}
+      orgId={orgId}
       projectId={projectId}
       envSlug={envSlug}
       environmentName={environment.name}
@@ -182,11 +182,11 @@ export function EnvironmentEncryptionSettings() {
  * badge and General stay in step.
  */
 export function EnvironmentInheritanceSettings() {
-  const { orgSlug, projectId, environment, canManage, reload } = useEnvironmentSettings();
+  const { orgId, projectId, environment, canManage, reload } = useEnvironmentSettings();
 
   return (
     <InheritanceCard
-      orgSlug={orgSlug}
+      orgId={orgId}
       projectId={projectId}
       environment={environment}
       canManage={canManage}
@@ -201,11 +201,11 @@ export function EnvironmentInheritanceSettings() {
  * been read from. The read-alert emails link here.
  */
 export function EnvironmentPolicySettings() {
-  const { orgSlug, projectId, environment, canManage, reload } = useEnvironmentSettings();
+  const { orgId, projectId, environment, canManage, reload } = useEnvironmentSettings();
 
   return (
     <EnvironmentPolicyCard
-      orgSlug={orgSlug}
+      orgId={orgId}
       projectId={projectId}
       environment={environment}
       canManage={canManage}
@@ -220,8 +220,8 @@ export function EnvironmentPolicySettings() {
  * arrives at its address anyway is told who can, rather than shown nothing.
  */
 export function EnvironmentDangerSettings() {
-  const { orgSlug, projectId, environment } = useEnvironmentSettings();
-  const organization = useOrganization(orgSlug);
+  const { orgId, projectId, environment } = useEnvironmentSettings();
+  const organization = useOrganization(orgId);
 
   if (!canAdminister(organization, 'environment.delete')) {
     return (
@@ -234,7 +234,5 @@ export function EnvironmentDangerSettings() {
     );
   }
 
-  return (
-    <DeleteEnvironmentCard orgSlug={orgSlug} projectId={projectId} environment={environment} />
-  );
+  return <DeleteEnvironmentCard orgId={orgId} projectId={projectId} environment={environment} />;
 }

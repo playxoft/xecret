@@ -251,7 +251,9 @@ vault also asks for its code.
 settings → Single sign-on: turning it on creates the WorkOS organisation, and the
 setup portal is where the customer's IT admin connects their identity provider
 and verifies domains. It needs the organisation's single sign-on add-on
-(`npm run plan:set -- --org <slug> --addon saml --on`), and an SSO sign-in is
+(`npm run plan:set -- --org <org-id> --addon saml --on`, where `<org-id>` is the
+organisation's id as the admin page and its dashboard address show it; a legacy
+slug still works), and an SSO sign-in is
 believed only for the domains its WorkOS organisation has verified. A connection
 made directly in the WorkOS dashboard is not tied to any xecret organisation, so
 nobody is admitted to one through it.

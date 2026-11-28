@@ -29,14 +29,14 @@ export const PLANS_HREF = '/pricing';
  * the billing screen again on their own.
  *
  * Read from the path rather than taken as a prop, so the cards and dialogs that
- * draw these notices need not each thread a slug through. Anywhere without an
+ * draw these notices need not each thread an organisation through. Anywhere without an
  * organisation in its path — the account area, or no router at all — falls
  * back to `PLANS_HREF`.
  */
 export function plansHref(pathname: string | null): string {
   if (pathname === null) return PLANS_HREF;
-  const { orgSlug } = parseDashboardPath(pathname);
-  return orgSlug === null ? PLANS_HREF : appPath.orgPlans(orgSlug);
+  const { orgId } = parseDashboardPath(pathname);
+  return orgId === null ? PLANS_HREF : appPath.orgPlans(orgId);
 }
 
 function usePlansHref(): string {

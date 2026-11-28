@@ -3,12 +3,19 @@ import * as z from 'zod/mini';
 import { isUuid } from '../ids';
 
 /**
- * Slugs identify organisations, projects and environments in URLs and in the
- * CLI (`xecret run --env production`). They must be machine-friendly and stable.
+ * Slugs identify projects and environments in the CLI and in CI
+ * (`xecret pull --project payments-api --env production`). They must be
+ * machine-friendly and stable. A project's slug is shown to people as its
+ * "Project ID": chosen when the project is created, and never changed after.
  *
  * A project's dashboard address names it by id rather than by slug, and its API
- * routes take either — see `checkSlug` for the one rule that keeps the two
- * from ever being confused.
+ * routes take either; see `checkSlug` for the one rule that keeps the two from
+ * ever being confused.
+ *
+ * An organisation still has a slug, but it is nobody's identifier any more:
+ * the server derives it from the organisation's id when the organisation is
+ * created, nothing shows it to a person, and every address names the
+ * organisation by its id. The slug is only read when an older client sends it.
  */
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -24,16 +31,11 @@ export const SLUG_MAX_LENGTH = 63;
 /**
  * How long an organisation slug may be.
  *
- * Much tighter than the general ceiling, and pinned to
- * `ORGANIZATION_NAME_MAX_LENGTH` rather than chosen independently. The create
- * form derives the slug from the name, and `slugify` maps each run of separators
- * to a single hyphen — so a derived slug is never longer than the name it came
- * from. Setting this *below* the name limit would therefore produce a form that
- * generates a slug and then rejects it, with an error about a field the user
- * never touched.
- *
- * `slug.test.ts` pins that relationship, so raising the name limit without
- * raising this one fails a test rather than shipping the broken form.
+ * Every slug chosen while people still chose them is within it, and so is the
+ * one the server now derives: an organisation's id written in base 36, which
+ * for a 128-bit id is at most exactly this many digits. Shorter than a UUID as
+ * well, so no organisation slug can ever be read as an id. `slug.test.ts` pins
+ * both.
  */
 export const ORGANIZATION_SLUG_MAX_LENGTH = 25;
 
@@ -58,9 +60,9 @@ const RESERVED_SLUGS = new Set([
   'members',
   'tokens',
   'audit',
-  // `GET /api/orgs/availability` sits in the slot `{orgSlug}` occupies, so an
-  // organisation claiming this slug would shadow the endpoint the create form
-  // uses to find out whether a slug is free — and would be unreachable itself.
+  // Once the endpoint that said whether an organisation slug was free, in the
+  // slot an organisation takes under `/api/orgs/`. Kept reserved now that it is
+  // gone, so no project can take the name either.
   'availability',
   // The invitation-acceptance page lives at `/invite/{token}`, beside `/app`.
   // Reserved so no future top-level route and no organisation slug can collide
@@ -160,14 +162,12 @@ export function normalizeSlugInput(input: string): string {
 /**
  * Why a slug cannot be used, as a category rather than a sentence.
  *
- * Three callers ask the same question and need three different things back: the
- * create form renders a line of prose under the field,
- * `GET /api/orgs/availability` reports a machine-readable `reason`, and
+ * More than one caller asks the same question and each needs something
+ * different back: a create form renders a line of prose under the field, and
  * `slugSchema` turns it into a zod issue. Each used to derive the rules from
  * `SLUG_PATTERN` and `isReservedSlug` itself, so adding a rule to one of them
- * left the availability endpoint answering `available: true` for a slug
- * `POST /api/orgs` was about to refuse — a form that says yes and an API that
- * says no, with nothing failing anywhere to say so.
+ * left a form answering yes for a slug the API was about to refuse, with nothing
+ * failing anywhere to say so.
  */
 export type SlugProblem =
   | 'empty'
@@ -362,9 +362,9 @@ export const slugReferenceSchema = schemaFrom((slug) => checkSlugShape(slug, SLU
 /**
  * The same rules at the organisation's shorter ceiling.
  *
- * An organisation slug is the first segment of every URL in the product and the
- * one identifier shared across the whole installation, so it is the one worth
- * keeping short enough to read at a glance and type without checking.
+ * Nothing accepts an organisation slug from a client any more: the server
+ * derives one from the id. Kept so that the derivation can be checked against
+ * the rules every slug has always had to meet.
  */
 export const organizationSlugSchema = slugSchemaWithin(ORGANIZATION_SLUG_MAX_LENGTH);
 

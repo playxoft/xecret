@@ -354,7 +354,7 @@ export function isoToLocalInput(iso: string): string {
 /** Reads the plan for an instant. A plan refusal past the window names the plan that reaches it. */
 export function fetchRestorePlan(target: EnvironmentRef, at: string): Promise<RestorePlanResponse> {
   return api.get<RestorePlanResponse>(
-    withQuery(apiPath.restorePoint(target.orgSlug, target.projectId, target.envSlug), { at }),
+    withQuery(apiPath.restorePoint(target.orgId, target.projectId, target.envSlug), { at }),
   );
 }
 
@@ -364,7 +364,7 @@ export function postRestore(
   body: { at: string; writes: ChangeEntry[]; dryRun: boolean },
 ): Promise<RestoreApplyResponse> {
   return api.post<RestoreApplyResponse>(
-    apiPath.restorePoint(target.orgSlug, target.projectId, target.envSlug),
+    apiPath.restorePoint(target.orgId, target.projectId, target.envSlug),
     body,
   );
 }

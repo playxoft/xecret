@@ -151,7 +151,7 @@ function Explanation({ view }: { view: ConfirmationView }) {
         <span className="text-fg font-medium break-all">
           “<Inert value={view.organization.name} />”
         </span>{' '}
-        (<code className="font-mono break-all">{view.organization.slug}</code>)
+        (<code className="font-mono break-all">{view.organization.id}</code>)
       </>
     );
     // "Yet", and the sentence after it, only when continuing really does make

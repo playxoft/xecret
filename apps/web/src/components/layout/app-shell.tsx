@@ -22,7 +22,7 @@ import { WorkspaceSwitcherDialog } from './workspace-switcher-dialog';
 export interface AppShellProps {
   nav: readonly NavSection[];
   organizations: readonly ShellOrganization[];
-  currentOrgSlug: string;
+  currentOrgId: string;
   /**
    * Adds "New organisation" to the organisation switcher's menu.
    *
@@ -53,7 +53,7 @@ export interface AppShellProps {
 export function AppShell({
   nav,
   organizations,
-  currentOrgSlug,
+  currentOrgId,
   onCreateOrganization,
   user,
   accountHref,
@@ -142,7 +142,7 @@ export function AppShell({
     return (
       <OrgSwitcher
         organizations={organizations}
-        currentSlug={currentOrgSlug}
+        currentOrgId={currentOrgId}
         {...(create ? { onCreate: create } : {})}
       />
     );
@@ -222,7 +222,7 @@ export function AppShell({
           decides nothing about where it appears — only what it can read. */}
       <WorkspaceSwitcherDialog
         organizations={organizations}
-        currentSlug={currentOrgSlug}
+        currentOrgId={currentOrgId}
         open={switcherOpen}
         onOpenChange={setSwitcherOpen}
         {...(onCreateOrganization === undefined ? {} : { onCreate: onCreateOrganization })}

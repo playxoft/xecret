@@ -53,7 +53,7 @@ import type { VaultKeyMaterial } from '@/components/vault/key-store';
 
 /** Where an environment lives, as the API addresses it. */
 export interface OverrideTarget {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
 }
@@ -161,7 +161,7 @@ export function listOverrides(
   options?: { signal?: AbortSignal },
 ): Promise<OverrideListResponse> {
   return api.get<OverrideListResponse>(
-    apiPath.overrides(target.orgSlug, target.projectId, target.envSlug),
+    apiPath.overrides(target.orgId, target.projectId, target.envSlug),
     options,
   );
 }
@@ -220,7 +220,7 @@ export async function setOverride(params: {
   const ciphertext = await sealOverride(params);
   return api.put<OverrideSetResponse>(
     apiPath.override(
-      params.target.orgSlug,
+      params.target.orgId,
       params.target.projectId,
       params.target.envSlug,
       params.name,
@@ -270,7 +270,7 @@ export function removeOverride(
   name: string,
 ): Promise<OverrideRemoveResponse> {
   return api.delete<OverrideRemoveResponse>(
-    apiPath.override(target.orgSlug, target.projectId, target.envSlug, name),
+    apiPath.override(target.orgId, target.projectId, target.envSlug, name),
   );
 }
 

@@ -32,6 +32,7 @@ import type { SignInConfirmation } from './sign-in-confirmation';
 const SECRET = 'a-perfectly-random-thirty-two-plus-character-secret';
 const NOW = new Date('2026-10-18T10:00:00Z');
 const NOW_SECONDS = Math.floor(NOW.getTime() / 1000);
+const ORGANIZATION_ID = '01938a2e-7c3d-7b4a-9f2e-3c1d5e6f7a8b';
 
 function parked(over: Partial<SignInConfirmation> = {}): SignInConfirmation {
   return {
@@ -40,7 +41,7 @@ function parked(over: Partial<SignInConfirmation> = {}): SignInConfirmation {
     email: 'pat@attacker.example',
     signInMethod: 'sso',
     ssoWorkosOrgId: 'org_01HATTACKER',
-    organization: { name: 'Acme Corp', slug: 'acme-corp' },
+    organization: { name: 'Acme Corp', id: ORGANIZATION_ID },
     purpose: 'sign-in',
     next: '/app',
     flowIssuedAt: NOW_SECONDS - 20,
@@ -105,7 +106,7 @@ describe('a round trip', () => {
     // sign-in that never had a chance.
     const value = parked({
       email: `${'a'.repeat(300)}@example.com`,
-      organization: { name: '\u{1F600}'.repeat(100), slug: 'acme-corp' },
+      organization: { name: '\u{1F600}'.repeat(100), id: ORGANIZATION_ID },
       next: `/${'a'.repeat(MAX_NEXT_LENGTH - 1)}`,
     });
 
@@ -246,6 +247,21 @@ describe('a validly signed payload the confirmation could not act on', () => {
     expect((await openSignInConfirmation(await key(), await resealed(base), NOW)).ok).toBe(true);
   });
 
+  // Sealed now: the organisation's id beside its name. The base payload above
+  // is what a cookie sealed before ids carries, a slug in the same place, and
+  // it opens too, for the few minutes such a cookie lives.
+  it('opens with the organisation id beside its name, and with the slug an older cookie carries', async () => {
+    const opened = await openSignInConfirmation(
+      await key(),
+      await resealed({ ...base, o: ['Acme', ORGANIZATION_ID] }),
+      NOW,
+    );
+    expect(opened.ok && opened.value.organization).toEqual({ name: 'Acme', id: ORGANIZATION_ID });
+
+    const legacy = await openSignInConfirmation(await key(), await resealed(base), NOW);
+    expect(legacy.ok && legacy.value.organization).toEqual({ name: 'Acme', id: 'acme' });
+  });
+
   it.each([
     ['a short nonce', { n: 'abc' }],
     ['an account id that is not a UUID', { u: 'admin' }],
@@ -253,7 +269,7 @@ describe('a validly signed payload the confirmation could not act on', () => {
     ['a method outside the closed set', { m: 'magic' }],
     ['an SSO organisation beside a password sign-in', { m: 'password' }],
     ['an organisation id of the wrong shape', { s: 'acme' }],
-    ['an organisation slug that is not a slug', { o: ['Acme', 'Acme Corp'] }],
+    ['an organisation id that is neither an id nor a slug', { o: ['Acme', 'Acme Corp'] }],
     ['an organisation name with a control character', { o: ['Ac\u0000me', 'acme'] }],
     ['an absolute next', { x: 'https://evil.example/' }],
     ['a protocol-relative next', { x: '//evil.example' }],

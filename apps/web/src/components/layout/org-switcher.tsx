@@ -19,7 +19,8 @@ import {
 } from '@/components/ui';
 
 export interface ShellOrganization {
-  slug: string;
+  /** What the switcher tells organisations apart by: names are not unique. */
+  id: string;
   name: string;
   /** The viewer's role here. Shown so it is obvious before, not after, an action is denied. */
   role: string;
@@ -41,7 +42,7 @@ export interface ShellOrganization {
 
 export interface OrgSwitcherProps {
   organizations: readonly ShellOrganization[];
-  currentSlug: string;
+  currentOrgId: string;
   /**
    * Adds "New organisation" at the foot of the menu.
    *
@@ -62,8 +63,13 @@ export interface OrgSwitcherProps {
  * is the same question continued. Separating them would put two organisation
  * controls within 40px of each other in a 240px column.
  */
-export function OrgSwitcher({ organizations, currentSlug, onCreate, className }: OrgSwitcherProps) {
-  const current = organizations.find((org) => org.slug === currentSlug) ?? organizations[0];
+export function OrgSwitcher({
+  organizations,
+  currentOrgId,
+  onCreate,
+  className,
+}: OrgSwitcherProps) {
+  const current = organizations.find((org) => org.id === currentOrgId) ?? organizations[0];
   if (!current) return null;
 
   return (
@@ -100,10 +106,10 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
       <DropdownMenuContent align="start" className="w-64">
         <DropdownMenuLabel>Organisations</DropdownMenuLabel>
         {organizations.map((org) => (
-          <DropdownMenuItem key={org.slug} asChild>
+          <DropdownMenuItem key={org.id} asChild>
             <Link href={org.href} className="justify-between">
               <span className="min-w-0 truncate">{org.name}</span>
-              {org.slug === current.slug ? (
+              {org.id === current.id ? (
                 <CheckIcon className="text-accent-text size-4 shrink-0" />
               ) : (
                 <span className="text-fg-subtle max-w-[45%] shrink-0 truncate text-sm">

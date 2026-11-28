@@ -14,7 +14,7 @@ const PROJECT_ID = '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
 function sidebarAt(pathname: string) {
   const location = parseDashboardPath(pathname);
   const items = dashboardNav({
-    orgSlug: location.orgSlug ?? 'acme',
+    orgId: location.orgId ?? 'acme',
     projectId: location.projectId,
     viewer: null,
   }).flatMap((section) => section.items);

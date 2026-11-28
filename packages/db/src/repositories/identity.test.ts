@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { hashToken } from '@xecret/core/auth';
-import { uuidv7 } from '@xecret/core/ids';
-import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
+import { isUuid, uuidv7 } from '@xecret/core/ids';
+import {
+  checkSlug,
+  isReservedSlug,
+  ORGANIZATION_SLUG_MAX_LENGTH,
+  SLUG_PATTERN,
+} from '@xecret/core/validation';
 import { createDatabase } from '../client';
 import {
   accountLockQuery,
   organizationsForUserQuery,
+  organizationSlugFor,
   organizationsHeldByQuery,
-  orgSlugCandidate,
-  personalOrgSlugSeed,
+  personalOrganizationNameSeed,
 } from './organizations';
 import {
   memberGrantsQuery,
@@ -304,42 +309,63 @@ describe('pagination', () => {
   });
 });
 
-describe('personal organisation slugs', () => {
+describe('personal organisation names', () => {
   it('takes the local part of the email address', () => {
-    expect(personalOrgSlugSeed('nitheesh@playxoft.com')).toBe('nitheesh');
+    expect(personalOrganizationNameSeed('nitheesh@playxoft.com')).toBe('nitheesh');
   });
 
   it("drops an address tag, which routes mail but is not part of anyone's name", () => {
-    expect(personalOrgSlugSeed('nitheesh+xecret@playxoft.com')).toBe('nitheesh');
+    expect(personalOrganizationNameSeed('nitheesh+xecret@playxoft.com')).toBe('nitheesh');
   });
 
-  it('leaves a string with no address structure alone, for slugify to deal with', () => {
-    expect(personalOrgSlugSeed('Ada Lovelace')).toBe('Ada Lovelace');
-  });
-
-  it('suffixes collisions with a readable counter', () => {
-    expect(orgSlugCandidate('acme', 0)).toBe('acme');
-    expect(orgSlugCandidate('acme', 1)).toBe('acme-2');
-    expect(orgSlugCandidate('acme', 7)).toBe('acme-8');
-  });
-
-  it('truncates the base, not the suffix, so a long name stays within the limit', () => {
-    const base = 'a'.repeat(SLUG_MAX_LENGTH);
-    const candidate = orgSlugCandidate(base, 11);
-
-    expect(candidate.length).toBeLessThanOrEqual(SLUG_MAX_LENGTH);
-    expect(candidate.endsWith('-12')).toBe(true);
-    expect(candidate).toMatch(SLUG_PATTERN);
-  });
-
-  it('never produces a double hyphen when truncation lands on one', () => {
-    const base = `${'a'.repeat(SLUG_MAX_LENGTH - 3)}-bb`;
-    const candidate = orgSlugCandidate(base, 1);
-
-    expect(candidate).not.toContain('--');
-    expect(candidate).toMatch(SLUG_PATTERN);
+  it('leaves a string with no address structure alone', () => {
+    expect(personalOrganizationNameSeed('Ada Lovelace')).toBe('Ada Lovelace');
   });
 });
+
+describe('the slug an organisation is created with', () => {
+  it('is a valid organisation slug that no person picked: never a UUID, never reserved', () => {
+    for (let index = 0; index < 200; index += 1) {
+      const slug = organizationSlugFor(uuidv7());
+
+      expect(slug).toHaveLength(ORGANIZATION_SLUG_MAX_LENGTH);
+      expect(slug).toMatch(SLUG_PATTERN);
+      expect(isUuid(slug)).toBe(false);
+      expect(isReservedSlug(slug)).toBe(false);
+      expect(checkSlug(slug, ORGANIZATION_SLUG_MAX_LENGTH)).toEqual({ valid: true });
+    }
+  });
+
+  it('is the id itself in another base, so two organisations can never share one', () => {
+    const orgId = uuidv7();
+    const slug = organizationSlugFor(orgId);
+    const back = BigInt(`0x${orgId.replaceAll('-', '')}`);
+
+    expect(BigInt(parseBase36(slug))).toBe(back);
+    expect(organizationSlugFor(orgId)).toBe(slug);
+    expect(organizationSlugFor(uuidv7())).not.toBe(slug);
+  });
+
+  it('fits the largest id there could be, and pads the smallest', () => {
+    expect(organizationSlugFor('ffffffff-ffff-ffff-ffff-ffffffffffff')).toHaveLength(
+      ORGANIZATION_SLUG_MAX_LENGTH,
+    );
+    expect(organizationSlugFor('00000000-0000-0000-0000-000000000001')).toBe(
+      `${'0'.repeat(ORGANIZATION_SLUG_MAX_LENGTH - 1)}1`,
+    );
+  });
+
+  it('refuses anything that is not a canonical id', () => {
+    expect(() => organizationSlugFor('acme')).toThrow(TypeError);
+  });
+});
+
+/** A base-36 string as a decimal string, for comparing against a BigInt. */
+function parseBase36(value: string): string {
+  let total = 0n;
+  for (const character of value) total = total * 36n + BigInt(Number.parseInt(character, 36));
+  return total.toString();
+}
 
 describe('the last-owner guard', () => {
   /**

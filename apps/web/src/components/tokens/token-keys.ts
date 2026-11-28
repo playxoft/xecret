@@ -12,6 +12,7 @@ import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   admitEncryptionMode,
   fetchEnvironmentKeys,
+  fetchModePinAliases,
   submitGrants,
   openEnvironmentKeys,
   sealGrantFor,
@@ -72,7 +73,7 @@ export class TokenKeyUnavailableError extends Error {
 }
 
 export interface MintServiceTokenParams {
-  orgSlug: string;
+  orgId: string;
   /** Where the environment's key state is read from, and its mode pin filed. */
   projectId: string;
   /** What the token is scoped to, as the create endpoint names it. */
@@ -108,7 +109,7 @@ export interface MintServiceTokenParams {
 export async function mintServiceToken(
   params: MintServiceTokenParams,
 ): Promise<MintedServiceToken> {
-  const path = apiPath.serviceTokens(params.orgSlug);
+  const path = apiPath.serviceTokens(params.orgId);
   const body = {
     name: params.name,
     projectSlug: params.projectSlug,
@@ -128,7 +129,7 @@ export async function mintServiceToken(
   // this checks is filed under the address, and one environment filed under two
   // spellings would be two pins that never meet.
   const target = {
-    orgSlug: params.orgSlug,
+    orgId: params.orgId,
     projectId: params.projectId,
     envSlug: params.environmentSlug,
   };
@@ -146,12 +147,13 @@ export async function mintServiceToken(
   // moment a downgrade pays off: a keyless token is a credential that reads an
   // environment through the server, which is what a server that wanted the
   // values would ask for. The tokens page may be the first this browser has
-  // opened since project addresses moved to ids, so a pin it filed under the
-  // project's slug is carried across before the answer is judged — the dialog
-  // holds the slug it was chosen by.
-  const admitted = await admitEncryptionMode(target, keys.encryptionMode, async () => [
-    params.projectSlug,
-  ]);
+  // opened since organisation and project addresses moved to ids, so a pin it
+  // filed under the organisation's or the project's slug is carried across
+  // before the answer is judged. The dialog holds the project slug it was
+  // chosen by; the organisation's is read when it could matter.
+  const admitted = await admitEncryptionMode(target, keys.encryptionMode, () =>
+    fetchModePinAliases(target, { projectSlug: params.projectSlug }),
+  );
   if (!admitted) {
     throw new TokenKeyUnavailableError(
       'This environment is reporting server-side encryption, but your browser has read it as ' +

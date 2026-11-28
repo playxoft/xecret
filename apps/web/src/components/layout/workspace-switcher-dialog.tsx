@@ -50,7 +50,7 @@ import type { ShellOrganization } from './org-switcher';
 
 export interface WorkspaceSwitcherDialogProps {
   organizations: readonly ShellOrganization[];
-  currentSlug: string;
+  currentOrgId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Opens the create-organisation dialog. Absent hides the row. */
@@ -59,7 +59,7 @@ export interface WorkspaceSwitcherDialogProps {
 
 export function WorkspaceSwitcherDialog({
   organizations,
-  currentSlug,
+  currentOrgId,
   open,
   onOpenChange,
   onCreate,
@@ -71,7 +71,7 @@ export function WorkspaceSwitcherDialog({
             without an effect having to clear it a render later. */}
         <WorkspaceList
           organizations={organizations}
-          currentSlug={currentSlug}
+          currentOrgId={currentOrgId}
           onOpenChange={onOpenChange}
           {...(onCreate === undefined ? {} : { onCreate })}
         />
@@ -82,12 +82,12 @@ export function WorkspaceSwitcherDialog({
 
 function WorkspaceList({
   organizations,
-  currentSlug,
+  currentOrgId,
   onOpenChange,
   onCreate,
 }: {
   organizations: readonly ShellOrganization[];
-  currentSlug: string;
+  currentOrgId: string;
   onOpenChange: (open: boolean) => void;
   onCreate?: () => void;
 }) {
@@ -98,10 +98,7 @@ function WorkspaceList({
 
   const needle = query.trim().toLowerCase();
   const matches = organizations.filter(
-    (organization) =>
-      needle.length === 0 ||
-      organization.name.toLowerCase().includes(needle) ||
-      organization.slug.toLowerCase().includes(needle),
+    (organization) => needle.length === 0 || organization.name.toLowerCase().includes(needle),
   );
 
   function focusRow(index: number) {
@@ -142,7 +139,7 @@ function WorkspaceList({
         ) : (
           <ul className="flex flex-col">
             {matches.map((organization, index) => (
-              <li key={organization.slug}>
+              <li key={organization.id}>
                 <Link
                   href={organization.href}
                   ref={(node) => {
@@ -171,7 +168,7 @@ function WorkspaceList({
                   }}
                   className={cn(
                     'hover:bg-surface-hover flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors',
-                    organization.slug === currentSlug && 'bg-surface-hover',
+                    organization.id === currentOrgId && 'bg-surface-hover',
                   )}
                 >
                   <span
@@ -189,7 +186,7 @@ function WorkspaceList({
                       {organization.customRole ? <> · {organization.customRole}</> : null}
                     </span>
                   </span>
-                  {organization.slug === currentSlug ? (
+                  {organization.id === currentOrgId ? (
                     <CheckIcon className="text-accent-text size-4 shrink-0" />
                   ) : null}
                 </Link>

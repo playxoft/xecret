@@ -408,7 +408,7 @@ xecret cache clear
 - **Auth:** OAuth-style loopback + PKCE against *your* server (never the identity provider directly). `xecret login` → PKCE challenge → loopback listener on `127.0.0.1:<random>` → browser consent screen showing the device name → code → exchange for a refresh token in the **OS keychain** (Keychain / Credential Manager / Secret Service), falling back to a `0600` file with a visible warning. Never printed, never in argv, never in shell history.
 - **`run`:** fetch → decrypt server-side → inject into child env → exec → forward signals → propagate exit code. Secrets never touch disk, argv, or stdout.
 - **Encrypted local cache:** AES-256-GCM, key in the OS keychain, `0600` file in `~/.xecret/cache/`, per project+env. Used automatically when the API is unreachable, with a loud stderr warning showing cache age. `--offline` forces it, `--no-cache` disables it, logout wipes it. **This is what stops a xecret outage from stopping every customer's `npm run dev`.**
-- `.xecret.yaml`: `project` + `environment` only. Never secrets. Safe to commit.
+- `.xecret.yaml`: `project` + `environment` only (since joined by `organization`, the organisation's id). Never secrets. Safe to commit.
 - Error messages that say what to do next, not what went wrong internally
 - `--json` for scripting; respects `NO_COLOR`, detects non-TTY
 - GoReleaser: darwin/linux/windows × amd64/arm64, `curl | sh` installer, checksums + cosign signatures. The Homebrew formula it generates is published by release.yml after the release is reviewed, not by GoReleaser at tag time.

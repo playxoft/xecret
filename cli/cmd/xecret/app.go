@@ -26,6 +26,23 @@ type app struct {
 	// project and environment the CI credential is locked to. Fetched once per
 	// invocation, the first time the credential is used.
 	tokenScope *api.TokenSelf
+	// me is GET /api/auth/me, fetched at most once per invocation by whichever
+	// helper first needs to know something only it can say (see fetchMe).
+	me        *api.Me
+	meErr     error
+	meFetched bool
+}
+
+// fetchMe is GET /api/auth/me, made at most once per invocation however many
+// helpers want an answer from it. A failure is remembered as well: the callers
+// that use it for a best-effort answer should not each pay for the same
+// failure again.
+func (a *app) fetchMe(ctx context.Context, client *api.Client) (*api.Me, error) {
+	if !a.meFetched {
+		a.me, a.meErr = client.FetchMe(ctx)
+		a.meFetched = true
+	}
+	return a.me, a.meErr
 }
 
 func newApp(jsonMode bool) *app {
@@ -94,10 +111,12 @@ func (a *app) clientFor(ctx context.Context) (*api.Client, *cred.Credentials, er
 //
 // The introspection is not optional plumbing: a service token is pinned to an
 // organisation, project and environment it cannot name — the pin is stored
-// server-side as ids, and every API path speaks slugs. `/api/tokens/self`
-// answers with exactly the credential's own scope, which then fills every gap
-// a missing `.xecret.yaml` leaves. One extra request per invocation, and CI
-// needs zero configuration beyond the token itself.
+// server-side, and nothing in the token string says what it is.
+// `/api/tokens/self` answers with exactly the credential's own scope, which
+// then fills every gap a missing `.xecret.yaml` leaves: the organisation by its
+// id, and the project and environment by the identifiers paths use. One extra
+// request per invocation, and CI needs zero configuration beyond the token
+// itself.
 //
 // ── The seam: this is where the key half stops ──
 //
@@ -133,6 +152,8 @@ func (a *app) serviceClient(ctx context.Context, token string) (*api.Client, *cr
 	return client, &cred.Credentials{
 		APIURL:  base,
 		Token:   authToken,
+		OrgID:   a.tokenScope.Organization.ID,
+		OrgName: a.tokenScope.Organization.Name,
 		OrgSlug: a.tokenScope.Organization.Slug,
 	}, nil
 }
@@ -179,9 +200,33 @@ func (a *app) deploymentOrigin() (base, reason string) {
 // scope is the resolved (org, project, environment) triple every secret
 // command operates in.
 type scope struct {
-	Org         string
+	// Org is how API paths name the organisation: its id whenever this process
+	// holds one, and otherwise a legacy slug, which the API accepts too.
+	Org string
+	// OrgID is the organisation's id when it is known without asking, which is
+	// every case but a credential from before organisation ids and a
+	// `.xecret.yaml` naming another organisation by a legacy slug.
+	// [app.orgIdentity] completes those, and is what every end-to-end path
+	// reads the AAD's orgId from.
+	OrgID string
+	// OrgSlug is the legacy slug this process holds for the organisation, if
+	// any. Never printed: it is consulted only to find what slug-keyed builds
+	// filed offline.
+	OrgSlug string
+	// orgSource is the `.xecret.yaml` the organisation came from, when it did
+	// not come from the credential. For messages.
+	orgSource string
+
 	Project     string
 	Environment string
+}
+
+// inCredentialOrg reports whether the scope addresses the credential's own
+// organisation, which is what every scope did before `.xecret.yaml` could name
+// one, and what a scope built with no organisation at all still means.
+func (s scope) inCredentialOrg(credentials *cred.Credentials) bool {
+	return s.Org == "" || credentials.NamesOrg(s.Org) ||
+		(s.OrgID != "" && s.OrgID == credentials.OrgID)
 }
 
 // resolveScope combines the credential's organisation with the project and
@@ -191,9 +236,26 @@ type scope struct {
 // pin, so a bare `xecret run` works in CI with no file at all. A flag naming
 // anything outside the pin still goes to the server, which refuses it — the
 // pin is enforced there, never merely assumed here.
+//
+// ── Which organisation ──
+//
+// The credential's, unless the project came from a `.xecret.yaml` that names
+// one: the organisation travels with the project it was written for. That is
+// what keeps a directory pinned to a project in one organisation working after
+// `xecret orgs use` chose another, rather than quietly reaching a project of
+// the same name there. A `--project` flag names a project in the credential's
+// organisation, the one `xecret projects` lists. A file with no organisation,
+// which is every file written before init recorded one, resolves as it always
+// did.
+//
+// Under XECRET_TOKEN the token's own organisation is used whatever the file
+// says. The server would refuse a path into any other, and says so; this only
+// warns first.
 func (a *app) resolveScope(credentials *cred.Credentials, projectFlag, envFlag string) (scope, error) {
 	resolved := scope{
-		Org:         credentials.OrgSlug,
+		Org:         credentials.OrgRef(),
+		OrgID:       credentials.OrgID,
+		OrgSlug:     credentials.OrgSlug,
 		Project:     strings.TrimSpace(projectFlag),
 		Environment: strings.TrimSpace(envFlag),
 	}
@@ -207,10 +269,11 @@ func (a *app) resolveScope(credentials *cred.Credentials, projectFlag, envFlag s
 		return scope{}, err
 	}
 
-	_, fileConfig, findErr := config.Find(cwd)
+	path, fileConfig, findErr := config.Find(cwd)
 	if findErr == nil {
 		if resolved.Project == "" {
 			resolved.Project = fileConfig.Project
+			a.adoptFileOrganization(&resolved, credentials, fileConfig, path)
 		}
 		if resolved.Environment == "" {
 			resolved.Environment = fileConfig.Environment
@@ -233,4 +296,31 @@ func (a *app) resolveScope(credentials *cred.Credentials, projectFlag, envFlag s
 		return scope{}, fmt.Errorf("no project or environment resolved — pass --project/--environment or run 'xecret init'")
 	}
 	return resolved, nil
+}
+
+// adoptFileOrganization points a scope at the organisation a `.xecret.yaml`
+// names, for a scope whose project came from that file. See resolveScope.
+//
+// An id is taken as it is, and is the AAD's orgId directly. A legacy slug is
+// accepted the way the API accepts one, and paths address it by that slug;
+// its id is learned when an end-to-end path first needs it.
+func (a *app) adoptFileOrganization(resolved *scope, credentials *cred.Credentials, file *config.Config, path string) {
+	if file.Organization == "" || credentials.NamesOrg(file.Organization) {
+		// None named, or the credential's own: the defaults already say so,
+		// and they hold the id even when the file has the slug.
+		return
+	}
+	if a.usingServiceToken() {
+		a.printer.Warnf(
+			"%s names a different organisation from the one XECRET_TOKEN is pinned to; the token's is used.", path)
+		return
+	}
+
+	resolved.Org = file.Organization
+	resolved.OrgID = file.OrganizationID()
+	resolved.OrgSlug = ""
+	if resolved.OrgID == "" {
+		resolved.OrgSlug = file.Organization
+	}
+	resolved.orgSource = path
 }

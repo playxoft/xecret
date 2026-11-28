@@ -175,7 +175,9 @@ export const POST = publicRoute(async ({ request, services }) => {
       // `null` unless the organisation's token policy caps lifetimes.
       expiresAt: issued.record.expiresAt?.toISOString() ?? null,
       user: { email: user.email, displayName: user.displayName },
-      organization: { slug: organization.slug, name: organization.name },
+      // `id` is what a current CLI addresses the API by; `slug` stays for an
+      // installed CLI that predates it, which stores and sends nothing else.
+      organization: { id: organization.id, name: organization.name, slug: organization.slug },
     },
     { status: 201 },
   );

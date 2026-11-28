@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { ORGANIZATION_NAME_MAX_LENGTH } from './names';
 import {
   checkSlug,
   checkSlugShape,
@@ -128,13 +127,11 @@ describe('checkSlug', () => {
   /**
    * The invariant the whole function exists for.
    *
-   * `POST /api/orgs` validates with `organizationSlugSchema`, the create form
-   * words a rejection with `describeSlugProblem`, and
-   * `GET /api/orgs/availability` reports a category — and all three used to
-   * derive the rules from `SLUG_PATTERN` themselves. A fourth rule added to one
-   * of them left the availability endpoint answering `available: true` for a
-   * slug the create endpoint was about to refuse. They now share this function,
-   * and this is what says so out loud.
+   * The schemas validate with it, and a form words its rejection from it. All
+   * of them used to derive the rules from `SLUG_PATTERN` themselves, and a rule
+   * added to one of them left another answering yes for a slug the API was
+   * about to refuse. They now share this function, and this is what says so
+   * out loud.
    */
   it('agrees with the schemas built from it, on every case either of them sees', () => {
     const corpus = [
@@ -345,23 +342,20 @@ describe('normalizeSlugInput', () => {
 
 describe('organizationSlugSchema', () => {
   /**
-   * The invariant that makes the create form coherent.
+   * The invariant the server's slug rests on.
    *
-   * The form derives the slug from the name, and `slugify` maps each run of
-   * separators to a single hyphen — so a derived slug is never longer than the
-   * name it came from. If this ceiling dropped below the name's, the form would
-   * generate a slug and then refuse it, blaming a field the user never touched.
-   *
-   * So raising `ORGANIZATION_NAME_MAX_LENGTH` without raising this one fails
-   * here, rather than shipping that form.
+   * An organisation is created with its id written in base 36 as its slug, and
+   * the largest 128-bit id is 25 base-36 digits. Below that, a new
+   * organisation's slug would be refused by the rules every slug meets; at or
+   * past a UUID's 36 characters, an organisation slug could be read as an id.
    */
-  it('is never shorter than the name a slug is derived from', () => {
-    expect(ORGANIZATION_SLUG_MAX_LENGTH).toBeGreaterThanOrEqual(ORGANIZATION_NAME_MAX_LENGTH);
+  it('holds a 128-bit id in base 36, and is shorter than a UUID', () => {
+    const largest = (2n ** 128n - 1n).toString(36);
 
-    const longestName = 'a b '
-      .repeat(ORGANIZATION_NAME_MAX_LENGTH)
-      .slice(0, ORGANIZATION_NAME_MAX_LENGTH);
-    expect(organizationSlugSchema.safeParse(slugify(longestName)).success).toBe(true);
+    expect(largest.length).toBe(25);
+    expect(ORGANIZATION_SLUG_MAX_LENGTH).toBeGreaterThanOrEqual(largest.length);
+    expect(ORGANIZATION_SLUG_MAX_LENGTH).toBeLessThan(36);
+    expect(organizationSlugSchema.safeParse(largest).success).toBe(true);
   });
 
   it('is tighter than the general ceiling, which stays at the DNS label limit', () => {

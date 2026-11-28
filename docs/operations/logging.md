@@ -60,7 +60,7 @@ from loggers that already existed.
 | `env` | `production` | One Better Stack source usually receives staging *and* production. |
 | `requestId` | `0198…` | **UUIDv7.** Time-ordered, so `ORDER BY requestId` is chronological. Also returned on `x-xecret-request-id`, and stamped on every audit record. |
 | `rayId` | `8f1c…` | Cloudflare's ray id, for crossing into the platform's own logs. `null` outside the edge. |
-| `method`, `path` | `GET`, `/api/orgs/acme/…` | |
+| `method`, `path` | `GET`, `/api/orgs/0192f0a1-…/…` | |
 | `ip`, `userAgent` | `203.0.113.5` | From `CF-Connecting-IP`, which the edge sets. |
 | `fn` | `revealSecret` | The function that emitted the line. See §5. |
 

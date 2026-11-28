@@ -103,10 +103,10 @@ const pageFields = {
 
 /**
  * `GET /api/admin/organizations` — every live organisation newest first, a
- * page at a time; or, with `?q=`, the search it has always been: the
- * organisations of the person with that email address, or the one with that
- * slug. A search is not paged (it answers at most fifty), so the paging
- * parameters are ignored beside `q`.
+ * page at a time; or, with `?q=`, the search: the organisations of the person
+ * with that email address, or the one with that id (or that legacy slug). A
+ * search is not paged (it answers at most fifty), so the paging parameters are
+ * ignored beside `q`.
  */
 export const adminOrganizationsQuerySchema = z.object({
   q: z.optional(
@@ -114,8 +114,8 @@ export const adminOrganizationsQuerySchema = z.object({
       .string()
       .check(
         z.trim(),
-        z.minLength(3, 'Search by an email address or an organisation’s slug.'),
-        z.maxLength(320, 'That is longer than any address or slug.'),
+        z.minLength(3, 'Search by an email address or an organisation ID.'),
+        z.maxLength(320, 'That is longer than any address or ID.'),
       ),
   ),
   ...pageFields,
@@ -362,7 +362,7 @@ export const adminOrganizationPayloadSchema = z.object({
   id: z.string(),
   name: z.string(),
   slug: z.string(),
-  /** The searched-for person's role in it; `null` for a search by slug, and in the list. */
+  /** The searched-for person's role in it; `null` for a search by id or slug, and in the list. */
   role: z.nullable(z.string()),
   createdAt: z.string(),
   plan: planSchema,

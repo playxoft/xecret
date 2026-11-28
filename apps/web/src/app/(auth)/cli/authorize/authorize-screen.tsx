@@ -41,7 +41,7 @@ interface MeResponse {
   /** `id` is here for the vault gate: every wrap's AAD is bound to it. */
   user: { id: string; email: string; displayName: string | null };
   vault: { configured: boolean; unlocked: boolean };
-  organizations: Array<{ id: string; name: string; slug: string; role: string }>;
+  organizations: Array<{ id: string; name: string; role: string }>;
 }
 
 interface AuthorizeResponse {
@@ -91,14 +91,14 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
   // *this tab* holds the User Key, which is what a hand-off needs.
   const vaultKeys = useVaultKeys();
 
-  const [orgSlug, setOrgSlug] = useState<string | null>(null);
+  const [orgId, setOrgId] = useState<string | null>(null);
   const [phase, setPhase] = useState<'idle' | 'submitting' | 'approved'>('idle');
   const [failure, setFailure] = useState<string | null>(null);
   /** Set when the server refuses an approval this page believed was unlocked. */
   const [relocked, setRelocked] = useState(false);
 
   const organizations = useMemo(() => me.data?.organizations ?? [], [me.data]);
-  const selectedSlug = orgSlug ?? organizations[0]?.slug ?? null;
+  const selectedOrgId = orgId ?? organizations[0]?.id ?? null;
 
   /**
    * The vault gate.
@@ -161,7 +161,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
   }
 
   const approve = async () => {
-    if (selectedSlug === null) return;
+    if (selectedOrgId === null) return;
     setPhase('submitting');
     setFailure(null);
 
@@ -188,7 +188,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
             });
 
       const result = await api.post<AuthorizeResponse>('/cli/authorize', {
-        orgSlug: selectedSlug,
+        orgId: selectedOrgId,
         deviceName: request.device,
         codeChallenge: request.challenge,
       });
@@ -256,13 +256,13 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
             {organizations.length > 1 ? (
               <div className="flex flex-col gap-1.5">
                 <span className="text-fg-muted text-sm">Organisation</span>
-                <Select value={selectedSlug ?? ''} onValueChange={setOrgSlug}>
+                <Select value={selectedOrgId ?? ''} onValueChange={setOrgId}>
                   <SelectTrigger aria-label="Organisation">
                     <SelectValue placeholder="Choose an organisation" />
                   </SelectTrigger>
                   <SelectContent>
                     {organizations.map((org) => (
-                      <SelectItem key={org.id} value={org.slug}>
+                      <SelectItem key={org.id} value={org.id}>
                         {org.name}
                       </SelectItem>
                     ))}
@@ -277,7 +277,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
               // A device is authorized *for* an organisation, so an account
               // with none cannot approve one. Rare — one is created at first
               // sign-in — but reachable once every membership is gone, and
-              // Approve is disabled by `selectedSlug === null` whether or not
+              // Approve is disabled by `selectedOrgId === null` whether or not
               // anything explains why. This is what explains why.
               <Alert tone="danger" title="No organisation to authorize for">
                 This account is not in any organisation. Create one in the dashboard, then run{' '}
@@ -295,7 +295,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
                   className="flex-1"
                   onClick={approve}
                   loading={phase === 'submitting'}
-                  disabled={me.loading || selectedSlug === null}
+                  disabled={me.loading || selectedOrgId === null}
                 >
                   Approve
                 </Button>

@@ -215,27 +215,27 @@ export function accountSettingsSections({
  * who has just met a locked switch deserves to know what would unlock it.
  */
 export function organizationSettingsSections(
-  orgSlug: string,
+  orgId: string,
   viewer: SessionOrganization | null,
 ): readonly SettingsSectionGroup[] {
   return [
     {
       sections: [
-        { href: appPath.orgSettings(orgSlug), label: 'General' },
+        { href: appPath.orgSettings(orgId), label: 'General' },
         {
-          href: appPath.orgRoles(orgSlug),
+          href: appPath.orgRoles(orgId),
           label: 'Roles',
           hidden: !canAdminister(viewer, 'member.update'),
         },
         {
-          href: appPath.orgSingleSignOn(orgSlug),
+          href: appPath.orgSingleSignOn(orgId),
           label: 'Single sign-on',
           anchors: ['single-sign-on'],
           hidden: !canAdminister(viewer, 'org.update'),
         },
-        { href: appPath.orgPolicies(orgSlug), label: 'Policies' },
+        { href: appPath.orgPolicies(orgId), label: 'Policies' },
         {
-          href: appPath.orgWebhooks(orgSlug),
+          href: appPath.orgWebhooks(orgId),
           label: 'Webhooks',
           anchors: ['webhooks'],
           hidden: !canAdminister(viewer, 'org.update'),
@@ -245,17 +245,17 @@ export function organizationSettingsSections(
     {
       sections: [
         {
-          href: appPath.orgBilling(orgSlug),
+          href: appPath.orgBilling(orgId),
           label: 'Billing',
           hidden: !canAdminister(viewer, 'billing.manage'),
         },
-        { href: appPath.orgPlans(orgSlug), label: 'Plans' },
+        { href: appPath.orgPlans(orgId), label: 'Plans' },
       ],
     },
     {
       sections: [
         {
-          href: appPath.orgDanger(orgSlug),
+          href: appPath.orgDanger(orgId),
           label: 'Danger zone',
           hidden: !canAdminister(viewer, 'org.delete'),
         },

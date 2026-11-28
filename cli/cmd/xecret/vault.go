@@ -47,9 +47,11 @@ Flags:
   --recovery-code      Ask for a recovery code instead of the passphrase
   --passphrase-stdin   Read the passphrase (or code) from stdin instead of a prompt
   --format FORMAT      env | json | yaml | shell | docker   (default env)
-  --environment NAME   Only this environment: <org>/<project>/<env>, or <env>
-  --out-dir DIR        Write one file per environment under DIR (mode 0600)
-                       instead of printing to stdout
+  --environment PATH   Only these environments: <organisation id>/<project>/<env>
+                       as --list shows it, or <project>/<env>, or <env>
+  --out-dir DIR        Write one file per environment under DIR (mode 0600),
+                       as DIR/<organisation id>/<project>/<env>, instead of
+                       printing to stdout
   --force              Overwrite files that already exist in --out-dir
   --list               Show what the archive holds, without opening it
 `
@@ -94,7 +96,8 @@ func (o *archiveOpener) run(args []string) error {
 	recoveryCode := flags.Bool("recovery-code", false, "ask for a recovery code instead of the passphrase")
 	fromStdin := flags.Bool("passphrase-stdin", false, "read the passphrase or code from stdin")
 	format := flags.String("format", "env", "env | json | yaml | shell | docker")
-	only := flags.String("environment", "", "only this environment: <org>/<project>/<env>, or <env>")
+	only := flags.String("environment", "",
+		"only these environments: <organisation id>/<project>/<env>, <project>/<env>, or <env>")
 	outDir := flags.String("out-dir", "", "write one file per environment under this directory")
 	force := flags.Bool("force", false, "overwrite files that already exist in --out-dir")
 	list := flags.Bool("list", false, "show what the archive holds without opening it")
@@ -160,27 +163,57 @@ func (o *archiveOpener) run(args []string) error {
 	return o.report(opened)
 }
 
-// selectEnvironments narrows the archive to --environment, by full path or by
-// environment slug alone when that is unambiguous.
+// selectEnvironments narrows the archive to --environment: every environment
+// the selector names, which is one for a full path and may be several for the
+// shorter forms.
+//
+// The full path names the organisation by its id, as --list prints it, because
+// the id is the one name an organisation has that no other shares. The path an
+// older build printed, with the organisation's slug where the id now is, is
+// accepted as well, so a command copied from that output still selects what it
+// did; it is not printed anywhere any more.
 func selectEnvironments(all []vaultarchive.Environment, only string) ([]vaultarchive.Environment, error) {
 	if only == "" {
 		return all, nil
 	}
 	var matched []vaultarchive.Environment
 	for _, environment := range all {
-		if environmentPath(environment.OrgSlug, environment.ProjectSlug, environment.EnvironmentSlug) == only ||
-			environment.EnvironmentSlug == only {
+		if selects(environment, only) {
 			matched = append(matched, environment)
 		}
 	}
 	if len(matched) == 0 {
-		return nil, fmt.Errorf("the archive has no environment %q — run with --list to see what it holds", printable(only))
+		return nil, fmt.Errorf("the archive has no environment %q; run with --list to see what it holds", printable(only))
 	}
 	return matched, nil
 }
 
-func environmentPath(org, project, environment string) string {
-	return printable(org + "/" + project + "/" + environment)
+// selects reports whether one --environment value names an environment.
+func selects(environment vaultarchive.Environment, only string) bool {
+	project := environment.ProjectSlug + "/" + environment.EnvironmentSlug
+	switch {
+	case only == environment.EnvironmentSlug, only == project:
+		return true
+	case strings.EqualFold(only, environment.OrgID+"/"+project):
+		return true
+	case only == environment.OrgSlug+"/"+project:
+		return true
+	}
+	return false
+}
+
+// environmentPath is how an environment is named where something will read
+// the name back: the --list line --environment takes, the keys of a json or
+// yaml document. The organisation is its id, which is unique where its name is
+// not; two organisations both called Acme would otherwise share a key.
+func environmentPath(orgID, project, environment string) string {
+	return printable(orgID + "/" + project + "/" + environment)
+}
+
+// environmentLabel is how an environment is named for a person: the
+// organisation by its name, which is the name people know it by.
+func environmentLabel(orgName, project, environment string) string {
+	return printable(orgName + " / " + project + " / " + environment)
 }
 
 // maxArchiveFileBytes bounds what is read into memory before anything is
@@ -294,7 +327,7 @@ func (o *archiveOpener) describe(doc *vaultarchive.Document, environments []vaul
 			production = "  [production]"
 		}
 		fmt.Fprintf(o.stdout, "%s / %s / %s%s\n", printable(environment.OrgName), printable(environment.ProjectName), printable(environment.EnvironmentName), production)
-		fmt.Fprintf(o.stdout, "  %s — %d secret(s)\n", environmentPath(environment.OrgSlug, environment.ProjectSlug, environment.EnvironmentSlug), len(environment.Secrets))
+		fmt.Fprintf(o.stdout, "  %s: %d secret(s)\n", environmentPath(environment.OrgID, environment.ProjectSlug, environment.EnvironmentSlug), len(environment.Secrets))
 		for _, secret := range environment.Secrets {
 			fmt.Fprintf(o.stdout, "    %s\n", printable(secret.Name))
 		}
@@ -351,7 +384,7 @@ func (o *archiveOpener) print(opened *vaultarchive.Opened, format string) error 
 			if index > 0 {
 				fmt.Fprintln(o.stdout)
 			}
-			fmt.Fprintf(o.stdout, "# %s\n", environmentPath(environment.OrgSlug, environment.ProjectSlug, environment.EnvironmentSlug))
+			fmt.Fprintf(o.stdout, "# %s\n", environmentLabel(environment.OrgName, environment.ProjectSlug, environment.EnvironmentSlug))
 			document, err := formatSecrets(values(environment), format)
 			if err != nil {
 				return err
@@ -368,7 +401,14 @@ func (o *archiveOpener) print(opened *vaultarchive.Opened, format string) error 
 	// one valid document however many environments the archive holds.
 	nested := map[string]map[string]string{}
 	for _, environment := range opened.Environments {
-		nested[environmentPath(environment.OrgSlug, environment.ProjectSlug, environment.EnvironmentSlug)] = values(environment)
+		key := environmentPath(environment.OrgID, environment.ProjectSlug, environment.EnvironmentSlug)
+		if _, taken := nested[key]; taken {
+			// The reader keeps paths unique by slug, as the archive format
+			// defines; one id under two slugs would make one environment's
+			// values silently replace another's here.
+			return fmt.Errorf("two environments in this archive are both %s", key)
+		}
+		nested[key] = values(environment)
 	}
 	var document []byte
 	var err error
@@ -401,12 +441,17 @@ func pathSegment(value string) string {
 // different secrets of the same environments. So a part's files are named for
 // the part — production.part-2-of-3.env — and two parts never write one file:
 // the second run would otherwise refuse, or with --force replace, the first.
+//
+// The organisation's folder is its id. Its name is free text, two
+// organisations may share one, and two different names can sanitise to the
+// same folder; the id cannot collide, and the line each file is reported with
+// names the organisation for the person reading it.
 func (o *archiveOpener) writeFiles(opened *vaultarchive.Opened, dir, format string, force bool) error {
 	extension := map[string]string{"env": ".env", "json": ".json", "yaml": ".yaml", "shell": ".sh", "docker": ".docker.env"}[format]
 	written := map[string]bool{}
 
 	for _, environment := range opened.Environments {
-		folder := filepath.Join(dir, pathSegment(environment.OrgSlug), pathSegment(environment.ProjectSlug))
+		folder := filepath.Join(dir, pathSegment(environment.OrgID), pathSegment(environment.ProjectSlug))
 		stem := pathSegment(environment.EnvironmentSlug)
 		if opened.Parts > 1 {
 			stem = fmt.Sprintf("%s.part-%d-of-%d", stem, opened.Part, opened.Parts)
@@ -434,7 +479,8 @@ func (o *archiveOpener) writeFiles(opened *vaultarchive.Opened, dir, format stri
 		if err := writeSecretDocument(path, document); err != nil {
 			return err
 		}
-		fmt.Fprintf(o.stderr, "Wrote %s (mode 0600).\n", printable(path))
+		fmt.Fprintf(o.stderr, "Wrote %s (%s, mode 0600).\n", printable(path),
+			environmentLabel(environment.OrgName, environment.ProjectSlug, environment.EnvironmentSlug))
 	}
 
 	fmt.Fprintln(o.stderr, "warning: those files hold plaintext secrets. Delete them when you have moved the values somewhere safe.")
@@ -446,7 +492,7 @@ func (o *archiveOpener) writeFiles(opened *vaultarchive.Opened, dir, format stri
 func (o *archiveOpener) report(opened *vaultarchive.Opened) error {
 	var noKey, damaged, notes []string
 	for _, environment := range opened.Environments {
-		where := environmentPath(environment.OrgSlug, environment.ProjectSlug, environment.EnvironmentSlug)
+		where := environmentLabel(environment.OrgName, environment.ProjectSlug, environment.EnvironmentSlug)
 		for _, secret := range environment.Secrets {
 			switch secret.Outcome {
 			case vaultarchive.OutcomeNoKey:

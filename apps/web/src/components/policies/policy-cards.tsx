@@ -18,20 +18,20 @@ import { TokenPolicyCard } from './token-policy-card';
  * to read it; editable by owners and admins (`org.update`, the route's gate).
  */
 export function PolicyCards({
-  orgSlug,
+  orgId,
   organization,
 }: {
-  orgSlug: string;
+  orgId: string;
   organization: SessionOrganization | null;
 }) {
-  const policies = useOrgPolicies(orgSlug);
+  const policies = useOrgPolicies(orgId);
   const canManage = canAdminister(organization, 'org.update');
   const reload = () => void policies.reload();
 
   return (
     <>
       <TokenPolicyCard
-        orgSlug={orgSlug}
+        orgId={orgId}
         policies={policies.data}
         error={policies.error}
         onRetry={reload}
@@ -39,7 +39,7 @@ export function PolicyCards({
         onSaved={reload}
       />
       <SecretPolicyCard
-        orgSlug={orgSlug}
+        orgId={orgId}
         policies={policies.data}
         error={policies.error}
         onRetry={reload}

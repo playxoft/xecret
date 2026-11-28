@@ -3,7 +3,7 @@ title: Frequently asked questions
 navTitle: FAQ
 description: Short answers about pricing, security, offline use, team access, migrating away, self-hosting and how xecret compares to .env files and other tools.
 keywords: [xecret faq, secret manager questions, is it secure, end-to-end encrypted, offline, pricing, migrate away]
-updated: 2026-11-22
+updated: 2026-11-28
 schema: faq
 ---
 
@@ -114,9 +114,10 @@ Each command gets its own environment; nothing is shared between them.
 
 ### Is `.xecret.yaml` safe to commit?
 
-Yes, and you should. It contains two slugs and no secrets — the type that
-models it has exactly two fields, so nothing in the CLI can write anything else
-into it.
+Yes, and you should. It holds three identifiers (the organisation's ID, the
+Project ID and the environment) and no secrets. The type that models it has
+exactly those three fields, so nothing in the CLI can write anything else into
+it.
 
 ## Teams and CI
 

@@ -38,7 +38,7 @@ import { ACTION_GROUPS, ACTION_LABELS } from './labels';
 const LEVELS: readonly AccessLevel[] = ['none', 'read', 'write', 'admin'];
 
 export interface RoleDialogProps {
-  orgSlug: string;
+  orgId: string;
   /** The role being edited, or `null` to define a new one. */
   role: CustomRole | null;
   /**
@@ -164,7 +164,7 @@ export function roleFormChanged(role: CustomRole | null, body: RoleBody): boolea
  * so an existing role's base is always among them.
  */
 export function RoleForm({
-  orgSlug,
+  orgId,
   role,
   definableBaseRoles: bases,
   onOpenChange,
@@ -236,8 +236,8 @@ export function RoleForm({
     setError(null);
     setNameError(null);
     try {
-      if (role === null) await api.post(apiPath.roles(orgSlug), body);
-      else await api.patch(apiPath.role(orgSlug, role.id), body);
+      if (role === null) await api.post(apiPath.roles(orgId), body);
+      else await api.patch(apiPath.role(orgId, role.id), body);
       toast({
         variant: 'success',
         title: role === null ? `Created ${normalised}` : `Saved ${normalised}`,

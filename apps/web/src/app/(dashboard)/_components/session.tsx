@@ -58,6 +58,10 @@ export interface SessionAuthority {
 export interface SessionOrganization {
   id: string;
   name: string;
+  /**
+   * The legacy slug: never shown, and read only to send an old address on to
+   * the id (`LegacyOrgAddress`) and to carry what this browser filed under it.
+   */
   slug: string;
   /** The stored role — what the viewer *is*, and what labels show. */
   role: OrgRole;
@@ -173,11 +177,15 @@ export function useSession(): SessionValue {
   return value;
 }
 
-/** The organisation a URL names, or `null` when the viewer is not a member. */
-export function useOrganization(slug: string | null): SessionOrganization | null {
+/**
+ * The organisation a URL names, by its id, or `null` when the viewer is not a
+ * member. A legacy slug in the URL finds nothing here: such an address is on
+ * its way to the id, and nothing is drawn for it until it arrives.
+ */
+export function useOrganization(orgId: string | null): SessionOrganization | null {
   const { organizations } = useSession();
-  if (slug === null) return null;
-  return organizations.find((organization) => organization.slug === slug) ?? null;
+  if (orgId === null) return null;
+  return organizations.find((organization) => organization.id === orgId) ?? null;
 }
 
 /**

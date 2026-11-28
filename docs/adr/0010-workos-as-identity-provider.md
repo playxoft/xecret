@@ -267,13 +267,15 @@ organisation's identity provider vouched for anybody.
   removal leaves a record (`org_member_removals`) that only an accepted invitation clears, and
   the refusal is `member.jit_denied` with reason `removed`.
 
-The login route's `?org=<slug>` deep link starts an organisation's SSO directly. The redirect
-has to carry the WorkOS organisation id, so it reveals which slugs have SSO; the lookup is
-therefore rate limited per address (`RL_LOGIN`), and over the limit the parameter is silently
+The login route's `?org=<id>` deep link starts an organisation's SSO directly. It names the
+organisation by its id; a legacy slug, in a link made before organisations were named by id,
+still works. The redirect has to carry the WorkOS organisation id, so it reveals which
+organisations have SSO; the lookup is therefore rate limited per address (`RL_LOGIN`), and
+over the limit the parameter is silently
 ignored and the ordinary screen opens — a refusal would be an oracle of its own. It is ignored
 altogether on a `reauth=1` sign-in, which is about this account, not an organisation.
 *(WS-5:)* It is honoured only from a same-origin navigation (to a document: `Sec-Fetch-Mode`
-and `-Dest` are checked where sent); from anywhere else it lands on `/sign-in?org=<slug>`,
+and `-Dest` are checked where sent); from anywhere else it lands on `/sign-in?org=<id>`,
 which names the organisation and asks the person to confirm. Once an organisation can be
 linked to an identity provider its owner controls, a blind deep link would otherwise be a
 login-CSRF: the victim signed in to the attacker's account.

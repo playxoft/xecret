@@ -158,11 +158,11 @@ CLI injects them into whatever you run:
 
 ```bash
 xecret login                     # browser approval; the credential goes to your OS keychain
-xecret init                      # writes .xecret.yaml — a project slug and an environment slug
+xecret init                      # writes .xecret.yaml: your organisation, project and environment
 xecret run -- npm run dev        # your command, with the environment already populated
 ```
 
-`.xecret.yaml` contains two slugs and no secrets, so you commit it. That single
+`.xecret.yaml` holds identifiers and no secrets, so you commit it. That single
 committed file is what makes the safe path the short path: a new engineer
 clones, runs `xecret run -- npm run dev`, and is working. Nobody pastes
 anything into Slack, because there is nothing to paste. The full sequence,

@@ -22,6 +22,7 @@ import type { ApiError } from './errors';
  */
 
 const repositories = vi.hoisted(() => ({
+  findOrganizationByIdWithEntitlements: vi.fn(),
   findOrganizationBySlugWithEntitlements: vi.fn(),
   findProjectById: vi.fn(),
   findProjectBySlug: vi.fn(),
@@ -150,6 +151,11 @@ beforeEach(() => {
     organization,
     entitlements: null,
   });
+  // Keyed, as the real query is: the row comes back only for its own id.
+  repositories.findOrganizationByIdWithEntitlements.mockImplementation(
+    async (_db: unknown, orgId: string) =>
+      orgId === organization.id ? { organization, entitlements: null } : null,
+  );
   repositories.findProjectBySlug.mockResolvedValue(project);
   // Org-scoped, as the real query is: the row comes back only for its own
   // organisation's id.
@@ -204,6 +210,117 @@ describe('organisation resolution', () => {
       orgId: ORG_ID,
       userId: USER_ID,
     });
+  });
+});
+
+describe('an organisation named by its id', () => {
+  it('resolves by id, and never asks for a slug', async () => {
+    const scope = await resolveOrg(userPrincipal, ORG_ID, services);
+
+    expect(scope.organization.id).toBe(ORG_ID);
+    expect(scope.actor).toEqual({ kind: 'user', userId: USER_ID, orgId: ORG_ID });
+    expect(repositories.findOrganizationByIdWithEntitlements).toHaveBeenCalledWith(
+      services.db,
+      ORG_ID,
+    );
+    expect(repositories.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('still resolves a legacy slug by slug, so an older CLI keeps working', async () => {
+    const scope = await resolveOrg(userPrincipal, 'playxoft', services);
+
+    expect(scope.organization.id).toBe(ORG_ID);
+    expect(repositories.findOrganizationBySlugWithEntitlements).toHaveBeenCalledWith(
+      services.db,
+      'playxoft',
+    );
+    expect(repositories.findOrganizationByIdWithEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('reaches the same scope by either spelling', async () => {
+    const byId = await resolveOrg(userPrincipal, ORG_ID, services);
+    const bySlug = await resolveOrg(userPrincipal, 'playxoft', services);
+
+    expect(byId).toEqual(bySlug);
+  });
+
+  it('answers an unknown id exactly as it answers an unknown slug', async () => {
+    await expectNotFound(resolveOrg(userPrincipal, OTHER_ORG_ID, services));
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue(null);
+    await expectNotFound(resolveOrg(userPrincipal, 'nope', services));
+  });
+
+  it('never retries a missing id as a slug, so a segment means one thing', async () => {
+    await expectNotFound(resolveOrg(userPrincipal, OTHER_ORG_ID, services));
+    expect(repositories.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('reads only the canonical spelling as an id', async () => {
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue(null);
+    await expectNotFound(resolveOrg(userPrincipal, ORG_ID.toUpperCase(), services));
+
+    expect(repositories.findOrganizationByIdWithEntitlements).not.toHaveBeenCalled();
+    expect(repositories.findOrganizationBySlugWithEntitlements).toHaveBeenCalledWith(
+      services.db,
+      ORG_ID.toUpperCase(),
+    );
+  });
+
+  it('requires a membership whichever spelling found the organisation', async () => {
+    repositories.loadAuthorizationContext.mockResolvedValue(null);
+    await expectNotFound(resolveOrg(userPrincipal, ORG_ID, services));
+    await expectNotFound(resolveOrg(userPrincipal, 'playxoft', services));
+  });
+
+  it('applies the single sign-on requirement whichever spelling found the organisation', async () => {
+    const requiring = { ...organization, ssoRequired: true, workosOrgId: 'org_01PLAYXOFT' };
+    repositories.findOrganizationByIdWithEntitlements.mockResolvedValue({
+      organization: requiring,
+      entitlements: null,
+    });
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: requiring,
+      entitlements: null,
+    });
+    repositories.loadAuthorizationContext.mockResolvedValue(membership('admin'));
+
+    await expect(resolveOrg(userPrincipal, ORG_ID, services)).rejects.toMatchObject({
+      code: 'sso_required',
+    });
+    await expect(resolveOrg(userPrincipal, 'playxoft', services)).rejects.toMatchObject({
+      code: 'sso_required',
+    });
+  });
+
+  it('holds a service token to its organisation by id and by slug alike', async () => {
+    const elsewhere = servicePrincipal({ orgId: OTHER_ORG_ID });
+
+    await expectNotFound(resolveOrg(elsewhere, ORG_ID, services));
+    await expectNotFound(resolveOrg(elsewhere, 'playxoft', services));
+    expect(repositories.loadAuthorizationContext).not.toHaveBeenCalled();
+  });
+
+  it('admits a service token at its own organisation by id and by slug alike', async () => {
+    for (const segment of [ORG_ID, 'playxoft']) {
+      const scope = await resolveOrg(servicePrincipal(), segment, services);
+      expect(scope.actor.kind).toBe('serviceToken');
+      expect(scope.organization.id).toBe(ORG_ID);
+    }
+  });
+
+  it('keeps a service token pinned to its project and environment beneath an id', async () => {
+    const otherProject = servicePrincipal({ projectId: OTHER_PROJECT_ID });
+    await expectNotFound(
+      resolveProject(await resolveOrg(otherProject, ORG_ID, services), 'default', services),
+    );
+
+    const otherEnvironment = servicePrincipal({ environmentId: OTHER_ENV_ID });
+    const scope = await resolveProject(
+      await resolveOrg(otherEnvironment, ORG_ID, services),
+      PROJECT_ID,
+      services,
+    );
+    await expectNotFound(resolveEnvironment(scope, 'production', services));
   });
 });
 

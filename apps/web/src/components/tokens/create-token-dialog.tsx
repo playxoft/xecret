@@ -44,7 +44,7 @@ import { mintServiceToken, TokenKeyUnavailableError } from './token-keys';
 import type { MintedServiceToken } from './token-keys';
 
 export interface CreateTokenDialogProps {
-  orgSlug: string;
+  orgId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
@@ -84,7 +84,7 @@ type ScopeField = 'ipAllowlist' | 'expiresAt';
  * remains a form.
  */
 export function CreateTokenDialog({
-  orgSlug,
+  orgId,
   open,
   onOpenChange,
   onCreated,
@@ -96,7 +96,7 @@ export function CreateTokenDialog({
     <Dialog open={open} onOpenChange={(next) => (submitting ? undefined : onOpenChange(next))}>
       <DialogContent>
         <CreateTokenFlow
-          orgSlug={orgSlug}
+          orgId={orgId}
           onOpenChange={onOpenChange}
           onSubmittingChange={setSubmitting}
           onCreated={onCreated}
@@ -114,19 +114,19 @@ interface MintOutcome {
 }
 
 function CreateTokenFlow({
-  orgSlug,
+  orgId,
   onOpenChange,
   onSubmittingChange,
   onCreated,
   tokenPolicy,
 }: {
-  orgSlug: string;
+  orgId: string;
   onOpenChange: (open: boolean) => void;
   onSubmittingChange: (submitting: boolean) => void;
   onCreated: () => void;
   tokenPolicy: TokenPolicy | null;
 }) {
-  const projects = useApiResource<ProjectListResponse>(apiPath.projects(orgSlug));
+  const projects = useApiResource<ProjectListResponse>(apiPath.projects(orgId));
   const vault = useVaultKeys();
 
   const [name, setName] = useState('');
@@ -152,7 +152,7 @@ function CreateTokenFlow({
 
   // The environment list follows the chosen project.
   const project = useApiResource<ProjectResponse>(
-    projectSlug === '' ? null : apiPath.project(orgSlug, projectSlug),
+    projectSlug === '' ? null : apiPath.project(orgId, projectSlug),
   );
 
   function setBusy(busy: boolean) {
@@ -217,7 +217,7 @@ function CreateTokenFlow({
       try {
         minted.push(
           await mintServiceToken({
-            orgSlug,
+            orgId,
             projectId,
             projectSlug,
             environmentSlug,

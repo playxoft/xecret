@@ -146,6 +146,9 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
 
   return json({
     organization: {
+      // The id is where the invitee is sent next (`/app/{orgId}`). The slug
+      // stays for a tab still running the page from before.
+      id: accepted.organization.id,
       name: accepted.organization.name,
       slug: accepted.organization.slug,
     },

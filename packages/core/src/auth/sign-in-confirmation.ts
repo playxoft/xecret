@@ -116,10 +116,16 @@ export interface SignInConfirmation {
   ssoWorkosOrgId: string | null;
   /**
    * How the organisation the sign-in came back through names itself here —
-   * chosen by whoever owns it, so the page shows it as a claim, never as fact.
-   * `null` when it named no organisation, or one not linked to any here.
+   * chosen by whoever owns it, so the page shows it as a claim, never as fact —
+   * and the id it is addressed by, which its owner did not choose and cannot
+   * make look like somebody else's. `null` when it named no organisation, or
+   * one not linked to any here.
+   *
+   * A cookie sealed before organisations were named by id carries the slug in
+   * `id`'s place. It is read the same way: an identifier the name cannot
+   * forge, shown beside it. Such a cookie lives for minutes.
    */
-  organization: { name: string; slug: string } | null;
+  organization: { name: string; id: string } | null;
   purpose: OAuthPurpose;
   /** A same-origin path, validated before it was first sealed. */
   next: string;
@@ -192,7 +198,7 @@ export async function sealSignInConfirmation(
         e: value.email,
         m: value.signInMethod,
         s: value.ssoWorkosOrgId,
-        o: value.organization === null ? null : [value.organization.name, value.organization.slug],
+        o: value.organization === null ? null : [value.organization.name, value.organization.id],
         p: value.purpose,
         x: value.next,
         f: value.flowIssuedAt,
@@ -354,12 +360,15 @@ function parsePayload(payload: string): SignInConfirmation | null {
   let organization: SignInConfirmation['organization'] = null;
   if (o !== null) {
     if (!Array.isArray(o) || o.length !== 2) return null;
-    const [name, slug] = o as unknown[];
+    const [name, id] = o as unknown[];
     if (!isPrintable(name, 200)) return null;
-    if (typeof slug !== 'string' || slug.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(slug)) {
+    // A canonical id is lowercase hex in single-hyphen groups, which the slug
+    // pattern admits, so one test holds both the id and the legacy slug an
+    // older cookie carries here.
+    if (typeof id !== 'string' || id.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(id)) {
       return null;
     }
-    organization = { name, slug };
+    organization = { name, id };
   }
 
   if (p !== 'sign-in' && p !== 'reauth') return null;

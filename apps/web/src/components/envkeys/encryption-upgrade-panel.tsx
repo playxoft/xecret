@@ -62,9 +62,11 @@ import type {
  * asking it on every page view costs no audit noise and no rate limit.
  */
 export interface EncryptionUpgradePanelProps {
+  /**
+   * The environment, as its address names it. Its `orgId` is also the AAD
+   * component every value is bound to.
+   */
   target: EnvironmentRef;
-  /** The organisation id, an AAD component of every value. `null` until the session loads. */
-  orgId: string | null;
   environmentName: string;
   isProduction: boolean;
   /** The coarse "may manage this environment" from the session. The server decides. */
@@ -86,12 +88,11 @@ const automaticAttempts = new Set<string>();
 const automaticFailures = new Set<string>();
 
 function attemptKey(target: EnvironmentRef): string {
-  return `${target.orgSlug}/${target.projectId}/${target.envSlug}`;
+  return `${target.orgId}/${target.projectId}/${target.envSlug}`;
 }
 
 export function EncryptionUpgradePanel({
   target,
-  orgId,
   environmentName,
   isProduction,
   canManage,
@@ -110,12 +111,12 @@ export function EncryptionUpgradePanel({
     latestUpgraded.current = onUpgraded;
   }, [onUpgraded]);
 
-  const { orgSlug, projectId, envSlug } = target;
+  const { orgId, projectId, envSlug } = target;
 
   useEffect(() => {
     if (!canManage) return;
     const controller = new AbortController();
-    fetchUpgradePreview({ orgSlug, projectId, envSlug }, { signal: controller.signal })
+    fetchUpgradePreview({ orgId, projectId, envSlug }, { signal: controller.signal })
       .then((answer) => {
         if (controller.signal.aborted) return;
         setPreview(answer);
@@ -127,29 +128,28 @@ export function EncryptionUpgradePanel({
         if (!controller.signal.aborted) setPreviewFailed(true);
       });
     return () => controller.abort();
-  }, [canManage, orgSlug, projectId, envSlug, attempt]);
+  }, [canManage, orgId, projectId, envSlug, attempt]);
 
   // ── The automatic upgrade ──
   // Only from the banner placement, so one page cannot start it twice, and only
   // when the server's own preview says there is nothing to decide. "Running" is
   // derived rather than stored: eligible, and not already failed in this tab.
-  const key = attemptKey({ orgSlug, projectId, envSlug });
+  const key = attemptKey({ orgId, projectId, envSlug });
   const automaticRunning =
     placement === 'banner' &&
     preview !== null &&
     vault !== null &&
-    orgId !== null &&
     autoUpgradeEligible(preview, true) &&
     automatic === 'idle' &&
     !automaticFailures.has(key);
 
   useEffect(() => {
-    if (!automaticRunning || preview === null || vault === null || orgId === null) return;
+    if (!automaticRunning || preview === null || vault === null) return;
     if (automaticAttempts.has(key)) return;
     automaticAttempts.add(key);
 
     void runEncryptionUpgrade({
-      target: { orgSlug, projectId, envSlug },
+      target: { orgId, projectId, envSlug },
       orgId,
       vault,
       preview,
@@ -172,18 +172,7 @@ export function EncryptionUpgradePanel({
       automaticFailures.add(key);
       setAutomatic(nothingChanged(outcome.error) ? 'failed' : 'unconfirmed');
     });
-  }, [
-    automaticRunning,
-    key,
-    preview,
-    vault,
-    orgId,
-    orgSlug,
-    projectId,
-    envSlug,
-    environmentName,
-    toast,
-  ]);
+  }, [automaticRunning, key, preview, vault, orgId, projectId, envSlug, environmentName, toast]);
 
   if (
     placement === 'banner' &&
@@ -239,7 +228,7 @@ export function EncryptionUpgradePanel({
               setAttempt((current) => current + 1);
               setDialogOpen(true);
             }}
-            disabled={!preview.canUpgrade || vault === null || orgId === null}
+            disabled={!preview.canUpgrade || vault === null}
           >
             Upgrade to end-to-end encryption
           </Button>
@@ -258,7 +247,7 @@ export function EncryptionUpgradePanel({
         </div>
       ) : null}
 
-      {preview !== null && details !== null && orgId !== null ? (
+      {preview !== null && details !== null ? (
         <EncryptionUpgradeDialog
           target={target}
           orgId={orgId}

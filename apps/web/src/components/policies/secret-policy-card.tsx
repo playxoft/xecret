@@ -67,14 +67,14 @@ const SCOPES: ReadonlyArray<{ value: SecretPolicyScope; label: string }> = [
  * switch it off still in reach.
  */
 export function SecretPolicyCard({
-  orgSlug,
+  orgId,
   policies,
   error,
   onRetry,
   canManage,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   policies: OrgPoliciesResponse | null;
   error: unknown;
   onRetry: () => void;
@@ -109,7 +109,7 @@ export function SecretPolicyCard({
         ) : (
           <SecretPolicyForm
             key={JSON.stringify(policies.secrets)}
-            orgSlug={orgSlug}
+            orgId={orgId}
             stored={policies.secrets}
             feature={policies.features.secretPolicy}
             canManage={canManage}
@@ -122,13 +122,13 @@ export function SecretPolicyCard({
 }
 
 function SecretPolicyForm({
-  orgSlug,
+  orgId,
   stored,
   feature,
   canManage,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   stored: SecretPolicy;
   feature: FeatureStatus;
   canManage: boolean;
@@ -177,7 +177,7 @@ function SecretPolicyForm({
     setSaving(true);
     setError(null);
     try {
-      await api.patch<OrgPoliciesResponse>(apiPath.policies(orgSlug), {
+      await api.patch<OrgPoliciesResponse>(apiPath.policies(orgId), {
         secrets: result.policy,
       });
       toast({

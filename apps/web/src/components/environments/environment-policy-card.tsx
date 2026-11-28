@@ -69,13 +69,13 @@ type Pending = 'export' | 'alerts' | 'reset' | null;
  * asked for by somebody who can manage the environment.
  */
 export function EnvironmentPolicyCard({
-  orgSlug,
+  orgId,
   projectId,
   environment,
   canManage,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   environment: EnvironmentDetail;
   /** Whether the viewer holds `environment.update`. The server still decides. */
@@ -83,10 +83,10 @@ export function EnvironmentPolicyCard({
   onChanged: () => void;
 }) {
   const { toast } = useToast();
-  const policies = useOrgPolicies(orgSlug);
+  const policies = useOrgPolicies(orgId);
   const sightings = useApiResource<ReadSightingsResponse>(
     canManage
-      ? withQuery(apiPath.readSightings(orgSlug, projectId, environment.slug), {
+      ? withQuery(apiPath.readSightings(orgId, projectId, environment.slug), {
           limit: SIGHTINGS_LIMIT,
         })
       : null,
@@ -115,7 +115,7 @@ export function EnvironmentPolicyCard({
     setError(null);
     try {
       await api.patch<EnvironmentChangeResponse>(
-        apiPath.environmentPolicy(orgSlug, projectId, environment.slug),
+        apiPath.environmentPolicy(orgId, projectId, environment.slug),
         body,
       );
       toast({ variant: 'success', title });

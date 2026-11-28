@@ -11,6 +11,7 @@ import type { Entitlements } from '@xecret/core/entitlements';
 import {
   entitlementsFromRow,
   findEnvironmentBySlug,
+  findOrganizationByIdWithEntitlements,
   findOrganizationBySlugWithEntitlements,
   findProjectById,
   findProjectBySlug,
@@ -55,8 +56,8 @@ export interface OrgScope {
    *
    * Present for every principal including a service token, because a limit
    * belongs to the organisation rather than to whoever is asking. It costs no
-   * extra query: `findOrganizationBySlugWithEntitlements` carries the columns
-   * along on the lookup `resolveOrg` was already making.
+   * extra query: `findOrganizationByIdWithEntitlements`, and its slug twin,
+   * carry the columns along on the lookup `resolveOrg` was already making.
    *
    * Holding it here — rather than fetching it where it is checked — is what
    * keeps "no extra query on the hot path" a structural property instead of a
@@ -74,28 +75,49 @@ export interface EnvironmentScope extends ProjectScope {
 }
 
 /**
- * Resolves an organisation slug for the current principal.
+ * Resolves an organisation, named by its id or by its legacy slug, for the
+ * current principal.
+ *
+ * ── Why either ──
+ * Every address the dashboard builds, every link the server mails and every
+ * path a current CLI calls names an organisation by its id; nothing shows a
+ * person its slug any more. But a CLI installed before that, a bookmark, an
+ * email already sent and any integration written against the API still name
+ * it by slug, and must keep working. One segment serves both, told apart by
+ * shape exactly as `resolveProject` tells a project's apart: a canonical
+ * lowercase UUID is an id, anything else is a slug. No organisation slug can
+ * take that shape (`checkSlug` refuses one, and the organisation ceiling is
+ * shorter than a UUID), so the reading is never ambiguous, and an id is never
+ * retried as a slug.
+ *
+ * Everything after the lookup is the same for both spellings: the membership,
+ * the single sign-on requirement and a service token's pin are checked against
+ * the row that was found, never against the value that found it.
  *
  * Note the order: the organisation is looked up first, then membership, and a
  * miss at *either* step produces the same `not_found`. Checking membership first
  * and reporting "no such organisation" separately would let an attacker
- * enumerate which slugs are taken.
+ * enumerate which organisations exist.
  */
 export async function resolveOrg(
   principal: Principal,
-  slug: string,
+  segment: string,
   services: ServiceContext,
 ): Promise<OrgScope> {
-  const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
-  if (!found) throw errors.notFound(`no organisation with slug`);
+  const found = isUuid(segment)
+    ? await findOrganizationByIdWithEntitlements(services.db, segment)
+    : await findOrganizationBySlugWithEntitlements(services.db, segment);
+  if (!found) throw errors.notFound('no organisation with that id or slug');
 
   const { organization } = found;
   const entitlements = entitlementsFromRow(found.entitlements);
 
   if (principal.kind === 'serviceToken') {
     // A service token carries its organisation; it does not get to name one.
-    // Any other slug is refused before a membership lookup that would find
-    // nothing anyway — the token has no member row by construction.
+    // Any other organisation, by id or by slug, is refused before a membership
+    // lookup that would find nothing anyway: the token has no member row by
+    // construction. Compared against the row found, so the spelling that found
+    // it makes no difference.
     if (principal.orgId !== organization.id) throw errors.notFound('service token org mismatch');
 
     bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
@@ -306,10 +328,13 @@ export async function resolveEnvironment(
  *
  * `projectSlug` is the route folder's name, `[projectSlug]`, and it holds the
  * project's slug *or its id* — whichever the caller addressed it by; see
- * `resolveProject`. The folder keeps the name it has always had because every
- * route below it, and every client that calls one, is unaffected by which of the
- * two arrives: the resolved scope carries the project row, and the routes read
- * `scope.project.slug` for anything they record.
+ * `resolveProject`. `orgSlug` is the same arrangement one level up, `[orgSlug]`:
+ * the organisation's id, which is what the dashboard and a current CLI send, or
+ * the legacy slug an older client still sends; see `resolveOrg`. Both folders
+ * keep the names they have always had because every route below them, and
+ * every client that calls one, is unaffected by which spelling arrives: the
+ * resolved scope carries the rows, and the routes read them for anything they
+ * record.
  */
 export async function resolveProjectPath(
   principal: Principal,

@@ -43,12 +43,12 @@ import type { Invitation } from './types';
  * re-invite — needs the row to act on.
  */
 export function InvitationsSection({
-  orgSlug,
+  orgId,
   invitations,
   onChanged,
   onReinvite,
 }: {
-  orgSlug: string;
+  orgId: string;
   invitations: readonly Invitation[];
   /** Reloads the invitation list after a revocation. */
   onChanged: () => void;
@@ -187,7 +187,7 @@ export function InvitationsSection({
           if (revoking === null) return;
           setError(null);
           try {
-            await api.delete(apiPath.invitation(orgSlug, revoking.id));
+            await api.delete(apiPath.invitation(orgId, revoking.id));
             toast({ variant: 'success', title: `Revoked the invitation to ${revoking.email}` });
             setRevoking(null);
             onChanged();

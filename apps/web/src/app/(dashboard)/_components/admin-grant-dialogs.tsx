@@ -60,7 +60,6 @@ import { Segmented } from './segmented';
 export interface GrantTarget {
   id: string;
   name: string;
-  slug: string;
   plan: AdminOrganizationPayload['plan'];
   /** What invitations are refused against now. */
   seatLimit: number;
@@ -92,7 +91,6 @@ export function grantTargetOf(organization: AdminOrganizationPayload): GrantTarg
   return {
     id: organization.id,
     name: organization.name,
-    slug: organization.slug,
     plan: organization.plan,
     seatLimit: organization.seats.limit,
     grant: organization.grant,

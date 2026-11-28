@@ -39,7 +39,7 @@ export function EnvKeyUnavailableState({
    * of that state that does not require another person. Optional so that callers
    * rendering the other four reasons are not made to supply it.
    */
-  target?: { orgSlug: string; environmentId: string };
+  target?: { orgId: string; environmentId: string };
 }) {
   if (reason === 'pending') {
     return (
@@ -61,7 +61,7 @@ export function EnvKeyUnavailableState({
                 joined without a code — which is most people. */}
             {target === undefined ? null : (
               <ClaimInviteKeys
-                orgSlug={target.orgSlug}
+                orgId={target.orgId}
                 environmentId={target.environmentId}
                 onClaimed={onRetry}
               />

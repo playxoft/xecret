@@ -3,7 +3,7 @@ title: CLI command reference
 navTitle: Command reference
 description: Every xecret command and flag — login, init, projects, secrets, versions, import, pull, export, run, audit, tokens and cache — with examples and the exact behaviour of each.
 keywords: [xecret command reference, xecret run flags, xecret secrets set, xecret secrets versions, xecret audit, xecret import, xecret pull, cli reference]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Every command the `xecret` binary accepts. Run `xecret help` for the same list
@@ -12,9 +12,13 @@ in your terminal, or `xecret <command> --help` for one command's flags.
 Two flags recur on every command that reads secrets:
 
 ```text
---project SLUG        override .xecret.yaml
+--project PROJECT-ID  override .xecret.yaml
 --environment SLUG    override .xecret.yaml
 ```
+
+`--project` takes the project's **Project ID** (`checkout-api`), the identifier
+chosen when the project was created; `--environment` takes the environment's
+slug (`production`).
 
 ## Authentication
 
@@ -79,7 +83,7 @@ out here, instead of confidently reporting a stale identity.
 
 ```text
 Signed in as   ada@example.com
-Organisation   acme
+Organisation   Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)
 This device    work laptop
 Server         https://xecret.playxoft.com
 ```
@@ -89,47 +93,74 @@ person:
 
 ```text
 Credential     service token "ci-build" (read)
-Organisation   acme
+Organisation   Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)
 Project        checkout-api
 Environment    production
 Server         https://xecret.playxoft.com
 ```
 
+The organisation is named by its name, with its ID beside it because names are
+not unique. With `--json`, `organization` is the name and `organizationId` the
+ID.
+
 ### `xecret orgs`
 
 ```bash
 xecret orgs [list] [--json]
-xecret orgs use SLUG
+xecret orgs use ORG-ID
 ```
 
 Your credential works in every organisation you are a member of. `use` chooses
-which one the other commands address:
+which one the other commands address. The listing names each by its name and
+its ID:
 
 ```text
-SLUG      NAME          ROLE
-acme      Acme Ltd      owner     current
-side      Side Project  developer
+NAME          ID                                    ROLE
+Acme Ltd      0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f  owner      current
+Side Project  0192f0b4-1d2e-7f30-8a41-5b6c7d8e9f01  developer
 ```
 
-`use` is a local change — one field stored beside the token. It makes no network
-call beyond checking that you are actually a member, revokes nothing, and
-switching back is another `use`. Refused under `XECRET_TOKEN`, which is pinned
-to one organisation server-side.
+```bash
+xecret orgs use 0192f0b4-1d2e-7f30-8a41-5b6c7d8e9f01
+xecret orgs use "Side Project"     # a name works when only one of yours has it
+```
+
+An exact name works too, ignoring case, when no other organisation you belong to
+has the same one. Names are free text, so when two do, the command lists both
+IDs and asks for one. `--json` gives `id`, `name`, `role` and `current` for each.
+
+`use` is a local change: the organisation's ID, stored beside the token. It
+makes no network call beyond checking that you are actually a member, revokes
+nothing, and switching back is another `use`. A directory whose `.xecret.yaml`
+names an organisation keeps using that one, whichever `use` chose; see
+[configuration and scope](configuration.md#scope-resolution). Refused under
+`XECRET_TOKEN`, which is pinned to one organisation server-side.
 
 ## Project setup
 
 ### `xecret init`
 
 ```bash
-xecret init [--project SLUG] [--environment SLUG] [--force]
+xecret init [--project PROJECT-ID] [--environment SLUG] [--force]
 ```
 
-Interactive picker that writes `.xecret.yaml` in the current directory — two
-slugs, never secrets, safe to commit.
+Interactive picker that writes `.xecret.yaml` in the current directory: the
+organisation's ID, the Project ID and the environment's slug. Never secrets,
+and safe to commit.
+
+```yaml
+organization: 0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f
+project: checkout-api
+environment: development
+```
+
+The organisation is the one your login addresses (see
+[`xecret orgs`](#xecret-orgs)), and the file keeps pointing at it after
+`xecret orgs use` picks another.
 
 | Flag | Effect |
 |---|---|
-| `--project SLUG` | Skip the project prompt |
+| `--project PROJECT-ID` | Skip the project prompt |
 | `--environment SLUG` | Skip the environment prompt |
 | `--force` | Overwrite an existing `.xecret.yaml` |
 
@@ -145,7 +176,7 @@ token's own scope already answers the question.
 
 ```bash
 xecret projects [list] [--json]
-xecret projects delete SLUG [--yes]
+xecret projects delete PROJECT-ID [--yes]
 ```
 
 Lists the projects you can see in your organisation, and removes one.
@@ -156,18 +187,21 @@ and each is end-to-end encrypted under a key generated in the creator's browser
 and sealed to them. This CLI opens grants and encrypts secrets; it cannot
 produce that key material, so there is nothing it could send.
 
-The slug you choose there is permanent: it appears in every URL, in
-`.xecret.yaml` and in the CI configuration of everyone who consumes the project,
-so renaming it would break every consumer that is not redeployed at the same
-instant.
+The **Project ID** you choose there (`checkout-api`, filled in from the name and
+editable until you create the project) is permanent: it appears in
+`.xecret.yaml`, in CLI commands and in the CI configuration of everyone who
+consumes the project, so changing it would break every consumer that is not
+redeployed at the same instant. The listing shows each project's Project ID
+first.
 
-Deleting is soft, and asks you to type the slug back unless you pass `--yes`.
+Deleting is soft, and asks you to type the Project ID back unless you pass
+`--yes`.
 
 ### `xecret environments`
 
 ```bash
-xecret environments [list] [--project SLUG] [--json]
-xecret environments delete SLUG [--yes] [--project SLUG]
+xecret environments [list] [--project PROJECT-ID] [--json]
+xecret environments delete SLUG [--yes] [--project PROJECT-ID]
 ```
 
 Lists and removes the environments of one project. Without `--project`, uses
@@ -670,11 +704,11 @@ accepted, which `.xecret.yaml` applies, and what is in the offline cache.
 ```text
      xecret 1.2.0 (commit a1b2c3d, built 2026-08-17, darwin/arm64, go1.25.5)
 ✓    credential store: OS keychain
-✓    signed in as ada@example.com, organisation acme
+✓    signed in as ada@example.com, organisation Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)
      server: https://xecret.playxoft.com (stored with the credential at login)
 ✓    server reachable — xecret 0.1.0 (commit a1b2c3d)
 ✓    credential accepted by https://xecret.playxoft.com
-✓    /work/checkout/.xecret.yaml → checkout-api/development
+✓    /work/checkout/.xecret.yaml → checkout-api/development in organisation 0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f
 ✓    offline cache: 2 environment(s) in ~/.xecret/cache
 ```
 

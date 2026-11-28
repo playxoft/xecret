@@ -6,7 +6,6 @@ import {
   environmentSlugSchema,
   isReservedSlug,
   ORGANIZATION_NAME_MAX_LENGTH,
-  organizationSlugSchema,
   slugSchema,
   slugify,
   SLUG_MAX_LENGTH,
@@ -30,9 +29,9 @@ import { uuidField } from './ids';
  *
  * Both halves live together because they are the same contract seen from two
  * sides, and because a shape that is written out once cannot drift between the
- * four routes that return it — `docs/architecture/api.md` §1 addresses every
- * resource by slug, and one route spelling a field differently would split the
- * client in half with no error anywhere.
+ * four routes that return it: `docs/architecture/api.md` §1 sets out how every
+ * resource is addressed, and one route spelling a field differently would split
+ * the client in half with no error anywhere.
  *
  * Three rules run through the whole file:
  *
@@ -40,10 +39,11 @@ import { uuidField } from './ids';
  *     the pattern, the length ceiling and the reserved list. A second regular
  *     expression here would be a second definition of what a valid identifier
  *     is, and the two would eventually disagree.
- *  2. **A slug is never accepted as a change.** It is the identifier committed
- *     to `.xecret.yaml` and pasted into CI, so the patch schemas admit the field
- *     only in order to refuse it with an explanation — see
- *     `assertSlugImmutable`.
+ *  2. **A slug is never accepted as a change.** A project's slug is its Project
+ *     ID, the identifier committed to `.xecret.yaml` and pasted into CI, so the
+ *     patch schemas admit the field only in order to refuse it with an
+ *     explanation; see `assertSlugImmutable`. An organisation's slug is not
+ *     a client's to set at all, at creation or after.
  *  3. **A response says what the caller may know.** The serialisers list their
  *     columns explicitly, so an internal id or a `deleted_at` cannot reach a
  *     client by being added to a table later.
@@ -67,9 +67,7 @@ export const DESCRIPTION_MAX_LENGTH = 500;
  * bounded how many times, and the two are not the same control. Every call
  * derives an Org Master Key inside one transaction, so a caller spending their
  * mutation budget on this endpoint holds a database connection open across
- * CPU-bound cryptography ~60 times a minute for as long as they like. Worse, it is the one endpoint that spends something no deletion
- * returns: `organizations_slug_unique` is a total constraint, so every slug
- * claimed is taken out of a namespace shared with every other tenant for good.
+ * CPU-bound cryptography ~60 times a minute for as long as they like.
  *
  * `FAIR_USE.organizations`, and taken from there rather than written again. This
  * was a hand-written 10, which is the same number as Team's *plan* ceiling — so
@@ -90,15 +88,15 @@ export const DESCRIPTION_MAX_LENGTH = 500;
  * on the account row, so the ceiling is exact rather than approximate.
  *
  * It does not bound **churn**, and cannot, because a place is freed by two acts
- * that do not give the slug back:
+ * that leave the organisation behind:
  *
- *  - *Deleting.* A soft delete frees the place; the slug stays claimed, since
- *    the unique constraint is total. One account can therefore cycle
- *    create-and-delete at whatever rate `RL_MUTATION` permits.
+ *  - *Deleting.* A soft delete frees the place; the row is kept for thirty days.
+ *    One account can therefore cycle create-and-delete at whatever rate
+ *    `RL_MUTATION` permits.
  *  - *Handing over.* An account can create an organisation, invite a second
  *    account as owner, be removed by it, and be back under its ceiling with the
- *    organisation — and its slug — still live. Repeat, and the pair burns the
- *    namespace between them without either ever exceeding ten.
+ *    organisation still live. Repeat, and the pair accumulate organisations
+ *    between them without either ever exceeding ten.
  *
  * That second path is the price of the membership join, and it is worth paying:
  * counting `created_by` alone made the quota unrecoverable instead, so an
@@ -189,22 +187,26 @@ const descriptionSchema = z.nullable(
 const immutableSlugField = z.optional(z.unknown());
 
 /**
- * Creating an organisation: a name, and the permanent identifier that goes with
- * it.
+ * Accepted so it can be ignored.
  *
- * `slug` is optional but is what the dashboard always sends. The form derives a
- * candidate from the name, checks it against `GET /api/orgs/availability`, and
- * lets the user edit it — so the identifier they are stuck with for the life of
- * the organisation is one they saw and agreed to.
+ * An organisation's slug is derived by the server from its new id and shown to
+ * nobody, so there is nothing a client could usefully send here. A tab still
+ * running the create form from before sends one anyway; refusing that would
+ * turn a working request into a 422 about a field the person cannot see.
+ */
+const ignoredSlugField = z.optional(z.unknown());
+
+/**
+ * Creating an organisation: a name, and that is all.
  *
- * Absent, the slug is derived from the name and *uniquified* — `acme`, then
- * `acme-2`. That path exists for API callers and for first sign-in, where there
- * is nobody at a keyboard to consult. It is deliberately not what the dashboard
- * uses: silently handing somebody `acme-2` forever, because a stranger they
- * cannot see holds `acme`, is the failure this field exists to prevent.
+ * Any text the name rules admit, and not unique: two organisations called
+ * "Acme" are two organisations, told apart by their ids, and nothing in the
+ * product treats a name as if it identified one. The organisation is
+ * addressed by the id it is created with; its slug is the server's
+ * (`organizationSlugFor`). A `slug` in the body is ignored.
  */
 export const organizationCreateSchema = z.strictObject(
-  { name: organizationNameSchema, slug: z.optional(organizationSlugSchema) },
+  { name: organizationNameSchema, slug: ignoredSlugField },
   UNEXPECTED_FIELD,
 );
 
@@ -412,9 +414,13 @@ export const pageQuerySchema = z.object({
 /**
  * The body of a destructive request.
  *
- * `confirm` carries the slug of the thing being destroyed. It defaults to an
+ * `confirm` carries what the person typed to say they meant it: a project's
+ * Project ID, an environment's slug, an organisation's name. It defaults to an
  * empty object so a `DELETE` with no body at all is still a well-formed request
  * — only the routes that guard production data require the field to be present.
+ *
+ * Bounded by the longest of those, which is the general slug ceiling; an
+ * organisation name is shorter still.
  */
 export const destructiveRequestSchema = z._default(
   z.strictObject(
@@ -442,10 +448,22 @@ export function assertSlugImmutable(
 ): void {
   if (!Object.hasOwn(patch, 'slug')) return;
 
-  throw errors.badRequest(
-    `The slug of ${resource === 'organisation' ? 'an' : 'a'} ${resource} cannot be changed: it appears in URLs, in .xecret.yaml and in CI configuration, so a rename would break every consumer that is not redeployed at the same instant.`,
-  );
+  throw errors.badRequest(IMMUTABLE_SLUG[resource]);
 }
+
+/**
+ * Why, in the words each resource is known by. A project's slug is shown to
+ * people as its Project ID, so the refusal calls it that; an organisation's is
+ * shown to nobody, so the refusal says only that it is not the client's.
+ */
+const IMMUTABLE_SLUG: Readonly<Record<'organisation' | 'project' | 'environment', string>> = {
+  organisation:
+    "An organisation's slug cannot be changed. Organisations are addressed by their id.",
+  project:
+    "A project's Project ID (its slug) cannot be changed once the project is created: it appears in .xecret.yaml, in CLI commands and in CI configuration, so changing it would break every consumer that is not redeployed at the same instant.",
+  environment:
+    'The slug of an environment cannot be changed: it appears in .xecret.yaml, in CLI commands and in CI configuration, so a rename would break every consumer that is not redeployed at the same instant.',
+};
 
 /**
  * The refusal when an account is already holding as many organisations as it may.
@@ -549,11 +567,11 @@ function derivationFailure(derived: string): string {
  * Whether a destructive request confirmed the right resource.
  *
  * Compared case-insensitively and after trimming, because slugs are stored in a
- * `citext` column and because a value pasted from a URL bar routinely arrives
+ * `citext` column and because a value pasted from a page routinely arrives
  * with a trailing space. This is a check against a mistake, not against an
- * attacker: anyone who can call the endpoint can also read the slug. Loosening
- * the comparison therefore costs nothing that matters and removes a failure mode
- * that would teach people to retry blindly.
+ * attacker: anyone who can call the endpoint can also read what it expects.
+ * Loosening the comparison therefore costs nothing that matters and removes a
+ * failure mode that would teach people to retry blindly.
  *
  * An absent or empty confirmation never matches, including for the resource
  * whose slug is somehow empty — there is no value a caller can omit their way
@@ -653,8 +671,11 @@ export function toEnvironments(environments: readonly EnvironmentRecord[]): Envi
 }
 
 /**
- * The organisation id is published because `/api/auth/me` already returns it,
- * and the dashboard's organisation switcher keys on it.
+ * The organisation id is published because it is what the organisation is
+ * addressed by: `/app/{orgId}/…` in the dashboard, `/api/orgs/{orgId}/…` in the
+ * API. `slug` stays in the payload for the clients that predate that (an
+ * installed CLI reads it at login and addresses the API by it), and is shown
+ * to nobody.
  *
  * A project's id is published too, because the dashboard names a project by it:
  * `/app/{org}/{projectId}/…`, so that an address never spells out what a

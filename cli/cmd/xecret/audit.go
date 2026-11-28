@@ -72,7 +72,7 @@ func cmdAudit(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	page, err := client.Audit(ctx, credentials.OrgSlug, api.AuditFilter{
+	page, err := client.Audit(ctx, credentials.OrgRef(), api.AuditFilter{
 		Action:          *action,
 		ProjectSlug:     *projectFlag,
 		EnvironmentSlug: *envFlag,

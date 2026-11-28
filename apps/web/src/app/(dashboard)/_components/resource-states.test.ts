@@ -12,7 +12,7 @@ import { ApiError } from '@/lib/api';
  */
 
 vi.mock('next/navigation', () => ({
-  useParams: () => ({ orgSlug: 'acme' }),
+  useParams: () => ({ orgId: 'acme' }),
   usePathname: () => '/app/acme/api',
 }));
 

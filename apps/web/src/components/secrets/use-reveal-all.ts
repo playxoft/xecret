@@ -83,7 +83,7 @@ export interface RevealAll {
 }
 
 export function useRevealAll(
-  orgSlug: string,
+  orgId: string,
   projectId: string,
   envSlug: string,
   io: SecretIo | null,
@@ -104,7 +104,7 @@ export function useRevealAll(
   // performs and by the `externalWrites` counter the screen threads through it —
   // and the `[path]` comparison covers the different case it was written for,
   // which is navigating from dev to production with values on screen.
-  const path = `${orgSlug}/${projectId}/${envSlug}`;
+  const path = `${orgId}/${projectId}/${envSlug}`;
 
   // The request in flight, so a second click cannot start a second decryption
   // of the same environment, and so a response for the environment the user has

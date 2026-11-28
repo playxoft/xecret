@@ -120,7 +120,7 @@ describe('the project’s Manage menu edits the description in place', () => {
     expect(form).toMatch(/const patch = projectPatch\(project, name, description\);/);
     expect(form).toMatch(/const unchanged = Object\.keys\(patch\)\.length === 0;/);
     expect(form).toMatch(/if \(submitting \|\| unchanged\) return;/);
-    expect(form).toMatch(/api\.patch\(apiPath\.project\(orgSlug, project\.slug\), patch\)/);
+    expect(form).toMatch(/api\.patch\(apiPath\.project\(orgId, project\.slug\), patch\)/);
     expect(form).toMatch(/<Button type="submit"[^>]*disabled=\{unchanged\}>\s*Save changes/);
   });
 
@@ -317,8 +317,8 @@ describe('`/app?to=plans` opens the organisation’s plans', () => {
     expect(page).toMatch(/intent=\{to === 'plans' \? 'plans' : null\}/);
     const screen = source('./organizations-screen.tsx');
     expect(screen).toMatch(/const open = intent === 'plans' \? appPath\.orgPlans : appPath\.org;/);
-    expect(screen).toContain('router.replace(open(only.slug))');
-    expect(screen).toContain('href={open(organization.slug)}');
+    expect(screen).toContain('router.replace(open(only.id))');
+    expect(screen).toContain('href={open(organization.id)}');
   });
 });
 

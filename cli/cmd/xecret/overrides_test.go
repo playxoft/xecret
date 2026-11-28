@@ -43,7 +43,7 @@ func fetchFor(t *testing.T, a *app, fake *fakeAPI) (map[string]string, error) {
 	}
 	resolved := scope{Org: "acme", Project: "web", Environment: "dev"}
 	return fetchSecrets(a, api.New(fake.URL(), credentials.Token, userAgent()), credentials, resolved,
-		cacheScope(credentials, resolved), cachePolicy{noCache: true, maxAge: cache.DefaultMaxAge})
+		cachePolicy{noCache: true, maxAge: cache.DefaultMaxAge})
 }
 
 func TestRunAppliesPersonalOverridesOverTheResolvedEnvironment(t *testing.T) {
@@ -192,7 +192,7 @@ func TestAServiceTokenRunNeverCallsTheOverridesEndpoint(t *testing.T) {
 	resolved := scope{Org: "acme", Project: "web", Environment: "dev"}
 
 	secrets, err := fetchSecrets(a, api.New(fake.URL(), credentials.Token, userAgent()), credentials,
-		resolved, cacheScope(credentials, resolved), cachePolicy{noCache: true})
+		resolved, cachePolicy{noCache: true})
 	if err != nil {
 		t.Fatalf("fetchSecrets: %v", err)
 	}

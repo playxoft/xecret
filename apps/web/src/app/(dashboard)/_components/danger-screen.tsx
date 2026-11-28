@@ -61,27 +61,28 @@ function DeleteProjectCard() {
     [organizations],
   );
 
-  const [orgSlug, setOrgSlug] = useState(adminOrgs[0]?.slug ?? '');
+  const [orgId, setOrgId] = useState(adminOrgs[0]?.id ?? '');
   const [projectSlug, setProjectSlug] = useState('');
   const [confirmText, setConfirmText] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [problem, setProblem] = useState<unknown>(null);
 
   const projects = useApiResource<{ projects: ProjectListItem[] }>(
-    orgSlug === '' ? null : apiPath.projects(orgSlug),
+    orgId === '' ? null : apiPath.projects(orgId),
   );
 
-  // What the project is *called*, for the copy that names it. The slug is the
-  // identifier — what the confirmation asks to be typed, because it is the one
-  // string that cannot be typed by accident — and the name is how a person
-  // recognises it, which is what the dialog title and the toast are for.
+  // What the project is *called*, for the copy that names it. The slug, shown
+  // as its Project ID, is the identifier — what the confirmation asks to be
+  // typed, because it is the one string that cannot be typed by accident — and
+  // the name is how a person recognises it, which is what the dialog title and
+  // the toast are for.
   const projectName =
     (projects.data?.projects ?? []).find((project) => project.slug === projectSlug)?.name ??
     projectSlug;
 
   async function deleteProject() {
     try {
-      await api.delete(apiPath.project(orgSlug, projectSlug), { confirm: confirmText.trim() });
+      await api.delete(apiPath.project(orgId, projectSlug), { confirm: confirmText.trim() });
       toast({ variant: 'success', title: `Deleted ${projectName}` });
       setProjectSlug('');
       setConfirmText('');
@@ -137,9 +138,9 @@ function DeleteProjectCard() {
           {adminOrgs.length > 1 ? (
             <Field label="Organisation">
               <Select
-                value={orgSlug}
+                value={orgId}
                 onValueChange={(value) => {
-                  setOrgSlug(value);
+                  setOrgId(value);
                   setProjectSlug('');
                   setConfirmText('');
                 }}
@@ -149,7 +150,7 @@ function DeleteProjectCard() {
                 </SelectTrigger>
                 <SelectContent>
                   {adminOrgs.map((organization) => (
-                    <SelectItem key={organization.slug} value={organization.slug}>
+                    <SelectItem key={organization.id} value={organization.id}>
                       {organization.name}
                     </SelectItem>
                   ))}
@@ -178,7 +179,7 @@ function DeleteProjectCard() {
           {projectSlug !== '' ? (
             <Field
               label={`Type "${projectSlug}" to confirm`}
-              hint="The slug, exactly — the step that cannot happen by accident."
+              hint="Its Project ID, exactly: the step that cannot happen by accident."
             >
               <Input
                 value={confirmText}

@@ -43,7 +43,7 @@ the run.
 
 ```bash
 xecret login                       # browser consent + PKCE; token → OS keychain
-xecret init                        # writes .xecret.yaml (two slugs, no secrets)
+xecret init                        # writes .xecret.yaml (identifiers only, no secrets)
 xecret run -- npm run dev          # the golden path
 xecret secrets list                # masked listing
 xecret secrets set STRIPE_KEY      # value from stdin or a hidden prompt

@@ -3,19 +3,12 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-import {
-  normalizeSlugInput,
-  ORGANIZATION_NAME_MAX_LENGTH,
-  ORGANIZATION_SLUG_MAX_LENGTH,
-  slugify,
-} from '@xecret/core/validation';
+import { ORGANIZATION_NAME_MAX_LENGTH } from '@xecret/core/validation';
 import { api, isApiError } from '@/lib/api';
-import { apiPath, appPath, dashboardHost } from '@/app/(dashboard)/_lib/paths';
+import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
 import {
   Alert,
-  AlertTriangleIcon,
   Button,
-  CheckCircleIcon,
   Dialog,
   DialogBody,
   DialogContent,
@@ -25,12 +18,9 @@ import {
   DialogTitle,
   Field,
   Input,
-  Spinner,
   useToast,
 } from '@/components/ui';
 import type { OrganizationResponse } from '@/components/projects/types';
-import { describeSlugProblem, useSlugAvailability } from './use-slug-availability';
-import type { SlugAvailability } from './use-slug-availability';
 
 export interface CreateOrganizationDialogProps {
   open: boolean;
@@ -46,7 +36,7 @@ export interface CreateOrganizationDialogProps {
    *
    * Awaited rather than fired and forgotten because the page being navigated to
    * is drawn from that list: pushing first means the shell resolves the new
-   * organisation's slug against a list that does not contain it yet, falls back
+   * organisation's id against a list that does not contain it yet, falls back
    * to the first organisation it does know, and briefly labels the new
    * organisation's page with somebody else's name.
    */
@@ -70,22 +60,13 @@ export interface CreateOrganizationDialogProps {
  * Cancel still work — a modal that can only be left with the mouse is a trap for
  * anyone who is not using one.
  *
- * ── Why the slug is shown, editable, and checked ──
- * An organisation slug is permanent and lives in a namespace shared with every
- * other tenant. The earlier version of this form hid it and let the server
- * suffix on collision, which meant somebody who typed "Acme" could end up with
- * `acme-2` in every URL forever, chosen for them, because of a stranger they
- * cannot see.
- *
- * So it is shown from the first keystroke, derived live from the name, editable,
- * and checked against `GET /api/orgs/availability` while they type. Immutable is
- * a defensible property for an identifier that lands in URLs and CLI config.
- * Immutable *and* auto-assigned is not — the permanence is only fair if the
- * choice was theirs.
- *
- * The check is a courtesy, not a gate: it is a snapshot, the unique index is the
- * real arbiter, and `POST /api/orgs` still answers with a field error if the
- * slug is claimed in between. See `use-slug-availability.ts`.
+ * ── Why it asks for a name and nothing else ──
+ * An organisation is addressed by the id it is created with: every URL, every
+ * link the product mails, every path the CLI calls. So there is no identifier
+ * here to choose, check or get wrong, and the name is only a label: any text,
+ * changeable later, and not unique. Two organisations called "Acme" are two
+ * organisations. The slug the database still keeps is the server's, derived
+ * from the id and shown to nobody.
  */
 export function CreateOrganizationDialog({
   open,
@@ -130,18 +111,12 @@ function CreateOrganizationForm({
   const { toast } = useToast();
 
   const [name, setName] = useState('');
-  const [slug, setSlug] = useState('');
-  // Until the slug is touched it follows the name. After that it stops, because
-  // silently overwriting a deliberate choice on the next keystroke is maddening
-  // — and this choice is permanent.
-  const [slugEdited, setSlugEdited] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // Split three ways, because they are read in three places. A rejected name or
-  // slug belongs under its own field; a rate limit or a lost connection is a
+  // Split two ways, because they are read in two places. A rejected name
+  // belongs under its own field; a rate limit or a lost connection is a
   // property of the attempt and belongs at the foot of the form, where it does
-  // not read as an instruction to retype either.
+  // not read as an instruction to retype the name.
   const [nameError, setNameError] = useState<string | null>(null);
-  const [slugError, setSlugError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   /** Kept in step with the parent, which blocks dismissal mid-request. */
@@ -155,66 +130,34 @@ function CreateOrganizationForm({
   // refuse, and a Create button that is enabled for it promises otherwise.
   const isEmpty = trimmed.length === 0;
 
-  const effectiveSlug = slugEdited ? slug : slugify(name);
-  const availability = useSlugAvailability(effectiveSlug);
-
-  // A local rule failure outranks the server's answer, and the server's answer
-  // outranks nothing — an `unknown` result is not shown at all. `slugError` is
-  // set only by a rejected submission, so it wins over both.
-  const slugProblem =
-    slugError ??
-    (availability.state === 'invalid' || availability.state === 'taken'
-      ? availability.message
-      : null);
-
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting || isEmpty) return;
 
-    // Re-checked at submit rather than trusted from the typeahead: the field may
-    // have been edited since the last debounce fired, and this is the rule that
-    // must hold. Availability is deliberately *not* re-checked here — the server
-    // settles that, and a second round trip would only widen the same race.
-    const problem = describeSlugProblem(effectiveSlug);
-    if (problem !== null) {
-      setSlugError(problem);
-      return;
-    }
-
     setBusy(true);
     setNameError(null);
-    setSlugError(null);
     setFormError(null);
 
     try {
-      const created = await api.post<OrganizationResponse>(apiPath.orgs(), {
-        name: trimmed,
-        slug: effectiveSlug,
-      });
+      const created = await api.post<OrganizationResponse>(apiPath.orgs(), { name: trimmed });
 
       toast({
         variant: 'success',
         title: `Created ${created.organization.name}`,
-        description: `Its slug is ${created.organization.slug}. Create your first project to start storing secrets.`,
+        description: 'Create your first project to start storing secrets.',
       });
 
       onOpenChange(false);
       // Awaited, so the shell's membership list already contains the new
       // organisation when its page mounts. Fired and forgotten, the push landed
-      // first: the shell could not find the new slug in the list it still held,
+      // first: the shell could not find the new id in the list it still held,
       // fell back to the first organisation it knew, and drew that one's name
       // over the new organisation's page until the refetch caught up.
       await onCreated?.();
-      router.push(appPath.org(created.organization.slug));
+      router.push(appPath.org(created.organization.id));
     } catch (cause) {
       if (isApiError(cause)) {
         const fields = cause.fieldErrors();
-        // The slug first: a 409 from losing the race arrives as a field error on
-        // it, and that is the one the user can act on.
-        if (fields['slug'] !== undefined) {
-          setSlugError(fields['slug']);
-          return;
-        }
         if (fields['name'] !== undefined) {
           setNameError(fields['name']);
           return;
@@ -254,7 +197,7 @@ function CreateOrganizationForm({
           // The raw length, not the trimmed one: this counts against what the
           // input will still accept, and a counter that disagrees with the point
           // at which typing stops working is worse than no counter.
-          hint={`${name.length} of ${ORGANIZATION_NAME_MAX_LENGTH} characters. You can change this later.`}
+          hint={`${name.length} of ${ORGANIZATION_NAME_MAX_LENGTH} characters. Any name will do, and you can change it later.`}
         >
           <Input
             value={name}
@@ -270,49 +213,6 @@ function CreateOrganizationForm({
           />
         </Field>
 
-        <Field
-          label="Slug"
-          error={slugProblem}
-          hint={
-            <>
-              <span className="text-fg-muted">
-                {dashboardHost()}/app/
-                <span className="text-fg font-mono">{effectiveSlug || '…'}</span>
-              </span>
-              <br />
-              Permanent. It appears in every URL for this organisation and cannot be changed later,
-              so this is the moment to get it right.
-            </>
-          }
-        >
-          <div className="relative">
-            <Input
-              value={effectiveSlug}
-              onChange={(event) => {
-                setSlugEdited(true);
-                // `normalizeSlugInput`, never `slugify`. The latter strips
-                // trailing hyphens, which makes `acme-corp` untypable — the
-                // hyphen disappears the moment it is pressed. This lowercases
-                // and substitutes without deleting, so a trailing hyphen stays
-                // on screen and the field explains it instead.
-                setSlug(normalizeSlugInput(event.target.value));
-                setSlugError(null);
-                setFormError(null);
-              }}
-              placeholder="acme"
-              maxLength={ORGANIZATION_SLUG_MAX_LENGTH}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              className="pr-9 font-mono"
-            />
-            <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center">
-              <AvailabilityIndicator availability={availability} />
-            </span>
-          </div>
-        </Field>
-
         {formError !== null ? <Alert tone="danger">{formError}</Alert> : null}
       </DialogBody>
 
@@ -320,61 +220,12 @@ function CreateOrganizationForm({
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
           Cancel
         </Button>
-        {/* Disabled for the two things that are certainly wrong — no name, and a
-            slug that breaks a rule this form already knows — rather than
-            failing on submit. Deliberately *not* disabled while the availability
-            check is in flight or when it says "taken": the check is a snapshot,
-            not an authority, and blocking on it would leave the button dead if
-            the request failed for reasons the user cannot see. The server has
-            the final say either way. */}
-        <Button
-          type="submit"
-          variant="primary"
-          loading={submitting}
-          disabled={isEmpty || availability.state === 'invalid'}
-        >
+        {/* Disabled for the one thing that is certainly wrong, no name, rather
+            than failing on submit. The server has the final say either way. */}
+        <Button type="submit" variant="primary" loading={submitting} disabled={isEmpty}>
           Create
         </Button>
       </DialogFooter>
     </form>
-  );
-}
-
-/**
- * The state of the availability check, as a glyph inside the slug field.
- *
- * Silent for `idle` and `unknown`. Nothing is a better answer than a warning
- * icon when the user has typed nothing yet, or when a background request the
- * form never promised them happened to fail — the create attempt will tell them
- * anything they actually need to know.
- *
- * The visible glyph is `aria-hidden` and paired with a live region, because a
- * tick appearing beside an input is invisible to a screen reader. `polite`, so
- * it waits for a pause in typing rather than interrupting every keystroke.
- */
-function AvailabilityIndicator({ availability }: { availability: SlugAvailability }) {
-  const announcement =
-    availability.state === 'available'
-      ? 'That slug is available.'
-      : availability.state === 'taken'
-        ? availability.message
-        : '';
-
-  return (
-    <>
-      {availability.state === 'checking' ? (
-        // `label={null}`: the live region below is this component's single
-        // voice, and a spinner announcing "Loading" on every debounce would talk
-        // over it.
-        <Spinner className="text-fg-subtle size-4" label={null} />
-      ) : availability.state === 'available' ? (
-        <CheckCircleIcon className="text-success-text size-4" aria-hidden="true" />
-      ) : availability.state === 'taken' ? (
-        <AlertTriangleIcon className="text-danger-text size-4" aria-hidden="true" />
-      ) : null}
-      <span role="status" aria-live="polite" className="sr-only">
-        {announcement}
-      </span>
-    </>
   );
 }
