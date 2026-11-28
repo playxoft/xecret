@@ -41,7 +41,15 @@ vi.mock('../_lib/use-api-resource', () => ({
 const { ApiError } = await import('@/lib/api');
 const { UpgradeScreen } = await import('./upgrade-screen');
 const { PLAN_COMPARISON } = await import('@/components/plans/pricing-content');
-const { PURCHASE_FAQ } = await import('./upgrade-plans');
+const {
+  CHANGE_PITCH,
+  CHANGE_REASSURANCE,
+  CHECKOUT_REASSURANCE,
+  PLAN_PITCH,
+  PURCHASE_FAQ,
+  RECOMMENDED_LABEL,
+  trialNote,
+} = await import('./upgrade-plans');
 
 function organization(role: OrgRole): SessionOrganization {
   return {
@@ -285,8 +293,155 @@ describe('UpgradeScreen, for an owner', () => {
     expect(html).toContain('$12');
   });
 
-  it('promises no trial, as the pricing page offers none', () => {
-    expect(render('owner')).not.toMatch(/\btrial\b/i);
+  it('names the free trial beside Team’s checkout only, and as a condition', () => {
+    const html = render('owner');
+    const note = trialNote('team') ?? '';
+    const team = cardOf(html, 'team');
+
+    expect(note).toMatch(/if neither this organisation nor your account has had one/);
+    // Once: beside the card's button, not on Pro's card and not in the
+    // table's compact header.
+    expect(html.split(note)).toHaveLength(2);
+    expect(team).toContain(note);
+    expect(cardOf(html, 'pro')).not.toMatch(/\btrial\b/i);
+    expect(head(html)).not.toMatch(/\btrial\b/i);
+    // And the button still says what it does whether or not a trial comes.
+    expect(team).toContain('Upgrade to Team');
+  });
+
+  it('offers no trial where no checkout is offered', () => {
+    answers(
+      billing({
+        plan: 'pro',
+        interval: 'yearly',
+        managedBy: 'checkout',
+        actions: { checkout: false, changePlan: true, portal: true, promoCode: false },
+      }),
+    );
+    expect(render('owner')).not.toMatch(/free trial/i);
+
+    answers(billing());
+    expect(render('developer')).not.toMatch(/free trial/i);
+    expect(render('owner', { taken: false })).not.toMatch(/\btrial\b/i);
+  });
+
+  it('leads with what the team gets, not "Choose a plan"', () => {
+    const html = render('owner');
+
+    expect(html).toContain(`id="plans-heading"`);
+    expect(html).toContain(PLAN_PITCH.heading);
+    expect(html).toContain(PLAN_PITCH.subhead);
+    expect(html).not.toContain('Choose a plan');
+    // The same for a member who cannot buy: it is what an owner would be asked for.
+    expect(render('developer')).toContain(PLAN_PITCH.heading);
+  });
+
+  it('leads a subscriber with when a move lands', () => {
+    answers(
+      billing({
+        plan: 'pro',
+        interval: 'yearly',
+        managedBy: 'checkout',
+        actions: { checkout: false, changePlan: true, portal: true, promoCode: false },
+      }),
+    );
+    const html = render('owner');
+
+    expect(html).toContain(CHANGE_PITCH.heading);
+    expect(html).toContain(CHANGE_PITCH.subhead);
+    expect(html).not.toContain(PLAN_PITCH.heading);
+  });
+
+  it('makes no pitch where there is nothing to take it up with', () => {
+    answers(
+      billing({
+        plan: 'enterprise',
+        managedBy: 'support',
+        actions: { checkout: false, changePlan: false, portal: false, promoCode: false },
+      }),
+    );
+    const managed = render('owner');
+    expect(managed).toContain('>Compare plans</h2>');
+    expect(managed).not.toContain(PLAN_PITCH.heading);
+
+    expect(render('owner', { taken: false })).toContain('>Compare plans</h2>');
+  });
+
+  it('recommends Team, for teams, and nothing as the most popular', () => {
+    const html = render('owner');
+
+    expect(cardOf(html, 'team')).toContain(RECOMMENDED_LABEL);
+    expect(html.split(RECOMMENDED_LABEL)).toHaveLength(2);
+    expect(html).not.toMatch(/popular|best[- ]?seller/i);
+  });
+
+  it('shows each plan’s own yearly saving beside its figure', () => {
+    const html = render('owner');
+
+    expect(cardOf(html, 'pro')).toContain('Save 37% on monthly');
+    expect(cardOf(html, 'team')).toContain('Save 36% on monthly');
+    expect(cardOf(html, 'free')).not.toContain('Save');
+  });
+
+  it('lists the few differences that decide a plan, building on the one below', () => {
+    const html = render('owner');
+
+    expect(cardOf(html, 'pro')).toContain('Everything in Free, plus');
+    expect(cardOf(html, 'pro')).toContain('Unlimited members');
+    expect(cardOf(html, 'team')).toContain('Everything in Pro, plus');
+    expect(cardOf(html, 'team')).toContain('100 projects, 25 environments each');
+  });
+
+  it('says how paying works right under the buttons that pay', () => {
+    const html = render('owner');
+    const at = html.indexOf('aria-label="About paying"');
+    const strip = html.slice(at, html.indexOf('</ul>', at));
+
+    // After the last card, where its button is, and before the table.
+    expect(at).toBeGreaterThan(html.indexOf('aria-labelledby="plan-team"'));
+    expect(at).toBeLessThan(html.indexOf('aria-label="Plan comparison"'));
+    for (const item of CHECKOUT_REASSURANCE) expect(strip, item.id).toContain(item.text);
+  });
+
+  it.each(['developer', 'viewer'] as const)(
+    'says nothing about paying to a %s, who has nothing to pay with',
+    (role) => {
+      expect(render(role)).not.toContain('aria-label="About paying"');
+    },
+  );
+
+  it('says what a change does under the switches, and nothing about paying, to a subscriber', () => {
+    answers(
+      billing({
+        plan: 'team',
+        interval: 'monthly',
+        managedBy: 'checkout',
+        actions: { checkout: false, changePlan: true, portal: true, promoCode: false },
+      }),
+    );
+    const html = render('owner');
+
+    expect(html).toContain('aria-label="About changing plan"');
+    for (const item of CHANGE_REASSURANCE) expect(html, item.id).toContain(item.text);
+    expect(html).not.toContain('aria-label="About paying"');
+  });
+
+  it('marks the current plan in words, not with a button nobody can press', () => {
+    const html = render('owner');
+
+    expect(cardOf(html, 'free')).toContain('Your current plan');
+    expect(html).not.toMatch(/<button[^>]*>(?:(?!<\/button>)[\s\S])*Your current plan/);
+  });
+
+  it('draws the period toggle as one radio group with one tab stop', () => {
+    const html = render('owner');
+    const toggle = /<div role="radiogroup" aria-label="Billing period"[\s\S]*?<\/div>/.exec(
+      html,
+    )?.[0];
+
+    expect(toggle).toBeDefined();
+    expect(toggle).toMatch(/aria-checked="false" tabindex="-1"[^>]*>Monthly</);
+    expect(toggle).toMatch(/aria-checked="true" tabindex="0"[^>]*>Yearly</);
   });
 
   it('says what /pricing says about per-environment access, and no more', () => {
@@ -318,6 +473,13 @@ describe('UpgradeScreen, for an owner', () => {
     expect(cells).not.toContain('Coming soon');
   });
 });
+
+/** One plan card's markup, from its opening tag to its close. */
+function cardOf(html: string, plan: 'free' | 'pro' | 'team'): string {
+  const at = html.indexOf(`aria-labelledby="plan-${plan}"`);
+  if (at < 0) throw new Error(`no ${plan} card rendered`);
+  return html.slice(at, html.indexOf('</article>', at));
+}
 
 /** The comparison table's markup, from its container to its end. */
 function comparison(html: string): string {
