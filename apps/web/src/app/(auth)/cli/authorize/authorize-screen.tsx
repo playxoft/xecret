@@ -291,7 +291,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 
             {phase === 'approved' ? (
               <Alert tone="success">
-                Approved. Return to your terminal — you can close this tab.
+                Approved. You can close this tab and return to your terminal.
               </Alert>
             ) : (
               <div className="flex gap-3">
@@ -441,7 +441,7 @@ function HandoffFingerprint({ publicKey }: { publicKey: string }) {
       </p>
       <p className="text-fg-muted mt-2 text-sm leading-6">
         Your terminal printed this same code before it opened this page. If they do not match,
-        something other than your <code>xecret login</code> is asking for your key — deny this, and
+        something other than your <code>xecret login</code> is asking for your key. Deny this, and
         do not approve anything until you know what.
       </p>
     </div>
@@ -496,7 +496,7 @@ function VaultGate({
           {mode === 'setup'
             ? 'Your account has no vault yet. Creating one takes a minute, and the CLI cannot be authorised without it.'
             : handsOffKeys
-              ? 'The CLI is given the key that decrypts your secrets, and only this browser can hand it over. Unlocking here is what produces it — nothing is sent to the server.'
+              ? 'The CLI is given the key that decrypts your secrets, and only this browser can hand it over. Unlocking here is what produces it, and nothing is sent to the server.'
               : 'The CLI is issued a token that can read your secrets, so this has to be you.'}
         </p>
       </div>

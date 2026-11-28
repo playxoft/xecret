@@ -46,7 +46,7 @@ describe('the kit file', () => {
   it('explains what the codes are and what losing them costs', () => {
     expect(text).toContain(EMERGENCY_KIT_EXPLANATION);
     expect(EMERGENCY_KIT_EXPLANATION).toMatch(
-      /nothing can bring your secrets back — not even xecret/i,
+      /nothing can bring your secrets back, not even xecret/i,
     );
     expect(EMERGENCY_KIT_EXPLANATION).toMatch(/works once/i);
   });

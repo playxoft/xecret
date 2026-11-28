@@ -262,7 +262,7 @@ function RestoreBody({
         <DialogDescription>
           Put every secret back the way it was at a moment you choose: old values return as new
           versions, secrets deleted since come back, and secrets created since are removed. Nothing
-          is lost — every step writes forward, so a restore can itself be undone.
+          is lost: every step writes forward, so a restore can itself be undone.
         </DialogDescription>
       </DialogHeader>
 
@@ -271,8 +271,8 @@ function RestoreBody({
           <Alert tone="warning" title="This environment’s key is not open here">
             <p>
               A restore re-encrypts every value it puts back, in this browser, under the
-              environment’s current key. Unlock your vault — or ask for this environment’s key to be
-              shared with you — and try again.
+              environment’s current key. Unlock your vault (or ask for this environment’s key to be
+              shared with you) and try again.
             </p>
           </Alert>
         ) : null}
@@ -317,7 +317,7 @@ function RestoreBody({
           <Alert tone="danger" title="This restore cannot be applied from here">
             <p>
               {blocked.join(', ')} {blocked.length === 1 ? 'has' : 'have'} a value to put back that
-              did not open in this browser, and a restore has to write every value it changes —
+              did not open in this browser, and a restore has to write every value it changes:
               leaving one out would apply part of an instant. Somebody whose vault opens those keys
               can apply it.
             </p>

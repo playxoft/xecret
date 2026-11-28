@@ -86,7 +86,7 @@ export XECRET_PUBLIC_URL XECRET_ENV
 # This line is the last chance to notice, and it names the file so that noticing
 # leads somewhere.
 echo "Building for $XECRET_ENV at $XECRET_PUBLIC_URL"
-echo "  (from apps/web/wrangler.toml → env.$env_name.vars — stop now if that is not your deployment)"
+echo "  (from apps/web/wrangler.toml → env.$env_name.vars; stop now if that is not your deployment)"
 
 # ── The deployment has to name its identity provider ──
 #
@@ -115,7 +115,7 @@ env.$env_name.
 
 Every sign-in on the deployment would fail. Add the client id of the
 WorkOS environment this deployment signs people in against to
-[env.$env_name.vars] — the Production environment's for production, the
+[env.$env_name.vars]: the Production environment's for production, the
 Staging environment's for anything else. It is not a secret; the API key is,
 and that one belongs in \`wrangler secret put\`, not in the file.
 EOF
@@ -137,7 +137,7 @@ EOF
     ;;
 esac
 
-echo "  (signing in against WorkOS client $WORKOS_CLIENT_ID — its API key must be from the same WorkOS environment)"
+echo "  (signing in against WorkOS client $WORKOS_CLIENT_ID; its API key must be from the same WorkOS environment)"
 
 # ── What `GET /api/version` will answer with ──
 #

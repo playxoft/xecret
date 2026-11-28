@@ -42,7 +42,7 @@ export const EMERGENCY_KIT_EXPLANATION =
   'Each works once, and using one replaces all five. ' +
   'Treat them like a passport: anyone with a code and your sign-in can open your vault, so keep them out of the ' +
   'inbox and password manager your sign-in already protects. ' +
-  'Lose the passphrase and all five codes, and nothing can bring your secrets back — not even xecret.';
+  'Lose the passphrase and all five codes, and nothing can bring your secrets back, not even xecret.';
 
 /** `2026-09-08` — the date, unambiguous in every locale. */
 function isoDate(at: Date): string {
@@ -83,7 +83,7 @@ export function emergencyKitText(kit: EmergencyKit): string {
     EMERGENCY_KIT_EXPLANATION,
     '',
     'Your master passphrase is deliberately not written here. If you write it down,',
-    'keep it somewhere else — this sheet and that passphrase together are your vault.',
+    'keep it somewhere else: this sheet and that passphrase together are your vault.',
     '',
   ];
 

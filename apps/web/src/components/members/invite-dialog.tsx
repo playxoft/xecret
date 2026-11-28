@@ -290,7 +290,7 @@ function InviteFlow({
       setFormError(
         projectsError
           ? 'The project list could not be loaded, so access cannot be selected. Reload and try again.'
-          : 'The project list is still loading — one moment.',
+          : 'The project list is still loading. One moment.',
       );
       return;
     }
@@ -370,11 +370,11 @@ function InviteFlow({
     return (
       <>
         <DialogHeader>
-          <DialogTitle>Invitation sent — now send the second half</DialogTitle>
+          <DialogTitle>Invitation sent. Now send the second half</DialogTitle>
           <DialogDescription>
             {issued.emailSent
               ? `${issued.invitation.email} has been emailed the link. The code below did not go with it, and must not.`
-              : `Email is not configured for this deployment, so both halves below are the only copies — deliver them yourself, over two different channels.`}
+              : `Email is not configured for this deployment, so both halves below are the only copies. Deliver them yourself, over two different channels.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -395,7 +395,7 @@ function InviteFlow({
           {fragment !== null ? (
             <section className="flex flex-col gap-2">
               <h3 className="text-fg text-sm font-medium">
-                2. The key code — send this separately
+                2. The key code (send this separately)
               </h3>
               <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
                 <code className="text-fg min-w-0 flex-1 font-mono text-sm break-all select-all">
@@ -408,7 +408,7 @@ function InviteFlow({
                 <p>
                   Together they unlock the environments you ticked. Apart, each is useless: the link
                   proves who they are and decrypts nothing, and this code decrypts and proves
-                  nothing. Sending both by email would collapse the two into one — a compromised
+                  nothing. Sending both by email would collapse the two into one: a compromised
                   inbox would then be enough.
                 </p>
                 <p className="mt-2">
@@ -419,7 +419,7 @@ function InviteFlow({
 
               <p className="text-fg-subtle text-sm">
                 This code exists only in this browser and has never been sent to the server. Closing
-                this dialog discards it for good — if it is lost, the invitation still works and a
+                this dialog discards it for good. If it is lost, the invitation still works and a
                 teammate shares the keys afterwards instead.
               </p>
             </section>
@@ -450,8 +450,8 @@ function InviteFlow({
       <DialogHeader>
         <DialogTitle>Invite a member</DialogTitle>
         <DialogDescription>
-          They join with the role you choose and access to exactly the environments you add below —
-          nothing else. Both can be changed per member afterwards.
+          They join with the role you choose and access to exactly the environments you add below,
+          and nothing else. Both can be changed per member afterwards.
         </DialogDescription>
       </DialogHeader>
 
@@ -496,7 +496,7 @@ function InviteFlow({
             </div>
           ) : projects.length === 0 ? (
             <p className="text-fg-subtle text-sm">
-              This organisation has no projects yet — the member will join with access to nothing,
+              This organisation has no projects yet. The member will join with access to nothing,
               which is also what they get by default.
             </p>
           ) : (
@@ -581,7 +581,7 @@ function InviteFlow({
 
           {projects !== null && projects.length > 0 && selectionCount === 0 ? (
             <Alert tone="warning">
-              Nothing is granted — they will join with <strong>no access to any project</strong>{' '}
+              Nothing is granted: they will join with <strong>no access to any project</strong>{' '}
               until someone grants them access on their member page.
             </Alert>
           ) : null}

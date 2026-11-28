@@ -1,24 +1,24 @@
 ---
 title: xecret with Docker
 navTitle: Docker
-description: Keep secrets out of image layers — runtime injection, BuildKit secret mounts, Compose, and the export format that exists only for docker run.
+description: Keep secrets out of image layers: runtime injection, BuildKit secret mounts, Compose, and the export format that exists only for docker run.
 keywords: [docker secrets, dockerfile env secrets, buildkit secret mount, docker compose env, container secret management]
 updated: 2026-08-16
 ---
 
 One rule shapes everything on this page:
 
-> **Important** — A secret must never end up in an image layer. `ENV`, `ARG`
+> **Important**: A secret must never end up in an image layer. `ENV`, `ARG`
 > and `COPY .env` all bake the value into image history, where
 > `docker history` reads it back out of any copy of the image, forever.
 
-## Runtime injection — the right default
+## Runtime injection: the right default
 
 Do not put secrets in the image at all. Build an image that expects its
 configuration from the environment, and supply it when the container runs.
 
 ```dockerfile
-# Dockerfile — no secrets anywhere in it
+# Dockerfile: no secrets anywhere in it
 FROM node:22-slim
 WORKDIR /app
 COPY . .
@@ -63,7 +63,7 @@ docker run --rm -e XECRET_TOKEN=xst_… my-app
 
 What you are trading: the container now needs network access to xecret at
 start-up, and one credential (`XECRET_TOKEN`) instead of many. That is often a
-good trade — one secret to manage in your orchestrator rather than twenty — but
+good trade (one secret to manage in your orchestrator rather than twenty), but
 it does mean a xecret outage delays a container restart. There is no offline
 cache under a service token, deliberately; see
 [the offline cache](../cli/offline-cache.md).
@@ -72,8 +72,8 @@ Keep the token scoped to exactly one project and environment, read-only.
 
 ## Build-time secrets
 
-Sometimes a build genuinely needs a credential — a private npm registry, a
-private Go module proxy. Use **BuildKit secret mounts**, the one mechanism that
+Sometimes a build genuinely needs a credential (a private npm registry, a
+private Go module proxy). Use **BuildKit secret mounts**, the one mechanism that
 keeps the value out of layers and build history:
 
 ```dockerfile
@@ -162,11 +162,11 @@ The same fork applies:
   entrypoint, as above.
 
 The first is the conventional choice for production clusters; the second is
-simpler to keep in sync. Both are legitimate — pick one deliberately rather
+simpler to keep in sync. Both are legitimate; pick one deliberately rather
 than ending up with half of each.
 
 ## Next
 
-- [Secrets in CI](ci.md) — building the image.
-- [Tokens](../api/tokens.md) — scoping the credential the container holds.
-- [The offline cache](../cli/offline-cache.md) — why CI and containers have none.
+- [Secrets in CI](ci.md): building the image.
+- [Tokens](../api/tokens.md): scoping the credential the container holds.
+- [The offline cache](../cli/offline-cache.md): why CI and containers have none.

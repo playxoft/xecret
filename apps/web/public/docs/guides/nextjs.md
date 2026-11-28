@@ -1,7 +1,7 @@
 ---
 title: xecret with Next.js
 navTitle: Next.js
-description: Replace .env.local with xecret in a Next.js app — local development, NEXT_PUBLIC build-time variables, multiple environments, and deployment.
+description: Replace .env.local with xecret in a Next.js app: local development, NEXT_PUBLIC build-time variables, multiple environments, and deployment.
 keywords: [nextjs secrets, next.js env variables, NEXT_PUBLIC, replace .env.local, nextjs environment management]
 updated: 2026-08-16
 ---
@@ -38,7 +38,7 @@ Keep real credentials out of that prefix regardless of where they are stored.
 
 The environment is injected when `xecret run` starts the process. Hot reload
 does not re-fetch. After changing a secret, stop the dev server and run the
-command again — the same moment you would have edited `.env.local`.
+command again (the same moment you would have edited `.env.local`).
 
 ## Server-only secrets
 
@@ -48,7 +48,7 @@ in `process.env`. The rule to hold onto is Next's own: a variable without the
 server component stays on the server.
 
 ```ts
-// app/api/health/route.ts — runs on the server, never in a bundle
+// app/api/health/route.ts: runs on the server, never in a bundle
 export async function GET() {
   const url = process.env.DATABASE_URL;
   // …
@@ -96,7 +96,7 @@ their own dashboards at deploy time. Two options:
    synchronised at all.
 
 ```bash
-# option 1, sketched — never commit the output of this
+# option 1, sketched: never commit the output of this
 xecret pull --format env | while IFS='=' read -r key value; do
   your-platform-cli env set "$key" "$value" --environment production
 done
@@ -104,7 +104,7 @@ done
 
 ## Next.js on Cloudflare Workers
 
-If you deploy through `@opennextjs/cloudflare` — as xecret itself does — note
+If you deploy through `@opennextjs/cloudflare` (as xecret itself does), note
 that Worker bindings and `process.env` are two different things at runtime. Use
 xecret for build-time configuration and for anything your Node-compatible code
 reads from `process.env`; use Wrangler's own `vars` and secrets bindings for
@@ -112,6 +112,6 @@ values the Worker runtime resolves.
 
 ## Next
 
-- [Node.js](nodejs.md) — the same patterns without the framework.
-- [Secrets in CI](ci.md) — service tokens end to end.
-- [Command reference](../cli/commands.md) — every flag.
+- [Node.js](nodejs.md): the same patterns without the framework.
+- [Secrets in CI](ci.md): service tokens end to end.
+- [Command reference](../cli/commands.md): every flag.

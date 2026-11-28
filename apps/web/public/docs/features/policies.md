@@ -20,12 +20,12 @@ No policy ever stops a build from running: `xecret run`, on a laptop or in CI,
 works tomorrow if it worked yesterday, whatever was decided in between. The one
 policy that refuses a read is [disabling plaintext
 export](#disabling-plaintext-export), and only for the commands whose whole job
-is to write the values into a file — `pull`, `export` and the dashboard's
+is to write the values into a file: `pull`, `export` and the dashboard's
 download.
 
 One more guard rail sits beside the policies, though it is not one you switch
-on: production reading values from an environment that is not production — by
-inheriting from it, or through a template — must be confirmed, because it lets
+on: production reading values from an environment that is not production (by
+inheriting from it, or through a template) must be confirmed, because it lets
 the source's writers change what production reads. See
 [Production reading from elsewhere](references.md#production-reading-from-elsewhere).
 
@@ -51,18 +51,18 @@ Team and above. It ships with a sensible default ruleset, switched off:
 
 | Rule | Default |
 |---|---|
-| Names must match | `[A-Z][A-Z0-9_]*` — the whole name |
+| Names must match | `[A-Z][A-Z0-9_]*`, matching the whole name |
 | Minimum entropy | 64 bits, for names containing `SECRET`, `PASSWORD`, `PASSWD`, `TOKEN`, `PRIVATE_KEY` or `API_KEY` |
 | Forbidden words | `changeme`, `password`, `letmein`, `default`, `123456`, in any case |
 
 The policy can apply to every environment or only to production ones.
 
 **The name rule** is enforced by the server on every write that introduces a
-name — a create, a rename, an import, a promotion — whatever client sent it.
+name (a create, a rename, an import, a promotion), whatever client sent it.
 Because the server runs it on every such write, a pattern is refused when it is
 saved if it could make one check slow: a repeated group that itself repeats,
 like `(A+)+`, or more than two repeated parts in a row, like `A*B*C*`. Both can
-almost always be written as a single class — `[ABC]*`.
+almost always be written as a single class: `[ABC]*`.
 
 **The value rules** need the value, which the server never sees in an
 end-to-end encrypted environment. The dashboard, `xecret secrets set` and
@@ -75,7 +75,7 @@ round them.
 
 A [template](references.md)'s text is not a credential of its own, so it is
 read differently: the entropy rule is not asked of it, and the forbidden words
-are looked for in its literal text only — `postgres://app:${DB_PASSWORD}@db`
+are looked for in its literal text only: `postgres://app:${DB_PASSWORD}@db`
 does not contain the word "password", because `DB_PASSWORD` is a reference's
 name. The secrets a template names are held to the rules where they are
 written.
@@ -84,7 +84,7 @@ written.
 skipping the rules, and says so: the dashboard while the policy is loading or
 after it failed to load, the CLI when the request fails. Only a server too old
 to have policies at all is treated as having none. A write that carries no
-value — a rename, a note — is unaffected, because the server checks the name
+value (a rename, a note) is unaffected, because the server checks the name
 rule itself.
 
 Existing names and values that break the rules are **warnings** in the dashboard,
@@ -92,7 +92,7 @@ never errors. A policy adopted today is not a reason to make yesterday's value
 unreadable.
 
 Entropy is estimated as the value's length times the Shannon entropy of its own
-characters — a 32-character random token scores about 150 bits, `password1`
+characters: a 32-character random token scores about 150 bits, `password1`
 about 27. It rewards length and variety and is easy to explain, which matters
 more for a rule people have to satisfy than precision does.
 
@@ -108,14 +108,14 @@ them anywhere, which is the habit this policy exists to encourage.
 The setting follows the **values**, wherever they are read from. A `pull` of
 staging that [inherits](references.md#inheritance) from production, or whose
 template reaches `${production.DB_PASSWORD}`, writes production's values to a
-file, so it is refused when production disables export — and the refusal names
+file, so it is refused when production disables export, and the refusal names
 production, whose admins can change it. An environment that is only walked
 through to reach a reference, and contributes no value of its own, does not
 count. The dashboard's download of an environment's own values is decided by
 that environment alone, because nothing else is in it.
 
 What it can and cannot do, plainly: anybody who may read a value can still write
-it down — they hold it in plaintext the moment they read it. What the policy
+it down, because they hold it in plaintext the moment they read it. What the policy
 removes is the one-command route from a vault to an unencrypted file on a
 laptop, which is how most leaked `.env` files begin.
 
@@ -123,7 +123,7 @@ laptop, which is how most leaked `.env` files begin.
 
 *Environment settings → Policy → Read alerts*, Pro and above.
 
-The first time an environment is read from an address — or by a device — that
+The first time an environment is read from an address (or by a device) that
 has not read it before, the organisation's owners and admins are emailed. A CLI
 login and a CI token each count as a device; a browser counts as its person; an
 IPv6 address counts as its /64, so a laptop's rotating privacy addresses are one
@@ -134,7 +134,7 @@ address.
 - **A read is a read of every environment it draws values from.** A pull of
   staging that inherits from production, or whose template reaches
   `${production.DB_PASSWORD}`, is noted as a read of production under
-  production's setting — and of staging under staging's.
+  production's setting, and of staging under staging's.
 - **Digest-throttled**: at most one email an hour per organisation. Everything
   else seen in the hour waits for the next digest, so a CI fleet on rotating
   addresses produces one email listing them, never one per runner. Digests are
@@ -150,6 +150,6 @@ until it does again.
 
 ## Next
 
-- [Teams, roles and access](../guides/teams.md) — who may change these.
-- [Service tokens](../api/tokens.md) — the credentials the token policy governs.
-- [The audit log](../security/audit-log.md) — `org.policy_changed` and `environment.policy_changed`.
+- [Teams, roles and access](../guides/teams.md): who may change these.
+- [Service tokens](../api/tokens.md): the credentials the token policy governs.
+- [The audit log](../security/audit-log.md): `org.policy_changed` and `environment.policy_changed`.

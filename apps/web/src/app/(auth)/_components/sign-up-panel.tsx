@@ -72,7 +72,7 @@ export type SignUpNotice = 'existing-account' | 'password-too-weak' | 'password-
 const NOTICES: Record<SignUpNotice, { title: string; body: string }> = {
   'existing-account': {
     title: 'You already had an account',
-    body: 'We’ve signed you in to it. Its password hasn’t changed — to change it, use “Forgot password?” on the sign-in page.',
+    body: 'We’ve signed you in to it. Its password hasn’t changed. To change it, use “Forgot password?” on the sign-in page.',
   },
   'password-too-weak': {
     title: 'Your account is ready',

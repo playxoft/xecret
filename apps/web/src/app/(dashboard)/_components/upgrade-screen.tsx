@@ -677,7 +677,7 @@ function Notices({
     notices.push(
       <Alert key="returned" tone="info" title="Finishing your upgrade">
         <p>
-          The plan changes as soon as our payment provider confirms the payment — usually within a
+          The plan changes as soon as our payment provider confirms the payment, usually within a
           minute.{' '}
           <Link
             href={withQuery(appPath.orgBilling(orgId), { checkout: 'returned' })}
@@ -768,7 +768,7 @@ function Notices({
                 <li key={warning.resource}>
                   {count(warning.current)} {RESOURCE_NAME[warning.resource]}
                   {warning.limit === null
-                    ? ' — past the fair-use level we check in about. Nothing is blocked.'
+                    ? ', past the fair-use level we check in about. Nothing is blocked.'
                     : ` of ${count(warning.limit)}.`}
                   {next !== null ? ` ${next.sentence}` : ''}
                 </li>
@@ -957,13 +957,14 @@ function ComparisonTable({
           {selling ? (
             <>
               {' '}
-              — the same table as the{' '}
+              (the same table as the{' '}
               <Link
                 href="/pricing#compare"
                 className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
               >
                 pricing page
               </Link>
+              )
             </>
           ) : null}
           . Where a plan does not have something the row says so, and where nobody has it yet the
@@ -1170,7 +1171,7 @@ function promises(
     {
       icon: <ShieldCheckIcon className="size-4" />,
       title: 'Builds never stop for billing',
-      body: `A fetch past the allowance is never refused — on a paid plan it is billed at ${overageRate} — and a declined card never stops a build.`,
+      body: `A fetch past the allowance is never refused (on a paid plan it is billed at ${overageRate}), and a declined card never stops a build.`,
     },
     {
       icon: <HistoryIcon className="size-4" />,

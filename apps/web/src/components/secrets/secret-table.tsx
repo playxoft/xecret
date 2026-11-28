@@ -900,7 +900,7 @@ export function SecretTable({
     if (outcome.rateLimited) {
       toast({
         variant: 'error',
-        title: 'Rate limited — the save stopped part way',
+        title: 'Rate limited: the save stopped part way',
         description: `${
           parts.length > 0 ? `${parts.join(', ')}. ` : ''
         }${pluralize(outcome.notAttempted, 'row')} not attempted. Everything still in the table can be saved again in a moment.`,
@@ -1003,7 +1003,7 @@ export function SecretTable({
               ? comparedOnly
                   .map(
                     (entry) =>
-                      `${entry.name} has ${pluralize(entry.count, 'key')} this environment does not — loading the rest of this page will list them.`,
+                      `${entry.name} has ${pluralize(entry.count, 'key')} this environment does not. Loading the rest of this page will list them.`,
                   )
                   .join(' ')
               : 'Every key in any of them has a row, empty where an environment does not hold it. Values are masked until you ask, and each cell saves to its own environment.'}
@@ -1099,7 +1099,7 @@ export function SecretTable({
         <EmptyState
           icon={<SearchIcon />}
           title={`Nothing matches “${query.trim()}”`}
-          description="Filtering is on the name only — values are never searched, because searching them would mean decrypting them."
+          description="Filtering is on the name only. Values are never searched, because searching them would mean decrypting them."
           action={
             <Button variant="secondary" onClick={() => setQuery('')}>
               Clear the filter
@@ -1357,7 +1357,7 @@ export function SecretTable({
                 // and so does everything staged against them.
                 <>
                   <p role="status" className="text-danger-text text-sm">
-                    Couldn’t load more — {errorMessage(loadMoreError)}
+                    Couldn’t load more: {errorMessage(loadMoreError)}
                   </p>
                   <Button variant="secondary" onClick={onLoadMore} loading={loadingMore}>
                     Retry

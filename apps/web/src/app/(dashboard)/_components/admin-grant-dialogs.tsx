@@ -354,7 +354,7 @@ function GrantFlow({
           ) : (
             <Alert tone="warning" title="No subscription id was on record">
               <p>
-                Look {target.name} up in Dodo’s dashboard — by its owner’s address — and cancel any
+                Look {target.name} up in Dodo’s dashboard by its owner’s address, and cancel any
                 subscription you find for it there.
               </p>
             </Alert>
@@ -415,7 +415,7 @@ function GrantFlow({
           label="Seat ceiling"
           optional
           error={problems.seats}
-          hint={`The most members it may have. Empty lets the plan decide — never fewer than the ${target.seatLimit.toLocaleString('en-GB')} it allows now.`}
+          hint={`The most members it may have. Empty lets the plan decide, never fewer than the ${target.seatLimit.toLocaleString('en-GB')} it allows now.`}
         >
           <Input
             inputMode="numeric"
@@ -436,7 +436,7 @@ function GrantFlow({
             value={form.reason}
             onChange={(event) => update({ reason: event.target.value })}
             maxLength={ADMIN_TEXT_MAX_LENGTH}
-            placeholder="Launch partner — three months on us"
+            placeholder="Launch partner, three months on us"
             disabled={submitting}
             autoComplete="off"
           />
@@ -589,7 +589,7 @@ function EndGrantFlow({
     if (submitting) return;
     const trimmed = reason.trim();
     if (trimmed.length === 0) {
-      setProblem('Say why — it goes in the organisation’s audit log.');
+      setProblem('Say why. It goes in the organisation’s audit log.');
       return;
     }
 

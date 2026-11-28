@@ -290,7 +290,7 @@ export function validateSecretPolicy(policy: SecretPolicy): SecretPolicy {
     if (NESTED_QUANTIFIER.test(pattern)) {
       throw new SecretPolicyError(
         'namePattern',
-        'A name pattern may not repeat a group that itself repeats or alternates, e.g. (A+)+ — ' +
+        'A name pattern may not repeat a group that itself repeats or alternates, e.g. (A+)+, so ' +
           'rewrite it without the repeated group.',
       );
     }
@@ -298,7 +298,7 @@ export function validateSecretPolicy(policy: SecretPolicy): SecretPolicy {
       throw new SecretPolicyError(
         'namePattern',
         `A name pattern may not have more than ${MAX_ADJACENT_REPEATS} repeated parts in a row, ` +
-          'e.g. A*B*C* — join them into one, e.g. [ABC]*.',
+          'e.g. A*B*C*, so join them into one, e.g. [ABC]*.',
       );
     }
     try {

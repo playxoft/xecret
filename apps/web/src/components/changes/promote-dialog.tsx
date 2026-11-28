@@ -319,7 +319,7 @@ function PromoteBody({
                     disabled={environment.encryptionMode !== 'e2ee'}
                   >
                     {environment.name}
-                    {environment.encryptionMode !== 'e2ee' ? ' — not end-to-end encrypted' : ''}
+                    {environment.encryptionMode !== 'e2ee' ? ' (not end-to-end encrypted)' : ''}
                   </SelectItem>
                 ))}
               </SelectContent>

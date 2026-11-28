@@ -1,7 +1,7 @@
 ---
 title: Tokens and credentials
 navTitle: Tokens
-description: Sessions, CLI tokens and service tokens — what each can do, how they are scoped and stored, how to rotate them, and what happens when one leaks.
+description: Sessions, CLI tokens and service tokens: what each can do, how they are scoped and stored, how to rotate them, and what happens when one leaks.
 keywords: [service token, cli token xct, xst token, api authentication, token rotation, revoke token]
 updated: 2026-11-28
 ---
@@ -13,14 +13,14 @@ work.
 
 | | Session | CLI token | Service token |
 |---|---|---|---|
-| **Prefix** | — (a cookie) | `xct_` | `xst_` |
+| **Prefix** | none (a cookie) | `xct_` | `xst_` |
 | **Created by** | signing in | `xecret login` | the dashboard |
 | **Acts as** | you | you | itself |
 | **Scope** | your whole account | one organisation | one org, project **and** environment |
 | **Stored** | browser cookie | OS keychain | your CI provider's secret store |
 | **Expires** | on sign-out or revoke | on `xecret logout` or revoke | optionally, at a date you set |
 | **Can mint credentials** | yes | no | no |
-| **Offline cache** | — | yes | no |
+| **Offline cache** | no | yes | no |
 
 ## Sessions
 
@@ -34,7 +34,7 @@ sign out everywhere at once.
 
 Signed in and unlocked are different things. Your secrets are decrypted in the
 browser with keys your vault holds, and the vault locks when the session has
-been idle for a while — an hour by default; 15 minutes, 4 hours, or until the
+been idle for a while: an hour by default; 15 minutes, 4 hours, or until the
 tab closes if you choose under *Settings → Unlock & auto-lock*. However active you are, an
 unlock never lasts more than 8 hours. You can also lock it on demand, in this
 browser or in every signed-in session at once.
@@ -51,15 +51,15 @@ decrypt a value. CLI and service tokens are not subject to the lock.
 ## CLI tokens
 
 Created by `xecret login`, through a browser consent flow with PKCE. The token
-is stored in your operating system's keychain. On a machine with none — or
-with `XECRET_KEYRING=file`, for containers — it goes in a file readable only by
+is stored in your operating system's keychain. On a machine with none (or
+with `XECRET_KEYRING=file`, for containers), it goes in a file readable only by
 you, `~/.xecret/credentials.json`, and the CLI warns you that it has. The same
 flow hands the CLI your vault's key, sealed to a key only that process holds,
 so it decrypts on your machine; that key is kept in the same place.
 
 **A CLI token adds no authority.** It acts as you: your role, your grants, and
 nothing more. That is why creating one requires only active membership rather
-than the permission to create *service* tokens — it hands out no power the
+than the permission to create *service* tokens: it hands out no power the
 holder did not already have.
 
 Consequences worth knowing:
@@ -141,7 +141,7 @@ curl https://xecret.playxoft.com/api/tokens/self \
 The organisation is named by its `id`; its `slug` is a legacy field, kept for
 older clients. The project's `slug` is its Project ID.
 
-The answer derives from the credential row alone — there is no parameter to lie
+The answer derives from the credential row alone; there is no parameter to lie
 in. This is how `XECRET_TOKEN=… xecret run` learns its scope with no
 configuration file.
 
@@ -158,7 +158,7 @@ acme/marketing-site/production read    "deploy-marketing"
 ```
 
 The reason is blast radius. When one leaks, you want the answer to "what could
-it reach?" to be one environment of one project — and the answer to "who was
+it reach?" to be one environment of one project, and the answer to "who was
 using it?" to be one pipeline you can fix without breaking four others.
 
 Use `write` only where a job genuinely writes secrets, which is rarer than it
@@ -172,7 +172,7 @@ first seems. A deploy reads.
 3. Revoke the old one.
 ```
 
-In that order. Revocation is immediate — the lookup filters on "not revoked" in
+In that order. Revocation is immediate: the lookup filters on "not revoked" in
 SQL, so an in-flight job on the old token fails on its next request.
 
 Rotate on a schedule, and always when somebody with access to the CI
@@ -183,7 +183,7 @@ configuration leaves.
 1. **Revoke it.** *Tokens → Service tokens → Revoke*. It stops working at once.
 2. **Read the audit log** for that token's name: every read it performed, with
    timestamps. This is what tells you which secrets to treat as compromised.
-3. **Rotate those secrets** at their source — the database password, the API
+3. **Rotate those secrets** at their source: the database password, the API
    key at the provider. Revoking the xecret token does not un-leak a value it
    already read.
 4. **Mint a replacement** and fix whatever exposed the first one.
@@ -193,6 +193,6 @@ given away your Stripe key.
 
 ## Next
 
-- [Secrets in CI](../guides/ci.md) — tokens in practice.
-- [The audit log](../security/audit-log.md) — reading what a token did.
-- [Endpoint reference](reference.md) — the token routes themselves.
+- [Secrets in CI](../guides/ci.md): tokens in practice.
+- [The audit log](../security/audit-log.md): reading what a token did.
+- [Endpoint reference](reference.md): the token routes themselves.

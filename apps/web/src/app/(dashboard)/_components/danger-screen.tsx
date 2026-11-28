@@ -123,7 +123,7 @@ function DeleteProjectCard() {
           <CardTitle>Delete a project</CardTitle>
           <CardDescription>
             Hides the project and every environment and secret beneath it, immediately, for
-            everyone. Applications reading those secrets fail at their next deploy — which is later,
+            everyone. Applications reading those secrets fail at their next deploy, which is later,
             when this is hardest to connect to its cause.
           </CardDescription>
         </CardHeader>
@@ -272,7 +272,7 @@ function DeleteAccountCard() {
           ) : null}
 
           <Alert tone="warning" title="If you are the only owner of a shared organisation">
-            The deletion is refused until you hand ownership to someone else — removing the only
+            The deletion is refused until you hand ownership to someone else. Removing the only
             owner would strand everyone still inside.
           </Alert>
 

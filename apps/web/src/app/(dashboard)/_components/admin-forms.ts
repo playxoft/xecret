@@ -158,7 +158,7 @@ export function grantRequest(
   if (seats === undefined) problems.seats = 'A whole number of seats, from 1 to 100,000.';
 
   const reason = form.reason.trim();
-  if (reason.length === 0) problems.reason = 'Say why — it goes in the organisation’s audit log.';
+  if (reason.length === 0) problems.reason = 'Say why. It goes in the organisation’s audit log.';
   else if (reason.length > ADMIN_TEXT_MAX_LENGTH) {
     problems.reason = `At most ${ADMIN_TEXT_MAX_LENGTH} characters.`;
   }

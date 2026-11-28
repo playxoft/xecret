@@ -198,7 +198,7 @@ export function PromoCodesTab() {
         description={
           revoking.target?.kind === 'discount'
             ? 'No checkout can use it from now on. A subscription already bought with it keeps whatever Dodo took off.'
-            : 'Nobody can redeem it from now on. Organisations that already did keep their free plan until it ends — end one from the Grants tab.'
+            : 'Nobody can redeem it from now on. Organisations that already did keep their free plan until it ends. End one from the Grants tab.'
         }
         confirmLabel="Revoke"
         onConfirm={async () => {
@@ -448,7 +448,7 @@ function CreatePromoCodeFlow({
         <DialogTitle>New promo code</DialogTitle>
         <DialogDescription>
           {kind === 'grant'
-            ? 'An owner redeems it in the app, and the organisation is on the plan at once — no card, and nothing at the payment provider.'
+            ? 'An owner redeems it in the app, and the organisation is on the plan at once, with no card and nothing at the payment provider.'
             : 'Taken off at Dodo’s checkout when an owner subscribes with it. The card is still collected, so 100% off is a free plan with a card on file.'}
         </DialogDescription>
       </DialogHeader>
@@ -667,7 +667,7 @@ function DiscountFields({
       {mode === 'test_mode' ? (
         <Alert tone="warning" title="Made in Dodo’s test mode">
           <p>
-            This deployment’s payments are in test mode, so the discount is made there — and applies
+            This deployment’s payments are in test mode, so the discount is made there, and applies
             to nothing once the deployment goes live.
           </p>
         </Alert>
@@ -710,7 +710,7 @@ function DiscountFields({
         ) : null}
         {!percentage ? (
           <p className="text-fg-subtle text-sm leading-5">
-            In the currency’s whole units — 5 for $5. Dodo applies it only to a checkout in that
+            In the currency’s whole units: 5 for $5. Dodo applies it only to a checkout in that
             currency.
           </p>
         ) : null}
@@ -764,7 +764,7 @@ function DiscountFields({
               className="max-w-24"
             />
             <span className="text-fg-muted text-sm">
-              billing cycles — months on a monthly plan, years on a yearly one
+              billing cycles (months on a monthly plan, years on a yearly one)
             </span>
           </div>
         ) : null}

@@ -93,7 +93,7 @@ export function VaultCard({ user }: VaultCardProps) {
       <CardHeader>
         <CardTitle>Vault</CardTitle>
         <CardDescription>
-          Your master passphrase and recovery codes — what your secrets are ultimately sealed with.
+          Your master passphrase and recovery codes: what your secrets are ultimately sealed with.
           Neither is ever sent to xecret.
         </CardDescription>
       </CardHeader>
@@ -176,7 +176,7 @@ function ChangePassphraseSection({ user }: VaultCardProps) {
         variant: 'success',
         title: 'Passphrase changed',
         description:
-          'Your recovery codes still work and your other devices stay unlocked — the key itself did not change, only the passphrase that unwraps it.',
+          'Your recovery codes still work and your other devices stay unlocked. The key itself did not change, only the passphrase that unwraps it.',
       });
     } catch (cause) {
       setProblem(errorMessage(cause));
@@ -203,7 +203,7 @@ function ChangePassphraseSection({ user }: VaultCardProps) {
 
       <Field
         label="Current passphrase"
-        hint="Asked for again even though you are signed in — it is what proves this is you and not somebody at your desk."
+        hint="Asked for again even though you are signed in. It is what proves this is you and not somebody at your desk."
       >
         <Input
           type="password"
@@ -321,7 +321,7 @@ function RecoveryCodesSection({ user }: VaultCardProps) {
           <h3 className="text-fg text-sm font-medium">Recovery codes</h3>
           <p className="text-fg-subtle mt-1 text-sm leading-6">
             {remaining === 0
-              ? 'You have no unused recovery codes left. Issue a new set now — without one, a forgotten passphrase is the end of your vault.'
+              ? 'You have no unused recovery codes left. Issue a new set now. Without one, a forgotten passphrase is the end of your vault.'
               : `${pluralize(remaining, 'unused code')} left of five. Reissuing replaces every one of them, including any you have already printed.`}
           </p>
         </div>

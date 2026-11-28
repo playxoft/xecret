@@ -35,8 +35,8 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-11-22';
-const EFFECTIVE = '2026-11-22';
+const UPDATED = '2026-11-28';
+const EFFECTIVE = '2026-11-28';
 
 const CANONICAL = absoluteUrl('/privacy');
 
@@ -66,10 +66,10 @@ export const metadata: Metadata = {
 
 const SUMMARY = [
   'We hold your email address, the names of your organisations, projects, environments and secrets, your secret values as ciphertext we cannot decrypt, and a log of who read or changed what.',
-  'Your secret values and notes are end-to-end encrypted. They are encrypted on your device before they reach us, under keys we never hold, so we cannot read them — and neither can anyone who obtains our database or compels us to hand it over. The one exception is an older environment still on server-side encryption, which section 3 explains.',
+  'Your secret values and notes are end-to-end encrypted. They are encrypted on your device before they reach us, under keys we never hold, so we cannot read them, and neither can anyone who obtains our database or compels us to hand it over. The one exception is an older environment still on server-side encryption, which section 3 explains.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
-  'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
-  'What you delete is kept for 30 days, so that a mistake can be undone, and then erased for good — a deleted secret longer only where your plan’s restore window needs it. You can export everything with the CLI and delete your own account.',
+  'We do not sell or share personal information. There is no advertising or analytics cookie on this site: the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
+  'What you delete is kept for 30 days, so that a mistake can be undone, and then erased for good (a deleted secret longer only where your plan’s restore window needs it). You can export everything with the CLI and delete your own account.',
   'If you self-host, none of this is us: the operator of that deployment writes their own policy.',
 ] as const;
 
@@ -85,7 +85,7 @@ const SECTIONS: readonly LegalSection[] = [
         Kanchipuram, Tamil Nadu 631501, India. Playxoft is the controller for the personal data
         described below, and &ldquo;we&rdquo; means Playxoft throughout.
       </>,
-      'This policy covers the hosted service we run, this website, the documentation, and the CLI when it talks to our servers. It does not cover a xecret server that somebody else runs — see section 13.',
+      'This policy covers the hosted service we run, this website, the documentation, and the CLI when it talks to our servers. It does not cover a xecret server that somebody else runs (see section 13).',
       <>
         It sits alongside two documents that say the same things in more detail:{' '}
         <LegalLink href="/docs/security/trust-model">what xecret can and cannot see</LegalLink>, and{' '}
@@ -104,8 +104,8 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Account identity.</strong> Your email address,
           whether it has been verified, and the identifier WorkOS issues for your account. If WorkOS
-          holds a name or a profile picture for you — as it does when you sign in with Google, which
-          supplies both — we receive the name and the picture&rsquo;s URL too. We never see your
+          holds a name or a profile picture for you (as it does when you sign in with Google, which
+          supplies both), we receive the name and the picture&rsquo;s URL too. We never see your
           password, and never receive your Google password: a password is entered on a sign-in page
           hosted by WorkOS, or on Google&rsquo;s own for a Google account, WorkOS verifies who you
           are once, and xecret issues its own session afterwards. Accounts created before we moved
@@ -127,27 +127,27 @@ const SECTIONS: readonly LegalSection[] = [
           secret, its versions, when each changed and who changed it. These are{' '}
           <strong className="text-fg font-medium">not</strong> encrypted the way values are. A name
           like <code className="text-fg font-mono text-[0.9em]">STRIPE_LIVE_SECRET_KEY</code> tells
-          us — and anybody holding the database — what you keep, though not what it is.
+          us (and anybody holding the database) what you keep, though not what it is.
         </>,
         <>
           <strong className="text-fg font-medium">Audit records.</strong> Who read, wrote, revealed
           or deleted what, and when, plus every denial: actor, action, outcome, resource, timestamp
-          and a fixed set of metadata fields. No audit record can contain a secret value — the type
+          and a fixed set of metadata fields. No audit record can contain a secret value: the type
           describing that metadata is an allowlist of field names with no catch-all, so the compiler
           rejects an attempt to put one there.
         </>,
         <>
           <strong className="text-fg font-medium">Sessions and devices.</strong> For each browser
           session: its IP address, its user agent, when it was created, when it was last seen, when
-          it expires, when its PIN was last accepted, how it signed in &mdash; password, Google, or
-          which organisation&rsquo;s single sign-on &mdash; and the sign-in provider&rsquo;s own
-          session identifier, so that signing out here can end that session too. The session token
-          itself is stored only as a hash, so a database dump yields hashes rather than usable
-          sessions. If you reset your vault, the session you signed in again with also records when
-          that sign-in happened, when a code was last emailed and how many were requested, and how
-          many codes were tried &mdash; never a code itself, and the proof it leads to only as a
-          hash. That record belongs to the session and is removed with it; it stops counting for
-          anything ten minutes after the sign-in.
+          it expires, when its PIN was last accepted, how it signed in (password, Google, or which
+          organisation&rsquo;s single sign-on) and the sign-in provider&rsquo;s own session
+          identifier, so that signing out here can end that session too. The session token itself is
+          stored only as a hash, so a database dump yields hashes rather than usable sessions. If
+          you reset your vault, the session you signed in again with also records when that sign-in
+          happened, when a code was last emailed and how many were requested, and how many codes
+          were tried (never a code itself, and the proof it leads to only as a hash). That record
+          belongs to the session and is removed with it; it stops counting for anything ten minutes
+          after the sign-in.
         </>,
         <>
           <strong className="text-fg font-medium">Token metadata.</strong> For each CLI or service
@@ -158,8 +158,8 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Membership, and its end.</strong> Which
           organisations your account belongs to and your role in each. When an organisation removes
-          you, a record that you were removed &mdash; by whom and when &mdash; is kept, so that its
-          single sign-on cannot silently re-admit you. Accepting a fresh invitation clears it.
+          you, a record that you were removed (by whom and when) is kept, so that its single sign-on
+          cannot silently re-admit you. Accepting a fresh invitation clears it.
         </>,
         <>
           <strong className="text-fg font-medium">Billing, for a paid plan.</strong> The
@@ -181,8 +181,8 @@ const SECTIONS: readonly LegalSection[] = [
           environment&rsquo;s key that are sealed to you. For a browser where you set up a device
           PIN: half of the key that browser&rsquo;s copy is encrypted under, a hash derived from the
           PIN, and the failed-attempt counter that stops it being guessed. We never receive your
-          passphrase, a recovery code or a PIN &mdash; only values derived from them on your device
-          &mdash; and we cannot recover any of them.
+          passphrase, a recovery code or a PIN (only values derived from them on your device), and
+          we cannot recover any of them.
         </>,
         <>
           <strong className="text-fg font-medium">Request logs.</strong> Method, path, a request
@@ -194,14 +194,14 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Mail we send.</strong> Organisation invitations to
           the address you type; and, when you reset your vault, your{' '}
-          <LegalLink href="/docs/security/vault-archive">vault archive</LegalLink> — your secrets,
+          <LegalLink href="/docs/security/vault-archive">vault archive</LegalLink> (your secrets,
           still encrypted, with the names of your organisations, projects, environments and secrets
-          in plain text — attached to a message to your own address, or a notice in its place if you
+          in plain text), attached to a message to your own address, or a notice in its place if you
           chose to reset without it. On a paid plan, an organisation&rsquo;s owners also receive its
-          billing emails — a trial ending, a payment that failed, a renewal coming up, a seat
-          change, a receipt being ready. WorkOS also sends, on our behalf, the mail that belongs to
-          signing in: a message to verify your email address, a password reset link when you ask for
-          one, a one-time sign-in code if you choose to sign in by email, and the one-time code that
+          billing emails: a trial ending, a payment that failed, a renewal coming up, a seat change,
+          a receipt being ready. WorkOS also sends, on our behalf, the mail that belongs to signing
+          in: a message to verify your email address, a password reset link when you ask for one, a
+          one-time sign-in code if you choose to sign in by email, and the one-time code that
           confirms a vault reset. That is the whole of it: no newsletter, no product marketing, and
           no tracking pixel in the mail we send ourselves.
         </>,
@@ -213,7 +213,7 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'trust-model',
     heading: 'What our encryption protects, and what it does not',
     paragraphs: [
-      'Secret values and notes are end-to-end encrypted. Every environment has its own data key, generated on a member’s device. That key is sealed to the public key of each member and service token allowed to read the environment, and each member’s private key is stored only encrypted under a key that their master passphrase unlocks on their own device. Values are encrypted with AES-256-GCM in your browser or the CLI before they are sent, and each ciphertext is bound to its exact position — a row copied from staging into production does not decrypt.',
+      'Secret values and notes are end-to-end encrypted. Every environment has its own data key, generated on a member’s device. That key is sealed to the public key of each member and service token allowed to read the environment, and each member’s private key is stored only encrypted under a key that their master passphrase unlocks on their own device. Values are encrypted with AES-256-GCM in your browser or the CLI before they are sent, and each ciphertext is bound to its exact position: a row copied from staging into production does not decrypt.',
       'We store the ciphertext and never hold a key that opens it. Your master passphrase and recovery codes never leave your device. Every value fetched is still written to an append-only audit log that the application’s own database credentials cannot alter, so an organisation can see who was handed which value, and when.',
       <>
         <strong className="text-fg font-medium">
@@ -222,9 +222,9 @@ const SECTIONS: readonly LegalSection[] = [
         Not our staff, not anybody who obtains our database, and not anybody who compels us to hand
         it over: there is no plaintext value on our side to give. The same is true in reverse. If
         you lose your passphrase, every recovery code and every passkey, we cannot recover your
-        vault either &mdash; a teammate can share your environments with you again.
+        vault either. A teammate can share your environments with you again.
       </>,
-      'One exception, stated as plainly. An environment created before end-to-end encryption became the default uses server-side encryption: its values are encrypted under a key our server unwraps with the service’s root key, so we can decrypt them, and importing a .env file into one sends the file to us to parse. The environment’s key settings in the dashboard say so. It cannot be converted in place: create a new environment, move the values across — which encrypts them on your device — and delete the old one. Every environment created since is end-to-end encrypted from its first key.',
+      'One exception, stated as plainly. An environment created before end-to-end encryption became the default uses server-side encryption: its values are encrypted under a key our server unwraps with the service’s root key, so we can decrypt them, and importing a .env file into one sends the file to us to parse. The environment’s key settings in the dashboard say so. It cannot be converted in place: create a new environment, move the values across (which encrypts them on your device), and delete the old one. Every environment created since is end-to-end encrypted from its first key.',
       'What is not encrypted the way values are: the names of your secrets, organisations, projects and environments; membership, roles and access grants; audit metadata; and everything in the request logs. Those are readable by us and by anybody who obtains the database. The values are not.',
       <>
         The guarantee rests on the code that does the encrypting. The CLI is open source and its
@@ -244,18 +244,18 @@ const SECTIONS: readonly LegalSection[] = [
       [
         <>
           <strong className="text-fg font-medium">Performance of a contract</strong> (Article
-          6(1)(b)) — running the service you signed up for: authenticating you, storing and
-          returning your secrets, delivering an invitation to somebody you invited.
+          6(1)(b)): running the service you signed up for (authenticating you, storing and returning
+          your secrets, delivering an invitation to somebody you invited).
         </>,
         <>
-          <strong className="text-fg font-medium">Legitimate interests</strong> (Article 6(1)(f)) —
-          security and abuse prevention, and keeping the service working: rate limiting, session and
-          token records, request logs, and the audit trail. On a secrets product the audit trail is
+          <strong className="text-fg font-medium">Legitimate interests</strong> (Article 6(1)(f)):
+          security and abuse prevention, and keeping the service working (rate limiting, session and
+          token records, request logs, and the audit trail). On a secrets product the audit trail is
           the interest: an organisation that cannot tell who read a credential cannot respond to an
           incident.
         </>,
         <>
-          <strong className="text-fg font-medium">Legal obligation</strong> (Article 6(1)(c)) —
+          <strong className="text-fg font-medium">Legal obligation</strong> (Article 6(1)(c)):
           records we are required to keep, and responses to lawful requests.
         </>,
         <>
@@ -264,7 +264,7 @@ const SECTIONS: readonly LegalSection[] = [
           analytics cookie to consent to.
         </>,
       ],
-      'Two roles, and the distinction matters. For your account data we are the controller. For what you put into xecret — secrets, names, structure, and the audit records about them — we act as a processor on the instructions of the organisation that owns it, and that organisation is the controller. If your organisation needs a data processing agreement with us, ask at support@playxoft.com.',
+      'Two roles, and the distinction matters. For your account data we are the controller. For what you put into xecret (secrets, names, structure, and the audit records about them), we act as a processor on the instructions of the organisation that owns it, and that organisation is the controller. If your organisation needs a data processing agreement with us, ask at support@playxoft.com.',
       'We do not use your data to train models. We do not profile you, we do not enrich your account from third-party data sources, and we make no automated decision that produces a legal effect for you.',
     ],
   },
@@ -275,38 +275,38 @@ const SECTIONS: readonly LegalSection[] = [
       'The hosted service runs on these, and on nothing else:',
       [
         <>
-          <strong className="text-fg font-medium">Cloudflare</strong> — hosting, the Workers runtime
+          <strong className="text-fg font-medium">Cloudflare</strong>: hosting, the Workers runtime
           that serves every request, the edge network, rate limiting, and the Secrets Store binding
           that holds the service&rsquo;s root key, which protects our own operational secrets
-          &mdash; webhook signing keys, for example &mdash; and the keys of any older environment
-          still on server-side encryption, but never a value in an end-to-end encrypted one.
+          (webhook signing keys, for example) and the keys of any older environment still on
+          server-side encryption, but never a value in an end-to-end encrypted one.
         </>,
         <>
-          <strong className="text-fg font-medium">Neon</strong> — the managed PostgreSQL database
+          <strong className="text-fg font-medium">Neon</strong>: the managed PostgreSQL database
           that holds everything in section 2. A self-hosted deployment can use any PostgreSQL.
         </>,
         <>
-          <strong className="text-fg font-medium">WorkOS, Inc.</strong> — identity only. It hosts
-          the sign-in page, checks your password if you use one, and verifies who you are, so it
-          sees your email address, your name and your sign-in events, including the IP address and
+          <strong className="text-fg font-medium">WorkOS, Inc.</strong>: identity only. It hosts the
+          sign-in page, checks your password if you use one, and verifies who you are, so it sees
+          your email address, your name and your sign-in events, including the IP address and
           browser each one came from. It also sends the sign-in mail listed in section 2. It never
           receives a secret or anything else you store in xecret. Once it has verified you, xecret
           issues its own session and keeps none of the tokens WorkOS issues.
         </>,
         <>
-          <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:
-          organisation invitations, the billing emails an organisation&rsquo;s owners receive on a
-          paid plan, and the vault archive or notice sent when you reset your vault. The archive
+          <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong>: transactional email
+          (organisation invitations, the billing emails an organisation&rsquo;s owners receive on a
+          paid plan, and the vault archive or notice sent when you reset your vault). The archive
           passes through it as an attachment: encrypted values it cannot read, and names in plain
           text.
         </>,
         <>
-          <strong className="text-fg font-medium">Better Stack</strong> — log shipping, when a
+          <strong className="text-fg font-medium">Better Stack</strong>: log shipping, when a
           deployment is configured for it. When it is not, request logs stay in Cloudflare&rsquo;s
           own tail.
         </>,
         <>
-          <strong className="text-fg font-medium">Dodo Payments</strong> — payments, as the merchant
+          <strong className="text-fg font-medium">Dodo Payments</strong>: payments, as the merchant
           of record, for an organisation that buys a paid plan. It takes the payment, charges the
           tax and issues the invoice, so it receives the name, email address and billing country of
           the owner who checks out, and it holds the card: the card number is entered on its
@@ -318,8 +318,8 @@ const SECTIONS: readonly LegalSection[] = [
       'We will list a new sub-processor here before it starts processing anything.',
       <>
         If you run xecret yourself, this list is not yours. Your sub-processors are whoever you
-        chose to host the Worker, run the database, verify identity and relay mail —{' '}
-        <LegalLink href="/docs/self-hosting">the self-hosting guide</LegalLink> names the ones the
+        chose to host the Worker, run the database, verify identity and relay mail.{' '}
+        <LegalLink href="/docs/self-hosting">The self-hosting guide</LegalLink> names the ones the
         software needs.
       </>,
     ],
@@ -330,50 +330,50 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       [
         <>
-          <strong className="text-fg font-medium">Audit records</strong> — 7 days on Free, 30 days
-          on Pro, 180 days on Team, a year on Enterprise, and whatever an Enterprise agreement
-          states above that. A single audit query returns at most a 90-day window, which is a limit
-          on the query and not on the retention.
+          <strong className="text-fg font-medium">Audit records</strong>: 7 days on Free, 30 days on
+          Pro, 180 days on Team, a year on Enterprise, and whatever an Enterprise agreement states
+          above that. A single audit query returns at most a 90-day window, which is a limit on the
+          query and not on the retention.
         </>,
         <>
-          <strong className="text-fg font-medium">Secrets</strong> — for as long as you keep them.
+          <strong className="text-fg font-medium">Secrets</strong>: for as long as you keep them.
           Every earlier version of a value is kept with it, which is what lets you roll one back.
         </>,
         <>
           <strong className="text-fg font-medium">
             Deleted organisations, projects, environments and secrets
-          </strong>{' '}
-          — kept for 30 days after deletion, out of everybody&rsquo;s reach, and then erased for
-          good: the values, every earlier version of them, and the keys they were encrypted under. A
-          job runs every night to do it, and it records each erasure in the audit log.
+          </strong>
+          : kept for 30 days after deletion, out of everybody&rsquo;s reach, and then erased for
+          good (the values, every earlier version of them, and the keys they were encrypted under).
+          A job runs every night to do it, and it records each erasure in the audit log.
         </>,
         <>
           <strong className="text-fg font-medium">Why 30 days.</strong> What xecret holds is
           credentials, and a credential is deleted by mistake far more often than on purpose: the
           wrong environment, a script that cleaned up too much, a value somebody did not know was
-          still in use &mdash; or an account that had been taken over. The first sign is usually an
-          outage days later, when an application restarts and cannot fetch what it needs. Thirty
-          days gives you time to notice and ask us to put it back, and gives an investigation the
-          record of what existed. After that, keeping a credential nobody can use would only add
-          risk, so we erase it.
+          still in use, or an account that had been taken over. The first sign is usually an outage
+          days later, when an application restarts and cannot fetch what it needs. Thirty days gives
+          you time to notice and ask us to put it back, and gives an investigation the record of
+          what existed. After that, keeping a credential nobody can use would only add risk, so we
+          erase it.
         </>,
         <>
           <strong className="text-fg font-medium">One exception.</strong> A secret deleted from an
           environment that still exists is kept for your plan&rsquo;s point-in-time restore window
-          when that is longer than 30 days &mdash; 180 days on Team, a year on Enterprise &mdash;
-          because restoring the environment to an earlier moment brings such secrets back, and it
-          can only do that while they are still here.
+          when that is longer than 30 days (180 days on Team, a year on Enterprise), because
+          restoring the environment to an earlier moment brings such secrets back, and it can only
+          do that while they are still here.
         </>,
         <>
-          <strong className="text-fg font-medium">Reset vaults</strong> — when you reset your vault,
+          <strong className="text-fg font-medium">Reset vaults</strong>: when you reset your vault,
           the old one is kept for seven days so that you can recover it, and nothing in xecret can
-          delete it in that window — not you, and not us through the product. It is purged
+          delete it in that window (not you, and not us through the product). It is purged
           automatically within about twelve hours after the seven days end. The archive emailed at
           the reset is a copy in your mailbox, and stays there for as long as you keep it: we cannot
           delete mail we have sent.
         </>,
         <>
-          <strong className="text-fg font-medium">Closed accounts</strong> — deleting your account
+          <strong className="text-fg font-medium">Closed accounts</strong>: deleting your account
           revokes every session and CLI token, deletes your vault, your passkeys and any device
           PINs, removes you from the organisations you are not the last owner of, and deletes the
           organisations that were only yours, which are then erased 30 days later as described
@@ -384,16 +384,16 @@ const SECTIONS: readonly LegalSection[] = [
           us if you need the identity record erased outright.
         </>,
         <>
-          <strong className="text-fg font-medium">Sessions</strong> — 30 days from creation, and
+          <strong className="text-fg font-medium">Sessions</strong>: 30 days from creation, and
           immediately on sign-out or on &ldquo;sign out everywhere&rdquo;.
         </>,
         <>
-          <strong className="text-fg font-medium">Request logs</strong> — kept only as long as they
+          <strong className="text-fg font-medium">Request logs</strong>: kept only as long as they
           are useful for debugging and abuse control, by whichever log sink the deployment uses.
           They are not used to build a profile of you.
         </>,
       ],
-      'Backups keep their own clock. A record deleted today can survive inside a database backup until that backup rotates — a property of every hosted database, stated here rather than left for you to assume otherwise.',
+      'Backups keep their own clock. A record deleted today can survive inside a database backup until that backup rotates, a property of every hosted database, stated here rather than left for you to assume otherwise.',
     ],
   },
   {
@@ -418,10 +418,10 @@ const SECTIONS: readonly LegalSection[] = [
       </>,
       <>
         If you think we have got this wrong, you can complain to the data protection authority where
-        you live &mdash; in the United Kingdom the Information Commissioner&rsquo;s Office, in the
-        EEA the authority of your own country. Playxoft is established in India, where the authority
-        under the Digital Personal Data Protection Act, 2023 is the Data Protection Board of India.
-        We would rather you told us first.
+        you live: in the United Kingdom the Information Commissioner&rsquo;s Office, in the EEA the
+        authority of your own country. Playxoft is established in India, where the authority under
+        the Digital Personal Data Protection Act, 2023 is the Data Protection Board of India. We
+        would rather you told us first.
       </>,
     ],
   },
@@ -429,7 +429,7 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'california',
     heading: 'California residents',
     paragraphs: [
-      'We do not sell personal information, and we do not share it for cross-context behavioural advertising, as the CCPA — as amended by the CPRA — uses those words. We have not done so in the preceding twelve months, and we offer no financial incentive in exchange for personal information.',
+      'We do not sell personal information, and we do not share it for cross-context behavioural advertising, as the CCPA (as amended by the CPRA) uses those words. We have not done so in the preceding twelve months, and we offer no financial incentive in exchange for personal information.',
       'You may ask what we collect and why (section 2 is that list), ask for a copy, ask for correction, and ask for deletion. There is no “do not sell or share my personal information” link on this site, because there is nothing to opt out of. Exercising any of these rights costs you nothing and changes nothing about the service you receive.',
       'Sensitive personal information: we do not collect it in order to infer characteristics about you. A secret value you store may contain anything you choose to put in it, which is why the value is encrypted and why every reveal is audited.',
     ],
@@ -452,36 +452,36 @@ const SECTIONS: readonly LegalSection[] = [
       'Six cookies, all strictly necessary, none of them a tracker:',
       [
         <>
-          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_session</code> — your
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_session</code>: your
           signed-in session. HttpOnly, secure, same-site, and valid for 30 days unless you sign out.
           It carries an opaque token; the server stores only its hash.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_csrf</code> — a token this
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_csrf</code>: a token this
           site&rsquo;s own JavaScript reads and echoes back, so a form on somebody else&rsquo;s site
           cannot make a request as you. Same lifetime as the session.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_oauth_state</code> — set
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_oauth_state</code>: set
           when you leave for the sign-in page and cleared when you come back, so that a sign-in can
           only be completed in the browser that started it. HttpOnly, secure, signed, and valid for
           ten minutes. It holds the one-time values that tie the sign-in to your browser and the
           page to return you to.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_sign_in_confirm</code> —
-          set only when a sign-in is held back for your confirmation (&ldquo;Is this you?&rdquo;).
-          It carries the held-back sign-in, sealed so that only this site can read it. HttpOnly,
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_sign_in_confirm</code>: set
+          only when a sign-in is held back for your confirmation (&ldquo;Is this you?&rdquo;). It
+          carries the held-back sign-in, sealed so that only this site can read it. HttpOnly,
           secure, single-use, and valid for five minutes.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_sso_continue</code> — set
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_sso_continue</code>: set
           when you open an organisation&rsquo;s sign-in link, so that only the warning page&rsquo;s
           own Continue button can start that organisation&rsquo;s sign-in. HttpOnly, secure, and
           valid for five minutes.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_last_account</code> — a
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_last_account</code>: a
           signed note of which account last signed in on this browser, so we do not ask &ldquo;Is
           this you?&rdquo; needlessly when our sign-in provider remembers you. HttpOnly, secure, and
           valid for 180 days. It names an account id and nothing else.
@@ -504,28 +504,28 @@ const SECTIONS: readonly LegalSection[] = [
       </>,
       [
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.theme</code> — light, dark or
+          <code className="text-fg font-mono text-[0.9em]">xecret.theme</code>: light, dark or
           system.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.sidebar</code> — whether the
+          <code className="text-fg font-mono text-[0.9em]">xecret.sidebar</code>: whether the
           dashboard sidebar is collapsed.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.projects.view</code> — whether the
+          <code className="text-fg font-mono text-[0.9em]">xecret.projects.view</code>: whether the
           projects page shows a grid or a list.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.nudge.unlock.v1</code> — when this
+          <code className="text-fg font-mono text-[0.9em]">xecret.nudge.unlock.v1</code>: when this
           browser last offered you a faster way to unlock your vault, as a timestamp, so that the
           offer is not made again for 30 days.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.pins.v1</code> — the public keys
-          of the members and service tokens this browser has encrypted keys for, each filed under
-          its xecret identifier with the date it was first recorded. A public key is not a secret.
-          It is kept so that if our server ever presented a different key for one of them, this
-          browser would notice and warn you instead of encrypting to it.
+          <code className="text-fg font-mono text-[0.9em]">xecret.pins.v1</code>: the public keys of
+          the members and service tokens this browser has encrypted keys for, each filed under its
+          xecret identifier with the date it was first recorded. A public key is not a secret. It is
+          kept so that if our server ever presented a different key for one of them, this browser
+          would notice and warn you instead of encrypting to it.
         </>,
         <>
           <code className="text-fg font-mono text-[0.9em]">xecret.pins.mode.v1</code>: for each
@@ -536,17 +536,17 @@ const SECTIONS: readonly LegalSection[] = [
           text.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code> — present only if
-          you set up a device PIN on this browser. It holds your vault key — the key your master
-          passphrase unlocks — encrypted so that this device alone cannot open it: the other half of
+          <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code>: present only if you
+          set up a device PIN on this browser. It holds your vault key (the key your master
+          passphrase unlocks), encrypted so that this device alone cannot open it: the other half of
           the key it is encrypted under stays on our server, which releases it only when the PIN you
           type is right, and deletes it after five wrong attempts in a row. Beside it are a random
           salt, and an identifier for this browser that is sent to our server whenever you set up,
           use or turn off the PIN, so that it knows which half to release. The encrypted vault key
           itself never leaves this browser. Turning the PIN off in this browser deletes the entry.
-          If the PIN ends any other way &mdash; turned off from another browser, or revoked because
-          your passphrase was changed or your vault was recovered or reset &mdash; our server has
-          deleted its half, and the entry can stay here until this browser next tries to use it.
+          If the PIN ends any other way (turned off from another browser, or revoked because your
+          passphrase was changed or your vault was recovered or reset), our server has deleted its
+          half, and the entry can stay here until this browser next tries to use it.
         </>,
       ],
       <>
@@ -560,17 +560,17 @@ const SECTIONS: readonly LegalSection[] = [
           it.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.uk.session.v1</code> — while your
+          <code className="text-fg font-mono text-[0.9em]">xecret.uk.session.v1</code>: while your
           vault is unlocked in a tab, that tab keeps a copy of the vault&rsquo;s keys here,{' '}
           <strong className="text-fg font-medium">unencrypted</strong>: your vault key, your
           account&rsquo;s encryption and signing key pairs, and your account identifier. It is what
           lets a reload skip your passphrase, and the entry is never sent to us. Locking the vault,
-          or signing out in that tab, deletes it. If your session ends any other way &mdash; it
-          expires, it is revoked, or you sign out everywhere from another device &mdash; the copy
-          can stay in that tab until the tab is closed or the vault is locked there. Closing a tab
-          normally ends it, but a browser that reopens closed tabs, restores a previous session or
-          duplicates a tab can carry it along. So on a computer you share, lock the vault or close
-          the tab yourself, rather than relying on signing out from somewhere else.
+          or signing out in that tab, deletes it. If your session ends any other way (it expires, it
+          is revoked, or you sign out everywhere from another device), the copy can stay in that tab
+          until the tab is closed or the vault is locked there. Closing a tab normally ends it, but
+          a browser that reopens closed tabs, restores a previous session or duplicates a tab can
+          carry it along. So on a computer you share, lock the vault or close the tab yourself,
+          rather than relying on signing out from somewhere else.
         </>,
       ],
       'There is no advertising cookie, no analytics cookie and no third-party tag on this site. That is why there is no cookie banner: there is nothing to ask you about. If we ever add analytics, this section will say so, and we will ask first where the law requires it.',
@@ -584,7 +584,7 @@ const SECTIONS: readonly LegalSection[] = [
         'Secret values and notes are AES-256-GCM, encrypted on your device under a per-environment key that is sealed only to the members and service tokens allowed to read it. We hold no key that opens them.',
         'Session tokens, CLI tokens and service tokens are stored as hashes. A token is shown once, at creation, and cannot be re-read afterwards.',
         'The application’s database role cannot alter the audit table. It is append-only by grant rather than by discipline.',
-        'Error messages returned to a client are fixed strings — never derived from an exception, a database error or the rejected input, because the rejected input may itself be a secret.',
+        'Error messages returned to a client are fixed strings, never derived from an exception, a database error or the rejected input, because the rejected input may itself be a secret.',
         'Your vault locks after a period of inactivity, so an unattended session cannot read a value until it is unlocked again with your passphrase, a passkey or a device PIN.',
       ],
       <>
@@ -609,7 +609,7 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       'The server is AGPL-3.0 and running it yourself is a documented, supported path. If you do, this policy does not govern your users: the operator of that deployment is the controller, chooses the database, the identity provider and the mail relay, holds the server’s root key, and writes their own privacy policy. End-to-end encryption works the same way there: the operator cannot read the values in an end-to-end encrypted environment either.',
       <>
-        We receive nothing from a self-hosted instance — no telemetry, no phone-home, no licence
+        We receive nothing from a self-hosted instance: no telemetry, no phone-home, no licence
         check. <LegalLink href="/docs/self-hosting">Self-hosting</LegalLink> states the real
         dependency list, including the parts that are friction, and is blunt about what the
         server&rsquo;s root key protects and what losing it would cost.
@@ -622,15 +622,17 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       'When this policy changes, the date at the top of the page changes with it. For a change that materially affects your rights, we will email the owners of every organisation and announce it in the repository before it takes effect.',
       <>
-        The version of 22 November 2026 is not a material change. It names the company that operates
-        xecret and how to reach it, and it sets how long deleted data is kept &mdash; 30 days, then
-        erased, under <LegalLink href="#retention">How long we keep it</LegalLink> &mdash; where the
-        version before it left that period to be decided. It also describes the end-to-end
-        encryption the product already uses, under{' '}
+        The version of 28 November 2026 is not a material change. It names the company that operates
+        xecret and how to reach it, and it sets how long deleted data is kept (30 days, then erased,
+        under <LegalLink href="#retention">How long we keep it</LegalLink>), where the version
+        before it left that period to be decided. It also describes the end-to-end encryption the
+        product already uses, under{' '}
         <LegalLink href="#trust-model">What our encryption protects</LegalLink>, and lists the vault
-        key material that comes with it &mdash; material we already held, none of which we can open.
-        What we can read is narrower than the version before it said, not wider; why we process
-        data, who processes it for us, and your rights are unchanged.
+        key material that comes with it: material we already held, none of which we can open. Under{' '}
+        <LegalLink href="#cookies">Cookies and browser storage</LegalLink>, it now says that the
+        entries this site keeps in your browser name organisations and projects by their identifiers
+        rather than their slugs. What we can read is narrower than the version before it said, not
+        wider; why we process data, who processes it for us, and your rights are unchanged.
       </>,
       <>
         This page lives in the same repository as the product, so its history is the git history:
@@ -647,8 +649,8 @@ const SECTIONS: readonly LegalSection[] = [
       <>
         Email <LegalLink href="mailto:support@playxoft.com">support@playxoft.com</LegalLink> about
         anything on this page. For a question that is not about you personally, you are welcome to{' '}
-        <LegalLink href={`${REPO_URL}/issues`}>open an issue in the repository</LegalLink> instead
-        &mdash; but please keep personal information out of it, since issues are public.
+        <LegalLink href={`${REPO_URL}/issues`}>open an issue in the repository</LegalLink> instead,
+        but please keep personal information out of it, since issues are public.
       </>,
       <>
         By post: Playxoft Studios Private Limited, 19B/1, Ananthapettai Street, Kanchipuram, Tamil

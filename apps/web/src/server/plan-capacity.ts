@@ -32,8 +32,8 @@ import type { EnvironmentScope } from './tenancy';
  * so change them in both places or not at all.
  */
 export const CLI_DEVICE_REMEDY =
-  'Revoke a device you no longer use — on the Tokens page of this organisation in the ' +
-  'dashboard, or by running `xecret logout` on it — then log in again.';
+  'Revoke a device you no longer use (on the Tokens page of this organisation in the ' +
+  'dashboard, or by running `xecret logout` on it), then log in again.';
 
 /**
  * Lock `scopeId` for `resource`, count, and refuse unless `adding` more fit.

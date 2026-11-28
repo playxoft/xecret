@@ -1,7 +1,7 @@
 ---
 title: Core concepts
 navTitle: Core concepts
-description: Organisations, projects, environments, secrets, versions and tokens — the vocabulary every other page assumes, defined once.
+description: Organisations, projects, environments, secrets, versions and tokens: the vocabulary every other page assumes, defined once.
 keywords: [xecret concepts, organisation project environment, secret versions, access levels, service token, glossary]
 updated: 2026-11-28
 ---
@@ -72,7 +72,7 @@ Two things make an environment more than a folder:
 
 ### Secret
 
-A named value inside an environment — `DATABASE_URL`, `STRIPE_SECRET_KEY`.
+A named value inside an environment, such as `DATABASE_URL` or `STRIPE_SECRET_KEY`.
 
 Names follow the same rule your shell does: letters, digits and underscores,
 and never starting with a digit. Up to 256 characters. `MY_KEY` is valid;
@@ -94,8 +94,8 @@ Every write appends. Updating `DATABASE_URL` creates version 5; version 4 is
 still there, still readable by anyone who may read the environment, and still
 restorable. Nothing is ever overwritten in place.
 
-Writing a value identical to the current one is a no-op — detected without
-decrypting anything — so a script that re-applies the same configuration does
+Writing a value identical to the current one is a no-op, detected without
+decrypting anything, so a script that re-applies the same configuration does
 not fill your history with noise.
 
 Renaming a secret or changing its note does **not** create a version: declaring
@@ -117,7 +117,7 @@ all. There are four, ordered `viewer` < `developer` < `admin` < `owner`.
 | `developer` | Reads and writes secrets; cannot manage members. |
 | `viewer` | Reads. Cannot write anywhere. |
 
-Nobody can hand out a role above their own — an admin can appoint another
+Nobody can hand out a role above their own: an admin can appoint another
 admin, but only an owner can create an owner.
 
 ### Access levels
@@ -137,9 +137,9 @@ Where no grant says otherwise, your role supplies a default:
 
 **Production is deny-by-default for developers and viewers.** A developer who
 needs production must be granted it explicitly by somebody who manages members,
-and that grant lands in the audit log with a name attached. The alternative —
-production behaving like every other environment until somebody remembers to
-lock it down — makes the safe state the one that requires work.
+and that grant lands in the audit log with a name attached. The alternative
+(production behaving like every other environment until somebody remembers to
+lock it down) makes the safe state the one that requires work.
 
 A grant may target a whole project or a single environment, and the more
 specific one wins. `none` always denies, whatever the role default would have
@@ -158,7 +158,7 @@ Three ways to prove who you are. A request presents exactly one.
 | **CLI token** | `xct_…` | `xecret login` on your machine |
 | **Service token** | `xst_…` | CI jobs and containers |
 
-A CLI token *acts as you* — it carries your role and your grants, and nothing
+A CLI token *acts as you*: it carries your role and your grants, and nothing
 more. A service token is not a person: it is pinned to one organisation, one
 project and one environment, is read-only unless you say otherwise, and can
 never delete a secret. See [tokens](api/tokens.md).
@@ -169,7 +169,7 @@ Every mutation, every read, and **every denial** is recorded, in an
 append-only table nobody can edit. A system that records only what succeeded
 cannot detect an attack in progress.
 
-The log names the actor — a person, a CLI token, or a service token — never
+The log names the actor (a person, a CLI token, or a service token), never
 "whoever created the token". A CI write is recorded as the act of that token.
 See [the audit log](security/audit-log.md).
 
@@ -178,7 +178,7 @@ See [the audit log](security/audit-log.md).
 Worth knowing before you read any command page:
 
 1. **A secret value is never written** to stdout, stderr, a log, a temporary
-   file, or a process argument — except by `xecret pull` and
+   file, or a process argument, except by `xecret pull` and
    `xecret secrets get --plain`, whose stated purpose is producing one.
 2. **Credentials live in the OS keychain**, never in a dotfile. Where no
    keyring exists, a `0600` file under `~/.xecret/` is used, and the CLI tells

@@ -208,7 +208,7 @@ export function VersionHistoryDialog({
             <DialogTitle className="font-mono">{secretName}</DialogTitle>
             <DialogDescription>
               Every version ever written, newest first. Revealing one decrypts that version and is
-              recorded in the audit log — an old value often still works at the provider.
+              recorded in the audit log. An old value often still works at the provider.
             </DialogDescription>
           </DialogHeader>
 

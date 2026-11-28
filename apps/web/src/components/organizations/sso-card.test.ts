@@ -182,7 +182,7 @@ describe('SingleSignOnCard', () => {
     const required = switchFor(html, 'sso-required');
     expect(required).toMatch(/\sdisabled=""/);
     expect(required).toContain('aria-describedby="sso-required-hint"');
-    expect(html).toContain('until a connection is active');
+    expect(html).toContain('Until a connection is active');
     // The opt-in has no such requirement.
     expect(switchFor(html, 'sso-jit')).not.toMatch(/\sdisabled=""/);
   });

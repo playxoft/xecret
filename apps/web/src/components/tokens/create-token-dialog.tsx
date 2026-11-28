@@ -311,7 +311,7 @@ function CreateTokenFlow({
           </DialogTitle>
           <DialogDescription>
             This is the only time they will be shown. Only a hash is stored, and for an end-to-end
-            encrypted environment the string also carries the key that decrypts it — which exists
+            encrypted environment the string also carries the key that decrypts it, which exists
             nowhere else. Closing this dialog discards the values forever; losing one means minting
             a new token.
           </DialogDescription>
@@ -328,7 +328,7 @@ function CreateTokenFlow({
           {outcome.minted.some((issued) => !issued.keyShared) ? (
             <Alert tone="danger" title="One token has no key yet">
               It authenticates but decrypts nothing until somebody shares this environment&apos;s
-              key with it. Copy it anyway — this is still the only time it is shown — then open the
+              key with it. Copy it anyway (this is still the only time it is shown), then open the
               environment&apos;s key panel and share or rotate.
             </Alert>
           ) : null}
@@ -341,7 +341,7 @@ function CreateTokenFlow({
                 <p className="text-fg-muted text-sm font-medium">
                   {projectName(issued.serviceToken.projectSlug)} / {environment}
                   {issued.keyShared ? null : (
-                    <span className="text-fg-subtle"> &mdash; no key shared</span>
+                    <span className="text-fg-subtle"> (no key shared)</span>
                   )}
                 </p>
                 <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
@@ -376,7 +376,7 @@ function CreateTokenFlow({
         <DialogTitle>New service token</DialogTitle>
         <DialogDescription>
           A CI credential, pinned to exactly one project and environment. Selecting several
-          environments mints one token per environment. It acts as itself — never as a person — and
+          environments mints one token per environment. It acts as itself, never as a person, and
           every read it makes is audited.
         </DialogDescription>
       </DialogHeader>
@@ -449,7 +449,7 @@ function CreateTokenFlow({
           hint={
             accessLevel === 'read'
               ? 'Reads secrets. The right level for builds and deploys.'
-              : 'Also writes secrets — for pipelines that rotate credentials. Cannot delete.'
+              : 'Also writes secrets, for pipelines that rotate credentials. Cannot delete.'
           }
         >
           {/* The same capsule the member screens grant with, so one vocabulary

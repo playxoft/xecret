@@ -40,7 +40,7 @@ export function Actor({
 
   if (userId === null) {
     // Unreachable while the writer CHECK holds; rendered honestly if it ever is.
-    return <span className="text-fg-subtle">—</span>;
+    return <span className="text-fg-subtle">Unknown</span>;
   }
 
   if (userId === user.id) {

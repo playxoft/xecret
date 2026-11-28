@@ -205,7 +205,7 @@ export function EnvironmentSettingsForm({
 
             <Field
               label="Slug"
-              hint="Immutable. It is what xecret run --env takes, what .xecret.yaml records, and what every URL to this environment contains — so a rename would break every consumer that is not redeployed at the same instant."
+              hint="Immutable. It is what xecret run --env takes, what .xecret.yaml records, and what every URL to this environment contains, so a rename would break every consumer that is not redeployed at the same instant."
             >
               <Input value={environment.slug} readOnly disabled className="font-mono" />
             </Field>
@@ -250,7 +250,7 @@ export function EnvironmentSettingsForm({
           <CardContent>
             <p className="text-fg-muted text-sm leading-6">
               {environment.isProduction
-                ? 'Removing the mark grants every developer in this organisation immediate access to the secrets already stored here. No data moves and no permission is granted individually — a boolean simply reads false, and a whole environment becomes readable.'
+                ? 'Removing the mark grants every developer in this organisation immediate access to the secrets already stored here. No data moves and no permission is granted individually: a boolean simply reads false, and a whole environment becomes readable.'
                 : `Adding the mark takes access away from everybody below admin, including whoever is reading this, until an admin grants it back explicitly. This environment currently holds ${pluralize(environment.secretCount, 'secret')}.`}
             </p>
             <Separator className="my-4" />
@@ -398,8 +398,8 @@ function EnvironmentDeleteNote() {
   return (
     <Alert tone="info" title="The values are hidden, not destroyed">
       The environment&apos;s data key stays exactly where it is, so this is reversible by an
-      operator. Destroying the key — which would make every value unreadable, in every backup ever
-      taken — is a separate, deliberate operation that this screen does not offer.
+      operator. Destroying the key (which would make every value unreadable, in every backup ever
+      taken) is a separate, deliberate operation that this screen does not offer.
     </Alert>
   );
 }

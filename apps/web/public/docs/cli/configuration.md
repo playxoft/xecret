@@ -14,11 +14,11 @@ wins, and what each is for.
 Every secret-touching command needs an *(organisation, project, environment)*
 triple. It is resolved in this order, first answer winning:
 
-1. **`--project` / `--environment` flags** — explicit beats everything.
+1. **`--project` / `--environment` flags.** Explicit beats everything.
 2. **`.xecret.yaml`**, discovered by walking up from the working directory,
    the way `git` finds `.git`. So `xecret run` works from any subdirectory.
 3. **The service token's pinned scope**, when `XECRET_TOKEN` is set.
-4. **Nothing** — an error telling you to run `xecret init`.
+4. **Nothing.** You get an error telling you to run `xecret init`.
 
 That order settles the project and the environment. The **organisation** is
 never chosen by a file:
@@ -38,7 +38,7 @@ never chosen by a file:
   organisation must never be able to point `xecret run`, `import` or
   `secrets set` at another organisation you also belong to.
 
-> **Note** — Naming a scope outside a service token's pin is refused by the
+> **Note**: Naming a scope outside a service token's pin is refused by the
 > server, not merely by the client. Passing `--environment production` to a job
 > whose token is pinned to `staging` fails with a 404, not a quiet success. The
 > client-side rules on this page are conveniences; the boundary is server-side.
@@ -81,7 +81,7 @@ xecret run --environment staging -- npm run dev
 Or, if you always want a different default, set it for your shell session:
 
 ```bash
-export XECRET_ENVIRONMENT=staging   # not read by the CLI — see below
+export XECRET_ENVIRONMENT=staging   # not read by the CLI; see below
 ```
 
 That variable does *not* exist, deliberately. An environment variable that
@@ -94,7 +94,7 @@ explicit with the flag.
 | Variable | Effect |
 |---|---|
 | `XECRET_TOKEN` | Authenticate as a service token (`xst_…`). No login, no keychain, no offline cache. Overrides any stored login. |
-| `XECRET_API_URL` | Which deployment to talk to — used by `login` and by `XECRET_TOKEN` mode. A stored login remembers its own URL, so you do not need this after `xecret login --api-url …`. |
+| `XECRET_API_URL` | Which deployment to talk to, used by `login` and by `XECRET_TOKEN` mode. A stored login remembers its own URL, so you do not need this after `xecret login --api-url …`. |
 | `XECRET_KEYRING=file` | Force the `0600` file fallback instead of the OS keyring. |
 | `XECRET_NO_UPGRADE_NOTICE` | Silence the [upgrade notice](commands.md#the-upgrade-notice). It is already silent under `XECRET_TOKEN` and whenever stderr is not a terminal. |
 | `NO_COLOR` | Disable colour. Output is also uncoloured whenever stdout is not a terminal. |
@@ -109,7 +109,7 @@ xecret run -- npm run build
 
 While `XECRET_TOKEN` is set:
 
-- `xecret login`, `logout` and `init` are refused — none of them make sense for
+- `xecret login`, `logout` and `init` are refused: none of them make sense for
   a credential you did not create on this machine.
 - No offline cache is written or read. A CI runner is disposable; an encrypted
   cache file on it would be a liability with no benefit.
@@ -125,8 +125,8 @@ The credential from `xecret login` goes into your operating system's keychain:
 | Windows | Credential Manager |
 | Linux | Secret Service (GNOME Keyring, KWallet, …) |
 
-Where no keyring is available — a bare container, a headless server, a minimal
-window manager — the CLI falls back to a `0600` file under `~/.xecret/` and
+Where no keyring is available (a bare container, a headless server, a minimal
+window manager), the CLI falls back to a `0600` file under `~/.xecret/` and
 **tells you on stderr** that it has done so. It never falls back silently: you
 should know when your credential moved from a keychain to a file.
 
@@ -161,6 +161,6 @@ The compiled-in default is `https://xecret.playxoft.com`. See
 
 ## Next
 
-- [The offline cache](offline-cache.md) — what the cache does and does not do.
-- [Command reference](commands.md) — every flag in one page.
-- [Secrets in CI](../guides/ci.md) — the token-based setup end to end.
+- [The offline cache](offline-cache.md): what the cache does and does not do.
+- [Command reference](commands.md): every flag in one page.
+- [Secrets in CI](../guides/ci.md): the token-based setup end to end.

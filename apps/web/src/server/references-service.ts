@@ -415,7 +415,7 @@ export async function crossingRefusal(
   throw errors.conflict(
     `link_crosses_protection: This would make the production environment ${here} ${how} ` +
       `${sources}, which ${one ? 'is' : 'are'} not production. Anyone who can change ` +
-      `${one ? 'its' : 'their'} secrets — ${parts.join('; ')} — would change what ${here} reads, ` +
+      `${one ? 'its' : 'their'} secrets (${parts.join('; ')}) would change what ${here} reads, ` +
       `without ${here}'s own access rules being asked. Confirm the link ` +
       '(confirmCrossesProtection: true) to make it anyway.',
   );
@@ -1005,7 +1005,7 @@ export async function assertTokenReach(
 
   throw errors.conflict(
     `This environment has ${tokens} active service token${tokens === 1 ? '' : 's'}, and a service ` +
-      `token can read only its own environment — so it could not resolve ${
+      `token can read only its own environment, so it could not resolve ${
         what === 'parent' ? 'inherited values' : 'a reference to another environment'
       }. Revoke the token${tokens === 1 ? '' : 's'} first, or keep CI on an environment that ` +
       'stands alone.',
@@ -1099,7 +1099,7 @@ export async function planPull(
   } catch (cause) {
     if (cause instanceof ResolutionError) {
       throw errors.conflict(
-        `resolution_failed: this environment's references cannot be resolved — ${cause.message}`,
+        `resolution_failed: this environment's references cannot be resolved. ${cause.message}`,
       );
     }
     throw cause;

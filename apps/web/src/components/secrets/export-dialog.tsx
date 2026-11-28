@@ -269,7 +269,7 @@ function ExportBody({
         <Alert tone="warning" title="A file on disk is not protected by anything">
           <p>
             The download is plaintext. It is not encrypted at rest, it will be backed up and synced
-            by whatever indexes your home directory, and it cannot be revoked — once it exists,
+            by whatever indexes your home directory, and it cannot be revoked. Once it exists,
             xecret can no longer tell you who has read it.
           </p>
           <p className="mt-2">Delete it as soon as you are done, and never commit it.</p>

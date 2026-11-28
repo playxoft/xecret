@@ -247,14 +247,14 @@ export function checkSlugShape(slug: string, maxLength: number): SlugCheck {
     return {
       valid: false,
       problem: 'doubleHyphen',
-      message: 'Use single hyphens — two in a row is not allowed.',
+      message: 'Use single hyphens. Two in a row is not allowed.',
     };
   }
   if (!SLUG_PATTERN.test(slug)) {
     return {
       valid: false,
       problem: 'invalidCharacters',
-      message: 'Use lowercase letters, digits and single hyphens — no spaces.',
+      message: 'Use lowercase letters, digits and single hyphens, with no spaces.',
     };
   }
   return { valid: true };

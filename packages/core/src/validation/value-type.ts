@@ -105,7 +105,7 @@ export const SECRET_VALUE_TYPE_DESCRIPTORS: Readonly<
   boolean: {
     type: 'boolean',
     label: 'Boolean',
-    hint: 'true, false, 1, 0, yes, no, on or off — in any case.',
+    hint: 'true, false, 1, 0, yes, no, on or off, in any case.',
     example: 'true',
   },
   int: {
@@ -129,7 +129,7 @@ export const SECRET_VALUE_TYPE_DESCRIPTORS: Readonly<
   url: {
     type: 'url',
     label: 'URL',
-    hint: 'An absolute URL with a scheme — https, postgres, redis, anything.',
+    hint: 'An absolute URL with a scheme: https, postgres, redis, anything.',
     example: 'https://api.example.com',
   },
   date: {
@@ -171,13 +171,13 @@ export const SECRET_VALUE_TYPE_DESCRIPTORS: Readonly<
   uuidv4: {
     type: 'uuidv4',
     label: 'UUID v4',
-    hint: 'A random UUID — version nibble 4.',
+    hint: 'A random UUID (version nibble 4).',
     example: '9b2f4c1e-8a3d-4f6b-9c2e-1d5a7b3e6f80',
   },
   uuidv7: {
     type: 'uuidv7',
     label: 'UUID v7',
-    hint: 'A time-ordered UUID — version nibble 7.',
+    hint: 'A time-ordered UUID (version nibble 7).',
     example: '019456f0-8c3a-7d21-9f4e-6b8a2c5d1e30',
   },
   template: {
@@ -219,7 +219,7 @@ export function checkSecretValue(value: string, type: SecretValueType): ValueTyp
   const trimmed = value.trim();
   if (trimmed.length > 0 && trimmed !== value && CHECKS[type](trimmed).valid) {
     return invalid(
-      'That value has whitespace around it — often a stray newline from a copy. Remove it.',
+      'That value has whitespace around it, often a stray newline from a copy. Remove it.',
     );
   }
 

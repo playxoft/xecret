@@ -329,7 +329,7 @@ export function RoleForm({
                       />
                       <span className="text-sm">
                         {ACTION_LABELS[action]}
-                        {floor ? <span className="text-fg-subtle"> — always included</span> : null}
+                        {floor ? <span className="text-fg-subtle"> (always included)</span> : null}
                       </span>
                     </label>
                   );
@@ -351,7 +351,7 @@ export function RoleForm({
             <span className="text-sm">
               Cap how far holders reach, whatever they are granted
               <span className="text-fg-subtle block">
-                Every level a holder resolves to — explicit grants included — is held at or below
+                Every level a holder resolves to, explicit grants included, is held at or below
                 this. It never raises anything. Use it for &ldquo;can never touch production&rdquo;.
               </span>
             </span>
@@ -405,8 +405,8 @@ export function RoleForm({
         {role !== null && (role.holderCount ?? 0) > 0 ? (
           <Alert tone="info">
             {role.holderCount === 1 ? 'One member holds' : `${role.holderCount} members hold`} this
-            role, and a change applies to them at once. Widening it — more actions, a higher ceiling
-            — is refused if any of them holds access grants beyond your own.
+            role, and a change applies to them at once. Widening it (more actions, a higher ceiling)
+            is refused if any of them holds access grants beyond your own.
           </Alert>
         ) : null}
 

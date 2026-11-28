@@ -168,7 +168,7 @@ export function describeProjectCount({
   const count = filtering
     ? `${shown.toLocaleString('en')} of ${pluralize(total, 'project')} shown`
     : pluralize(total, 'project');
-  return hasMore ? `${count} — only the most recently created are loaded` : count;
+  return hasMore ? `${count} (only the most recently created are loaded)` : count;
 }
 
 /**

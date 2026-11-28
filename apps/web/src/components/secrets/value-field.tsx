@@ -762,7 +762,7 @@ export function ValueField({
                       <button
                         type="button"
                         onClick={onHistory}
-                        aria-label={`v${secret.version} — version history of ${secretName}`}
+                        aria-label={`v${secret.version}: version history of ${secretName}`}
                         className={cn(
                           'border-line bg-canvas-inset text-fg-muted inline-flex h-7 cursor-pointer items-center rounded-full border px-2.5 text-sm font-medium transition-colors',
                           'hover:border-accent-line hover:bg-accent-tint hover:text-accent-text',

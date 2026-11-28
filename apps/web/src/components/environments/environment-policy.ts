@@ -65,7 +65,7 @@ export function readAlertsSource(environment: PolicyFields): string {
       : 'Off by default, because this environment is not marked production.';
   }
   if (environment.readAlerts === fallback) {
-    return `Set ${fallback ? 'on' : 'off'} for this environment — the same as the default for ${where}.`;
+    return `Set ${fallback ? 'on' : 'off'} for this environment, the same as the default for ${where}.`;
   }
   return `Set ${environment.readAlerts ? 'on' : 'off'} for this environment. The default for ${where} is ${fallback ? 'on' : 'off'}.`;
 }

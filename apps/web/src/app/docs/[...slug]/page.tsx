@@ -51,7 +51,7 @@ export async function generateMetadata(props: PageProps<'/docs/[...slug]'>): Pro
       type: 'article',
       url,
       siteName: SITE_NAME,
-      title: `${doc.title}${section ? ` — ${section}` : ''}`,
+      title: `${doc.title}${section ? ` (${section})` : ''}`,
       description: doc.description,
     },
     twitter: {

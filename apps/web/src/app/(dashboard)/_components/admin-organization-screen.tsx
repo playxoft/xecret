@@ -205,7 +205,7 @@ function OrganizationDetail({ orgId }: { orgId: string }) {
           Members
         </h2>
         {members.length === 0 ? (
-          <p className="text-fg-muted text-sm">Nobody — every member’s account has been deleted.</p>
+          <p className="text-fg-muted text-sm">Nobody. Every member’s account has been deleted.</p>
         ) : (
           <TableContainer aria-label={`Members of ${organization.name}`}>
             <Table>
@@ -229,7 +229,7 @@ function OrganizationDetail({ orgId }: { orgId: string }) {
                       </Link>
                     </TableCell>
                     <TableCell className="text-fg-muted text-sm">
-                      {member.displayName ?? '—'}
+                      {member.displayName ?? 'No name'}
                     </TableCell>
                     <TableCell className="text-sm">{roleLabel(member.role)}</TableCell>
                     <TableCell className="text-sm">

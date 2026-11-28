@@ -506,7 +506,7 @@ describe('a read that is not noted', () => {
 
     await readAs(world, sessionOf(world.owner), { envSlug: 'development' });
     expect(await sightingsOf(world.development)).toHaveLength(1);
-    expect(mail[0]!.text).toContain('api/development —');
+    expect(mail[0]!.text).toContain('api/development:');
   });
 
   it('on a plan without the feature', async () => {

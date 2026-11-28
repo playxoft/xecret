@@ -240,11 +240,11 @@ export function MemberAccessPanel({
       ) : null}
 
       {keyNotice ? (
-        <Alert tone="info" title="Access changed — the keys have not caught up yet">
+        <Alert tone="info" title="Access changed, but the keys have not caught up yet">
           <p>
             Every environment is end-to-end encrypted, so access and keys are two separate things.
             An environment they can now read is one they hold <strong>no key</strong> for until
-            somebody who does shares it — they will see “waiting for a teammate” until then, and a
+            somebody who does shares it. They will see “waiting for a teammate” until then, and a
             prompt appears on that environment for whoever can help.
           </p>
           <p className="mt-2">
@@ -279,7 +279,7 @@ export function MemberAccessPanel({
             <p className="text-fg-subtle text-sm">
               {visible.length === 0
                 ? 'No project access.'
-                : `Access to ${pluralize(visible.length, 'project')} — granted per environment, never per project.`}
+                : `Access to ${pluralize(visible.length, 'project')}, granted per environment, never per project.`}
             </p>
             {mayEdit && assignable.length > 0 ? (
               <DropdownMenu>

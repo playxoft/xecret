@@ -168,8 +168,8 @@ export function EnvironmentPolicyCard({
               <code className="font-mono">xecret pull</code>,{' '}
               <code className="font-mono">xecret export</code> and the download on this
               environment’s page refuse to put its values in a file.{' '}
-              <code className="font-mono">xecret run</code> is unaffected — it hands values to a
-              process without writing them anywhere — so builds and deploys keep working. It cannot
+              <code className="font-mono">xecret run</code> is unaffected (it hands values to a
+              process without writing them anywhere), so builds and deploys keep working. It cannot
               stop somebody who may read a value from writing it down; what it removes is the
               one-command route from the vault to an unencrypted file on a laptop.
             </>
@@ -205,7 +205,7 @@ export function EnvironmentPolicyCard({
           label="Alert on reads from new addresses"
           description={
             <>
-              The first time this environment is read from an address — or by a device — not seen
+              The first time this environment is read from an address (or by a device) not seen
               reading it before, the owners and admins get an email: at most one an hour, listing
               what is new. It names who read and from where, never a secret.{' '}
               <span className="text-fg">{readAlertsSource(environment)}</span>

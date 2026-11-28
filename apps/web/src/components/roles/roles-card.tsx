@@ -92,7 +92,7 @@ export function RolesCard({
         <div className="min-w-0 flex-1">
           <CardTitle>Roles</CardTitle>
           <CardDescription>
-            Job titles that narrow a built-in role — a Deployer who is a developer without
+            Job titles that narrow a built-in role: a Deployer who is a developer without
             production, a Contractor who reads one project. A custom role only ever takes away.
             Assign them on the Members page.
           </CardDescription>
@@ -202,12 +202,12 @@ export function RolesCard({
                             aria-disabled={inUse || undefined}
                             title={
                               inUse
-                                ? 'In use — move its members to another role, or to none, first'
+                                ? 'In use. Move its members to another role, or to none, first.'
                                 : undefined
                             }
                             aria-label={
                               inUse
-                                ? `Delete role ${role.name} — unavailable while ${pluralize(role.holderCount ?? 0, 'member')} ${role.holderCount === 1 ? 'holds' : 'hold'} it`
+                                ? `Delete role ${role.name} (unavailable while ${pluralize(role.holderCount ?? 0, 'member')} ${role.holderCount === 1 ? 'holds' : 'hold'} it)`
                                 : `Delete role ${role.name}`
                             }
                             onClick={() => {
@@ -246,7 +246,7 @@ export function RolesCard({
           title={`Delete ${deleting.name}?`}
           description={
             (deleting.holderCount ?? 0) > 0
-              ? `${pluralize(deleting.holderCount ?? 0, 'member')} still ${deleting.holderCount === 1 ? 'holds' : 'hold'} this role. A role in use cannot be deleted — move them to another role, or to none, on the Members page first.`
+              ? `${pluralize(deleting.holderCount ?? 0, 'member')} still ${deleting.holderCount === 1 ? 'holds' : 'hold'} this role. A role in use cannot be deleted. Move them to another role, or to none, on the Members page first.`
               : 'Nobody holds this role, so deleting it changes nobody’s access. The audit log keeps what it allowed.'
           }
           confirmLabel="Delete role"

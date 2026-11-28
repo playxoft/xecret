@@ -827,9 +827,9 @@ function NameCell({
                 // the pointer's copy of the same thing.
                 aria-label={
                   noteState !== undefined
-                    ? `Note on ${secret.name} — ${NOTE_STATE_LABEL[noteState]}`
+                    ? `Note on ${secret.name}: ${NOTE_STATE_LABEL[noteState]}`
                     : hasNote
-                      ? `Note on ${secret.name} — show it`
+                      ? `Show the note on ${secret.name}`
                       : `Add a note to ${secret.name}`
                 }
                 aria-expanded={describing}

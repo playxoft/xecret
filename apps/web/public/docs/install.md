@@ -1,14 +1,14 @@
 ---
 title: Installing the CLI
 navTitle: Installing the CLI
-description: Install the xecret command-line tool on macOS, Linux, Windows, from npm, in Docker and in CI — with checksum verification and upgrade instructions.
+description: Install the xecret command-line tool on macOS, Linux, Windows, from npm, in Docker and in CI, with checksum verification and upgrade instructions.
 keywords: [install xecret cli, homebrew xecret, npm install xecret, curl install script, xecret windows, xecret docker install]
 updated: 2026-08-18
 ---
 
 The `xecret` binary is a single static executable written in Go
 (`CGO_ENABLED=0`), for macOS, Linux and Windows on both amd64 and arm64. It has
-no runtime dependencies — no Node, no Python, no shared libraries — which is
+no runtime dependencies (no Node, no Python, no shared libraries), which is
 what lets it drop into a scratch container.
 
 The CLI is MIT-licensed, unlike the server, so it can live inside your Docker
@@ -32,7 +32,7 @@ The script detects your OS and architecture, downloads the matching release
 archive, **verifies its checksum**, and installs to `/usr/local/bin` (or
 `~/.local/bin` if that is not writable).
 
-> **Note** — Piping a script to a shell deserves scepticism. The security
+> **Note**: Piping a script to a shell deserves scepticism. The security
 > boundary here is the checksum verification inside the script, not the URL:
 > the URL redirects to the canonical installer, and you are welcome to fetch it
 > and read it before running it.
@@ -49,7 +49,7 @@ archive, **verifies its checksum**, and installs to `/usr/local/bin` (or
 curl -fsSL https://xecret.playxoft.com/install.sh | XECRET_VERSION=v1.2.0 sh
 ```
 
-The version is an environment variable, not a flag — the installer reads
+The version is an environment variable, not a flag: the installer reads
 `XECRET_VERSION` and parses no arguments at all, so anything after `-s --` is
 silently discarded and you get the latest release instead.
 
@@ -71,10 +71,10 @@ npx @playxoft/xecret run -- npm run dev
 ```
 
 `xecret` is a small wrapper whose `optionalDependencies` are six packages
-holding one executable each — npm installs exactly the one that matches your
+holding one executable each: npm installs exactly the one that matches your
 machine and skips the other five.
 
-> **Note** — There is no `postinstall` script and nothing is downloaded during
+> **Note**: There is no `postinstall` script and nothing is downloaded during
 > the install. That is deliberate. `npm ci --ignore-scripts` is a sensible thing
 > to run, and a secret manager whose installer silently broke under it would be
 > teaching people to turn that protection off. Shipping the binary *as* a
@@ -91,7 +91,7 @@ against the signed `checksums.txt` before they were packaged.
 One trade-off worth knowing: installed this way, a Node process sits in front of
 the binary for the life of each command. It costs a few milliseconds and one
 process. For `xecret run -- npm run dev`, which runs for hours, Homebrew or the
-install script are the better choice — they give you the executable and nothing
+install script are the better choice: they give you the executable and nothing
 else.
 
 ## Windows
@@ -109,7 +109,7 @@ Linux keyring rules apply.
 ## Docker
 
 Copy the binary out of the published image rather than installing it at build
-time — no package manager, no network fetch, and a version you pinned:
+time (no package manager, no network fetch, and a version you pinned):
 
 ```dockerfile
 FROM ghcr.io/playxoft/xecret:1.2.0 AS xecret
@@ -120,7 +120,7 @@ COPY --from=xecret /usr/local/bin/xecret /usr/local/bin/xecret
 
 `ghcr.io/playxoft/xecret` is a multi-arch (amd64 and arm64) distroless image
 carrying the same static binary the installer would have fetched. The image
-tags carry the version *without* the leading `v` — `1.2.0`, not `v1.2.0` —
+tags carry the version *without* the leading `v` (`1.2.0`, not `v1.2.0`),
 because that is what GoReleaser templates from, the same way the archive names
 do. Pin it: an unpinned install resolves the latest release at build time, so
 the same Dockerfile would produce a different binary on every rebuild.
@@ -136,7 +136,7 @@ xecret version
 
 prints the version, the commit it was built from, the build date, and your
 platform. If the shell answers `command not found`, the install directory is
-not on your `PATH` — reopen your terminal, or add it:
+not on your `PATH`. Reopen your terminal, or add it:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -183,5 +183,5 @@ dashboard under *Tokens → Your devices*.
 
 ## Next
 
-- [The CLI](cli.md) — what it does and the rules it follows.
-- [Quickstart](quickstart.md) — sign in and run something.
+- [The CLI](cli.md): what it does and the rules it follows.
+- [Quickstart](quickstart.md): sign in and run something.

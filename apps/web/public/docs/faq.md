@@ -31,7 +31,7 @@ the file.
 
 ### Does it work on Windows?
 
-Yes — a native binary, with credentials in Windows Credential Manager.
+Yes, a native binary, with credentials in Windows Credential Manager.
 PowerShell, `cmd.exe` and WSL all work. See [installing the CLI](install.md).
 
 ## Security
@@ -52,12 +52,12 @@ The full list, and the limits of the guarantee, are in
 The attacker gets ciphertext, and the names and metadata beside it. The keys
 that open your values were never on our servers to steal. What a stolen
 database does allow is guessing at a person's master passphrase offline, which
-Argon2id makes slow on purpose — so choose a strong one.
+Argon2id makes slow on purpose, so choose a strong one.
 
 ### What if I forget my master passphrase?
 
 Use one of your five recovery codes, or a passkey. If you lose all of them, we
-cannot get your vault back — nobody holds a copy of your keys, us included.
+cannot get your vault back: nobody holds a copy of your keys, us included.
 Teammates can share their environments with you again, and a reset keeps the
 old vault recoverable for seven days. See
 [resetting your vault](security/vault-archive.md).
@@ -66,7 +66,7 @@ old vault recoverable for seven days. See
 
 Only if you ask for it. `xecret run` never writes them. `xecret pull` does, by
 design, and warns on stderr every time. The offline cache stores an encrypted
-copy whose key is in your OS keychain — see
+copy whose key is in your OS keychain. See
 [the offline cache](cli/offline-cache.md).
 
 ### Can a teammate see my production secrets?
@@ -78,15 +78,15 @@ audited. See [teams, roles and access](guides/teams.md).
 ### Who can see that I read a secret?
 
 Owners and admins, in the [audit log](security/audit-log.md). Every fetch of a
-value is recorded — yours included.
+value is recorded, yours included.
 
 ## Day to day
 
 ### Does xecret work offline?
 
 For `xecret run`, yes. An encrypted local cache answers when the API cannot be
-reached, printing its age to stderr. It does **not** answer when the server
-actively refuses — a revocation must take effect immediately.
+reached, saying so on stderr. It does **not** answer when the server
+actively refuses, because a revocation must take effect immediately.
 
 CI has no cache at all, deliberately. See
 [the offline cache](cli/offline-cache.md).
@@ -98,7 +98,7 @@ cache. After that, a network outage falls back rather than failing.
 
 ### Why does my app not see a changed secret?
 
-The environment is injected when the process starts. Restart it — the same
+The environment is injected when the process starts. Restart it at the same
 moment you would have edited `.env.local`.
 
 ### Can I run different environments at once?
@@ -123,7 +123,7 @@ it.
 
 ### How many people can I add?
 
-As many as your plan allows — three on Free, counting the people you have
+As many as your plan allows: three on Free, counting the people you have
 invited and not yet seen accept; Pro and above do not limit members. The seat
 count is enforced when an invitation is sent and again when it is accepted,
 inside the same transaction as the membership. Every other plan limit works the
@@ -133,7 +133,7 @@ taken away. See [plan limits](api/reference.md#plan-limits).
 
 ### What is the difference between a CLI token and a service token?
 
-A CLI token acts as *you* — your role, your grants. A service token is not a
+A CLI token acts as *you*, with your role and your grants. A service token is not a
 person: it is pinned to one project and one environment, is read-only by
 default, and can never delete a secret. See [tokens](api/tokens.md).
 
@@ -159,7 +159,7 @@ Version history is not part of a bulk export. See
 
 ### Can I run it myself?
 
-Yes — it is AGPL-3.0 and self-hosting is a documented first-class path. It
+Yes. It is AGPL-3.0 and self-hosting is a documented first-class path. It
 needs Cloudflare Workers, PostgreSQL and a WorkOS account for identity. The
 honest dependency list is in [self-hosting](self-hosting.md).
 
@@ -202,7 +202,7 @@ process instead. They are complementary more often than competing.
 
 ## Next
 
-- [Troubleshooting](troubleshooting.md) — for error messages rather than
+- [Troubleshooting](troubleshooting.md): for error messages rather than
   questions.
-- [Quickstart](quickstart.md) — if you have not tried it yet.
-- [Trust model](security/trust-model.md) — the security answers in full.
+- [Quickstart](quickstart.md): if you have not tried it yet.
+- [Trust model](security/trust-model.md): the security answers in full.

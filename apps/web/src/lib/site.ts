@@ -67,7 +67,7 @@ function fromBuildEnvironment(name: 'XECRET_PUBLIC_URL' | 'XECRET_ENV'): string 
  * catches the second case, and it is the one somebody actually types.
  */
 function requireAbsoluteOrigin(value: string): string {
-  const shape = 'It must include the scheme — for example https://xecret.example.com.';
+  const shape = 'It must include the scheme, for example https://xecret.example.com.';
 
   let parsed: URL;
   try {
@@ -105,8 +105,8 @@ function buildOrigin(): string {
         "a build that cannot name its own origin would publish somebody else's. Deploy with " +
         '`scripts/deploy-web.sh <env>`, which reads the origin out of apps/web/wrangler.toml, ' +
         'or set XECRET_PUBLIC_URL in the build environment yourself. If you are not building ' +
-        'for a deployment, XECRET_ENV is coming from your shell — a sourced .env, or ' +
-        '`phase run -- ...` — and this check runs on import, so it lands as a crash in every ' +
+        'for a deployment, XECRET_ENV is coming from your shell (a sourced .env, or ' +
+        '`phase run -- ...`), and this check runs on import, so it lands as a crash in every ' +
         'file that touches this module. Unset it, or set XECRET_ENV=development, for that ' +
         'command.',
     );

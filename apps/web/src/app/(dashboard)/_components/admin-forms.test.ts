@@ -133,7 +133,7 @@ describe('a free plan for one organisation', () => {
 
     expect(request).toEqual({
       ok: false,
-      problems: { reason: 'Say why — it goes in the organisation’s audit log.' },
+      problems: { reason: 'Say why. It goes in the organisation’s audit log.' },
     });
   });
 

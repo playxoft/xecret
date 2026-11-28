@@ -48,7 +48,7 @@ const actionSchema = z.enum(ACTIONS, 'That is not an action this product knows.'
  */
 const baseRoleSchema = z.enum(
   CUSTOM_ROLE_BASE_ROLES as [OrgRole, ...OrgRole[]],
-  'A custom role is based on admin, developer or viewer — never owner.',
+  'A custom role is based on admin, developer or viewer, never owner.',
 );
 
 /**

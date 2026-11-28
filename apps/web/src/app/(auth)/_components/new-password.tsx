@@ -67,7 +67,7 @@ export function newPasswordProblem(input: {
   if (password.length < NEW_PASSWORD_MIN_LENGTH) {
     return {
       field: 'password',
-      message: `Use at least ${NEW_PASSWORD_MIN_LENGTH} characters — a few unrelated words make a strong one.`,
+      message: `Use at least ${NEW_PASSWORD_MIN_LENGTH} characters. A few unrelated words make a strong one.`,
     };
   }
   const address = input.email.trim().toLowerCase();

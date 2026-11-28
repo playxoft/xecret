@@ -243,7 +243,7 @@ export function VaultUnlock({
         <Alert tone="warning" title="Your vault was reset on another device">
           <p>
             There is nothing here to unlock any more. A reset destroys the keys, every wrap and
-            every recovery code — deliberately, because nothing else could have replaced a
+            every recovery code. It does so deliberately, because nothing else could have replaced a
             passphrase nobody remembered. Anything encrypted under the old vault stays unreadable.
           </p>
           <p className="mt-2">
@@ -530,7 +530,7 @@ function UnlockForm({
 
     rememberNudge(storage, now);
     toast({
-      title: 'Unlock with your fingerprint or face next time — set it up in seconds',
+      title: 'Unlock with your fingerprint or face next time. Set it up in seconds.',
       // Unlock & auto-lock, where the passkeys and the device PIN are set
       // up — the section this nudge is about, not the vault's passphrase.
       action: { label: 'Set it up', href: appPath.settingsUnlock() },
@@ -578,7 +578,7 @@ function UnlockForm({
       }
 
       if (materialSupersedes(material, fresh.material)) {
-        return 'Your master passphrase was changed on another device. This page was still showing the old one — use the new passphrase, or reload the page and try again.';
+        return 'Your master passphrase was changed on another device. This page was still showing the old one. Use the new passphrase, or reload the page and try again.';
       }
     } catch {
       // Fall through to the original failure. See above.
@@ -626,7 +626,7 @@ function UnlockForm({
 
       {passkeyUnavailable !== null ? (
         <Alert tone="warning" title="Your passkey could not be used here">
-          {passkeyUnavailable} Your passphrase still opens your vault — it always does, which is why
+          {passkeyUnavailable} Your passphrase still opens your vault. It always does, which is why
           a passkey is never the only way in.
         </Alert>
       ) : null}
@@ -639,7 +639,7 @@ function UnlockForm({
         <Alert tone="info" title="Passkey unlock is not available in this browser">
           {availability === 'insecure-context'
             ? 'This page is not served over HTTPS, so the browser will not use a passkey. This is expected in local development.'
-            : 'This browser does not support passkeys. Use your passphrase — your enrolled passkeys still work elsewhere and nothing needs re-enrolling.'}
+            : 'This browser does not support passkeys. Use your passphrase. Your enrolled passkeys still work elsewhere and nothing needs re-enrolling.'}
         </Alert>
       ) : null}
 
@@ -979,7 +979,7 @@ function RecoveryFlow({
     return (
       <form onSubmit={reset} noValidate className="flex flex-col gap-4">
         <Alert tone="success" title="That code worked">
-          Your vault is open. Choose a new passphrase now — the code you just used is spent, and the
+          Your vault is open. Choose a new passphrase now. The code you just used is spent, and the
           other four are about to be replaced.
         </Alert>
 
@@ -1089,7 +1089,7 @@ export function ResetResult({
           We emailed{' '}
           {result.archive.parts > 1 ? `${result.archive.parts} archive files` : 'an archive'} of
           your encrypted secrets to {result.archive.to}. Your old passphrase or a recovery code
-          opens it. Save it somewhere private, then delete the email — anyone who gets it can try to
+          opens it. Save it somewhere private, then delete the email. Anyone who gets it can try to
           guess your passphrase offline.
         </Alert>
       ) : (
@@ -1184,7 +1184,7 @@ export function ArchivePreflightFacts({
         <span className="text-fg">Before we reset, we email you an archive</span> of your secrets,
         still encrypted. Your old passphrase or a recovery code opens it, any time, even without
         xecret. Anyone who gets that email can try to guess your passphrase offline, for as long as
-        they like — keep the file somewhere private and delete the email.
+        they like. Keep the file somewhere private and delete the email.
       </p>
     );
   }
@@ -1577,13 +1577,13 @@ function AllCodesLost({
 
         <Alert tone="danger" title="We can’t bring your secrets back">
           They were sealed with keys only your passphrase and recovery codes could open. With both
-          gone, nothing can unseal them — not even xecret.
+          gone, nothing can unseal them, not even xecret.
         </Alert>
 
         <div className="text-fg-muted flex flex-col gap-3 text-sm leading-6">
           <p>
-            <span className="text-fg">Resetting gives you a fresh start</span> — a new passphrase
-            and a new Emergency Kit. An owner or admin will need to share team environments with you
+            <span className="text-fg">Resetting gives you a fresh start</span>: a new passphrase and
+            a new Emergency Kit. An owner or admin will need to share team environments with you
             again.
           </p>
           {preflightFacts}
@@ -1601,7 +1601,7 @@ function AllCodesLost({
           disabled={!canProceed}
           aria-describedby={canProceed ? undefined : blockedHintId}
         >
-          I understand — reset my vault
+          I understand, reset my vault
         </Button>
         {!canProceed && archiveBlocked && preflight?.resettable === true ? (
           <p id={blockedHintId} className="text-fg-subtle -mt-2 text-xs">
@@ -1659,15 +1659,15 @@ function AllCodesLost({
           else has this browser. Then we’ll email you a code.
         </p>
         <p className="text-fg-subtle text-sm leading-6">
-          A sign-in with an emailed code doesn’t count for this step — the code comes next. Never
-          set a password? Choose one with{' '}
+          A sign-in with an emailed code doesn’t count for this step. The code comes next. Never set
+          a password? Choose one with{' '}
           <a
             href={`${SIGN_IN_PATH}/forgot-password`}
             className="text-fg decoration-line-strong hover:decoration-fg rounded-sm underline underline-offset-4 transition-colors"
           >
             Forgot password?
           </a>{' '}
-          first — it works for an account that has never had one — then sign in with it here.
+          first (it works for an account that has never had one), then sign in with it here.
         </p>
 
         <Button variant="danger" asChild>

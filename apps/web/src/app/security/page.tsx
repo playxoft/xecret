@@ -122,7 +122,7 @@ const GLANCE: readonly { icon: IconComponent; label: string; value: string }[] =
   {
     icon: KeyIcon,
     label: 'Key sharing',
-    value: 'X25519, sealed to each member and token — never to us',
+    value: 'X25519, sealed to each member and token, never to us',
   },
   {
     icon: ShieldCheckIcon,
@@ -169,7 +169,7 @@ const ENCRYPTION: readonly Fact[] = [
 
 /** The trust model's own list of what is visible to us, shortened, not softened. */
 const WE_CAN_SEE = [
-  'Secret names, versions and timestamps — and roughly how long each value is',
+  'Secret names, versions and timestamps, and roughly how long each value is',
   'Organisation, project and environment names',
   'Members, their email addresses, roles and access',
   'The audit log, including IP addresses',
@@ -188,7 +188,7 @@ const ACCESS: readonly IconFact[] = [
   {
     icon: UsersIcon,
     title: 'Built-in roles, scoped by grants',
-    body: 'Viewer, developer, admin and owner — plus custom roles on Enterprise — decide what kind of action is available to someone; grants on a project or a single environment decide where. The more specific grant wins, and no grant lifts anyone above their role.',
+    body: 'Viewer, developer, admin and owner (plus custom roles on Enterprise) decide what kind of action is available to someone; grants on a project or a single environment decide where. The more specific grant wins, and no grant lifts anyone above their role.',
   },
   {
     icon: ShieldIcon,
@@ -208,7 +208,7 @@ const ACCESS: readonly IconFact[] = [
   {
     icon: LockIcon,
     title: 'A vault that locks itself',
-    body: 'After an hour idle by default — 15 minutes, 4 hours or when the tab closes if you prefer — and no unlock lasts more than 8 hours. Unlock with your passphrase, a passkey, or a device PIN that five wrong guesses destroy.',
+    body: 'After an hour idle by default (15 minutes, 4 hours or when the tab closes if you prefer), and no unlock lasts more than 8 hours. Unlock with your passphrase, a passkey, or a device PIN that five wrong guesses destroy.',
   },
   {
     icon: LayersIcon,
@@ -221,11 +221,11 @@ const ACCESS: readonly IconFact[] = [
 const AUDIT_RECORDED: readonly Fact[] = [
   {
     title: 'Every value fetched',
-    body: 'Each pull, run, reveal or export writes a record with the actor, the time and the IP address — at the moment the server hands ciphertext to someone holding the key.',
+    body: 'Each pull, run, reveal or export writes a record with the actor, the time and the IP address, at the moment the server hands ciphertext to someone holding the key.',
   },
   {
     title: 'Every change, and every denial',
-    body: 'Writes, rotations, grants and revocations, and every refused attempt — a log of what succeeded cannot show an attack in progress.',
+    body: 'Writes, rotations, grants and revocations, and every refused attempt. A log of what succeeded cannot show an attack in progress.',
   },
   {
     title: 'The right name on every write',
@@ -278,7 +278,7 @@ const PROVIDERS = [
   {
     name: 'Neon',
     role: 'Database',
-    body: 'Managed PostgreSQL holding your data — secret values only as ciphertext.',
+    body: 'Managed PostgreSQL holding your data, with secret values only as ciphertext.',
   },
   {
     name: 'WorkOS',
@@ -288,7 +288,7 @@ const PROVIDERS = [
   {
     name: 'ZeptoMail (Zoho)',
     role: 'Email',
-    body: 'Transactional mail: invitations, billing notices, and the archive sent when you reset a vault — its values still encrypted.',
+    body: 'Transactional mail: invitations, billing notices, and the archive sent when you reset a vault, its values still encrypted.',
   },
   {
     name: 'Dodo Payments',
@@ -321,7 +321,7 @@ const HARDENING: readonly Fact[] = [
   },
   {
     title: 'An offline cache that cannot soften a revocation',
-    body: 'The CLI keeps ciphertext and sealed keys so a local run keeps working through a network outage — and fails, rather than falling back, on a 401, 403 or 404.',
+    body: 'The CLI keeps ciphertext and sealed keys so a local run keeps working through a network outage, and fails, rather than falling back, on a 401, 403 or 404.',
   },
   {
     title: 'CLI credentials in the keychain',
@@ -376,7 +376,7 @@ const COMPLIANCE: readonly Fact[] = [
   },
   {
     title: 'Deletion that finishes',
-    body: 'Deleted organisations, projects, environments and secrets are erased for good after 30 days — longer only where your plan’s restore window needs it — by a daily job that records each erasure in the audit log. Database backups expire on their own rotation.',
+    body: 'Deleted organisations, projects, environments and secrets are erased for good after 30 days (longer only where your plan’s restore window needs it) by a daily job that records each erasure in the audit log. Database backups expire on their own rotation.',
   },
   {
     title: 'Breach notification',
@@ -384,7 +384,7 @@ const COMPLIANCE: readonly Fact[] = [
   },
   {
     title: 'No trackers',
-    body: 'No analytics, no advertising pixel, no session recorder and no third-party tag — which is why there is no cookie banner.',
+    body: 'No analytics, no advertising pixel, no session recorder and no third-party tag, which is why there is no cookie banner.',
   },
   {
     title: 'Your data stays yours',
@@ -398,26 +398,26 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Can xecret read my secrets?',
     answer:
-      'No. Secret values and notes are encrypted on your device — in the browser or the CLI — under a key generated for each environment and sealed only to the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. We can see secret names, organisation, project and environment names, members, and the audit log. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
+      'No. Secret values and notes are encrypted on your device, in the browser or the CLI, under a key generated for each environment and sealed only to the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. We can see secret names, organisation, project and environment names, members, and the audit log. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment, and its key settings say so.',
   },
   {
     question: 'What would an attacker get from xecret’s database?',
     answer:
-      'Ciphertext, wrapped keys and public keys — nothing that opens a value. Session, CLI and service tokens are stored only as hashes, so a copy of the database yields hashes rather than usable sessions or tokens. The wrapped keys do allow offline guessing at each person’s master passphrase, at Argon2id’s cost of 64 MiB and three passes per guess, which is why a strong passphrase matters. Names and audit metadata are readable, as the trust model lists.',
+      'Ciphertext, wrapped keys and public keys: nothing that opens a value. Session, CLI and service tokens are stored only as hashes, so a copy of the database yields hashes rather than usable sessions or tokens. The wrapped keys do allow offline guessing at each person’s master passphrase, at Argon2id’s cost of 64 MiB and three passes per guess, which is why a strong passphrase matters. Names and audit metadata are readable, as the trust model lists.',
   },
   {
     question: 'Is xecret SOC 2 or ISO 27001 certified?',
     answer:
-      'No. xecret does not hold SOC 2 or ISO 27001 certification, and has not had an external security audit. What a review gets instead is the evidence itself: the source code, the byte-level encryption specification and the threat model are public, and the guarantee that matters most — that we cannot read your secret values — rests on cryptography you can check rather than on a policy we attest to. Under the GDPR and the UK GDPR we act as your processor, and a data processing agreement can be requested at support@playxoft.com.',
+      'No. xecret does not hold SOC 2 or ISO 27001 certification, and has not had an external security audit. What a review gets instead is the evidence itself: the source code, the byte-level encryption specification and the threat model are public, and the guarantee that matters most (that we cannot read your secret values) rests on cryptography you can check rather than on a policy we attest to. Under the GDPR and the UK GDPR we act as your processor, and a data processing agreement can be requested at support@playxoft.com.',
   },
   {
     question: 'How do I report a vulnerability?',
-    answer: `Privately, through a GitHub security advisory on the xecret repository or by email to ${SECURITY_EMAIL} — never in a public issue. We acknowledge a report ${ACKNOWLEDGEMENT}, send an initial assessment ${ASSESSMENT}, have a fix or mitigation plan ${FIX_PLAN}, and coordinate public disclosure with you after a fix ships. We credit you in the advisory unless you prefer otherwise.`,
+    answer: `Privately, through a GitHub security advisory on the xecret repository or by email to ${SECURITY_EMAIL}, never in a public issue. We acknowledge a report ${ACKNOWLEDGEMENT}, send an initial assessment ${ASSESSMENT}, have a fix or mitigation plan ${FIX_PLAN}, and coordinate public disclosure with you after a fix ships. We credit you in the advisory unless you prefer otherwise.`,
   },
   {
     question: 'What happens if I lose my master passphrase?',
     answer:
-      'A passkey or any one of your five recovery codes still opens your vault. Lose the passphrase, every recovery code and every passkey, and nobody can open it — including us. There is no escrow and no support reset, because a way round it would be a way for us to read your secrets. Your teammates’ data is unaffected, and they can share their environments with your new vault.',
+      'A passkey or any one of your five recovery codes still opens your vault. Lose the passphrase, every recovery code and every passkey, and nobody can open it, including us. There is no escrow and no support reset, because a way round it would be a way for us to read your secrets. Your teammates’ data is unaffected, and they can share their environments with your new vault.',
   },
   {
     question: 'Can I verify the encryption myself?',
@@ -514,7 +514,7 @@ export default function SecurityPage() {
           headingId="encryption-heading"
           eyebrow="Encryption"
           title="Encrypted on your device, under keys we never hold."
-          description="Every new environment is end-to-end encrypted from its first key. The server stores ciphertext and holds nothing that opens it — not for our staff, not for anyone who obtains our database, and not for anyone who compels us to hand it over."
+          description="Every new environment is end-to-end encrypted from its first key. The server stores ciphertext and holds nothing that opens it: not for our staff, not for anyone who obtains our database, and not for anyone who compels us to hand it over."
         />
 
         <div className="mt-12 grid items-start gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:gap-8">
@@ -579,7 +579,7 @@ export default function SecurityPage() {
                 <span className="text-fg font-medium">One exception, stated plainly.</span> An older
                 environment created before end-to-end encryption became the default stays on
                 server-side encryption, which we can decrypt, until its values are moved to a new
-                environment — and its key settings say so.
+                environment, and its key settings say so.
               </p>
             </div>
           </Reveal>
@@ -791,14 +791,14 @@ export default function SecurityPage() {
                       {SECURITY_EMAIL}
                     </a>
                     <p className="text-fg-muted mt-1 text-sm leading-6">
-                      Either channel is fine — use the one you prefer.
+                      Either channel is fine. Use the one you prefer.
                     </p>
                   </div>
                 </li>
               </ul>
               <p className="text-fg-muted mt-4 text-sm leading-6">
                 Include the affected component, reproduction steps and what an attacker could
-                achieve — a rough report is more useful than none. A suspected weakness in the
+                achieve. A rough report is more useful than none. A suspected weakness in the
                 cryptography is high severity: say so in the subject line.
               </p>
               <p className="text-fg-muted mt-3 text-sm leading-6">

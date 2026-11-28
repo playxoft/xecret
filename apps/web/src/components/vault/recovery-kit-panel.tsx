@@ -173,7 +173,7 @@ export function RecoveryKitPanel({
 
       {saved ? (
         <p className="text-success-text text-sm">
-          Saved. Keep it somewhere you would keep a passport — not in the password manager your
+          Saved. Keep it somewhere you would keep a passport, not in the password manager your
           xecret sign-in already protects.
         </p>
       ) : promptedCode !== null && onTypedCode !== undefined ? (

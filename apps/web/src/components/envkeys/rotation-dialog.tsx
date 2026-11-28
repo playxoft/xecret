@@ -219,7 +219,7 @@ function RotationFlow({
         <DialogTitle>Rotate the key for {environmentName}</DialogTitle>
         <DialogDescription>
           A new data key is generated in this browser and sealed to everyone who may still read this
-          environment. Every existing value stays readable — the values are re-encrypted lazily, as
+          environment. Every existing value stays readable: the values are re-encrypted lazily, as
           each one is next written.
         </DialogDescription>
       </DialogHeader>
@@ -229,7 +229,7 @@ function RotationFlow({
           <p>
             Whoever lost access read what they read while they held the key, and those credentials
             are still live at whatever issued them. This stops them opening anything written from
-            now on — it does not revoke a database password or an API key.
+            now on. It does not revoke a database password or an API key.
           </p>
           <p className="mt-2">
             Rotate the secrets themselves too: open each one, put a fresh value in, and save.
@@ -256,8 +256,8 @@ function RotationFlow({
                 <p>
                   Sealing this environment&apos;s key to a public key that has changed is exactly
                   what a substitution looks like from here, so it is refused rather than warned
-                  about. Confirm each fingerprint with the person themselves — on a call, in the
-                  room, over a channel that is not this one — and then say so below.
+                  about. Confirm each fingerprint with the person themselves (on a call, in the
+                  room, over a channel that is not this one), and then say so below.
                 </p>
                 <ul className="mt-3 flex flex-col gap-2">
                   {substituted.map((recipient) => (
@@ -331,8 +331,8 @@ function RotationFlow({
         {phase.kind === 'refused' ? (
           <Alert tone="danger" title="The server refused this grant set">
             <p>
-              A rotation has to name every principal who may read this environment, and nobody else
-              — a set that quietly omitted somebody would revoke them silently. The roster changed
+              A rotation has to name every principal who may read this environment, and nobody else.
+              A set that quietly omitted somebody would revoke them silently. The roster changed
               while this dialog was open:
             </p>
             <ul className="mt-2 space-y-0.5">

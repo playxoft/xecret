@@ -216,7 +216,7 @@ function SecretPolicyForm({
       {storedProblem !== null ? (
         <Alert tone="warning" title="The stored policy does not pass today’s checks">
           {storedProblem} The server skips a rule it cannot evaluate rather than refusing every
-          write over it — fix it here and save.
+          write over it. Fix it here and save.
         </Alert>
       ) : null}
 
@@ -233,7 +233,7 @@ function SecretPolicyForm({
       <Alert tone="info" title="Who enforces which rule">
         <p>
           <span className="text-fg font-medium">Names</span> are checked by the server on every
-          write that introduces one — a new secret, a rename, an import, a promotion — so no client
+          write that introduces one (a new secret, a rename, an import, a promotion), so no client
           can get past the naming rule.
         </p>
         <p className="mt-1.5">
@@ -283,7 +283,7 @@ function SecretPolicyForm({
       <PolicyCheckRow
         id="secret-policy-names"
         label="Require names to match a pattern"
-        description="A regular expression the whole name must match — it is anchored, so [A-Z_]+ means only those characters, not merely one of them. Checked by the server."
+        description="A regular expression the whole name must match. It is anchored, so [A-Z_]+ means only those characters, not merely one of them. Checked by the server."
         checked={draft.useNamePattern}
         disabled={!editable}
         onCheckedChange={(checked) => patch({ useNamePattern: checked })}
@@ -341,7 +341,7 @@ function SecretPolicyForm({
               label="Only for names containing"
               optional
               error={fieldErrors.entropyAppliesTo ?? null}
-              hint="One per line, matched anywhere in the name and ignoring case. Leave it empty to hold every value to the rule — including PORT and NODE_ENV, which is rarely what anybody wants."
+              hint="One per line, matched anywhere in the name and ignoring case. Leave it empty to hold every value to the rule, including PORT and NODE_ENV, which is rarely what anybody wants."
             >
               <Textarea
                 value={draft.entropyAppliesTo}
@@ -361,7 +361,7 @@ function SecretPolicyForm({
         label="Forbidden words"
         optional
         error={fieldErrors.forbiddenSubstrings ?? null}
-        hint={`One per line, matched anywhere in a value and ignoring case — the placeholders that reach production more often than anyone admits. At most ${SECRET_POLICY_LIMITS.maxListEntries}. A refusal never says which word matched: the word is part of the value.`}
+        hint={`One per line, matched anywhere in a value and ignoring case: the placeholders that reach production more often than anyone admits. At most ${SECRET_POLICY_LIMITS.maxListEntries}. A refusal never says which word matched: the word is part of the value.`}
       >
         <Textarea
           value={draft.forbiddenSubstrings}

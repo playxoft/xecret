@@ -9,7 +9,7 @@ role: Playxoft
 category: Engineering
 ---
 
-Most Next.js teams can recite the rule — prefix it with `NEXT_PUBLIC_` and it
+Most Next.js teams can recite the rule: prefix it with `NEXT_PUBLIC_` and it
 reaches the browser, leave the prefix off and it does not. The rule is
 correct and it is also not enough, because it describes a naming convention
 while the thing that actually decides is a build-time text substitution and a
@@ -28,9 +28,9 @@ JavaScript file with your value typed into it.
 Three consequences follow, and each one surprises somebody:
 
 **The value is public forever, not merely public now.** It is baked into a
-static asset. Every previously deployed build that is still reachable — a
+static asset. Every previously deployed build that is still reachable (a
 preview deployment, a CDN edge holding an old chunk, a customer's browser
-cache — contains the value you had at that build. Changing it later publishes
+cache) contains the value you had at that build. Changing it later publishes
 a new constant; it does not retract the old one. If you ever prefixed a real
 credential, rotation is the only remedy.
 
@@ -42,7 +42,7 @@ and works in `next dev`, where a real Node process with a real environment is
 running underneath.
 
 **Unprefixed variables in client code become an empty string.** Next.js does
-not leave `process.env.STRIPE_SECRET_KEY` alone in a client bundle — it
+not leave `process.env.STRIPE_SECRET_KEY` alone in a client bundle. It
 substitutes an empty string. This is a genuinely good default, and it is also
 why the failure mode of leaking is usually a confusing `401` rather than a
 loud error.
@@ -60,7 +60,7 @@ exist.
 
 This is what bites on a serverless or edge deploy. You set a variable in your
 platform's dashboard, redeploy, and the server-side code picks it up while the
-client-side one stubbornly shows the old value — because the client-side one
+client-side one stubbornly shows the old value, because the client-side one
 was frozen into a chunk during the build that ran before your change, and the
 platform's dashboard variables were injected into the *runtime*, not the
 build. The same asymmetry is why promoting a single Docker image between
@@ -68,7 +68,7 @@ staging and production works for server secrets and silently does not work for
 `NEXT_PUBLIC_` values: one image, one build, one set of baked constants.
 
 If you need a value to be genuinely per-deployment on the client, it cannot be
-an inlined constant. It has to be fetched — from a Route Handler, or read on
+an inlined constant. It has to be fetched from a Route Handler, or read on
 the server during dynamic rendering and passed down. Which brings us, shortly,
 to the third leak.
 
@@ -77,14 +77,14 @@ to the third leak.
 Next.js resolves each variable by looking in these places in order and
 stopping at the first hit:
 
-1. `process.env` — the real environment of the process
+1. `process.env` (the real environment of the process)
 2. `.env.$(NODE_ENV).local`
-3. `.env.local` — skipped entirely when `NODE_ENV` is `test`
+3. `.env.local` (skipped entirely when `NODE_ENV` is `test`)
 4. `.env.$(NODE_ENV)`
 5. `.env`
 
 The first line is the one worth internalising: **the real process environment
-beats every file.** That is why an injector works without any code change —
+beats every file.** That is why an injector works without any code change:
 `xecret run -- next dev` populates the process environment before Next.js
 starts, so the files become unnecessary rather than overridden.
 
@@ -95,7 +95,7 @@ every other command. So
 laptop too, which trips people who assumed the filename referred to their
 hosting environment rather than to `NODE_ENV`.
 
-> **Warning** — The `env` key in `next.config.ts` is a different mechanism with
+> **Warning**: The `env` key in `next.config.ts` is a different mechanism with
 > a much worse default. Anything listed there is inlined into the client
 > bundle regardless of its name; the `NEXT_PUBLIC_` prefix only governs values
 > arriving through the environment or `.env` files. A secret placed in that
@@ -121,17 +121,17 @@ it does not.
 
 In the App Router the boundary is the module graph, not the file's location.
 A file is server-only until something reachable from a `'use client'` module
-imports it — at which point it and everything it imports are compiled for the
+imports it, at which point it and everything it imports are compiled for the
 browser.
 
 Next.js blanks unprefixed `process.env` reads in that bundle, so this usually
 does not leak the credential itself. What it does leak is everything else in
 the module: internal hostnames, undocumented endpoints, query shapes, table
 names, the structure of your admin API. And there is one shape where the
-actual value does ship — a literal in the source:
+actual value does ship, which is a literal in the source:
 
 ```ts
-// lib/payments.ts — the fallback is a string literal, not an env read.
+// lib/payments.ts: the fallback is a string literal, not an env read.
 // Nothing blanks it. If this module reaches the client graph it ships verbatim.
 const key = process.env.STRIPE_SECRET_KEY ?? 'sk_live_51H8xExampleNotARealKey';
 ```
@@ -148,8 +148,8 @@ export async function chargeCard(amount: number) {
 }
 ```
 
-`server-only` has no runtime behaviour. Importing it makes the build fail —
-at build time, with a stack trace naming the offending import chain — the
+`server-only` has no runtime behaviour. Importing it makes the build fail
+(at build time, with a stack trace naming the offending import chain) the
 moment anything in the client graph reaches this module. That failure is the
 entire product. Put it at the top of every module that touches a credential, a
 database handle or a signing key, and the import boundary stops depending on
@@ -162,13 +162,13 @@ and no prefix rule protects you from it.
 
 Props passed from a Server Component to a Client Component are serialised into
 the RSC payload, which is embedded in the HTML document the browser receives.
-Not fetched, not derived — inlined in the response, viewable with *view
+Not fetched, not derived: inlined in the response, viewable with *view
 source*. So a Server Component that reads a secret and passes an object
 containing it across the boundary has published it, whatever the variable was
 called.
 
 ```tsx
-// app/settings/page.tsx — a Server Component
+// app/settings/page.tsx: a Server Component
 import { ClientPanel } from './client-panel';
 
 export default async function Page() {
@@ -201,7 +201,7 @@ to the browser, because the serialiser has no opinion about which columns you
 meant. React's experimental taint APIs exist to catch this, but the durable
 practice is narrower: never spread a server-side object into client props.
 
-> **Tip** — Make the boundary reviewable. If every `'use client'` component
+> **Tip**: Make the boundary reviewable. If every `'use client'` component
 > takes explicitly named primitive props, a code review can check the leak by
 > reading a function signature instead of tracing an object.
 
@@ -213,23 +213,23 @@ checking only the first is the common mistake.
 ```bash
 npx next build
 
-# 1. The static chunks — where an inlined NEXT_PUBLIC_ value lands.
+# 1. The static chunks, where an inlined NEXT_PUBLIC_ value lands.
 grep -rl 'sk_live_' .next/static/
 
-# 2. The rendered HTML — where serialised props land. Start the app first.
+# 2. The rendered HTML, where serialised props land. Start the app first.
 npx next start &
 curl -s http://localhost:3000/settings | grep -o 'sk_live_[A-Za-z0-9]\{6\}'
 ```
 
 Search for the *value*, or a distinctive prefix of it, rather than for the
-variable's name — the name is exactly what disappears during inlining. Run
+variable's name. The name is exactly what disappears during inlining. Run
 both checks in CI against a known-bad canary string and you have a regression
 test for the whole class of problem.
 
 ## Where xecret fits
 
 Clearly marked so you can skip it. None of the above is solved by where the
-values are stored — the inlining model is the same whichever tool fills
+values are stored: the inlining model is the same whichever tool fills
 `process.env`. What a tool can do is make the build-time step unmissable and
 the values themselves accountable: with xecret you run `xecret run -- next
 build` so the build has the environment it needs, keep one value per
@@ -238,7 +238,7 @@ every read. The [Next.js guide](/docs/guides/nextjs) covers the deployment
 patterns, [the quickstart](/docs/quickstart) is five minutes, and the
 [trust model](/docs/security/trust-model) states plainly what we can and cannot
 see. Values are end-to-end encrypted, so the short answer is that we cannot read
-them — although, as this article has spent its length explaining, a
-`NEXT_PUBLIC_` value stops being secret the moment it is built into a bundle.
+them (although, as this article has spent its length explaining, a
+`NEXT_PUBLIC_` value stops being secret the moment it is built into a bundle).
 [The pricing page](/pricing) says what each plan includes and
 what, if anything, it costs on the day you read this.

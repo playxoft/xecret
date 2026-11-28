@@ -349,7 +349,7 @@ export function EnvironmentSwitcher({
                 {...(state === 'compared' && current !== undefined
                   ? {
                       'aria-description': `Its values are shown beside ${current.name}’s. Opens ${environment.name} on its own.`,
-                      title: `${environment.name} is shown beside ${current.name} — click to open it on its own`,
+                      title: `${environment.name} is shown beside ${current.name}. Click to open it on its own.`,
                     }
                   : state === 'current'
                     ? { title: `You are viewing ${environment.name}` }
@@ -526,7 +526,7 @@ function CompareMenu({
           aria-label={
             count === 0
               ? `Compare ${current.name} with another environment`
-              : `Compare — ${count} shown beside ${current.name}`
+              : `Compare: ${count} shown beside ${current.name}`
           }
         >
           <ColumnsIcon className="size-4" />

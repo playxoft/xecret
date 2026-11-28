@@ -22,7 +22,7 @@ xecret run -- npm run dev
 Everything after `--` runs exactly as the user would have run it, with the
 secrets of the selected environment already in its environment. No `.env` file
 is written, no value is passed on the command line, and nothing enters shell
-history. Values do reach the child process's environment, which is the point —
+history. Values do reach the child process's environment, which is the point:
 what that does and does not protect is spelled out under "when you are the
 agent running someone's code", below.
 
@@ -38,7 +38,7 @@ shortcut looks faster.
    secret by name. If a command you ran happened to emit one, say that it did
    rather than repeating the value.
 2. **Do not read values you were not asked to read.** `xecret secrets list`
-   shows names, types, versions and timestamps and decrypts nothing — prefer
+   shows names, types, versions and timestamps and decrypts nothing, so prefer
    it. `xecret secrets get --plain` decrypts, and is recorded server-side as
    `secret.revealed`.
 3. **Prefer `xecret run` over `xecret pull`.** `pull` and `export` write
@@ -95,11 +95,11 @@ commands can do.
 
 Every write **appends**. Updating a secret creates a new version; the old one
 stays readable and restorable. Writing the identical value again is a no-op.
-Renaming a secret or editing its note appends no version — declaring a type is
+Renaming a secret or editing its note appends no version: declaring a type is
 not a rotation, and neither is a rename.
 
 **Secret names follow shell rules**: letters, digits and underscores, never
-starting with a digit, and up to 255 characters — the CLI's bound; the server
+starting with a digit, and up to 255 characters (the CLI's bound); the server
 accepts 256, so stay under the shorter one. `MY_KEY` is valid; `my-key` and
 `2FA_SECRET` are not.
 
@@ -117,11 +117,11 @@ the role supplies a default:
 | `developer` | write | **none** |
 | `viewer` | read | **none** |
 
-**Credentials** — a request presents exactly one:
+**Credentials.** A request presents exactly one:
 
 | Credential | Looks like | Acts as | Used by |
 |---|---|---|---|
-| Session cookie | — | you | the dashboard |
+| Session cookie | (a browser cookie) | you | the dashboard |
 | CLI token | `xct_…` | you | `xecret login` on a machine |
 | Service token | `xst_…` | itself | CI, containers, agents |
 
@@ -133,8 +133,8 @@ require a browser session.
 
 ## Two encryption modes
 
-An environment is either **end-to-end encrypted** — the default for anything
-created recently — or **server-mode**. The difference is who holds the key, and
+An environment is either **end-to-end encrypted** (the default for anything
+created recently) or **server-mode**. The difference is who holds the key, and
 it changes what several commands can do. Assume `e2ee` unless something tells
 you otherwise; `xecret doctor` says which you are dealing with.
 
@@ -144,11 +144,11 @@ consequences an agent will otherwise hit without being able to diagnose:
 
 - **Reading needs key material, not just a credential.** `xecret run`,
   `secrets get --plain`, `import` and `export` all need it. On a machine with
-  no browser — a container, a headless server — unlock with
+  no browser (a container, a headless server), unlock with
   `xecret login --passphrase` rather than the browser flow.
 - **A service token minted before end-to-end encryption carries no key.** It
   authenticates and then cannot read anything, and the CLI says so:
-  `XECRET_TOKEN carries no key — it predates end-to-end encryption`. The fix is
+  `XECRET_TOKEN carries no key: it predates end-to-end encryption`. The fix is
   a new token from the dashboard, not a retry.
 - **The HTTP API cannot format an e2ee environment for you.** `GET …/export`
   refuses with `client_side_only`, and `GET …/pull?format=…` ignores the format
@@ -168,10 +168,10 @@ way.
 |---|---|
 | Run or test the app with real configuration | `xecret run -- <their command>` |
 | Set up a repository for the first time | `xecret login`, then `xecret init`, then commit `.xecret.yaml` |
-| Know what configuration exists | `xecret secrets list` — decrypts nothing |
+| Know what configuration exists | `xecret secrets list` (decrypts nothing) |
 | Add or rotate a secret | `xecret secrets set NAME` from stdin, or `--generate` |
 | Migrate an existing `.env` | `xecret import .env --dry-run`, show the plan, then import |
-| Feed a legacy tool that needs a file | `xecret export -o .env` — propose it, get a yes, and add the file to `.gitignore` |
+| Feed a legacy tool that needs a file | `xecret export -o .env`: propose it, get a yes, and add the file to `.gitignore` |
 | Wire up CI | A service token in the provider's secret store as `XECRET_TOKEN` |
 | Find out who read something | `xecret audit --action secret.revealed --since 7d` |
 | Undo a bad value | `xecret secrets versions NAME`, then `secrets restore NAME --version N` |
@@ -233,7 +233,7 @@ Two flags recur on everything that reads secrets: `--project PROJECT-ID` and
 ### Reading
 
 ```bash
-xecret secrets list                 # names, types, versions and when — no values, no author
+xecret secrets list                 # names, types, versions and when; no values, no author
 xecret secrets get DATABASE_URL     # masked metadata
 xecret secrets versions API_KEY     # history, metadata only, and who wrote each version
 xecret projects                     # what you can see
@@ -251,11 +251,11 @@ xecret secrets get DATABASE_URL --plain   # decrypts; audited as secret.revealed
 **If you are an agent, do not run `--plain` unless the user asked for that
 value in this turn.** Its output lands in your transcript, and from there in
 logs, summaries and pull-request comments. When a command needs the value, give
-it the value without routing it through you — `xecret run -- psql "$DATABASE_URL"`
+it the value without routing it through you: `xecret run -- psql "$DATABASE_URL"`
 rather than `psql "$(xecret secrets get DATABASE_URL --plain)"`, which expands
 the credential into `argv` where `ps` and a `set -x` build log can read it.
 
-Reading an earlier version requires `--plain` too, and warns on stderr — a
+Reading an earlier version requires `--plain` too, and warns on stderr, because a
 rotated secret is usually still live at whoever issued it, so an old value is a
 working credential rather than an archive entry.
 
@@ -266,7 +266,7 @@ xecret secrets set STRIPE_SECRET_KEY                     # hidden interactive pr
 openssl rand -hex 32 | xecret secrets set SESSION_SECRET  # from a pipe
 xecret secrets set SA_KEY --from-file key.json && rm key.json   # verbatim, trailing newline included
 xecret secrets set SESSION_SECRET --generate              # 32 random bytes, never printed
-xecret secrets set SESSION_SECRET --generate=48           # note the '=' — it is required
+xecret secrets set SESSION_SECRET --generate=48           # note the '=': it is required
 xecret secrets set PORT --type int --note "the container listens here"
 ```
 
@@ -288,12 +288,12 @@ xecret secrets restore DATABASE_URL --version 3   # re-appends as a new version;
 
 One secret is limited to 64 KB. Delete the source file once it is stored, as
 the `--from-file` line does: `key.json` is the same credential, unencrypted, in
-the working tree — the file class that gets committed by accident.
+the working tree, the file class that gets committed by accident.
 
 ### Bulk
 
 ```bash
-xecret import .env --dry-run             # the exact plan, writes nothing — always do this first
+xecret import .env --dry-run             # the exact plan, writes nothing; always do this first
 xecret import .env --strategy overwrite  # skip (default) | overwrite | rename
 xecret pull --format json | jq 'keys'    # env|json|yaml|shell|docker
 xecret export -o .env.production         # file created 0600; --force to overwrite
@@ -301,7 +301,7 @@ xecret export -o .env.production         # file created 0600; --force to overwri
 
 The dry run and the real import share the same planning code, so the preview
 cannot disagree with the outcome. Import files are limited to 1 MB. Once the
-import is confirmed, delete the `.env` you imported — leaving it is how the
+import is confirmed, delete the `.env` you imported. Leaving it is how the
 repository ends up with both a managed copy and a stale plaintext one.
 
 `pull` and `export` are a deliberate downgrade in posture, and say so on
@@ -318,12 +318,12 @@ xecret run --offline -- npm test      # encrypted local cache, no API call
 xecret run --no-cache -- npm test     # neither read nor refresh the cache
 ```
 
-Always write the `--`. It is not strictly required — flag parsing stops at the
-first non-flag, so `xecret run npm run dev` works — but without it anything in
+Always write the `--`. It is not strictly required (flag parsing stops at the
+first non-flag, so `xecret run npm run dev` works), but without it anything in
 your command that looks like a xecret flag is eaten by xecret instead of being
 passed on.
 
-The API is authoritative and the cache answers only when the API *cannot* — a
+The API is authoritative and the cache answers only when the API *cannot*: a
 network failure or a 5xx. A 401, 403 or 404 is a decision, most importantly a
 revocation, and decisions are never softened by a local file. A cached copy
 older than seven days is refused rather than served; raise `--max-cache-age` if
@@ -385,11 +385,11 @@ xecret run -- npm run build
 No login and no `.xecret.yaml` are needed: the token knows its own scope. While
 `XECRET_TOKEN` is set, `logout` and `init` are refused, no offline cache is
 written or read, and `whoami` reports the pin rather than a person. `login`
-still runs, but its result is ignored — the token keeps winning until it is
+still runs, but its result is ignored. The token keeps winning until it is
 unset, so a successful login is not evidence that it was.
 
 One token per *(project, environment, purpose)*. It is more tokens, and it is
-the right number — when one leaks, "what could it reach?" should answer with
+the right number: when one leaks, "what could it reach?" should answer with
 one environment of one project. A deploy reads; use `write` only where a job
 genuinely writes secrets, which is rarer than it first seems.
 
@@ -400,7 +400,7 @@ fails with a 404, server-side.
 Rotation is always: mint a new token with the same scope → update the consumer
 → revoke the old one, in that order. If one leaks, revoke it, read the audit
 log for that token's name to learn what it read, then **rotate those secrets at
-their source** — revoking the xecret token does not un-leak a value it already
+their source**. Revoking the xecret token does not un-leak a value it already
 read.
 
 ### Environment variables
@@ -427,7 +427,7 @@ read.
 | Docker | Pass values at `docker run` from `xecret run`, or use the published image in a build stage. Never `COPY` a `.env` into an image layer. |
 
 Hot reload does **not** re-fetch. After changing a secret, stop the process and
-run the command again — the same moment you would have edited `.env.local`.
+run the command again, at the same moment you would have edited `.env.local`.
 
 A variable that ships to the browser (`NEXT_PUBLIC_`, `VITE_`) is not a secret
 once built. Storing it in xecret keeps it managed and versioned; it does not
@@ -442,7 +442,7 @@ Handing it production credentials because that is what was in the shell is how
 a debugging session becomes an incident.
 
 - **Ask for its own environment.** One called `agent`, or reuse `test`, holding
-  values that are shaped correctly but not real — a local database URL, a
+  values that are shaped correctly but not real: a local database URL, a
   test-mode API key, a signing secret generated for the purpose. Then
   `xecret run --environment agent -- npm test`. Nothing about the setup
   changes; only which environment loads.
@@ -451,7 +451,7 @@ a debugging session becomes an incident.
   `--environment production` gets a 404.
 - **Know what that does and does not protect.** `xecret run` puts values into
   the child process's environment, and anything that can run commands in that
-  process can read them — `printenv` is not a sophisticated attack. The
+  process can read them; `printenv` is not a sophisticated attack. The
   protection is the *scope of the credential*, not secrecy from a process you
   deliberately started. The question is never "can the agent read these?" but
   "what is the worst thing in the environment I am giving it?"
@@ -462,7 +462,7 @@ a debugging session becomes an incident.
 
 ## The HTTP API
 
-For tooling only — `xecret run` is the supported path. Base path `/api`, JSON
+For tooling only; `xecret run` is the supported path. Base path `/api`, JSON
 in and out, `Cache-Control: no-store` on every response. Resources are
 addressed through their organisation, so the path itself carries the ownership
 chain: the organisation by its ID (a legacy slug is still accepted), a project
@@ -486,8 +486,8 @@ requests carry no ambient credential and must not send it.
 | Reveal one value | `GET …/secrets/{name}` |
 | Create · new version · metadata · delete | `POST …/secrets` · `PATCH …/secrets/{name}` · `PUT …/secrets/{name}` · `DELETE …/secrets/{name}` |
 | History · one version · restore | `GET …/secrets/{name}/versions` · `GET …/versions/{version}` · `POST …/secrets/{name}/restore` |
-| Everything at once (what `run` uses) | `GET …/environments/{env}/pull?format=env\|json\|yaml\|shell\|docker` — `format` applies in `server` mode only; an e2ee environment returns a JSON bundle of ciphertexts and ignores it |
-| Import · export | `POST …/environments/{env}/import` · `GET …/environments/{env}/export` — export is refused with `client_side_only` on an e2ee environment |
+| Everything at once (what `run` uses) | `GET …/environments/{env}/pull?format=env\|json\|yaml\|shell\|docker`. `format` applies in `server` mode only; an e2ee environment returns a JSON bundle of ciphertexts and ignores it |
+| Import · export | `POST …/environments/{env}/import` · `GET …/environments/{env}/export`. Export is refused with `client_side_only` on an e2ee environment |
 | Audit | `GET /api/orgs/{orgId}/audit` |
 
 Errors come back as
@@ -497,7 +497,7 @@ Errors come back as
 `rate_limited` 429 · `csrf_failed` 403 · `session_locked` 403 ·
 `unavailable` 503 · `internal_error` 500.
 
-403 is returned only once membership in the organisation is established — an
+403 is returned only once membership in the organisation is established: an
 insufficient grant, production's deny-by-default included, is a 403. A wrong
 tenant, a service token reaching outside its pin, a membership that no longer
 exists and a genuinely absent resource are all 404. The two are not
@@ -507,7 +507,7 @@ company's projects by watching which answered differently.
 `message` is a fixed string, never derived from the rejected input, because in
 this product that input may itself be a secret value; quote the `requestId` in
 a bug report instead. Pagination is `?limit=&cursor=` with `nextCursor` null on
-the last page — keyset for the audit log, page-indexed for the secret listing.
+the last page: keyset for the audit log, page-indexed for the secret listing.
 Treat the cursor as opaque either way.
 
 Every mutation, every decryption and every **denial** is written to an
@@ -557,7 +557,7 @@ curl https://xecret.playxoft.com/llms-full.txt   # the whole corpus in one file
 
 Answering one question: fetch `/llms.txt`, pick the page whose description
 matches, fetch that one `.md`. Doing a whole task: fetch `/llms-full.txt` once
-— it is smaller than several round trips.
+(it is smaller than several round trips).
 
 Self-hosted deployments serve all of the above from their own origin. Point the
 CLI at one with `xecret login --api-url https://secrets.example.com`, or set

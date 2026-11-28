@@ -153,12 +153,12 @@ function compose(reminder: BillingReminder, organization: string): Composed {
           subject: `A payment for ${organization} didn't go through`,
           lines: [
             `A charge for ${organization} during its ${planName(reminder.plan)} trial was ` +
-              'declined — most likely for the change of plan just asked for, which is made only ' +
+              'declined, most likely for the change of plan just asked for, which is made only ' +
               'once it is paid. That change has not happened, and the trial still ends on ' +
               `${formatDay(trialEndsAt)}.`,
             BUILDS_UNAFFECTED,
-            'To try the change again, update the card from the billing page — "Manage billing" ' +
-              'opens the customer portal — and choose the plan again. If a payment is due for ' +
+            'To try the change again, update the card from the billing page ("Manage billing" ' +
+              'opens the customer portal) and choose the plan again. If a payment is due for ' +
               'anything else, we will email you about it separately.',
           ],
           action: 'Open billing',
@@ -169,11 +169,11 @@ function compose(reminder: BillingReminder, organization: string): Composed {
           subject: `A payment for ${organization} didn't go through`,
           lines: [
             `The ${planName(reminder.plan)} trial for ${organization} has ended, and its first ` +
-              'payment did not go through — there is no card on file, or the card was declined.',
+              'payment did not go through: there is no card on file, or the card was declined.',
             BUILDS_UNAFFECTED,
             // TRIAL_HOLD_LIMIT_MS in `jobs.ts`.
-            'The plan keeps working for 2 days while you add a card from the billing page — ' +
-              '"Manage billing" opens the customer portal. After that the organisation moves to ' +
+            'The plan keeps working for 2 days while you add a card from the billing page ' +
+              '("Manage billing" opens the customer portal). After that the organisation moves to ' +
               'Free; nothing is deleted.',
           ],
           action: 'Add a card',
@@ -198,8 +198,8 @@ function compose(reminder: BillingReminder, organization: string): Composed {
                 'declined.',
               BUILDS_UNAFFECTED,
               'Our payment provider will try again over the next few days. To fix it now, ' +
-                'update the card from the billing page — "Manage billing" opens the customer ' +
-                'portal. A subscription still unpaid after 14 days on hold ends, and the ' +
+                'update the card from the billing page ("Manage billing" opens the customer ' +
+                'portal). A subscription still unpaid after 14 days on hold ends, and the ' +
                 'organisation moves to Free; nothing is deleted.',
             ],
             action: 'Update the card',
@@ -217,8 +217,8 @@ function compose(reminder: BillingReminder, organization: string): Composed {
               `${count(reminder.days)} days without a successful payment, so the organisation is ` +
               'now on Free. Nothing was deleted: every secret is still there and still readable.',
           BUILDS_UNAFFECTED,
-          `To return to ${planName(reminder.plan)}, update the card from the billing page — ` +
-            '"Manage billing" opens the customer portal — or choose a plan again.',
+          `To return to ${planName(reminder.plan)}, update the card from the billing page ` +
+            '("Manage billing" opens the customer portal) or choose a plan again.',
         ],
         action: 'Open billing',
       };
@@ -231,7 +231,7 @@ function compose(reminder: BillingReminder, organization: string): Composed {
             (reminder.renewsAt
               ? `, before the next renewal on ${formatDay(reminder.renewsAt)}.`
               : '.'),
-          'Update it from the billing page — "Manage billing" opens the customer portal.',
+          'Update it from the billing page ("Manage billing" opens the customer portal).',
           BUILDS_UNAFFECTED,
         ],
         action: 'Update the card',
@@ -305,7 +305,7 @@ function compose(reminder: BillingReminder, organization: string): Composed {
           // (the plan is support-managed), and a subscription bought around it
           // would be charged and never applied.
           `To keep ${plan}, choose it from the billing page once the complimentary plan has ` +
-            'ended — or, if it should be extended, ask us before then through the contact page on ' +
+            'ended. If it should be extended, ask us before then through the contact page on ' +
             'the xecret website.',
         ],
         action: 'Open billing',
@@ -364,7 +364,7 @@ export function billingMail(
     '',
     'You are receiving this because you are an owner of this organisation on xecret.',
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
 
   const paragraphs = composed.lines

@@ -183,7 +183,7 @@ describe('the Compare button', () => {
 
   it('counts what is compared, in its name as well as its badge', () => {
     const html = render({ comparing: ['staging', 'production'] });
-    expect(html).toContain('aria-label="Compare — 2 shown beside Development"');
+    expect(html).toContain('aria-label="Compare: 2 shown beside Development"');
     expect(html).toMatch(/<span aria-hidden="true" class="[^"]*bg-accent[^"]*">2<\/span>/);
   });
 });

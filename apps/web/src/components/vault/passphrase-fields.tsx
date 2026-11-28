@@ -246,7 +246,7 @@ export function PassphraseFields({
           At least {PASSPHRASE_MIN_LENGTH} characters
         </ChecklistPoint>
         <ChecklistPoint met={!empty && display !== null && score >= PASSPHRASE_MIN_SCORE}>
-          Rated “Very strong” — hard for an attacker to guess
+          Rated “Very strong”: hard for an attacker to guess
           {!empty && display !== null ? (
             <span className="text-fg-muted">
               {' '}

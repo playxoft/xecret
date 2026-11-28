@@ -157,7 +157,7 @@ export async function mintServiceToken(
   if (!admitted) {
     throw new TokenKeyUnavailableError(
       'This environment is reporting server-side encryption, but your browser has read it as ' +
-        'end-to-end encrypted before. No token will be minted until that is explained — a token ' +
+        'end-to-end encrypted before. No token will be minted until that is explained. A token ' +
         'issued now would read this environment through the server.',
     );
   }
@@ -169,7 +169,7 @@ export async function mintServiceToken(
 
   if (params.vault === null) {
     throw new TokenKeyUnavailableError(
-      'Unlock your vault first — a token for an end-to-end encrypted environment is given its key by this browser, not by the server.',
+      'Unlock your vault first. A token for an end-to-end encrypted environment is given its key by this browser, not by the server.',
     );
   }
   const vault = params.vault;

@@ -1,7 +1,7 @@
 ---
 title: API endpoint reference
 navTitle: Endpoint reference
-description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
+description: Every HTTP endpoint: auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
 updated: 2026-11-28
 ---
@@ -12,7 +12,7 @@ Project ID, and `{envSlug}` is an environment's slug;
 [the overview](../api.md#shape) says how each one is resolved.
 
 Read [the API overview](../api.md) first for authentication, errors and
-pagination — none of it is repeated here.
+pagination. None of it is repeated here.
 
 ## Version
 
@@ -20,7 +20,7 @@ pagination — none of it is repeated here.
 |---|---|---|
 | `GET` | `/version` | What is deployed. No credential required. |
 
-Answered at **both** `https://<host>/api/version` and `https://<host>/version` —
+Answered at **both** `https://<host>/api/version` and `https://<host>/version`,
 the same body, no redirect between them. The second is there because a version
 check is the one request made by someone holding a hostname and nothing else.
 
@@ -39,7 +39,7 @@ reporting a bug against it, and to watch a deploy roll out.
 
 `commit` is `git describe --always --dirty`, so a build made from a modified
 tree says `a1b2c3d-dirty`. Both `commit` and `builtAt` read `unknown` on a build
-that did not come from `scripts/deploy-web.sh` — a local `next build`, or CI.
+that did not come from `scripts/deploy-web.sh`, such as a local `next build` or CI.
 
 It reports the build, never the install: no environment name, no bindings, no
 dependency versions, no identity-provider or database detail. Those describe how one
@@ -51,8 +51,8 @@ deployment is configured, which is not public.
 |---|---|---|
 | `GET` | `/auth/login` | Starts a sign-in: sets a short-lived signed cookie and redirects (**307**) to the identity provider's hosted sign-in page. Optional `?next=` (a path on this site to land on afterwards), `?hint=sign-up`, `?org=<organisation id>` (start that organisation's single sign-on directly, if it has one; a legacy slug still works). A link, not an API call. |
 | `GET` | `/auth/callback` | Where the identity provider sends the browser back. Checks the flow belongs to this browser, verifies the sign-in with the provider, creates the account on first sign-in, bootstraps a personal organisation, sets the session and CSRF cookies, and redirects (**303**) to `next`. |
-| `DELETE` | `/auth/session` | Signs out. Idempotent. Answers `{ logoutUrl }`: the sign-in provider's logout address for the session you signed in with, which the dashboard opens so that you are signed out there too — or `null` when there is none to end. |
-| `GET` | `/auth/me` | You, your organisations, your role in each — with `sso: { required, blocked }`, whether the organisation requires single sign-on and whether that refuses the credential you are using — and `vault`: whether you have one and whether this session has unlocked it. |
+| `DELETE` | `/auth/session` | Signs out. Idempotent. Answers `{ logoutUrl }`: the sign-in provider's logout address for the session you signed in with, which the dashboard opens so that you are signed out there too, or `null` when there is none to end. |
+| `GET` | `/auth/me` | You, your organisations, your role in each, with `sso: { required, blocked }` (whether the organisation requires single sign-on, and whether that refuses the credential you are using) and `vault`: whether you have one and whether this session has unlocked it. |
 | `GET` | `/auth/sessions` | Your active sessions. Never returns a token hash. |
 | `DELETE` | `/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
 | `DELETE` | `/auth/account` | Deletes your account. Body `{ confirm: "<your email>" }`. Browser sessions only, and the vault must be unlocked. **409** if you are the only active owner of an organisation other people are in. |
@@ -66,16 +66,16 @@ shown: telling a caller which part of a forged request to fix is a gift.
 ### The vault
 
 Values are decrypted in your browser, so these endpoints move wrapped keys and
-verifiers — never a key, and never your passphrase. Reading the vault, setting
+verifiers, never a key, and never your passphrase. Reading the vault, setting
 one up, unlocking and recovery work from a locked session; everything else here
 needs it unlocked.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/auth/vault` | Whether you have a vault, whether this session has unlocked it, and the wrapped material an unlock needs: the passphrase and passkey wraps, the Argon2id salt and parameters, and your encrypted private keys. Usable while locked. A CLI token may read it too, for `xecret login --passphrase` — rate-limited, and audited as `vault.material_read`. |
+| `GET` | `/auth/vault` | Whether you have a vault, whether this session has unlocked it, and the wrapped material an unlock needs: the passphrase and passkey wraps, the Argon2id salt and parameters, and your encrypted private keys. Usable while locked. A CLI token may read it too, for `xecret login --passphrase`, rate-limited and audited as `vault.material_read`. |
 | `POST` | `/auth/vault` | Sets up a vault: public keys, encrypted private keys, the passphrase wrap, the five recovery wraps and the two unlock verifiers, in one transaction. **409** if you already have one. |
 | `PATCH` | `/auth/vault` | Body `{ autoLockMinutes }`: how long the vault may sit idle before it locks, held between 15 and 720. Applies to every signed-in browser. |
-| `POST` | `/auth/vault/unlock` | Marks this session unlocked, with a verifier your browser derived — the unlock itself already happened there. Wrong verifiers are counted and slowed down. |
+| `POST` | `/auth/vault/unlock` | Marks this session unlocked, with a verifier your browser derived. The unlock itself already happened there. Wrong verifiers are counted and slowed down. |
 | `POST` | `/auth/vault/lock` | Locks this session, or every one with `{ everywhere: true }`. Does not sign you out. Returns `{ locked }`, the number of sessions locked. |
 | `POST` | `/auth/vault/passphrase` | Replaces the passphrase wrap, proved with the current passphrase's verifier. Nothing else is re-encrypted. |
 | `GET` `POST` `DELETE` | `/auth/vault/pin` | List your device PINs, enrol this browser, or turn every one off. The server keeps only its half of each enrolment's key; the wrap stays in that browser. |
@@ -88,11 +88,11 @@ needs it unlocked.
 
 ### Re-authentication for a vault reset
 
-Resetting a vault ends access to everything it held — the old vault is kept,
-recoverable, for seven days, then deleted for good — so it asks for proof twice,
+Resetting a vault ends access to everything it held (the old vault is kept,
+recoverable, for seven days, then deleted for good), so it asks for proof twice,
 in order: a fresh sign-in (`/auth/login?reauth=1`, which makes the provider ask
 for a credential even if it remembers you), then a one-time code emailed to you.
-Browser sessions only, and usable while the vault is locked — which is the
+Browser sessions only, and usable while the vault is locked, which is the
 point. A refused re-authentication is a **403**, never a 401, so it does not
 sign you out.
 
@@ -100,17 +100,17 @@ sign you out.
 |---|---|---|
 | `GET` | `/auth/reauth` | Where this session's attempt stands: `{ signedIn, signedInUntil, codeSent, email }`. Sends nothing. |
 | `POST` | `/auth/reauth/start` | Emails the code. Only within 10 minutes of the fresh sign-in, and at most three times per sign-in (then **403**: sign in again). **204**. |
-| `POST` | `/auth/reauth/verify` | Body `{ code }` (six digits, from the email) — or, after a `{ mfaRequired: true, mfaToken }` answer, `{ totp, mfaToken }` with the code from your authenticator app. Returns `{ reauthProof, expiresAt }` — single-use, five minutes, good for this session only. Every guess counts: five per attempt, ten per account per day; past the daily limit, **429**. |
+| `POST` | `/auth/reauth/verify` | Body `{ code }` (six digits, from the email), or, after a `{ mfaRequired: true, mfaToken }` answer, `{ totp, mfaToken }` with the code from your authenticator app. Returns `{ reauthProof, expiresAt }`: single-use, five minutes, good for this session only. Every guess counts: five per attempt, ten per account per day; past the daily limit, **429**. |
 | `GET` | `/auth/vault/reset/preflight` | What a reset would do with the vault's escape archive, asked before you confirm: `{ resettable, archive: { deliverable, reason } }`. `reason` is `null`, `too-large` (the archive is over 8 MiB, and then `estimatedBytes` and `maxBytes` are included) or `mail-not-configured`. `resettable` is `false` on a production deployment with no email set up: it resets no vault. An unlocked session also gets the size and the counts of environments and secrets. **404** with no vault. Usable while locked. |
-| `POST` | `/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof, proceedWithoutArchive? }`. First, before the proof is spent: **503** on a production deployment with no email set up, whatever the body says; **409** when the archive cannot be emailed (too large, or no email outside production) and `proceedWithoutArchive` is not `true`. Then it spends the proof, emails the escape archive to your address (at most two parts; a notice instead when you chose to go without), and resets the vault — keeping the old one, recoverable, for seven days. **503** if an email cannot be sent, **409** if your vault changed in between; nothing is reset in either case, and a retry needs a new proof. **404** with no vault. Returns `{ vault, archive, retained }`: `archive` is `{ emailed: true, parts, to }` or `{ emailed: false, reason }`; `retained` is `{ id, retainedUntil, grantCount }`. **This is not recovery** — nothing is decrypted or restored. |
+| `POST` | `/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof, proceedWithoutArchive? }`. First, before the proof is spent: **503** on a production deployment with no email set up, whatever the body says; **409** when the archive cannot be emailed (too large, or no email outside production) and `proceedWithoutArchive` is not `true`. Then it spends the proof, emails the escape archive to your address (at most two parts; a notice instead when you chose to go without), and resets the vault, keeping the old one recoverable, for seven days. **503** if an email cannot be sent, **409** if your vault changed in between; nothing is reset in either case, and a retry needs a new proof. **404** with no vault. Returns `{ vault, archive, retained }`: `archive` is `{ emailed: true, parts, to }` or `{ emailed: false, reason }`; `retained` is `{ id, retainedUntil, grantCount }`. **This is not recovery**: nothing is decrypted or restored. |
 
 ### Recovering a reset vault
 
 Inside its seven days, a reset vault can be brought back into the vault you
 have now, in the browser, with its old passphrase or one of its recovery codes
 (see [Vault reset and archive](/docs/security/vault-archive)). These endpoints
-need an **unlocked** session — re-sealing the old keys into the current vault
-needs it open — and answer only the vault's owner, only inside the window: the
+need an **unlocked** session (re-sealing the old keys into the current vault
+needs it open) and answer only the vault's owner, only inside the window: the
 same **404** for anything else, a malformed id included.
 
 | Method | Path | Notes |
@@ -129,7 +129,7 @@ against this server rather than the identity provider.
 |---|---|---|
 | `POST` | `/cli/authorize` | Session + CSRF only. Body `{ orgId, deviceName, codeChallenge }`; an older consent screen's `orgSlug` is accepted in place of `orgId` (exactly one of the two). Mints a single-use code, 10-minute TTL, hashed at rest. |
 | `POST` | `/cli/token` | Public: the caller holds no credential yet. Body `{ code, codeVerifier }`. Returns the `xct_` token exactly once, with `organization: { id, name, slug }` (the slug only for older CLIs). Every failure is the same fixed 401. |
-| `DELETE` | `/cli/token` | The token revokes itself — this is `xecret logout`. Idempotent. |
+| `DELETE` | `/cli/token` | The token revokes itself; this is `xecret logout`. Idempotent. |
 
 The code is consumed **before** the PKCE check, so a failed binding kills it
 rather than leaving it guessable.
@@ -161,8 +161,8 @@ same transaction. A project arrives with `development`, `staging` and
 `production`, so `POST /orgs/{orgId}/projects` carries the keys for all three:
 `{ name, slug?, description?, environments: [{ slug, id, keys: { grant } }] }`,
 where each `slug` names which of the three defaults the entry is for. Both
-creates need a browser session with an unlocked vault — the keys are generated
-there and sealed to you — and are refused for a CLI or service token. An
+creates need a browser session with an unlocked vault (the keys are generated
+there and sealed to you) and are refused for a CLI or service token. An
 environment without a key cannot hold a secret and cannot be repaired.
 
 The project's own `slug` is its **Project ID**: lowercase letters, digits and
@@ -177,17 +177,17 @@ commands and CI configuration name the project by it: a `PATCH` that names
 |---|---|---|
 | `GET` | `…/environments/{envSlug}/secrets` | **Masked.** Names, versions, timestamps, who updated. No ciphertext leaves the database. |
 | `POST` | `…/secrets` | Create. Body `{ name, value, note?, valueType? }`. |
-| `GET` | `…/secrets/{name}` | **Reveal.** One value, as ciphertext for the client to decrypt — or, in an environment still on server-side encryption, decrypted. Audited as `secret.revealed` every time. |
+| `GET` | `…/secrets/{name}` | **Reveal.** One value, as ciphertext for the client to decrypt or, in an environment still on server-side encryption, decrypted. Audited as `secret.revealed` every time. |
 | `PATCH` | `…/secrets/{name}` | Appends a new version. Body `{ value, valueType? }`. A value identical to the current one is a no-op, detected without decrypting. |
-| `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, valueType? }`. Appends no version: declaring a type is not a rotation, and neither is a rename. |
-| `DELETE` | `…/secrets/{name}` | Soft delete, erased for good after 30 days — or after your plan's point-in-time restore window, if that is longer. |
+| `PUT` | `…/secrets/{name}` | Metadata only: `{ name?, note?, valueType? }`. Appends no version: declaring a type is not a rotation, and neither is a rename. |
+| `DELETE` | `…/secrets/{name}` | Soft delete, erased for good after 30 days, or after your plan's point-in-time restore window, if that is longer. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only. |
 | `GET` | `…/secrets/{name}/versions/{version}` | Reveal one historical version. Audited, with the version recorded. |
 | `POST` | `…/secrets/{name}/restore` | Body `{ version }`. Re-appends an earlier value as a new version; never rewrites history. |
 
 The masked listing and the reveal endpoint are **separate routes on purpose**,
-so "where can a value leave the server?" — as ciphertext, or as plaintext from
-an environment still on server-side encryption — has a one-line answer a
+so "where can a value leave the server?" (as ciphertext, or as plaintext from
+an environment still on server-side encryption) has a one-line answer a
 reviewer can verify by searching the code.
 
 ## Bulk read
@@ -200,13 +200,13 @@ The path `xecret run` depends on.
 
 One environment, every current secret. For an end-to-end encrypted
 environment the answer is a JSON bundle of ciphertexts plus your own sealed copy
-of the environment's key, and the client decrypts and formats it — so a
+of the environment's key, and the client decrypts and formats it, so a
 `format` is refused there. An environment still on server-side encryption
 answers in the format asked for, decrypted. Its budget is at most three
 database queries and **zero** outgoing network calls, constant in the number of
 secrets.
 
-Audited **once per call** as `secret.read` with a count — not once per secret,
+Audited **once per call** as `secret.read` with a count, not once per secret,
 which would make a 200-secret pull write 200 audit rows and turn the audit
 table into a denial-of-service surface against itself.
 
@@ -218,7 +218,7 @@ table into a denial-of-service surface against itself.
 | `GET` | `…/environments/{envSlug}/export?format=…` | The same data as `pull`, as a file download. |
 
 The dry run and the real import call the same planning function, so the preview
-cannot disagree with the outcome — including a refusal for the plan's limit on
+cannot disagree with the outcome, including a refusal for the plan's limit on
 secrets per environment.
 
 ## Plan limits
@@ -234,14 +234,14 @@ the plan that would allow more:
 | `environmentsPerProject` | create an environment |
 | `secretsPerEnvironment` | create a secret, or import, promote or restore new names into an environment (a batch is weighed whole) |
 | `serviceTokens` | mint a service token |
-| `cliDevicesPerUser` | approve or complete an `xecret login` — revoke a device you no longer use to make room |
+| `cliDevicesPerUser` | approve or complete an `xecret login` (revoke a device you no longer use to make room) |
 | `webhooks` | add a webhook endpoint |
 
 Only live things count: deleting a project or environment, or revoking a token,
 frees its place, and an expired token holds none. Nothing you already have past
-a limit — after a downgrade, say — is deleted: it stays readable and editable,
+a limit (after a downgrade, say) is deleted: it stays readable and editable,
 and only adding more is refused. The exception is webhooks on a plan that allows
-none, which are kept but paused — they send nothing, and cannot be edited,
+none, which are kept but paused: they send nothing, and cannot be edited,
 switched back on or tested until the plan allows them (switching one off or
 deleting it always works). Creating an
 organisation past the account's limit, and inviting past the organisation's
@@ -260,8 +260,8 @@ a read of the environment itself.
 |---|---|---|
 | `PUT` | `…/environments/{envSlug}/parent` | Body `{ parent: envSlug \| null }`. Inherit from another environment of the project, or stop. Setting one needs Pro and read access to the parent; refused for a loop, a chain past five, an environment a service token is pinned to, or a change that would leave a template unresolvable. |
 | `GET` | `…/pull?bundle=2` | What a client that resolves inheritance and templates asks for. An environment that uses either answers **409** `resolution_unsupported` to a client that does not ask. Every environment the resolution reads must be one you can read. |
-| `GET` | `…/pull?bundle=2&layers=none` | The environment's own values only — templates marked, nothing resolved, no other environment read. What the dashboard asks for. Needs read access to this environment alone. |
-| `GET` | `…/environments/{envSlug}/overrides` | Your own [personal overrides](../features/overrides.md): `{ overrides: [{ name, ciphertext, updatedAt }], canSet, upgradeTo }`. A person's credential only — a service token gets **403**. |
+| `GET` | `…/pull?bundle=2&layers=none` | The environment's own values only: templates marked, nothing resolved, no other environment read. What the dashboard asks for. Needs read access to this environment alone. |
+| `GET` | `…/environments/{envSlug}/overrides` | Your own [personal overrides](../features/overrides.md): `{ overrides: [{ name, ciphertext, updatedAt }], canSet, upgradeTo }`. A person's credential only; a service token gets **403**. |
 | `PUT` `DELETE` | `…/overrides/{name}` | Body `{ ciphertext }` (an `xk2.gcm.` blob under your override key). Setting needs Pro; removing never does. |
 | `POST` | `…/environments/{target}/promote` | Body `{ source, writes, removals?, dryRun }`. [Promotion](../features/promotion-and-restore.md#promotion), atomic. `writes` are client-encrypted entries for the target, of names the source holds. |
 | `GET` | `…/environments/{envSlug}/restore-point?at=` | The [restore](../features/promotion-and-restore.md#point-in-time-restore) preview: each secret at the instant, its action, and your grants for the keys its old values were written under. Audited as a read. |
@@ -293,12 +293,12 @@ the JSON pull `xecret run` reads with `x-xecret-plaintext-export: disabled`.
 | `GET` | `/orgs/{orgId}/authority` | What *you* could grant: per environment, the highest level a grant you write there may carry. The dashboard caps its level controls with it. |
 | `GET` | `/orgs/{orgId}/invitations` | Open invitations, expired ones included. |
 | `DELETE` | `/orgs/{orgId}/invitations/{invitationId}` | Withdraws one; the emailed link stops working at commit. |
-| `POST` | `/invitations/lookup` | Public — the holder may have no account. Body `{ token }`. Returns the organisation name, invited address, role, state and expiry, and nothing else. |
+| `POST` | `/invitations/lookup` | Public, because the holder may have no account. Body `{ token }`. Returns the organisation name, invited address, role, state and expiry, and nothing else. |
 | `POST` | `/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one. |
 
 ## Custom roles
 
-Enterprise only. A custom role narrows a built-in role — it can never give
+Enterprise only. A custom role narrows a built-in role; it can never give
 anybody more than the role it is based on. See
 [Teams and access](../guides/teams.md#custom-roles).
 
@@ -314,11 +314,11 @@ anybody more than the role it is based on. See
 SAML and OIDC single sign-on through WorkOS, set up by your IT admin in WorkOS's
 setup portal. From a browser session only (a CLI token is refused). Owners and
 admins can read the status and switch a policy off; only **owners** can turn SSO
-on, open the setup portal, or switch a policy on — whoever does those decides
+on, open the setup portal, or switch a policy on, because whoever does those decides
 which identity provider vouches for every member. Turning anything **on** also
 needs the single sign-on add-on. Every route answers with the same `sso` status:
 whether SSO is on, `ssoRequired`, `jitJoinEnabled`, the seat limit, whether the
-add-on is held, and — once on — the connections and domains WorkOS reports
+add-on is held, and (once on) the connections and domains WorkOS reports
 (`null`, with `providerReachable: false`, if WorkOS cannot be reached) and
 `membersOutsideVerifiedDomains`, how many members your identity provider cannot
 sign in.
@@ -342,7 +342,7 @@ also shown on the organisation's settings General page as *Organisation ID*.
 | `GET` `POST` | `/orgs/{orgId}/tokens/service` | Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist? }`, where `projectSlug` is the Project ID. `read` by default; `admin` is unrepresentable. Returned **once**. |
 | `GET` | `/orgs/{orgId}/tokens/cli` | "Your devices": your own CLI tokens only, revoked ones included. |
 | `DELETE` | `/orgs/{orgId}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Anyone else's, or any service token: needs the revoke permission. |
-| `GET` | `/tokens/self` | Service-token introspection: the pinned organisation, project and environment, plus the token's name and level. Derived from the credential row alone — there is no parameter to lie in. |
+| `GET` | `/tokens/self` | Service-token introspection: the pinned organisation, project and environment, plus the token's name and level. Derived from the credential row alone; there is no parameter to lie in. |
 
 A created token's value appears in exactly one response and is never
 retrievable again. No listing function selects the stored hash.
@@ -358,6 +358,6 @@ clamped to 90 days and a caller that asked for more must be told it got less.
 
 ## Next
 
-- [Tokens](tokens.md) — obtaining and scoping a credential.
-- [The API overview](../api.md) — errors, CSRF, rate limits.
-- [The audit log](../security/audit-log.md) — what each event means.
+- [Tokens](tokens.md): obtaining and scoping a credential.
+- [The API overview](../api.md): errors, CSRF, rate limits.
+- [The audit log](../security/audit-log.md): what each event means.

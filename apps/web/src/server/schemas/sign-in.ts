@@ -88,7 +88,7 @@ const newPassword = z
   .check(
     z.minLength(
       MIN_NEW_PASSWORD_LENGTH,
-      `Use at least ${MIN_NEW_PASSWORD_LENGTH} characters — a few unrelated words make a strong one.`,
+      `Use at least ${MIN_NEW_PASSWORD_LENGTH} characters. A few unrelated words make a strong one.`,
     ),
     z.maxLength(MAX_PASSWORD_LENGTH, 'That password is longer than this form accepts.'),
   );

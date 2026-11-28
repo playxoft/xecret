@@ -251,7 +251,7 @@ export const POST = authenticatedRoute<Params>(
         if (mode !== null && mode !== environmentScope.environment.encryptionMode) {
           throw errors.conflict(
             'mode_changed: this environment was upgraded to end-to-end encryption while the token ' +
-              'was being created. Nothing was created — reload and create it again.',
+              'was being created. Nothing was created. Reload and create it again.',
           );
         }
 
@@ -276,7 +276,7 @@ export const POST = authenticatedRoute<Params>(
         if (isTransactionRace(cause)) {
           throw errors.conflict(
             'The environment was changed by another request while the token was being created. ' +
-              'Nothing was created — create it again.',
+              'Nothing was created. Create it again.',
           );
         }
         throw cause;

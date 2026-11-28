@@ -17,17 +17,17 @@ Everything else exists to support it.
 
 ## Two rules that govern everything
 
-Both are structural, not aspirational — they are properties of how the binary
+Both are structural, not aspirational: they are properties of how the binary
 is written, and the rest of this documentation depends on them being true.
 
 1. **A secret value is never written** to stdout, stderr, a log file, a
    temporary file, or a process argument. The exceptions are `xecret pull`,
    `xecret export` and `xecret secrets get [--version N] --plain`, whose entire
-   purpose is producing a value, and which write it to stdout raw — or, for
-   `export`, to one named file created `0600` — and nowhere else.
+   purpose is producing a value, and which write it to stdout raw (or, for
+   `export`, to one named file created `0600`) and nowhere else.
 
 2. **Credentials live in the OS keychain**, never in a dotfile you might commit
-   or sync — macOS Keychain, Windows Credential Manager, Secret Service on
+   or sync: macOS Keychain, Windows Credential Manager, Secret Service on
    Linux. Where no keyring exists, a `0600` file under `~/.xecret/` is used and
    the CLI says so on stderr rather than doing it quietly.
 
@@ -84,7 +84,7 @@ answer.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | The CLI itself failed — bad flags, no credential, a rejected request |
+| `1` | The CLI itself failed: bad flags, no credential, a rejected request |
 | *child's code* | `xecret run` exits with whatever your command exited with, untouched |
 
 That last row is why `xecret run -- npm test` is safe to use in CI: a failing
@@ -109,9 +109,9 @@ xecret: request rejected (401)
 
 ## Where next
 
-- [Command reference](cli/commands.md) — every command, every flag.
-- [Configuration and scope](cli/configuration.md) — `.xecret.yaml`, environment
+- [Command reference](cli/commands.md): every command, every flag.
+- [Configuration and scope](cli/configuration.md): `.xecret.yaml`, environment
   variables, where credentials are stored.
-- [The offline cache](cli/offline-cache.md) — what happens when the network
+- [The offline cache](cli/offline-cache.md): what happens when the network
   does not.
-- [Troubleshooting](troubleshooting.md) — when something is not working.
+- [Troubleshooting](troubleshooting.md): when something is not working.

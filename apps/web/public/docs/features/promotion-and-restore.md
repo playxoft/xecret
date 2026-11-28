@@ -1,14 +1,14 @@
 ---
 title: Environment promotion and point-in-time restore
 navTitle: Promotion and restore
-description: Promote values from staging to production with a masked diff, and put an environment back the way it was at an earlier moment — atomically, and without losing history.
+description: Promote values from staging to production with a masked diff, and put an environment back the way it was at an earlier moment, atomically, and without losing history.
 keywords: [environment promotion, promote secrets, secret diff, point in time restore, secrets rollback]
 updated: 2026-10-21
 ---
 
 Two ways of changing many secrets at once, both on the Pro plan and above, and
 both built the same way: your browser decides what changes and re-encrypts each
-value, and the server writes the lot in **one transaction** — all of it, or none.
+value, and the server writes the lot in **one transaction** (all of it, or none).
 
 ## Promotion
 
@@ -21,13 +21,13 @@ Pick the source, and the dashboard shows the difference between the two:
 | Added | The source has it; the target does not |
 | Changed | Both have it, with different values |
 | Unchanged | Both have it, with the same value |
-| Removed | The target has it; the source does not — removed only if you tick it |
+| Removed | The target has it; the source does not (removed only if you tick it) |
 
 Values are **masked** until you ask to see one. Choose what to include, check the
 preview, apply.
 
-What travels is the source's own secrets — not values it inherits from a
-parent — with their types. A template travels as a template, and the templates
+What travels is the source's own secrets (not values it inherits from a
+parent) with their types. A template travels as a template, and the templates
 of one promotion are checked together, so a template can travel with the
 values it refers to.
 
@@ -35,8 +35,8 @@ Your browser reads both environments, decrypts each value, and encrypts it again
 under the **target's** key for the target's row. The server cannot read either
 side and does not try; what it checks is everything it can:
 
-- you can read the source, and create and update — and, if you remove anything,
-  delete — in the target;
+- you can read the source, and create and update (and, if you remove anything,
+  delete) in the target;
 - every name written is one the source holds, with the source's type, and every
   name removed is one the target holds and the source does not;
 - the target's [secret policy](policies.md#secret-naming-and-strength) for every
@@ -51,7 +51,7 @@ so every secret's own history shows it.
 ## Point-in-time restore
 
 *Environment → Changes → Restore to a point in time*. Pick a moment, and the
-preview — which always comes first — lists what restoring to it would do:
+preview (which always comes first) lists what restoring to it would do:
 
 | Action | Means |
 |---|---|
@@ -114,5 +114,5 @@ neither changes what a pull or a CI run receives except by the values it writes.
 
 ## Next
 
-- [Webhooks](webhooks.md) — `environment.promoted` and `environment.restored` events.
-- [The audit log](../security/audit-log.md) — every record these write.
+- [Webhooks](webhooks.md): `environment.promoted` and `environment.restored` events.
+- [The audit log](../security/audit-log.md): every record these write.

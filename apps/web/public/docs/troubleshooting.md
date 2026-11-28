@@ -1,7 +1,7 @@
 ---
 title: Troubleshooting
 navTitle: Troubleshooting
-description: Every error message the CLI and API produce, what it actually means, and the fix — from "command not found" to "no such environment" in CI.
+description: Every error message the CLI and API produce, what it actually means, and the fix, from "command not found" to "no such environment" in CI.
 keywords: [xecret error, command not found, not signed in, 401 xecret, no xecret.yaml, ci token not accepted, debugging]
 updated: 2026-11-28
 ---
@@ -13,7 +13,7 @@ an API error are what a bug report needs.
 
 ### `xecret: command not found`
 
-The install directory is not on your `PATH`. Reopen your terminal first — an
+The install directory is not on your `PATH`. Reopen your terminal first: an
 installer that just added a directory cannot change the shell it ran in.
 
 ```bash
@@ -25,7 +25,7 @@ Add that line to `~/.zshrc` or `~/.bashrc` to make it stick.
 ### The install script fails on checksum verification
 
 The download did not match the published checksum. Do **not** work around it.
-Retry once — a truncated download is the usual cause. If it fails again, stop
+Retry once, since a truncated download is the usual cause. If it fails again, stop
 and report it; that is exactly the failure the check exists to catch.
 
 ## Signing in
@@ -47,7 +47,7 @@ stale identity.
 ### The browser opens but nothing happens after approving
 
 The CLI listens on `127.0.0.1` on a random port for the redirect. Something is
-blocking it — usually a VPN with a local proxy, or a firewall rule on the
+blocking it, usually a VPN with a local proxy, or a firewall rule on the
 loopback interface.
 
 The consent code is single-use with a 10-minute lifetime, so just run
@@ -55,7 +55,7 @@ The consent code is single-use with a 10-minute lifetime, so just run
 
 ### `login` says the keyring is unavailable
 
-No OS keyring on this machine — common on headless servers and minimal
+No OS keyring on this machine, which is common on headless servers and minimal
 containers. The CLI falls back to a `0600` file under `~/.xecret/` and tells
 you so. To choose that explicitly:
 
@@ -83,13 +83,13 @@ xecret run --project p --environment e -- cmd  # or name the scope explicitly
 ```
 
 The file is found by walking up from the current directory, so it works from
-any subdirectory — but not from a sibling directory of the repository.
+any subdirectory, but not from a sibling directory of the repository.
 
 ### The wrong environment was loaded
 
 Check in this order:
 
-1. Flags on the command — they beat everything.
+1. Flags on the command. They beat everything.
 2. `.xecret.yaml` in the nearest parent directory. In a monorepo, a package may
    have its own file shadowing the root one.
 3. `XECRET_TOKEN`, whose pinned scope answers when nothing else does.
@@ -134,21 +134,21 @@ does not re-fetch. Stop the process and run the command again.
 
 Almost always your own command waiting for something, since `run` execs it
 directly and forwards signals. `Ctrl-C` reaches the child. If it hangs *before*
-any output, the API call is timing out — see the offline section below.
+any output, the API call is timing out; see the offline section below.
 
 ## Network and offline
 
-### `xecret API unreachable — using cached secrets`
+### `using the offline copy from …, decrypted locally`
 
 Working as designed. The API could not be reached, so the encrypted local cache
-answered, and the CLI said so on stderr with the cache's age.
+answered, and the CLI said so on stderr, with when that copy was fetched.
 
-If the age is surprising, that is the point of printing it. `--no-cache` makes
+If the date is surprising, that is the point of printing it. `--no-cache` makes
 the command fail instead of falling back.
 
 ### It failed instead of falling back to the cache
 
-The cache answers only when the API *cannot* answer — a network failure or a
+The cache answers only when the API *cannot* answer: a network failure or a
 5xx. A 401, 403 or 404 is a **decision**, most importantly a revocation, and
 decisions are never softened by a local file.
 
@@ -173,7 +173,7 @@ uses the platform's roots.
 Read the whole hint the CLI prints. In order:
 
 - **Copied wrong.** The token is one long line. A CI variable UI that wraps or
-  trims it silently is a common cause — re-paste it.
+  trims it silently is a common cause. Re-paste it.
 - **Expired.** Check the expiry in *Tokens → Service tokens*.
 - **Revoked.** Same page; revoked tokens are listed.
 - **IP allowlist.** If you set one, your runner's egress address must be in it.
@@ -182,7 +182,7 @@ Read the whole hint the CLI prints. In order:
 ### `This service token cannot do that`
 
 The token is `read` and the job is writing, or the job is trying to **delete** a
-secret — which no service token can do, at any access level. Mint a `write`
+secret, which no service token can do at any access level. Mint a `write`
 token for the first case; for the second, do it from the dashboard.
 
 ### `not found` for an environment that exists
@@ -214,7 +214,7 @@ a digit, up to 256 characters. `MY_KEY` is valid; `my-key`, `MY.KEY` and
 
 ### `value does not match the declared type`
 
-The secret has a declared value type and the new value does not satisfy it —
+The secret has a declared value type and the new value does not satisfy it:
 this is the check catching `3o30` before your service does at 02:00. Fix the
 value, or change the type with `xecret secrets set NAME --type string`.
 
@@ -234,7 +234,7 @@ that produced it.
 
 ### `session_locked`
 
-Your session is signed in but its vault is locked — it was idle for longer
+Your session is signed in but its vault is locked: it was idle for longer
 than your auto-lock allows, or somebody locked it. Unlock it with your master
 passphrase, a passkey, or this browser's device PIN. This is the dashboard only;
 CLI and service tokens are not subject to the lock.
@@ -242,7 +242,7 @@ CLI and service tokens are not subject to the lock.
 ### `409` when deleting your account
 
 You are the only active owner of an organisation other people are in.
-Ownership has to move first — promote somebody, then try again.
+Ownership has to move first: promote somebody, then try again.
 
 ## Reporting a bug
 
@@ -258,6 +258,6 @@ contain your values.
 
 ## Next
 
-- [FAQ](faq.md) — questions rather than errors.
-- [Command reference](cli/commands.md) — every flag.
-- [The offline cache](cli/offline-cache.md) — the rules behind the fallback.
+- [FAQ](faq.md): questions rather than errors.
+- [Command reference](cli/commands.md): every flag.
+- [The offline cache](cli/offline-cache.md): the rules behind the fallback.

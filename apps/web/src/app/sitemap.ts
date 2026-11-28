@@ -37,7 +37,7 @@ const STATIC_PAGES = [
   { path: '/about', lastModified: '2026-11-23', changeFrequency: 'monthly', priority: 0.7 },
   { path: '/security', lastModified: '2026-11-23', changeFrequency: 'monthly', priority: 0.7 },
   { path: '/contact', lastModified: '2026-09-24', changeFrequency: 'yearly', priority: 0.6 },
-  { path: '/privacy', lastModified: '2026-11-22', changeFrequency: 'yearly', priority: 0.3 },
+  { path: '/privacy', lastModified: '2026-11-28', changeFrequency: 'yearly', priority: 0.3 },
   { path: '/terms', lastModified: '2026-11-23', changeFrequency: 'yearly', priority: 0.3 },
 ] as const;
 

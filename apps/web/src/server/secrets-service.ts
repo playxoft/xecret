@@ -1621,7 +1621,7 @@ async function openValue(
 function modeChanged() {
   return errors.conflict(
     'mode_changed: this environment was upgraded to end-to-end encryption while this request ' +
-      'was in flight. Nothing was written — reload it and try again.',
+      'was in flight. Nothing was written. Reload it and try again.',
   );
 }
 

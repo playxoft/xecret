@@ -40,7 +40,7 @@ export function TemplateReferenceList({ value, valueType }: { value: string; val
         <Tooltip key={entry.written} content={entry.where}>
           <span className="border-accent-line bg-accent-tint text-accent-text inline-flex rounded-md border px-1.5 py-0.5 font-mono text-xs">
             {entry.written}
-            <span className="sr-only"> — {entry.where}</span>
+            <span className="sr-only">: {entry.where}</span>
           </span>
         </Tooltip>
       ))}

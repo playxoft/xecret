@@ -39,7 +39,7 @@ const reasonSchema = z
   .string()
   .check(
     z.trim(),
-    z.minLength(1, 'Say why — it goes in the organisation’s audit log.'),
+    z.minLength(1, 'Say why. It goes in the organisation’s audit log.'),
     z.maxLength(ADMIN_TEXT_MAX_LENGTH, `At most ${ADMIN_TEXT_MAX_LENGTH} characters.`),
   );
 

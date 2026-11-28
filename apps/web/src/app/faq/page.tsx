@@ -50,7 +50,7 @@ import { takesPayments } from '@/server/billing/payments-live';
  * only edit needed, and there is no second list to forget.
  */
 
-const TITLE = 'Secret management FAQ — security, pricing, self-hosting';
+const TITLE = 'Secret management FAQ: security, pricing, self-hosting';
 const DESCRIPTION =
   'Answers to what people ask before they sign up: can xecret read my secrets, what it costs, how it replaces a .env file, and what self-hosting really takes.';
 
@@ -113,7 +113,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What is xecret?',
         answer:
-          'xecret is open-source secret management for developers. You store your environment variables once, encrypted per environment, and the CLI injects them into whatever you run — locally, in CI, in production. It replaces the .env file rather than sitting beside it.',
+          'xecret is open-source secret management for developers. You store your environment variables once, encrypted per environment, and the CLI injects them into whatever you run: locally, in CI, in production. It replaces the .env file rather than sitting beside it.',
       },
       {
         question: 'How is this different from a .env file?',
@@ -123,7 +123,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How long does it take to set up?',
         answer:
-          'About five minutes for the first project. Sign up, drag in the .env file you already have, install the CLI, and put xecret run in front of your dev command — that is the whole of it. The quickstart in the documentation is five steps long.',
+          'About five minutes for the first project. Sign up, drag in the .env file you already have, install the CLI, and put xecret run in front of your dev command. That is the whole of it. The quickstart in the documentation is five steps long.',
       },
       {
         question: 'Do I have to change my code?',
@@ -143,7 +143,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Does it work on Windows?',
         answer:
-          'Yes — a native binary, with credentials held in Windows Credential Manager. PowerShell, cmd.exe and WSL are all supported.',
+          'Yes. It is a native binary, with credentials held in Windows Credential Manager. PowerShell, cmd.exe and WSL are all supported.',
       },
     ],
   },
@@ -154,8 +154,8 @@ const CATEGORIES: readonly FaqCategory[] = [
     title: 'What xecret can see, and what it cannot',
     lede: (
       <>
-        The full reasoning — the key hierarchy, what each kind of compromise actually yields, and
-        exactly where the guarantee stops — is in{' '}
+        The full reasoning (the key hierarchy, what each kind of compromise actually yields, and
+        exactly where the guarantee stops) is in{' '}
         <Link href="/docs/security/trust-model" className={INLINE_LINK}>
           the trust model
         </Link>
@@ -166,7 +166,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Can xecret read my secrets?',
         answer:
-          'No. Secret values and notes are encrypted on your device — in the browser or the CLI — before they are sent, under a key generated for each environment. That key is sealed to the public key of each member and service token you give access to, and never to us. We store ciphertext, so neither our staff, nor anyone who obtains our database, nor anyone who compels us to hand it over can read your values. Secret names, project and environment names and the audit log are not encrypted. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
+          'No. Secret values and notes are encrypted on your device, in the browser or the CLI, before they are sent, under a key generated for each environment. That key is sealed to the public key of each member and service token you give access to, and never to us. We store ciphertext, so neither our staff, nor anyone who obtains our database, nor anyone who compels us to hand it over can read your values. Secret names, project and environment names and the audit log are not encrypted. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment, and its key settings say so.',
       },
       {
         question: 'Is xecret zero-knowledge or end-to-end encrypted?',
@@ -176,12 +176,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What happens if your database is breached?',
         answer:
-          'The attacker gets ciphertext and names. Every environment key is stored only sealed to its members’ public keys, and each member’s private key is stored only wrapped under a key derived from their passphrase with Argon2id, on their own device. To open anything, an attacker would have to guess a member’s passphrase at Argon2id’s deliberate cost per guess — which is why xecret asks for a strong one. Each ciphertext is also bound to its exact position, so a secret row copied from staging to production simply does not decrypt.',
+          'The attacker gets ciphertext and names. Every environment key is stored only sealed to its members’ public keys, and each member’s private key is stored only wrapped under a key derived from their passphrase with Argon2id, on their own device. To open anything, an attacker would have to guess a member’s passphrase at Argon2id’s deliberate cost per guess, which is why xecret asks for a strong one. Each ciphertext is also bound to its exact position, so a secret row copied from staging to production simply does not decrypt.',
       },
       {
         question: 'What happens if your servers are compromised?',
         answer:
-          'Stored values stay sealed. Our servers never hold a key that opens an end-to-end encrypted value, so nothing on them — the database, the server’s own root key, or both together — yields one. The residual risk is the web dashboard: a compromised server could serve altered code to the people using it. A strict Content Security Policy narrows that, and the CLI never depends on code we serve.',
+          'Stored values stay sealed. Our servers never hold a key that opens an end-to-end encrypted value, so nothing on them (the database, the server’s own root key, or both together) yields one. The residual risk is the web dashboard: a compromised server could serve altered code to the people using it. A strict Content Security Policy narrows that, and the CLI never depends on code we serve.',
       },
       {
         question: 'How are encryption keys rotated?',
@@ -191,7 +191,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Is there an audit log?',
         answer:
-          'Yes, and every value fetched is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention — the application credentials cannot alter it.',
+          'Yes, and every value fetched is in it, including your own. Every mutation and every denial is recorded too, because a system that logs only what succeeded cannot show you an attack in progress. The table is append-only by database grant rather than by convention. The application credentials cannot alter it.',
       },
       {
         question: 'Could one of my secret values end up in a log line?',
@@ -201,12 +201,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Are my secrets ever written to my disk?',
         answer:
-          "Only when you ask for it. xecret run never writes them — it hands them to your process and nothing else. xecret pull does write a file, by design, and warns on stderr every time. The CLI offline cache keeps an encrypted copy whose key lives in your operating system's keychain, not beside the file.",
+          "Only when you ask for it. xecret run never writes them. It hands them to your process and nothing else. xecret pull does write a file, by design, and warns on stderr every time. The CLI offline cache keeps an encrypted copy whose key lives in your operating system's keychain, not beside the file.",
       },
       {
         question: 'Do you have SOC 2 or ISO 27001?',
         answer:
-          'No. xecret does not hold a SOC 2 or ISO 27001 certification, and we do not imply otherwise. What a security review can verify instead is public — the source, the encryption specification, the threat model and the security page — and you can ask us for a data processing agreement at support@playxoft.com.',
+          'No. xecret does not hold a SOC 2 or ISO 27001 certification, and we do not imply otherwise. What a security review can verify instead is public (the source, the encryption specification, the threat model and the security page), and you can ask us for a data processing agreement at support@playxoft.com.',
       },
       {
         question: 'Is xecret production-ready?',
@@ -215,7 +215,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       },
       {
         question: 'How do I report a vulnerability?',
-        answer: `Privately — open a security advisory on the GitHub repository, or email ${SECURITY_EMAIL}. Please do not open a public issue. You get an acknowledgement ${disclosureCommitment('Acknowledgement')} and an initial assessment ${disclosureCommitment('Initial assessment')}, and we credit you in the advisory unless you would rather we did not.`,
+        answer: `Privately: open a security advisory on the GitHub repository, or email ${SECURITY_EMAIL}. Please do not open a public issue. You get an acknowledgement ${disclosureCommitment('Acknowledgement')} and an initial assessment ${disclosureCommitment('Initial assessment')}, and we credit you in the advisory unless you would rather we did not.`,
       },
     ],
   },
@@ -251,12 +251,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Do I need a card to try it?',
         answer:
-          'No. No card is collected today. Every organisation starts on Free, and each plan’s limits — Free’s included — apply now, as the pricing page states them.',
+          'No. No card is collected today. Every organisation starts on Free, and each plan’s limits, Free’s included, apply now, as the pricing page states them.',
         // The copy for a deployment that does not take payments (P12).
         whenPaymentsLive: {
           question: 'Do I need a card to try it?',
           answer:
-            'Not to try it: Free is $0 forever and never asks for a card. A card is asked for only when an owner chooses a paid plan, at the checkout of Dodo Payments, our merchant of record — we never see the card number.',
+            'Not to try it: Free is $0 forever and never asks for a card. A card is asked for only when an owner chooses a paid plan, at the checkout of Dodo Payments, our merchant of record. We never see the card number.',
         },
       },
       {
@@ -272,7 +272,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How long is audit history kept?',
         answer:
-          'Seven days on Free, thirty on Pro, a hundred and eighty on Team, and a year on Enterprise — or whatever an Enterprise agreement specifies above that, which can also export the log. Retention decides how far back you can read, not whether an event was recorded: every event is written on every plan, including Free.',
+          'Seven days on Free, thirty on Pro, a hundred and eighty on Team, and a year on Enterprise, or whatever an Enterprise agreement specifies above that, which can also export the log. Retention decides how far back you can read, not whether an event was recorded: every event is written on every plan, including Free.',
       },
       {
         question: 'Is self-hosting limited compared to the hosted version?',
@@ -311,14 +311,14 @@ const CATEGORIES: readonly FaqCategory[] = [
           'It works out which project and environment you are in, fetches that environment, and execs your command with the values already in its environment. Nothing is written to disk. Signals are forwarded, so Ctrl-C reaches your application rather than the wrapper.',
       },
       {
-        question: 'Does it work offline — on a plane, for instance?',
+        question: 'Does it work offline, on a plane, for instance?',
         answer:
           'For xecret run, yes. The CLI keeps an encrypted copy of the last environment it fetched and falls back to it when the API cannot be reached, printing the age of that copy to stderr so day-old configuration never passes silently. The first run in a given environment needs a network, because that is what fills the cache.',
       },
       {
         question: 'What happens if the network drops in the middle of a deploy?',
         answer:
-          'A DNS failure, a timeout or a 5xx falls back to the cache, loudly. A 401, 403 or 404 does not, because those are decisions rather than outages — and the most important of them is revocation, which has to take effect immediately rather than immediately-unless-the-laptop-is-offline. CI has no cache at all, deliberately.',
+          'A DNS failure, a timeout or a 5xx falls back to the cache, loudly. A 401, 403 or 404 does not, because those are decisions rather than outages, and the most important of them is revocation, which has to take effect immediately rather than immediately-unless-the-laptop-is-offline. CI has no cache at all, deliberately.',
       },
       {
         question: 'How do I import the .env file I already have?',
@@ -328,7 +328,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Can I get everything back out again?',
         answer:
-          'Yes — xecret pull writes five different formats, and the dashboard has an export dialog. There is no export fee and no lock-in mechanism. Version history is the one thing a bulk export does not carry.',
+          'Yes. xecret pull writes five different formats, and the dashboard has an export dialog. There is no export fee and no lock-in mechanism. Version history is the one thing a bulk export does not carry.',
       },
       {
         question: 'How does CI get secrets?',
@@ -371,12 +371,12 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Can I control access per environment?',
         answer:
-          'Yes. Access levels — none, read, write, admin — are granted on a whole project or on a single environment, and the more specific grant wins. A grant can never exceed the role: an environment grant cannot turn a viewer into somebody who writes.',
+          'Yes. Access levels (none, read, write, admin) are granted on a whole project or on a single environment, and the more specific grant wins. A grant can never exceed the role: an environment grant cannot turn a viewer into somebody who writes.',
       },
       {
         question: 'Can a developer see production by default?',
         answer:
-          'No. Developers and viewers get none on production, and reaching it takes an explicit grant from somebody who manages members — a grant written to the audit log with a name attached. The alternative, production behaving like every other environment until somebody remembers to lock it down, makes the safe state the one that requires work.',
+          'No. Developers and viewers get none on production, and reaching it takes an explicit grant from somebody who manages members, a grant written to the audit log with a name attached. The alternative, production behaving like every other environment until somebody remembers to lock it down, makes the safe state the one that requires work.',
       },
       {
         question: 'How do I remove somebody who leaves?',
@@ -386,7 +386,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What can a departing employee still see?',
         answer:
-          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they read and when, and that list is what you rotate — which is the whole reason every value fetched is recorded.',
+          'Nothing new, and everything they already copied. Removing somebody revokes access; it cannot un-read a value they read last month. The audit log tells you exactly which secrets they read and when, and that list is what you rotate, which is the whole reason every value fetched is recorded.',
       },
     ],
   },
@@ -423,7 +423,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What do I need to run it myself?',
         answer:
-          'Cloudflare Workers on a paid plan, a PostgreSQL database, a Cloudflare Secrets Store binding to hold the root key, and a WorkOS account for identity. The WorkOS requirement is real friction — it is a hosted service, so even a self-hosted install relies on an outside company to sign people in — and the documentation says so rather than burying it; an identity-provider interface exists so that a Postgres-native alternative can be contributed. Mail is optional — without it, invitations become a shareable link instead of an email.',
+          'Cloudflare Workers on a paid plan, a PostgreSQL database, a Cloudflare Secrets Store binding to hold the root key, and a WorkOS account for identity. The WorkOS requirement is real friction (it is a hosted service, so even a self-hosted install relies on an outside company to sign people in), and the documentation says so rather than burying it; an identity-provider interface exists so that a Postgres-native alternative can be contributed. Mail is optional. Without it, invitations become a shareable link instead of an email.',
       },
       {
         question: 'Are any features held back from the self-hosted build?',
@@ -534,8 +534,8 @@ export default async function FaqPage() {
           title="Still stuck?"
           description={
             <>
-              Short answers have a limit. The longer arguments — why .env files rot, what an audit
-              log is actually for — are on{' '}
+              Short answers have a limit. The longer arguments (why .env files rot, what an audit
+              log is actually for) are on{' '}
               <Link href="/blog" className={INLINE_LINK}>
                 the blog
               </Link>
@@ -553,8 +553,8 @@ export default async function FaqPage() {
             <BookIcon className="text-fg-subtle size-5" aria-hidden="true" />
             <h3 className="text-fg mt-3 text-base font-semibold">The documentation</h3>
             <p className="text-fg-muted mt-1.5 text-sm leading-6">
-              Concepts, framework guides and the full command reference — every answer that is
-              longer than a paragraph.
+              Concepts, framework guides and the full command reference: every answer that is longer
+              than a paragraph.
             </p>
           </Link>
 

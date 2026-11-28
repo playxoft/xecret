@@ -123,7 +123,7 @@ export class OverrideTooLargeError extends Error {
 export class OverrideUnreadableError extends Error {
   constructor(name: string) {
     super(
-      `The override for ${name} was made under a key your account no longer has — usually because ` +
+      `The override for ${name} was made under a key your account no longer has, usually because ` +
         'the vault was reset since. Remove it and set it again.',
     );
     this.name = 'OverrideUnreadableError';

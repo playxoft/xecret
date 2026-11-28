@@ -239,7 +239,7 @@ export function OverridesCard({
               <CardDescription>
                 Your own values for keys in this environment, used in place of the shared ones when{' '}
                 <code className="font-mono">xecret run</code> starts a process on your machine.
-                Everybody else — and every CI run — keeps getting the shared values.
+                Everybody else (and every CI run) keeps getting the shared values.
               </CardDescription>
             </div>
             {list.data !== null && ready ? (
@@ -378,7 +378,7 @@ export function OverridesCard({
           open
           onOpenChange={(open) => (open ? undefined : setRemoving(null))}
           title={`Remove your override for ${removing.name}?`}
-          description={`xecret run on your machine goes back to the shared value of ${removing.name} from its next run. Nobody else is affected — nobody else ever received it.`}
+          description={`xecret run on your machine goes back to the shared value of ${removing.name} from its next run. Nobody else is affected. Nobody else ever received it.`}
           confirmLabel="Remove override"
           onConfirm={async () => {
             // A refusal is thrown back to the dialog, which shows it and stays
@@ -418,8 +418,8 @@ function OverrideFacts() {
           overrides.
         </li>
         <li>
-          A vault reset gives your account a new key pair, and overrides made before it stop opening
-          — remove them and set them again.
+          A vault reset gives your account a new key pair, and overrides made before it stop
+          opening. Remove them and set them again.
         </li>
       </ul>
     </Alert>
@@ -684,7 +684,7 @@ function SetOverrideForm({
         <DialogDescription>
           Encrypted in this browser under your own key before it is sent. Only{' '}
           <code className="font-mono">xecret run</code> on your machine, signed in as you, will use
-          it — in {envSlug}, and nowhere else.
+          it, in {envSlug} and nowhere else.
         </DialogDescription>
       </DialogHeader>
 
@@ -695,7 +695,7 @@ function SetOverrideForm({
           hint={
             replacing
               ? `You already have an override for ${trimmed}. Saving replaces it.`
-              : 'Usually a key this environment holds. A new name works too — it is how you try a variable locally before adding it for everybody.'
+              : 'Usually a key this environment holds. A new name works too. It is how you try a variable locally before adding it for everybody.'
           }
         >
           <Input

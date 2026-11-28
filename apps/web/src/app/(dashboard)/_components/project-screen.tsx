@@ -78,7 +78,7 @@ export function ProjectScreen({ orgId, projectId }: { orgId: string; projectId: 
         <EmptyState
           icon={<LayersIcon />}
           title="This project has no environments"
-          description="An environment is where secrets live — one per deployment target. Each gets its own encryption key, so a compromise of one does not reach the others."
+          description="An environment is where secrets live, one per deployment target. Each gets its own encryption key, so a compromise of one does not reach the others."
           action={
             canCreateEnvironment ? (
               <LockedAction lock={createLock}>

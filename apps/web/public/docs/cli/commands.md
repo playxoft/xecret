@@ -1,7 +1,7 @@
 ---
 title: CLI command reference
 navTitle: Command reference
-description: Every xecret command and flag — login, init, projects, secrets, versions, import, pull, export, run, audit, tokens and cache — with examples and the exact behaviour of each.
+description: Every xecret command and flag (login, init, projects, secrets, versions, import, pull, export, run, audit, tokens and cache) with examples and the exact behaviour of each.
 keywords: [xecret command reference, xecret run flags, xecret secrets set, xecret secrets versions, xecret audit, xecret import, xecret pull, cli reference]
 updated: 2026-11-28
 ---
@@ -31,8 +31,8 @@ xecret login [--api-url URL] [--name DEVICE]
 Authenticates this machine through your browser.
 
 The CLI opens a consent page, listens on `127.0.0.1` on a random port for the
-one-time code that page redirects back, and exchanges that code — together with
-a PKCE verifier only this process knows — for a credential it stores in your OS
+one-time code that page redirects back, and exchanges that code, together with
+a PKCE verifier only this process knows, for a credential it stores in your OS
 keychain. It never talks to the identity provider directly; the consent screen
 and the token exchange are both xecret's own. If the browser is not signed in to
 xecret yet, it signs in first and comes back to the consent screen.
@@ -51,7 +51,7 @@ The device name is what you will look for later when revoking access from
 *Tokens → Your devices*, so make it something you will recognise.
 
 Logging in again replaces the credential this machine held, and the CLI revokes
-the old one on the server once the new one is saved — so re-running
+the old one on the server once the new one is saved, so re-running
 `xecret login` does not leave a stale device behind. If that revocation fails
 (the old deployment is unreachable, say), the login still succeeds and says so;
 revoke the old device from *Tokens → Your devices*. Each plan limits how many
@@ -183,8 +183,8 @@ xecret projects delete PROJECT-ID [--yes]
 
 Lists the projects you can see in your organisation, and removes one.
 
-**There is no `create` here — projects are created in the dashboard.** A project
-arrives with its default environments — development, staging and production —
+**There is no `create` here: projects are created in the dashboard.** A project
+arrives with its default environments (development, staging and production),
 and each is end-to-end encrypted under a key generated in the creator's browser
 and sealed to them. This CLI opens grants and encrypts secrets; it cannot
 produce that key material, so there is nothing it could send.
@@ -210,8 +210,8 @@ Lists and removes the environments of one project. Without `--project`, uses
 `.xecret.yaml`.
 
 **There is no `create` here either, for the same reason.** An environment is
-inseparable from its encryption key — one without a key could not hold a secret
-— and that key is generated in a browser and sealed to its creator. Create the
+inseparable from its encryption key (one without a key could not hold a secret),
+and that key is generated in a browser and sealed to its creator. Create the
 environment in the dashboard, then fill it from here:
 
 ```bash
@@ -234,7 +234,7 @@ xecret secrets list [--project P] [--environment E] [--json]
 ```
 
 Names, value types, current version numbers, when each was last updated and by
-whom. **No values** — this endpoint never decrypts anything.
+whom. **No values**: this endpoint never decrypts anything.
 
 ### `xecret secrets get`
 
@@ -260,7 +260,7 @@ psql "$(xecret secrets get DATABASE_URL --plain)"
 
 Every `--plain` read is audited server-side as `secret.revealed`. The value is
 decrypted here, on your machine, but the server records handing over its
-ciphertext, so an audit row always means somebody obtained the value — which
+ciphertext, so an audit row always means somebody obtained the value, which
 is what makes the log worth reading during an incident. (In an older
 environment still on server-side encryption, the server decrypts the value and
 sends it in plaintext; the row means the same thing.)
@@ -288,7 +288,7 @@ from a command-line argument**, where it would land in your shell history and
 in `ps` output for every user on the machine.
 
 ```bash
-# interactive — the prompt hides your typing
+# interactive: the prompt hides your typing
 xecret secrets set STRIPE_SECRET_KEY
 
 # from a pipe, for scripts
@@ -297,7 +297,7 @@ openssl rand -hex 32 | xecret secrets set SESSION_SECRET
 # from a file, byte for byte
 xecret secrets set GOOGLE_SERVICE_ACCOUNT --from-file key.json
 
-# have one generated — 32 bytes of entropy, never printed
+# have one generated: 32 bytes of entropy, never printed
 xecret secrets set SESSION_SECRET --generate
 
 # declare a type and a note
@@ -308,14 +308,14 @@ xecret secrets set PORT --type int --note "the container listens here"
 |---|---|
 | `--type TYPE` | Declares the value's shape: `string` `boolean` `int` `decimal` `email` `url` `date` `datetime` `json` `yaml` `xml` `ulid` `uuidv4` `uuidv7`, or `template` for a value built from other secrets. Future writes that do not match are refused by the server. |
 | `--note TEXT` | A note shown beside the secret in the dashboard. |
-| `--from-file PATH` | Take the file's bytes as the value, verbatim — trailing newline included. A pipe's final newline is the shell's framing and is stripped; a file's is part of the file, and a PEM key ends in one. Limited to 64 KB, the server's ceiling on one secret. |
-| `--generate[=BYTES]` | Mint a random value with the OS entropy source and write it without ever printing it. 32 bytes by default, rendered as 43 url-safe characters. Use `--generate=48` — with the `=` — to choose a length. |
-| `--confirm-link` | Confirm a production template that newly reads from an environment that is not production. Without it such a write is refused, naming who could then change what production reads — see [references](../features/references.md#production-reading-from-elsewhere). |
+| `--from-file PATH` | Take the file's bytes as the value, verbatim, trailing newline included. A pipe's final newline is the shell's framing and is stripped; a file's is part of the file, and a PEM key ends in one. Limited to 64 KB, the server's ceiling on one secret. |
+| `--generate[=BYTES]` | Mint a random value with the OS entropy source and write it without ever printing it. 32 bytes by default, rendered as 43 url-safe characters. Use `--generate=48` (with the `=`) to choose a length. |
+| `--confirm-link` | Confirm a production template that newly reads from an environment that is not production. Without it such a write is refused, naming who could then change what production reads; see [references](../features/references.md#production-reading-from-elsewhere). |
 
 Writing the same value again is a no-op rather than a new version.
 
 A **template** (`--type template`, or a secret already declared one) refers to
-other secrets — `${DB_HOST}`, `${staging.DB_HOST}`, `${billing.prod.API_KEY}` —
+other secrets (`${DB_HOST}`, `${staging.DB_HOST}`, `${billing.prod.API_KEY}`)
 and is resolved when it is read. The CLI parses the value before encrypting it,
 refuses a malformed reference locally, and declares the references it found so
 the server can check them for loops before storing anything. See
@@ -353,7 +353,7 @@ change.
 xecret secrets versions NAME [--json]
 ```
 
-The history of one secret — **metadata only**.
+The history of one secret: **metadata only**.
 
 ```text
 VERSION           WRITTEN           BY
@@ -367,7 +367,7 @@ usually keeps working at the provider that issued it until somebody disables it
 there, so a listing that returned values would hand out a page of live
 credentials under an interface people reason about as an archive. Reading the
 past is one version at a time, through `secrets get --version N --plain` or
-`secrets restore` — and each of those is audited.
+`secrets restore`, and each of those is audited.
 
 ### `xecret secrets restore`
 
@@ -384,13 +384,13 @@ xecret secrets restore DATABASE_URL --version 3
 
 ```text
 ✓ Restored DATABASE_URL from v3 as v5 in checkout-api/production.
-History was not rewritten — v3 is still there.
+History was not rewritten: v3 is still there.
 ```
 
 The old row stays exactly where it is: the history stays able to say "this value
 was current between Tuesday and Friday, then again from Monday". The value is
 decrypted and re-encrypted rather than copied, because the encryption is bound
-to the version number — bytes produced for v3 and stored as v5 would fail to
+to the version number: bytes produced for v3 and stored as v5 would fail to
 decrypt for the rest of their life.
 
 ### `xecret secrets delete`
@@ -400,11 +400,11 @@ xecret secrets delete NAME [--yes]
 ```
 
 Soft-deletes a secret. Without `--yes` you are asked to type the secret's name
-to confirm — a `y/n` prompt is too easy to answer by reflex for something that
+to confirm: a `y/n` prompt is too easy to answer by reflex for something that
 takes a value out of a running system.
 
-The secret and its history are kept for 30 days — or for your plan's
-point-in-time restore window, if that is longer — and then erased for good.
+The secret and its history are kept for 30 days (or for your plan's
+point-in-time restore window, if that is longer) and then erased for good.
 
 Always refused for service tokens: CI rotates a value by writing a new one, and
 destroying history is a human's decision.
@@ -432,7 +432,7 @@ xecret import .env --strategy overwrite
 ```
 
 `--dry-run` prints the exact plan the real import would execute, produced by
-the same planning code the real import runs — so the preview cannot disagree
+the same planning code the real import runs, so the preview cannot disagree
 with the outcome. Always dry-run first against production.
 
 Files are limited to 1 MB.
@@ -450,7 +450,7 @@ xecret pull --format json | jq 'keys'
 xecret pull -o .env.production          # creates the file 0600
 ```
 
-> **Warning** — `pull` writes plaintext secrets somewhere they persist. That is
+> **Warning**: `pull` writes plaintext secrets somewhere they persist. That is
 > a downgrade from `xecret run`, and the command says so on stderr every time.
 > `-o` at least creates the file with `0600` permissions. Use it for legacy
 > pipelines that cannot be changed, and use `run` everywhere else.
@@ -462,8 +462,8 @@ xecret export [--format env|json|yaml|shell|docker] [-o FILE] [--force]
 ```
 
 The same data as `pull`, written to a file. Without `-o` the name is derived
-from the format — `.env`, `secrets.json`, `secrets.yaml`, `secrets.sh`,
-`docker.env` — and an existing file is never overwritten without `--force`.
+from the format (`.env`, `secrets.json`, `secrets.yaml`, `secrets.sh`,
+`docker.env`), and an existing file is never overwritten without `--force`.
 
 The file is mode `0600` whether it was created or overwritten. A `--force` over
 a `.env` that some earlier `xecret pull > .env` left at `0644` narrows it before
@@ -479,7 +479,7 @@ are separate endpoints: the request path is what distinguishes "a build read
 its configuration" from "somebody took a copy" in the audit log. Both are
 recorded as `secret.read` with a count.
 
-> **Warning** — Exporting is a deliberate downgrade in security posture, and the
+> **Warning**: Exporting is a deliberate downgrade in security posture, and the
 > command exists anyway. The file is not encrypted, it outlives the session that
 > produced it, backup and sync tools will copy it, and no access grant can be
 > revoked after the fact, because the copy is no longer ours. It exists because
@@ -500,8 +500,8 @@ xecret vault open-archive FILE [--recovery-code] [--passphrase-stdin]
                                [--environment ORG/PROJECT/ENV] [--out-dir DIR] [--force] [--list]
 ```
 
-Opens the archive xecret emails when a vault is reset — the `.zip`, or the
-`archive.json` inside it — with the **old** vault's master passphrase or one of
+Opens the archive xecret emails when a vault is reset (the `.zip`, or the
+`archive.json` inside it) with the **old** vault's master passphrase or one of
 its recovery codes, and prints every secret, grouped by environment. It works
 fully offline: no account, no login, no network, no configuration, no keychain.
 
@@ -539,13 +539,13 @@ cannot tell your flags from its own.
 | `--offline` | Use the encrypted cache without calling the API. Refused under `XECRET_TOKEN`, which never writes a cache. |
 | `--no-cache` | Neither read nor refresh the cache. |
 
-The API is authoritative; the cache answers only when the API *cannot* — a
+The API is authoritative; the cache answers only when the API *cannot*: a
 network failure or a 5xx. A 401, 403 or 404 is a *decision* (a revocation,
 above all), and decisions are never softened by a local file. Full behaviour:
 [the offline cache](offline-cache.md).
 
 An environment that inherits from another, or holds templates, is resolved
-before the process starts — every inherited value and every reference, each
+before the process starts: every inherited value and every reference, each
 opened under its own environment's key. Logged in as yourself (never under
 `XECRET_TOKEN`), `run` then applies your personal overrides on top and names
 them on stderr; offline, it says it did not.
@@ -559,7 +559,7 @@ xecret overrides unset  NAME
 ```
 
 Your own value for one secret in one environment, used by `xecret run` on your
-machine in place of the shared one — a local database instead of staging's —
+machine in place of the shared one (a local database instead of staging's)
 without anybody else's environment changing. Nobody else can read it, the
 server included, and nobody else can make one in its place: it is encrypted
 under a key only your own vault derives. The value is read from stdin or a
@@ -585,12 +585,12 @@ xecret audit [--action ACTION] [--project P] [--environment E] [--outcome succes
              [--since 24h|7d|TIMESTAMP] [--until 1h|7d|TIMESTAMP] [--limit N] [--json]
 ```
 
-Reads the organisation's audit log — who did what, when, and whether it worked.
+Reads the organisation's audit log: who did what, when, and whether it worked.
 
 `--since` and `--until` take the same spellings: a duration counting back from
 now (`24h`, `7d`), or an RFC 3339 timestamp, normalised to UTC before it is
-sent. A window that cannot contain anything — a negative duration, a `--since`
-after `--until`, a `--since` in the future — is refused here rather than sent.
+sent. A window that cannot contain anything (a negative duration, a `--since`
+after `--until`, a `--since` in the future) is refused here rather than sent.
 The server collapses a backwards range to a single instant, so each of those
 would otherwise come back as "No matching events", which reads exactly like
 "nothing happened".
@@ -636,7 +636,7 @@ xecret tokens revoke ID --kind cli|service [--yes]
 
 The credentials that can reach your organisation.
 
-- **`cli`** tokens are devices — what `xecret login` writes. The listing shows
+- **`cli`** tokens are devices (what `xecret login` writes). The listing shows
   your own devices only, revoked ones included, because a CLI token acts as its
   user and confers nothing of its own. Your own device: always revocable.
   Someone else's: needs the revoke permission.
@@ -654,7 +654,7 @@ authentication. It is idempotent, so revoking a dead token succeeds without
 writing a second audit record.
 
 **Creating** a service token is deliberately not a CLI command. The server
-requires a browser session for it — a token that could mint another token would
+requires a browser session for it: a token that could mint another token would
 turn one leaked credential into a permanent foothold, so the chain has to start
 with a person. Create them in the dashboard, on the organisation's *Tokens* page.
 
@@ -678,18 +678,18 @@ xecret completion bash | zsh | fish
 Prints a completion script for commands, subcommands and the common flags.
 
 ```bash
-# bash — this session, or append to ~/.bashrc
+# bash: for this session, or append to ~/.bashrc
 source <(xecret completion bash)
 
-# zsh — needs a directory on $fpath
+# zsh: needs a directory on $fpath
 xecret completion zsh > "${fpath[1]}/_xecret"
 
 # fish
 xecret completion fish > ~/.config/fish/completions/xecret.fish
 ```
 
-Secret names are deliberately not completed: that would mean an API call — and a
-listing request against a server that rate-limits and audits — on every press of
+Secret names are deliberately not completed: that would mean an API call (and a
+listing request against a server that rate-limits and audits) on every press of
 the Tab key.
 
 ### `xecret doctor`
@@ -708,7 +708,7 @@ accepted, which `.xecret.yaml` applies, and what is in the offline cache.
 ✓    credential store: OS keychain
 ✓    signed in as ada@example.com, organisation Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)
      server: https://xecret.playxoft.com (stored with the credential at login)
-✓    server reachable — xecret 0.1.0 (commit a1b2c3d)
+✓    server reachable: xecret 0.1.0 (commit a1b2c3d)
 ✓    credential accepted by https://xecret.playxoft.com
 ✓    /work/checkout/.xecret.yaml → checkout-api/development in organisation 0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f
 ✓    offline cache: 2 environment(s) in ~/.xecret/cache
@@ -718,8 +718,8 @@ It prints no credential. The keyring check writes and deletes a probe value of
 its own rather than reading yours. Paste the output into a bug report.
 
 `doctor` exits non-zero when a check fails, so `xecret doctor || exit 1` works
-as a start-up guard in a container. Warnings — no `.xecret.yaml` in this
-directory, an unreadable cache — are not failures. With `--json` every verdict
+as a start-up guard in a container. Warnings (no `.xecret.yaml` in this
+directory, an unreadable cache) are not failures. With `--json` every verdict
 comes back in a `checks` array of `{name, status, ok, detail}`, alongside a
 top-level `ok`:
 
@@ -763,7 +763,7 @@ a response the CLI was already receiving; the CLI reads it and says so. Nobody
 is asked anything, and a server that sends no header produces no notice.
 
 Running your own deployment? Then you decide what your developers are told, by
-deciding what you deploy — which is usually more useful than pointing everyone
+deciding what you deploy, which is usually more useful than pointing everyone
 at the newest tag on GitHub.
 
 The notice stays quiet when stderr is not a terminal, when `XECRET_TOKEN` is set
@@ -772,7 +772,7 @@ ever), when you have already been told about that release today, and when
 `XECRET_NO_UPGRADE_NOTICE` is set. A newer release than the one you last saw is
 raised straight away rather than waiting for tomorrow.
 
-What you were last told is remembered in `~/.xecret/notices.json` — a version
+What you were last told is remembered in `~/.xecret/notices.json`: a version
 and a date, nothing else. It sits outside the cache directory on purpose, so
 `xecret cache clear` and `xecret logout` are not read as "please start nagging
 me again".
@@ -830,6 +830,6 @@ XECRET_TOKEN=xst_… xecret run -- npm run build
 
 ## Next
 
-- [Configuration and scope](configuration.md) — where each setting comes from.
-- [The offline cache](offline-cache.md) — behaviour when the network fails.
-- [Secrets in CI](../guides/ci.md) — service tokens end to end.
+- [Configuration and scope](configuration.md): where each setting comes from.
+- [The offline cache](offline-cache.md): behaviour when the network fails.
+- [Secrets in CI](../guides/ci.md): service tokens end to end.

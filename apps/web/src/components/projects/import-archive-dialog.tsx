@@ -361,8 +361,8 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
         {locked && step.kind !== 'done' ? (
           <div className="px-5 pt-4">
             <Alert tone="warning" title="Unlock your vault first">
-              Each value is encrypted here, under its environment’s key, before it is sent — and
-              your vault is what opens those keys.
+              Each value is encrypted here, under its environment’s key, before it is sent, and your
+              vault is what opens those keys.
             </Alert>
           </div>
         ) : null}
@@ -395,8 +395,8 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
                     {fileName === null ? null : (
                       <>
                         {' '}
-                        — last chosen{' '}
-                        <span className="text-fg font-mono break-all">{fileName}</span>
+                        (last chosen <span className="text-fg font-mono break-all">{fileName}</span>
+                        )
                       </>
                     )}
                   </>
@@ -638,7 +638,7 @@ export function TargetList({ targets }: { targets: readonly Target[] }) {
       <ul className="flex flex-col gap-1.5">
         {targets.map((target) => (
           <li key={target.slug} className="text-fg-muted leading-6">
-            <span className="text-fg">{target.name}</span> — {targetMode(target.state)}
+            <span className="text-fg">{target.name}</span>: {targetMode(target.state)}
             {target.state.status === 'unavailable' ? (
               <span className="block text-xs leading-5">{describeTarget(target.state)}</span>
             ) : null}
@@ -680,8 +680,7 @@ export function ArchiveEnvironmentCard({
           {environment.orgName} / {environment.projectName} / {environment.environmentName}
         </span>
         <span className="text-fg-muted">
-          {' '}
-          — {pluralize(summary.importable, 'secret')} to import
+          : {pluralize(summary.importable, 'secret')} to import
           {summary.noKey + summary.damaged > 0
             ? `, ${summary.noKey + summary.damaged} that did not open`
             : ''}
@@ -767,9 +766,9 @@ export function describePlanStatus(status: ImportPlanItem['status'] | undefined)
     case 'overwrite':
       return 'replaces the current value';
     case 'skip':
-      return 'not written — the current value is kept';
+      return 'not written (the current value is kept)';
     case 'unchanged':
-      return 'not written — already this value';
+      return 'not written (already this value)';
     case undefined:
       return 'not in the plan';
     default:

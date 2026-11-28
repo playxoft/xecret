@@ -1,7 +1,7 @@
 ---
 title: xecret with React and Vite
 navTitle: React / Vite
-description: Use xecret with a Vite front end — the VITE_ prefix, why browser configuration is never secret, and where the real credentials belong instead.
+description: Use xecret with a Vite front end: the VITE_ prefix, why browser configuration is never secret, and where the real credentials belong instead.
 keywords: [vite env variables, react secrets, VITE_ prefix, frontend environment variables, import.meta.env]
 updated: 2026-08-16
 ---
@@ -25,7 +25,7 @@ Vite substitutes `VITE_`-prefixed variables into the JavaScript bundle at build
 time. That bundle is downloaded by every visitor. "View source" is all it takes
 to read every one of them.
 
-This is not a Vite flaw — it is what a front end *is*. But it changes what
+This is not a Vite flaw. It is what a front end *is*. But it changes what
 xecret is doing for you here:
 
 | | |
@@ -34,7 +34,7 @@ xecret is doing for you here:
 | What it **cannot** give you | Privacy for anything in that bundle. |
 
 So `VITE_API_URL`, `VITE_SENTRY_DSN` and `VITE_STRIPE_PUBLISHABLE_KEY` are fine
-to store and inject. `STRIPE_SECRET_KEY` is not — not because xecret would
+to store and inject. `STRIPE_SECRET_KEY` is not: not because xecret would
 handle it badly, but because a browser would.
 
 Real credentials belong in the back end that your front end talks to. Give that
@@ -69,7 +69,7 @@ under `xecret run`:
     XECRET_TOKEN: ${{ secrets.XECRET_TOKEN }}
 ```
 
-Serving the built files afterwards needs no xecret at all — the values are
+Serving the built files afterwards needs no xecret at all: the values are
 already inside them. Which also means: to change one, you must rebuild.
 
 ## Different environments, different builds
@@ -102,6 +102,6 @@ is the whole reason to split them.
 
 ## Next
 
-- [Node.js](nodejs.md) — for the back end holding the real secrets.
-- [Secrets in CI](ci.md) — build tokens, scoped to one project.
-- [Core concepts](../concepts.md) — projects, environments and grants.
+- [Node.js](nodejs.md): for the back end holding the real secrets.
+- [Secrets in CI](ci.md): build tokens, scoped to one project.
+- [Core concepts](../concepts.md): projects, environments and grants.

@@ -186,7 +186,7 @@ describe('ProjectsScreen', () => {
     listing.current = { ...LISTING, hasMore: true };
     const html = render();
 
-    expect(html).toContain('3 projects — only the most recently created are loaded');
+    expect(html).toContain('3 projects (only the most recently created are loaded)');
     expect(html).toContain(
       'Only the organisation’s 200 most recently created projects are loaded, and of those, the ones you can open are listed. Search and sort cover only these.',
     );

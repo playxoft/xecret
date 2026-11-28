@@ -344,7 +344,7 @@ export async function assertRecentAccountOwner(
         { reason },
       );
     throw errors.forbidden(
-      'Confirm it’s you again — sign in, then enter the emailed code — before resetting your vault.',
+      'Confirm it’s you again (sign in, then enter the emailed code) before resetting your vault.',
     );
   };
 

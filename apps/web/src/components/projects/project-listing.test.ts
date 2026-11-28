@@ -221,10 +221,10 @@ describe('describeProjectCount', () => {
   it('says, when the API held some back, that only the newest arrived', () => {
     // Never a bare "200 projects": there are more, and a search covers only these.
     expect(describeProjectCount({ shown: 200, total: 200, hasMore: true, filtering: false })).toBe(
-      '200 projects — only the most recently created are loaded',
+      '200 projects (only the most recently created are loaded)',
     );
     expect(describeProjectCount({ shown: 3, total: 200, hasMore: true, filtering: true })).toBe(
-      '3 of 200 projects shown — only the most recently created are loaded',
+      '3 of 200 projects shown (only the most recently created are loaded)',
     );
   });
 
@@ -233,10 +233,10 @@ describe('describeProjectCount', () => {
     // so one readable project can arrive with `hasMore`. The old wording put
     // that as "The 1 most recently created projects", above a note saying 200.
     expect(describeProjectCount({ shown: 1, total: 1, hasMore: true, filtering: false })).toBe(
-      '1 project — only the most recently created are loaded',
+      '1 project (only the most recently created are loaded)',
     );
     expect(describeProjectCount({ shown: 0, total: 1, hasMore: true, filtering: true })).toBe(
-      '0 of 1 project shown — only the most recently created are loaded',
+      '0 of 1 project shown (only the most recently created are loaded)',
     );
   });
 

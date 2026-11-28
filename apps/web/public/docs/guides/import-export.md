@@ -1,7 +1,7 @@
 ---
 title: Importing and exporting secrets
 navTitle: Import and export
-description: Move secrets in and out of xecret — .env, JSON, YAML and shell formats, conflict strategies, dry runs, and migrating from another secret manager.
+description: Move secrets in and out of xecret: .env, JSON, YAML and shell formats, conflict strategies, dry runs, and migrating from another secret manager.
 keywords: [import env file, migrate secrets, dotenv import, export secrets, secret migration, bulk secret upload]
 updated: 2026-08-16
 ---
@@ -15,7 +15,7 @@ manager that has taken your configuration hostage.
 Open a project, pick an environment, and drag your file into the import dialog.
 
 The file is parsed **in your browser**. A dry-run preview shows exactly what
-will be created, renamed or skipped, and only the resulting plan is sent — so a
+will be created, renamed or skipped, and only the resulting plan is sent, so a
 pasted blob of production credentials never becomes a request body.
 
 Supported formats, auto-detected:
@@ -58,7 +58,7 @@ Files are limited to 1 MB, and a single secret value to 64 KB.
 Secret names must match your shell's rules: letters, digits and underscores,
 never starting with a digit. If your source file has `my-key` or `2fa-secret`,
 the import reports them rather than silently mangling them. Rename them in the
-source file and import again — a rename you did not choose is a rename you will
+source file and import again. A rename you did not choose is a rename you will
 be debugging at 3am.
 
 ## Exporting
@@ -80,10 +80,10 @@ xecret pull --format yaml -o config.yaml     # created 0600
 The dashboard has the same thing under the environment's export dialog, as a
 file download.
 
-> **Warning** — Every one of these writes plaintext secrets somewhere they
+> **Warning**: Every one of these writes plaintext secrets somewhere they
 > persist. `pull` says so on stderr each time it runs. Use it to migrate, to
 > feed a pipeline that cannot be changed, and to prove to yourself you can
-> leave — not as a daily habit. [`xecret run`](../cli/commands.md#run) is the
+> leave, not as a daily habit. [`xecret run`](../cli/commands.md#run) is the
 > daily habit.
 
 ## Migrating from another tool
@@ -99,7 +99,7 @@ rm .env                               # and mean it
 echo ".env*" >> .gitignore
 ```
 
-Then replace the run command in your scripts — see
+Then replace the run command in your scripts. See
 [Node.js](nodejs.md), [Next.js](nextjs.md) or [Go](go.md).
 
 If different developers have drifted apart, collect one canonical file first:
@@ -130,7 +130,7 @@ production first is how a migration becomes an incident.
 ### Keeping both for a transition period
 
 While you are moving over, it is reasonable to run both. Make xecret the source
-of truth immediately and sync outwards from it — never the reverse — so there
+of truth immediately and sync outwards from it (never the reverse), so there
 is never a question about which copy is current:
 
 ```bash
@@ -148,6 +148,6 @@ xecret pull --format env | other-tool import --env production
 
 ## Next
 
-- [Command reference](../cli/commands.md) — `import` and `pull` in full.
-- [Core concepts](../concepts.md) — naming rules and value types.
-- [Secrets in CI](ci.md) — why `pull > .env` is the anti-pattern there.
+- [Command reference](../cli/commands.md): `import` and `pull` in full.
+- [Core concepts](../concepts.md): naming rules and value types.
+- [Secrets in CI](ci.md): why `pull > .env` is the anti-pattern there.

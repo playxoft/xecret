@@ -1,6 +1,6 @@
 ---
 title: Personal overrides
-description: Use your own value for one secret on your machine — a local database instead of staging's — without changing the environment anyone else reads, or any CI run.
+description: Use your own value for one secret on your machine (a local database instead of staging's) without changing the environment anyone else reads, or any CI run.
 keywords: [local overrides, personal secrets, developer overrides, local env override, xecret run]
 updated: 2026-10-21
 ---
@@ -17,7 +17,7 @@ xecret overrides list
 xecret run -- npm run dev
 ```
 
-`run` prints which overrides it applied — names only — every time, so a local
+`run` prints which overrides it applied (names only) every time, so a local
 value is never mistaken for the shared one. Remove one with
 `xecret overrides unset DATABASE_URL`. In the dashboard, set one from the
 environment page's **Changes** menu (*Set a personal override…*); once you have
@@ -34,10 +34,10 @@ also how you try a new variable locally before proposing it.
   every value in the environment still cannot open your override. Neither can
   the server.
 - **Never forged.** The same key is the only one that can make an override your
-  CLI will accept, so a value cannot be slipped into your process in your name —
+  CLI will accept, so a value cannot be slipped into your process in your name:
   not by a teammate, and not by the server. What a misbehaving server *could*
-  do is keep handing back an override of yours it should have forgotten — the
-  value you replaced, or one you removed — because an override carries no
+  do is keep handing back an override of yours it should have forgotten (the
+  value you replaced, or one you removed), because an override carries no
   version your CLI could check. It can only ever be a value you set yourself,
   for that same name and environment; the
   [trust model](../security/trust-model.md) lists it among what xecret does not protect you from.
@@ -55,8 +55,8 @@ also how you try a new variable locally before proposing it.
 
 A vault reset gives your account a new key pair, and an override made under the
 old one no longer opens. `xecret run` stops rather than quietly using the shared
-value in its place — you set the override precisely so as not to get that
-value — and names the `xecret overrides unset` that removes each one. Set them
+value in its place (you set the override precisely so as not to get that
+value) and names the `xecret overrides unset` that removes each one. Set them
 again afterwards.
 
 ## Offline
@@ -71,5 +71,5 @@ them. Only setting a new one needs the plan.
 
 ## Next
 
-- [References and inheritance](references.md) — building one secret from others.
-- [CLI command reference](../cli/commands.md) — every flag of `xecret overrides`.
+- [References and inheritance](references.md): building one secret from others.
+- [CLI command reference](../cli/commands.md): every flag of `xecret overrides`.

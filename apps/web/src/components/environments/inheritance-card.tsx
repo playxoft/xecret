@@ -157,8 +157,8 @@ export function InheritanceCard({
       : `Make ${environment.name} inherit from ${chosen?.name ?? 'this environment'}?`;
   const confirmDescription =
     confirming === 'clear'
-      ? `Every key ${environment.name} does not hold itself stops resolving to ${environmentName(environments, parent ?? '')}’s value. Anything reading such a key — xecret run, CI — finds it missing from its next read.`
-      : `Every key ${environment.name} does not hold itself resolves to ${chosen?.name ?? 'its'} value from the next read — in xecret run, in CI, everywhere this environment is pulled. Its own values are unaffected and still win.`;
+      ? `Every key ${environment.name} does not hold itself stops resolving to ${environmentName(environments, parent ?? '')}’s value. Anything reading such a key (xecret run, CI) finds it missing from its next read.`
+      : `Every key ${environment.name} does not hold itself resolves to ${chosen?.name ?? 'its'} value from the next read: in xecret run, in CI, everywhere this environment is pulled. Its own values are unaffected and still win.`;
 
   return (
     <Card>
@@ -200,7 +200,7 @@ export function InheritanceCard({
             <div className="flex flex-col gap-1.5 text-sm leading-6">
               {parent === null ? (
                 <p className="text-fg-muted">
-                  Inherits from nothing — every value it holds is its own.
+                  Inherits from nothing. Every value it holds is its own.
                 </p>
               ) : (
                 <p className="text-fg-muted">
@@ -265,9 +265,9 @@ export function InheritanceCard({
                           {option.name}
                           {option.isProduction ? ' · production' : ''}
                           {option.slug === parent
-                            ? ' — the current parent'
+                            ? ' (the current parent)'
                             : option.unavailable !== null
-                              ? ` — ${option.unavailable}`
+                              ? ` (${option.unavailable})`
                               : ''}
                         </SelectItem>
                       ))}
