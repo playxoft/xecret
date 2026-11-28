@@ -2,6 +2,8 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 
+import { isUuid } from '@xecret/core/ids';
+
 /**
  * The organisation this tab was last actually in.
  *
@@ -21,7 +23,7 @@ import { useEffect, useSyncExternalStore } from 'react';
  * this replaced.
  *
  * ── Why `sessionStorage` ──
- * Holding the slug in React state alone would cover a click through the user
+ * Holding the id in React state alone would cover a click through the user
  * menu and nothing else: it does not survive a reload, so refreshing
  * `/app/settings/unlock` — a page with a control that re-reads the session, on
  * a screen people sit on — would quietly re-point the shell at whichever
@@ -41,28 +43,67 @@ import { useEffect, useSyncExternalStore } from 'react';
  * effect. The same reasoning is written out at greater length in `lib/theme.ts`,
  * which holds the theme and sidebar preferences the same way.
  *
- * The slug is a hint, never authority: the caller checks it against the
- * session's memberships before using it, so an organisation the viewer has
- * since been removed from cannot outlive their access, and every page behind
- * these links authorises on its own regardless.
+ * The value is a hint, never authority: the caller checks it against the
+ * session's memberships before using it (`resolveRememberedOrg`), so an
+ * organisation the viewer has since been removed from cannot outlive their
+ * access, and every page behind these links authorises on its own regardless.
+ *
+ * ── What a tab remembered before organisations were named by id ──
+ * The organisation's slug, because that was what the URL held. A tab that was
+ * open across the change still holds one, and it is not thrown away: the caller
+ * finds the membership it names by slug, uses that, and the tab remembers the
+ * id from then on (`resolveRememberedOrg` says when to rewrite it). Only an id
+ * is ever written now, so the slug in an old address, for the moment before
+ * it is replaced, is never remembered in its place.
  */
 
 const STORAGE_KEY = 'xecret.last-org';
 
 /**
- * @param orgSlug The organisation in the current URL, or `null` on the routes
- *   that have none. Returned unchanged when present — the URL always wins — and
- *   remembered for when it is not.
+ * @param orgId The organisation in the current URL, or `null` on the routes
+ *   that have none. Remembered when it is an id. Returned is what the tab
+ *   remembers, which the URL's id has just replaced whenever there is one: an
+ *   id, or a slug from before ids, which only `resolveRememberedOrg` reads.
  */
-export function useLastVisitedOrg(orgSlug: string | null): string | null {
+export function useLastVisitedOrg(orgId: string | null): string | null {
   const lastVisited = useSyncExternalStore(subscribe, readLastVisitedOrg, serverSnapshot);
 
   useEffect(() => {
-    if (orgSlug === null) return;
-    rememberOrg(orgSlug);
-  }, [orgSlug]);
+    if (orgId === null || !isUuid(orgId)) return;
+    rememberOrg(orgId);
+  }, [orgId]);
 
-  return orgSlug ?? lastVisited;
+  return lastVisited;
+}
+
+/**
+ * The membership a tab's remembered value names, and whether the value should
+ * be rewritten as its id: `true` only for a slug remembered before
+ * organisations were named by id, matched without regard to case because slugs
+ * are `citext`. `null` for a value that names no membership.
+ */
+export function resolveRememberedOrg<T extends { id: string; slug: string }>(
+  remembered: string | null,
+  memberships: readonly T[],
+): { organization: T; rewrite: boolean } | null {
+  if (remembered === null || remembered === '') return null;
+
+  const byId = memberships.find((organization) => organization.id === remembered);
+  if (byId !== undefined) return { organization: byId, rewrite: false };
+  if (isUuid(remembered)) return null;
+
+  const folded = remembered.toLowerCase();
+  const bySlug = memberships.find((organization) => organization.slug.toLowerCase() === folded);
+  return bySlug === undefined ? null : { organization: bySlug, rewrite: true };
+}
+
+/**
+ * Replaces a remembered slug with the id it named. For the caller that has
+ * just resolved one through `resolveRememberedOrg`; nothing else writes here.
+ */
+export function rememberOrgId(orgId: string): void {
+  if (!isUuid(orgId)) return;
+  rememberOrg(orgId);
 }
 
 const listeners = new Set<() => void>();
@@ -88,7 +129,7 @@ function serverSnapshot(): string | null {
  * The tab's answer, mirrored in memory. Two reasons, both of them the store
  * contract rather than performance: `getSnapshot` has to return the same value
  * until something notifies, and `sessionStorage` throws in Safari's private
- * mode and inside sandboxed iframes — where the mirror still carries the slug
+ * mode and inside sandboxed iframes — where the mirror still carries the id
  * for as long as the page stays loaded, instead of losing the feature entirely.
  *
  * `undefined` means "not read yet", which is how the first read distinguishes
@@ -109,15 +150,15 @@ function readLastVisitedOrg(): string | null {
   return remembered;
 }
 
-function rememberOrg(orgSlug: string): void {
+function rememberOrg(orgId: string): void {
   // Nothing to announce when the tab is already here, which is the common case:
   // this runs on every navigation, and most of them stay inside one
   // organisation.
-  if (readLastVisitedOrg() === orgSlug) return;
-  remembered = orgSlug;
+  if (readLastVisitedOrg() === orgId) return;
+  remembered = orgId;
 
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, orgSlug);
+    window.sessionStorage.setItem(STORAGE_KEY, orgId);
   } catch {
     // Not carried past this page load. The mirror above still answers.
   }

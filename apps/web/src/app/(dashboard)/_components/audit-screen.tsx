@@ -167,10 +167,10 @@ const ACTOR_PAGE_SIZE = 200;
  */
 const ACTOR_MAX_PAGES = 3;
 
-export function AuditScreen({ orgSlug }: { orgSlug: string }) {
-  const projects = useApiResource<ProjectListResponse>(apiPath.projects(orgSlug));
+export function AuditScreen({ orgId }: { orgId: string }) {
+  const projects = useApiResource<ProjectListResponse>(apiPath.projects(orgId));
 
-  const members = useFilterableMembers(orgSlug);
+  const members = useFilterableMembers(orgId);
 
   const [filters, setFilters] = useState<Filters>({
     action: NO_FILTER,
@@ -195,7 +195,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
   // two people in the other order is the same query, and re-fetching for it
   // would throw away a log somebody had already scrolled a long way down.
   const filterKey = [
-    orgSlug,
+    orgId,
     filters.action,
     filters.outcome,
     filters.projectSlug,
@@ -241,7 +241,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
     [filters],
   );
 
-  const firstPagePath = withQuery(apiPath.audit(orgSlug), queryParams);
+  const firstPagePath = withQuery(apiPath.audit(orgId), queryParams);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -284,7 +284,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
 
     api
       .get<AuditListResponse>(
-        withQuery(apiPath.audit(orgSlug), { ...queryParams, cursor: nextCursor }),
+        withQuery(apiPath.audit(orgId), { ...queryParams, cursor: nextCursor }),
       )
       .then((page) => {
         setState((previous) =>
@@ -307,7 +307,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
         setPagingError({ key: filterKey, cause });
       })
       .finally(() => setLoadingMore(false));
-  }, [filterKey, orgSlug, queryParams, loadingMore, nextCursor]);
+  }, [filterKey, orgId, queryParams, loadingMore, nextCursor]);
 
   // ── More rows on scroll, rather than on a click ──
   //
@@ -508,16 +508,16 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
  * a convenience over a log that is perfectly readable without it, and every row
  * already carries the actor it names.
  */
-function useFilterableMembers(orgSlug: string): {
+function useFilterableMembers(orgId: string): {
   members: readonly Member[];
   /** Whether there are members past the last page this read. */
   truncated: boolean;
 } {
   const [state, setState] = useState<{
-    orgSlug: string;
+    orgId: string;
     members: readonly Member[];
     truncated: boolean;
-  }>({ orgSlug: '', members: [], truncated: false });
+  }>({ orgId: '', members: [], truncated: false });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -530,7 +530,7 @@ function useFilterableMembers(orgSlug: string): {
       try {
         for (let page = 0; page < ACTOR_MAX_PAGES; page += 1) {
           const response: MemberListResponse = await api.get<MemberListResponse>(
-            withQuery(apiPath.members(orgSlug), {
+            withQuery(apiPath.members(orgId), {
               limit: ACTOR_PAGE_SIZE,
               ...(cursor === null ? {} : { cursor }),
             }),
@@ -547,15 +547,15 @@ function useFilterableMembers(orgSlug: string): {
       }
 
       if (controller.signal.aborted) return;
-      setState({ orgSlug, members: collected, truncated });
+      setState({ orgId, members: collected, truncated });
     })();
 
     return () => controller.abort();
-  }, [orgSlug]);
+  }, [orgId]);
 
   // The same guard every other listing on this screen carries: an answer for
   // the organisation you have navigated away from is absent, not stale.
-  return state.orgSlug === orgSlug
+  return state.orgId === orgId
     ? { members: state.members, truncated: state.truncated }
     : { members: [], truncated: false };
 }

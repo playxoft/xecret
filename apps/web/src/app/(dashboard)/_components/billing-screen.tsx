@@ -108,11 +108,11 @@ const CONFIRMATION_POLL_MS = 3_000;
 const CONFIRMATION_POLLS = 20;
 
 export function BillingScreen({
-  orgSlug,
+  orgId,
   returnedFromCheckout,
   initialChoice = {},
 }: {
-  orgSlug: string;
+  orgId: string;
   returnedFromCheckout: boolean;
   /**
    * The plan and period the plans page's "Switch to …" was pressed for, so the
@@ -121,9 +121,9 @@ export function BillingScreen({
    */
   initialChoice?: { plan?: Plan; interval?: Interval };
 }) {
-  const membership = useOrganization(orgSlug);
+  const membership = useOrganization(orgId);
   const isOwner = canAdminister(membership, 'billing.manage');
-  const resource = useApiResource<{ billing: Billing }>(isOwner ? apiPath.billing(orgSlug) : null);
+  const resource = useApiResource<{ billing: Billing }>(isOwner ? apiPath.billing(orgId) : null);
   const billing = resource.data?.billing ?? null;
 
   // Back from checkout and still on Free: the webhook has not landed yet. Ask
@@ -162,7 +162,7 @@ export function BillingScreen({
         <ErrorState subject="billing" error={resource.error} onRetry={resource.reload} />
       ) : billing ? (
         <BillingDetails
-          orgSlug={orgSlug}
+          orgId={orgId}
           billing={billing}
           waitingForPayment={waitingForPayment}
           initialChoice={initialChoice}
@@ -174,13 +174,13 @@ export function BillingScreen({
 }
 
 function BillingDetails({
-  orgSlug,
+  orgId,
   billing,
   waitingForPayment,
   initialChoice,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   billing: Billing;
   waitingForPayment: boolean;
   initialChoice: { plan?: Plan; interval?: Interval };
@@ -198,7 +198,7 @@ function BillingDetails({
   const appliedPromo = billing.actions.promoCode ? promo : null;
   const promoField: ReactNode = billing.actions.promoCode ? (
     <PromoCodeField
-      orgSlug={orgSlug}
+      orgId={orgId}
       applied={appliedPromo}
       onApplied={setPromo}
       discounts={billing.actions.checkout}
@@ -234,7 +234,7 @@ function BillingDetails({
           )}
           {billing.actions.portal ? (
             <div className="mt-3">
-              <PortalButton orgSlug={orgSlug} label="Update the card" />
+              <PortalButton orgId={orgId} label="Update the card" />
             </div>
           ) : null}
         </Alert>
@@ -280,7 +280,7 @@ function BillingDetails({
           </ul>
           <p className="mt-2">
             A secret fetch is never refused over a limit.{' '}
-            <Link href={appPath.orgPlans(orgSlug)}>Compare plans</Link>.
+            <Link href={appPath.orgPlans(orgId)}>Compare plans</Link>.
           </p>
         </Alert>
       ) : null}
@@ -298,7 +298,7 @@ function BillingDetails({
         )
       ) : choosing ? (
         <ChoosePlan
-          orgSlug={orgSlug}
+          orgId={orgId}
           billing={billing}
           initialChoice={initialChoice}
           promo={appliedPromo}
@@ -323,7 +323,7 @@ function BillingDetails({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <PortalButton orgSlug={orgSlug} label="Manage billing" />
+            <PortalButton orgId={orgId} label="Manage billing" />
           </CardContent>
         </Card>
       ) : null}
@@ -477,7 +477,7 @@ function Usage({ billing }: { billing: Billing }) {
   );
 }
 
-function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
+function PortalButton({ orgId, label }: { orgId: string; label: string }) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
@@ -485,7 +485,7 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
     setOpening(true);
     setError(null);
     try {
-      const { link } = await api.post<{ link: string }>(apiPath.billingPortal(orgSlug));
+      const { link } = await api.post<{ link: string }>(apiPath.billingPortal(orgId));
       window.location.assign(link);
     } catch (cause) {
       setError(cause);
@@ -506,14 +506,14 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
 }
 
 function ChoosePlan({
-  orgSlug,
+  orgId,
   billing,
   initialChoice,
   promo,
   promoField,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   billing: Billing;
   initialChoice: { plan?: Plan; interval?: Interval };
   /** The discount code applied above, carried into the checkout for a plan it covers. */
@@ -575,7 +575,7 @@ function ChoosePlan({
     setError(null);
     try {
       const { url } = await api.post<{ url: string }>(
-        apiPath.billingCheckout(orgSlug),
+        apiPath.billingCheckout(orgId),
         { plan, interval, ...(promoCode === null ? {} : { promoCode }) },
         { idempotencyKey: key },
       );
@@ -591,7 +591,7 @@ function ChoosePlan({
     setError(null);
     try {
       const answer = await api.get<{ preview: NonNullable<typeof preview> }>(
-        withQuery(apiPath.billingChange(orgSlug), { plan, interval }),
+        withQuery(apiPath.billingChange(orgId), { plan, interval }),
       );
       setPreview(answer.preview);
     } catch (cause) {
@@ -606,7 +606,7 @@ function ChoosePlan({
     setError(null);
     try {
       const answer = await api.post<{ effective: 'now' | 'renewal' }>(
-        apiPath.billingChange(orgSlug),
+        apiPath.billingChange(orgId),
         { plan, interval },
         { idempotencyKey: decisionKey },
       );

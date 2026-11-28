@@ -38,11 +38,11 @@ const DELIVERY_LOG_LIMIT = 50;
  * than for every endpoint the card lists.
  */
 export function DeliveriesDialog({
-  orgSlug,
+  orgId,
   webhook,
   onClose,
 }: {
-  orgSlug: string;
+  orgId: string;
   webhook: Webhook | null;
   onClose: () => void;
 }) {
@@ -50,7 +50,7 @@ export function DeliveriesDialog({
     <Dialog open={webhook !== null} onOpenChange={(open) => (open ? undefined : onClose())}>
       <DialogContent className="max-w-2xl">
         {webhook !== null ? (
-          <DeliveryLog orgSlug={orgSlug} webhook={webhook} onClose={onClose} />
+          <DeliveryLog orgId={orgId} webhook={webhook} onClose={onClose} />
         ) : null}
       </DialogContent>
     </Dialog>
@@ -58,16 +58,16 @@ export function DeliveriesDialog({
 }
 
 function DeliveryLog({
-  orgSlug,
+  orgId,
   webhook,
   onClose,
 }: {
-  orgSlug: string;
+  orgId: string;
   webhook: Webhook;
   onClose: () => void;
 }) {
   const log = useApiResource<WebhookDeliveriesResponse>(
-    withQuery(apiPath.webhookDeliveries(orgSlug, webhook.id), { limit: DELIVERY_LOG_LIMIT }),
+    withQuery(apiPath.webhookDeliveries(orgId, webhook.id), { limit: DELIVERY_LOG_LIMIT }),
   );
 
   return (

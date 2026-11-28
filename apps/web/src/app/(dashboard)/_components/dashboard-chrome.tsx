@@ -19,7 +19,11 @@ import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { createLockCatchUp } from '../_lib/lock-catch-up';
 import { useAutoLock } from '../_lib/use-auto-lock';
-import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
+import {
+  rememberOrgId,
+  resolveRememberedOrg,
+  useLastVisitedOrg,
+} from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
@@ -61,21 +65,32 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // on those routes, which rearranged the shell underneath somebody who only
   // opened their own settings; it now keeps describing an organisation. Which
   // one matters more than it looks: every sidebar href, the switcher's label
-  // and the admin gate are computed from this one slug, so naming the wrong
+  // and the admin gate are computed from this one id, so naming the wrong
   // organisation sends "Projects" into a different tenant. See the note in
   // `use-last-visited-org.ts` for why the first membership is not that answer.
   //
-  // The remembered slug is only honoured if it is still a membership, so an
-  // organisation the viewer has been removed from cannot outlive their access
-  // to it. A cold load with nothing remembered falls back to the first
-  // membership — the shell has to name something, and there is nothing better
-  // to know at that point.
-  const lastVisitedOrgSlug = useLastVisitedOrg(location.orgSlug);
+  // The remembered organisation is only honoured if it is still a membership,
+  // so an organisation the viewer has been removed from cannot outlive their
+  // access to it. A tab that remembered it by slug, from before organisations
+  // were named by id, finds it by that slug and remembers the id from then on.
+  // A cold load with nothing remembered falls back to the first membership —
+  // the shell has to name something, and there is nothing better to know at
+  // that point.
+  const lastVisited = useLastVisitedOrg(location.orgId);
   const memberships = session.data?.organizations;
-  const navOrgSlug =
-    location.orgSlug ??
-    memberships?.find((organization) => organization.slug === lastVisitedOrgSlug)?.slug ??
-    memberships?.[0]?.slug ??
+  const remembered = memberships ? resolveRememberedOrg(lastVisited, memberships) : null;
+  // Rewritten only where it is the answer, on a route that names no
+  // organisation. Where the URL names one, the URL's id replaces whatever the
+  // tab remembered anyway, and a rewrite from the stale value would undo it.
+  const rewriteRemembered =
+    location.orgId === null && remembered?.rewrite === true ? remembered.organization.id : null;
+  useEffect(() => {
+    if (rewriteRemembered !== null) rememberOrgId(rewriteRemembered);
+  }, [rewriteRemembered]);
+  const navOrgId =
+    urlOrganizationId(location.orgId, memberships) ??
+    remembered?.organization.id ??
+    memberships?.[0]?.id ??
     null;
 
   // Built before the early returns below, because hooks cannot run
@@ -84,9 +99,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // above the SessionProvider, and is read for the same organisation the hrefs
   // are built from, so the admin-only items can never describe one
   // organisation's authority over another's links.
-  const viewer = memberships?.find((organization) => organization.slug === navOrgSlug) ?? null;
+  const viewer = memberships?.find((organization) => organization.id === navOrgId) ?? null;
   const nav = useDashboardNav({
-    orgSlug: navOrgSlug,
+    orgId: navOrgId,
     projectId: location.projectId,
     viewer,
   });
@@ -101,18 +116,24 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }, [reloadTrail]);
 
   // The one read every project page shares, and so a place the mode pins this
-  // browser filed under a project's slug — before project addresses named the
-  // id — are carried across. Not the only one, and not the one a decision waits
-  // on: whoever reads a pin carries first (`admitEncryptionMode`), because
-  // nothing makes this trail land before the key state does.
+  // browser filed under an older address — the organisation's slug, the
+  // project's — are carried across. Not the only one, and not the one a
+  // decision waits on: whoever reads a pin carries first (`admitEncryptionMode`),
+  // because nothing makes this trail land before the key state does. Read only
+  // at an id address (`trailPath`), so the organisation here is always the id
+  // the pages read under.
   const trailProject = trail.data?.project ?? null;
-  const trailOrgSlug = location.orgSlug;
+  const trailOrgId = location.orgId;
   const trailSegment = location.projectId;
+  const trailOrgSlug = viewer?.slug ?? null;
   useEffect(() => {
-    if (trailProject === null || trailOrgSlug === null || trailSegment === null) return;
+    if (trailProject === null || trailOrgId === null || trailSegment === null) return;
     const carry = trailCarry(trailSegment, trailProject);
-    carryModePinsForward(trailOrgSlug, carry.projectId, carry.slugs);
-  }, [trailProject, trailOrgSlug, trailSegment]);
+    carryModePinsForward(
+      { orgId: trailOrgId, projectId: carry.projectId },
+      { orgSlugs: trailOrgSlug === null ? [] : [trailOrgSlug], projectSlugs: carry.slugs },
+    );
+  }, [trailProject, trailOrgId, trailSegment, trailOrgSlug]);
 
   // ── Catching up with a lock ──
   //
@@ -258,7 +279,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     );
   }
 
-  // Resolved through `navOrgSlug` rather than repeating its fallback, so the
+  // Resolved through `navOrgId` rather than repeating its fallback, so the
   // switcher and the sidebar always name the same organisation. The two
   // disagreeing would be worse than either of them being wrong on its own —
   // a sidebar full of Zebra's links under a switcher reading "Acme" is a shell
@@ -270,14 +291,14 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // behind it with a 404 regardless. It is not the account-area fallback; that
   // one has already been applied above.
   const currentOrg =
-    organizations.find((organization) => organization.slug === navOrgSlug) ?? organizations[0];
+    organizations.find((organization) => organization.id === navOrgId) ?? organizations[0];
 
   const shellOrganizations: readonly ShellOrganization[] = organizations.map((organization) => ({
-    slug: organization.slug,
+    id: organization.id,
     name: organization.name,
     role: organization.role,
     customRole: organization.authority.customRole?.name ?? null,
-    href: appPath.org(organization.slug),
+    href: appPath.org(organization.id),
   }));
 
   return (
@@ -302,7 +323,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         <AppShell
           nav={nav}
           organizations={shellOrganizations}
-          currentOrgSlug={currentOrg?.slug ?? ''}
+          currentOrgId={currentOrg?.id ?? ''}
           onCreateOrganization={openCreateOrganization}
           user={{ name: user.displayName ?? user.email, email: user.email }}
           accountHref={appPath.account()}
@@ -332,6 +353,25 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 }
 
 /**
+ * The organisation the URL names, by id: the segment itself at every address
+ * the dashboard builds, or, on an address from before organisations were named
+ * by id, the id of the membership its slug names, so the sidebar's links point
+ * at the address the page is about to be moved to. A slug that names no
+ * membership is returned as it stands; the page under it answers "not found".
+ * `null` on the routes that name no organisation.
+ */
+export function urlOrganizationId(
+  segment: string | null,
+  memberships: readonly { id: string; slug: string }[] | undefined,
+): string | null {
+  if (segment === null || isUuid(segment)) return segment;
+  const folded = segment.toLowerCase();
+  return (
+    memberships?.find((organization) => organization.slug.toLowerCase() === folded)?.id ?? segment
+  );
+}
+
+/**
  * What the shell reads for the trail's names: the project the URL is inside, or
  * nothing.
  *
@@ -346,14 +386,19 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
  * the trail kept its slugs until the next project. Withheld until then, the
  * unlock *is* the change, and the trail is read the moment there is a screen
  * under it.
+ *
+ * Nor on an address that names its organisation by a legacy slug. That address
+ * draws no screen, only its own move to the id, and a trail read there would
+ * carry this browser's pins to an address no page reads under.
  */
 export function trailPath(
   location: DashboardLocation,
   vault: VaultStatus | undefined,
 ): string | null {
   if (vault?.configured !== true || !vault.unlocked) return null;
-  if (location.orgSlug === null || location.projectId === null) return null;
-  return apiPath.project(location.orgSlug, location.projectId);
+  if (location.orgId === null || location.projectId === null) return null;
+  if (!isUuid(location.orgId)) return null;
+  return apiPath.project(location.orgId, location.projectId);
 }
 
 /**
@@ -396,37 +441,42 @@ export interface TrailNames {
  *
  * Every crumb is labelled with its display name — "Payments API", not
  * `payments-api` — and links by the address the URL uses: the organisation and
- * the environment by slug, the project by id. The trail used to show the
+ * the project by id, the environment by slug. The trail used to show the
  * project and environment by slug, so the line above every project page named
  * it by its identifier while the heading under it used its name. Until a name
  * is known — the first moment of a cold load, or a project the viewer cannot
- * read — the slug stands in, and for the project, whose segment is an id that
- * should never be shown to a person, the word "Project" does.
+ * read — the environment's slug stands in, and for the organisation and the
+ * project, whose segments are ids that should never be shown to a person (or,
+ * for a moment, a legacy slug that is no longer shown either), the words
+ * "Organisation" and "Project" do. An old address's project slug is still a
+ * Project ID, and fit to show.
  */
 export function buildBreadcrumbs(
   location: DashboardLocation,
   names: TrailNames,
 ): readonly BreadcrumbItem[] {
-  const { orgSlug, projectId, envSlug, isAccountArea, isAdminArea } = location;
+  const { orgId, projectId, envSlug, isAccountArea, isAdminArea } = location;
 
   if (isAccountArea) return [{ label: 'Account' }];
   if (isAdminArea) return [{ label: 'Admin' }];
-  if (orgSlug === null) return [{ label: 'Organisations' }];
+  if (orgId === null) return [{ label: 'Organisations' }];
 
-  const crumbs: BreadcrumbItem[] = [{ label: names.org ?? orgSlug, href: appPath.org(orgSlug) }];
+  const crumbs: BreadcrumbItem[] = [
+    { label: names.org ?? 'Organisation', href: appPath.org(orgId) },
+  ];
   if (projectId === null) return crumbs;
 
   crumbs.push({
     // An old address still carries the slug here for the moment before it is
     // replaced, and a slug is fit to show; an id is not.
     label: names.project ?? (isUuid(projectId) ? 'Project' : projectId),
-    href: appPath.project(orgSlug, projectId),
+    href: appPath.project(orgId, projectId),
   });
   if (envSlug === null) return crumbs;
 
   crumbs.push({
     label: names.environment ?? envSlug,
-    href: appPath.environment(orgSlug, projectId, envSlug),
+    href: appPath.environment(orgId, projectId, envSlug),
   });
   return crumbs;
 }

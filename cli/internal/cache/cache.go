@@ -30,6 +30,16 @@
 // and injecting nothing into a child process that then fails somewhere else.
 // Server-mode entries keep the AAD and the filename they have always had, so an
 // upgrade does not invalidate one.
+//
+// ── Organisation ids, and the slugs before them ──
+//
+// The org in a scope is the organisation's id. Builds before that filed every
+// copy and every mode pin under the organisation's slug, and an upgrade that
+// stopped finding them would cost an offline copy at best and, for a pin, the
+// downgrade protection it exists to give. So a scope carries the slugs it may
+// have been filed under, and every read consults them: a copy is served from
+// its slug-keyed file when the id has none, and a pin is the strictest of the
+// id's and the slugs' (see mode.go).
 package cache
 
 import (
@@ -61,7 +71,10 @@ const keyStoreEntry = "cache-key"
 
 // Scope identifies whose secrets a cache file holds.
 type Scope struct {
-	Host        string
+	Host string
+	// Org is the organisation's id. A scope whose id this machine could not
+	// learn names it by its legacy slug instead, as every scope did before ids
+	// were the key.
 	Org         string
 	Project     string
 	Environment string
@@ -69,6 +82,31 @@ type Scope struct {
 	// without its vault key. It changes the AAD, and therefore the filename, so
 	// the two kinds of entry can never be read as one another.
 	Encrypted bool
+	// LegacyOrgs are the slugs the same organisation was filed under by builds
+	// that keyed on the slug. Never part of the identity: they change no AAD
+	// and no filename. They are consulted so that nothing filed under one is
+	// lost, which for a mode pin would be a protection that switched itself
+	// off on upgrade. See [Scope.legacy].
+	LegacyOrgs []string
+}
+
+// legacy returns the scope as each legacy slug would have filed it, with every
+// other field the same. Duplicates, blanks and the scope's own Org are
+// dropped, so a caller can pass whatever slugs it knows without deduplicating.
+func (s Scope) legacy() []Scope {
+	var scopes []Scope
+	seen := map[string]bool{s.Org: true}
+	for _, org := range s.LegacyOrgs {
+		if org == "" || seen[org] {
+			continue
+		}
+		seen[org] = true
+		alias := s
+		alias.Org = org
+		alias.LegacyOrgs = nil
+		scopes = append(scopes, alias)
+	}
+	return scopes
 }
 
 // Entry is one cached environment, in exactly one of its two forms.
@@ -98,8 +136,13 @@ func path(scope Scope) string {
 }
 
 // aad is the canonical identity string bound into the ciphertext. The unit
-// separator cannot appear in a slug or hostname, so two scopes can never
-// concatenate to the same string.
+// separator cannot appear in an id, a slug or a hostname, so two scopes can
+// never concatenate to the same string.
+//
+// The org component is whatever Scope.Org holds, so the string itself did not
+// change when ids replaced slugs there: a file filed under a slug still opens
+// under exactly the string it was sealed with, which is how [Read] can serve
+// one.
 func aad(scope Scope) string {
 	const sep = "\x1f"
 	identity := "xecret-cache-v1" + sep + scope.Host + sep + scope.Org + sep +
@@ -217,11 +260,43 @@ func write(store keyring.Store, scope Scope, entry Entry) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), target)
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		return err
+	}
+
+	// The copy a slug-keyed build filed for the same scope is a previous copy
+	// of this one, and Write replaces previous copies. Left behind, it would be
+	// an older set of values on disk that Read never prefers and nothing else
+	// would ever remove.
+	for _, alias := range scope.legacy() {
+		if err := os.Remove(path(alias)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Read returns the cached entry for a scope, or ErrMiss.
+//
+// When the scope has no copy of its own, a copy filed under one of its legacy
+// slugs is served instead. It opens under the AAD it was sealed with, which
+// names the slug, so it is still bound to exactly the scope it was written for:
+// the fallback finds a file, and does not loosen what the file is allowed to be.
 func Read(store keyring.Store, scope Scope) (*Entry, error) {
+	entry, err := readOne(store, scope)
+	if !errors.Is(err, ErrMiss) {
+		return entry, err
+	}
+	for _, alias := range scope.legacy() {
+		entry, aliasErr := readOne(store, alias)
+		if !errors.Is(aliasErr, ErrMiss) {
+			return entry, aliasErr
+		}
+	}
+	return nil, err
+}
+
+func readOne(store keyring.Store, scope Scope) (*Entry, error) {
 	sealed, err := os.ReadFile(path(scope))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrMiss
@@ -274,9 +349,15 @@ func Read(store keyring.Store, scope Scope) (*Entry, error) {
 // A file that is already gone is not an error — this is called on a path whose
 // job is something else, and "the thing I was going to delete does not exist"
 // is the outcome that path wanted.
+//
+// The copies filed under the scope's legacy slugs go with it: a pre-migration
+// plaintext copy written by a slug-keyed build is exactly as obsolete, and
+// [Read] would otherwise still find it.
 func Forget(scope Scope) error {
-	if err := os.Remove(path(scope)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	for _, target := range append([]Scope{scope}, scope.legacy()...) {
+		if err := os.Remove(path(target)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }

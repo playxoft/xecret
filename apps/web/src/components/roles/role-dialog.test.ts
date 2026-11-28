@@ -27,7 +27,7 @@ function render(
         Dialog,
         { open: true },
         createElement(RoleForm, {
-          orgSlug: 'acme',
+          orgId: 'acme',
           role,
           definableBaseRoles: bases,
           onOpenChange: () => {},

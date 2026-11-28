@@ -47,7 +47,7 @@ import type {
 } from './types';
 
 export interface ImportDialogProps {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
   isProduction: boolean;
@@ -167,7 +167,7 @@ function ImportBody({
   onOpenChange,
   onImported,
   onApplyingChange,
-}: Omit<ImportDialogProps, 'open' | 'orgSlug' | 'projectId'> & {
+}: Omit<ImportDialogProps, 'open' | 'orgId' | 'projectId'> & {
   onApplyingChange: (applying: boolean) => void;
 }) {
   const { toast } = useToast();

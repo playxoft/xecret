@@ -3,7 +3,7 @@ title: Using xecret with AI agents
 navTitle: AI agents
 description: The one-line skill install for Claude, ChatGPT, Gemini and every other coding agent, the machine-readable documentation endpoints, and letting an agent run your app without production credentials.
 keywords: [llms.txt, ai agent skill, claude skill, chatgpt gemini agent, ai agent secrets, coding agent environment variables, machine readable docs, agent security]
-updated: 2026-09-20
+updated: 2026-11-28
 ---
 
 Three separate things share this page, because the people asking about one are
@@ -175,7 +175,9 @@ conventions this tool expects:
   `openssl rand -hex 32 | xecret secrets set SESSION_SECRET`.
 - **Never commit `.env`.** Check `.gitignore` covers `.env*` before doing
   anything else in a repository that has one.
-- **`.xecret.yaml` is safe to commit** and should be. It contains two slugs.
+- **`.xecret.yaml` is safe to commit** and should be. It holds three
+  identifiers (the organisation's ID, the Project ID and the environment) and
+  no secrets.
 - **Ask before touching production.** Production is deny-by-default for a
   reason; a command that needs a production grant is a command that needs a
   human.

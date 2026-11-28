@@ -66,7 +66,7 @@ function render(org: SessionOrganization): string {
     createElement(
       Toaster,
       null,
-      createElement(SingleSignOnCard, { orgSlug: 'acme', organization: org }),
+      createElement(SingleSignOnCard, { orgId: 'acme', organization: org }),
     ),
   );
 }

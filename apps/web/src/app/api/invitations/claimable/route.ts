@@ -46,7 +46,9 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
   return json({
     invitations: claimable.map((invitation) => ({
       invitationId: invitation.invitationId,
-      organization: { slug: invitation.orgSlug, name: invitation.orgName },
+      // By id, which is what the screen asking compares against; `slug` stays
+      // for a tab still running the screen from before.
+      organization: { id: invitation.orgId, name: invitation.orgName, slug: invitation.orgSlug },
       grants: invitation.grants.map(toInviteKeyGrant),
     })),
   });

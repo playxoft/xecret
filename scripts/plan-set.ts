@@ -2,15 +2,19 @@
 /**
  * Sets an organisation's plan, add-ons and limit overrides, by hand.
  *
- *   phase run -- npm run plan:show -- --org acme
- *   phase run -- npm run plan:set  -- --org acme --plan team --interval yearly --seats 5
- *   phase run -- npm run plan:set  -- --org acme --interval monthly
- *   phase run -- npm run plan:set  -- --org acme --status past_due
- *   phase run -- npm run plan:set  -- --org acme --addon saml --on
- *   phase run -- npm run plan:set  -- --org acme --limit-override projects=2000
- *   phase run -- npm run plan:set  -- --org acme --plan team --until 2027-03-01
- *   phase run -- npm run plan:set  -- --org acme --until never
- *   phase run -- npm run plan:set  -- --org acme --plan free
+ *   phase run -- npm run plan:show -- --org <org-id>
+ *   phase run -- npm run plan:set  -- --org <org-id> --plan team --interval yearly --seats 5
+ *   phase run -- npm run plan:set  -- --org <org-id> --interval monthly
+ *   phase run -- npm run plan:set  -- --org <org-id> --status past_due
+ *   phase run -- npm run plan:set  -- --org <org-id> --addon saml --on
+ *   phase run -- npm run plan:set  -- --org <org-id> --limit-override projects=2000
+ *   phase run -- npm run plan:set  -- --org <org-id> --plan team --until 2027-03-01
+ *   phase run -- npm run plan:set  -- --org <org-id> --until never
+ *   phase run -- npm run plan:set  -- --org <org-id> --plan free
+ *
+ * `--org` is the organisation's id, as the admin page shows it and as its
+ * dashboard address carries it. A legacy slug is still found, for an
+ * organisation that has one somebody remembers; nothing shows slugs any more.
  *
  * `--until` ends a grant (migration 0035): the hourly job returns the
  * organisation to Free at that moment, and its owners are emailed a week and a
@@ -79,6 +83,7 @@
  */
 
 import { eq } from 'drizzle-orm';
+import { isUuid } from '../packages/core/src/ids/index.ts';
 import {
   MINIMUM_SEATS,
   NULLABLE_LIMITS,
@@ -260,7 +265,7 @@ function parseOverride(spec: string): [string, number | null] {
  */
 function describe(
   row: typeof orgSubscriptions.$inferSelect,
-  slug: string,
+  label: string,
   seatLimit: number,
 ): void {
   const entitlements = resolveEntitlements({
@@ -276,8 +281,8 @@ function describe(
     .filter(([, on]) => on)
     .map(([name]) => name);
 
-  console.log(`\n  ${slug}`);
-  console.log(`  ${'─'.repeat(slug.length)}`);
+  console.log(`\n  ${label}`);
+  console.log(`  ${'─'.repeat(label.length)}`);
   console.log(
     `  plan            ${row.plan}${row.billingInterval ? ` (${row.billingInterval})` : ''}`,
   );
@@ -324,12 +329,12 @@ function describe(
 async function main(): Promise<void> {
   const url = process.env['DATABASE_URL'];
   if (!url) {
-    fail('DATABASE_URL is not set. Try: phase run -- npm run plan:set -- --org <slug> …');
+    fail('DATABASE_URL is not set. Try: phase run -- npm run plan:set -- --org <org-id> …');
   }
 
   const args = parseArgs(process.argv.slice(2));
-  const slug = typeof args['org'] === 'string' ? args['org'] : null;
-  if (!slug) fail('--org <slug> is required.');
+  const reference = typeof args['org'] === 'string' ? args['org'].trim().toLowerCase() : null;
+  if (!reference) fail('--org <org-id> is required.');
 
   const showOnly = args['show'] === true || process.env['PLAN_TOOL_MODE'] === 'show';
   const operator =
@@ -344,22 +349,27 @@ async function main(): Promise<void> {
     const [org] = await db
       .select({
         id: organizations.id,
-        slug: organizations.slug,
+        name: organizations.name,
         seatLimit: organizations.seatLimit,
         deletedAt: organizations.deletedAt,
       })
       .from(organizations)
-      .where(eq(organizations.slug, slug))
+      // By id when it is shaped like one, as `resolveOrg` reads it; else by
+      // the legacy slug.
+      .where(
+        isUuid(reference) ? eq(organizations.id, reference) : eq(organizations.slug, reference),
+      )
       .limit(1);
 
-    if (!org) fail(`No organisation with slug "${slug}".`);
+    if (!org) fail(`No organisation with id or slug "${reference}".`);
+    // How every line below names it: by id, which is how the admin page and
+    // every address name it, with its name for the operator reading along.
+    const slug = `${org.id} (${org.name})`;
 
     // Deliberately *found* and then refused, rather than filtered out of the
-    // lookup. `organizations_slug_unique` is a total constraint, so a
-    // soft-deleted organisation keeps its slug for ever and a filtered query
-    // would report "no organisation with slug acme" about a row that plainly
-    // exists — sending the operator to look for a typo. Refusing here says which
-    // problem it actually is.
+    // lookup. A filtered query would report "no organisation" about a row that
+    // plainly exists — sending the operator to look for a typo. Refusing here
+    // says which problem it actually is.
     //
     // Refused rather than warned because of what this tool can switch on: an
     // add-on here is a $125/month WorkOS connection, and a plan is an invoice.
@@ -367,7 +377,7 @@ async function main(): Promise<void> {
     if (org.deletedAt !== null) {
       fail(
         `"${slug}" was deleted on ${org.deletedAt.toISOString()}. ` +
-          'Its slug is still claimed — restore it before changing its plan.',
+          'Restore it before changing its plan.',
       );
     }
 
@@ -463,7 +473,7 @@ async function main(): Promise<void> {
     /**
      * `--interval` is read here rather than only inside the `--plan` branch.
      *
-     * It was nested, so `plan:set --org acme --interval monthly` on an existing
+     * It was nested, so `plan:set --org <org-id> --interval monthly` on an existing
      * paid subscription added nothing to `changes` and exited with "Nothing to
      * do" — there was no way to move a subscription between monthly and yearly
      * with a tool that documents `--interval` as a flag.

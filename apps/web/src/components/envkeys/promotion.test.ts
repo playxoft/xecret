@@ -88,7 +88,7 @@ function snapshot(
 ): EnvironmentSnapshot {
   return {
     ref: {
-      orgSlug: 'acme',
+      orgId: 'acme',
       projectId: 'api',
       envSlug: environmentId === SOURCE_ENV ? 'staging' : 'production',
     },
@@ -371,7 +371,7 @@ describe('promotionPolicyProblems', () => {
 });
 
 describe('readSnapshot', () => {
-  const ref = { orgSlug: 'acme', projectId: 'api', envSlug: 'staging' };
+  const ref = { orgId: 'acme', projectId: 'api', envSlug: 'staging' };
   const pullPath =
     'GET /api/orgs/acme/projects/api/environments/staging/pull?bundle=2&layers=none&format=json';
   const listPath = 'GET /api/orgs/acme/projects/api/environments/staging/secrets?limit=200';

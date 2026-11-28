@@ -61,14 +61,14 @@ function planName(id: string): string {
  * built-in role; this card says so.
  */
 export function RolesCard({
-  orgSlug,
+  orgId,
   organization,
 }: {
-  orgSlug: string;
+  orgId: string;
   organization: SessionOrganization | null;
 }) {
   const mayList = canAdminister(organization, 'member.update');
-  const roles = useApiResource<CustomRoleListResponse>(mayList ? apiPath.roles(orgSlug) : null);
+  const roles = useApiResource<CustomRoleListResponse>(mayList ? apiPath.roles(orgId) : null);
   const { toast } = useToast();
 
   const [editing, setEditing] = useState<CustomRole | 'new' | null>(null);
@@ -221,7 +221,7 @@ export function RolesCard({
 
       {editing !== null ? (
         <RoleDialog
-          orgSlug={orgSlug}
+          orgId={orgId}
           role={editing === 'new' ? null : editing}
           definableBaseRoles={definable}
           open
@@ -244,7 +244,7 @@ export function RolesCard({
           onConfirm={async () => {
             // A refusal — the role still in use, above all — is thrown back to
             // the dialog, which shows it in the server's words and stays open.
-            await api.delete(apiPath.role(orgSlug, deleting.id));
+            await api.delete(apiPath.role(orgId, deleting.id));
             toast({ variant: 'success', title: `Deleted ${deleting.name}` });
             setDeleting(null);
             void roles.reload();

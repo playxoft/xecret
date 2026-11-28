@@ -45,7 +45,7 @@ function member(role: OrgRole, customRole: Member['customRole'] = null): Member 
 
 function render(target: Member, assignable: boolean): string {
   const select: ReactElement = createElement(CustomRoleSelect, {
-    orgSlug: 'acme',
+    orgId: 'acme',
     member: target,
     choices: { roles, assignable },
     onChanged: () => {},

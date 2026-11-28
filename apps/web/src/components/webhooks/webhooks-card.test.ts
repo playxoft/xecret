@@ -77,11 +77,7 @@ function shows(over: Partial<WebhookListResponse> = {}): void {
 
 function render(org: SessionOrganization): string {
   return renderToStaticMarkup(
-    createElement(
-      Toaster,
-      null,
-      createElement(WebhooksCard, { orgSlug: 'acme', organization: org }),
-    ),
+    createElement(Toaster, null, createElement(WebhooksCard, { orgId: 'acme', organization: org })),
   );
 }
 

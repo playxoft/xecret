@@ -69,7 +69,7 @@ function listed(roles: CustomRole[], enabled = true): void {
 
 function render(org: SessionOrganization): string {
   return renderToStaticMarkup(
-    createElement(Toaster, null, createElement(RolesCard, { orgSlug: 'acme', organization: org })),
+    createElement(Toaster, null, createElement(RolesCard, { orgId: 'acme', organization: org })),
   );
 }
 

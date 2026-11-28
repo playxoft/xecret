@@ -120,7 +120,7 @@ describe('the project’s Manage menu edits the description in place', () => {
     expect(form).toMatch(/const patch = projectPatch\(project, name, description\);/);
     expect(form).toMatch(/const unchanged = Object\.keys\(patch\)\.length === 0;/);
     expect(form).toMatch(/if \(submitting \|\| unchanged\) return;/);
-    expect(form).toMatch(/api\.patch\(apiPath\.project\(orgSlug, project\.slug\), patch\)/);
+    expect(form).toMatch(/api\.patch\(apiPath\.project\(orgId, project\.slug\), patch\)/);
     expect(form).toMatch(/<Button type="submit"[^>]*disabled=\{unchanged\}>\s*Save changes/);
   });
 
@@ -317,8 +317,8 @@ describe('`/app?to=plans` opens the organisation’s plans', () => {
     expect(page).toMatch(/intent=\{to === 'plans' \? 'plans' : null\}/);
     const screen = source('./organizations-screen.tsx');
     expect(screen).toMatch(/const open = intent === 'plans' \? appPath\.orgPlans : appPath\.org;/);
-    expect(screen).toContain('router.replace(open(only.slug))');
-    expect(screen).toContain('href={open(organization.slug)}');
+    expect(screen).toContain('router.replace(open(only.id))');
+    expect(screen).toContain('href={open(organization.id)}');
   });
 });
 
@@ -338,5 +338,33 @@ describe('a page with no account to show still has a way out', () => {
     expect(chrome).toMatch(/<ChromeFrame signOut>\s*<EmptyState/);
     expect(chrome).toMatch(/\{signOut \? <SignOutButton \/> : null\}/);
     expect(chrome).toMatch(/function ChromeNotice[\s\S]*?<ChromeFrame>/);
+  });
+});
+
+// Names are not unique, and approving a CLI device for the wrong one of two
+// organisations called the same thing hands it the wrong secrets. Every
+// organisation on the consent screen carries the end of its id.
+describe('the CLI consent screen', () => {
+  it('labels every organisation in the picker, and the only one, with the end of its id', () => {
+    const screen = source('../../(auth)/cli/authorize/authorize-screen.tsx');
+    expect(screen).toMatch(
+      /<SelectItem key=\{org\.id\} value=\{org\.id\}>\s*<OrganizationLabel name=\{org\.name\} id=\{org\.id\} \/>/,
+    );
+    expect(screen).toMatch(
+      /<OrganizationLabel name=\{organizations\[0\]\.name\} id=\{organizations\[0\]\.id\} \/>/,
+    );
+  });
+});
+
+// A screen reader reads an aria-label aloud, and an organisation's id is
+// thirty-six characters of hex. The members table is named by the
+// organisation's name.
+describe('the members table', () => {
+  it('is labelled with the organisation’s name, never its id', () => {
+    const screen = source('./members-screen.tsx');
+    expect(screen).toMatch(
+      /aria-label=\{organization === null \? 'Members' : `Members of \$\{organization\.name\}`\}/,
+    );
+    expect(screen).not.toMatch(/Members of \$\{orgId\}/);
   });
 });

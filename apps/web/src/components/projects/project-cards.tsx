@@ -8,7 +8,7 @@ import { ArrowRightIcon, LayersIcon } from '@/components/ui';
 import type { ProjectListItem } from './types';
 
 export interface ProjectCardsProps {
-  orgSlug: string;
+  orgId: string;
   projects: readonly ProjectListItem[];
 }
 
@@ -27,19 +27,21 @@ export interface ProjectCardsProps {
  *  - `ProjectRows`, the list: one row per project, for scanning a long listing
  *    by name. Same links, same order, same facts.
  */
-export function ProjectCards({ orgSlug, projects }: ProjectCardsProps) {
+export function ProjectCards({ orgId, projects }: ProjectCardsProps) {
   return (
     <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {projects.map((project) => (
         <li key={project.slug}>
           <Link
-            href={appPath.project(orgSlug, project.id)}
+            href={appPath.project(orgId, project.id)}
             className="border-line bg-surface shadow-raised hover:border-line-strong hover:bg-surface-hover flex h-full flex-col rounded-xl border p-5 transition-colors"
           >
             <span className="text-fg truncate text-[0.9375rem] font-semibold tracking-tight">
               {project.name}
             </span>
-            <span className="text-fg-subtle mt-0.5 truncate font-mono text-sm">{project.slug}</span>
+            <span className="text-fg-subtle mt-0.5 truncate font-mono text-sm" title="Project ID">
+              {project.slug}
+            </span>
 
             <span className="text-fg-muted mt-3 line-clamp-2 min-h-[2.5rem] text-sm leading-5">
               {project.description ?? 'No description.'}
@@ -75,7 +77,7 @@ export function ProjectCards({ orgSlug, projects }: ProjectCardsProps) {
  * — one line, cut off like the column it stands in for.
  */
 export function ProjectRows({
-  orgSlug,
+  orgId,
   projects,
   revealDescriptions = false,
 }: ProjectCardsProps & { revealDescriptions?: boolean }) {
@@ -84,12 +86,12 @@ export function ProjectRows({
       {projects.map((project) => (
         <li key={project.slug}>
           <Link
-            href={appPath.project(orgSlug, project.id)}
+            href={appPath.project(orgId, project.id)}
             className="border-line bg-surface hover:border-line-strong hover:bg-surface-hover flex flex-col gap-1.5 rounded-xl border px-4 py-3 transition-colors lg:flex-row lg:items-center lg:gap-4"
           >
             <span className="min-w-0 lg:flex-1 xl:w-64 xl:flex-none">
               <span className="text-fg block truncate text-sm font-medium">{project.name}</span>
-              <span className="text-fg-subtle block truncate font-mono text-sm">
+              <span className="text-fg-subtle block truncate font-mono text-sm" title="Project ID">
                 {project.slug}
               </span>
               {revealDescriptions && project.description !== null ? (

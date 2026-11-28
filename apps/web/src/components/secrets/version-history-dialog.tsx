@@ -25,7 +25,7 @@ import { Actor } from './actor';
 import type { SecretSummary, SecretVersion, SecretVersionListResponse } from './types';
 
 export interface VersionHistoryDialogProps {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
   isProduction: boolean;
@@ -81,7 +81,7 @@ const PAGE_SIZE = 100;
  * above the one they meant.
  */
 export function VersionHistoryDialog({
-  orgSlug,
+  orgId,
   projectId,
   envSlug,
   isProduction,
@@ -113,7 +113,7 @@ export function VersionHistoryDialog({
    */
   const currentVersion = versions?.[0]?.version ?? secret.version;
 
-  const path = withQuery(apiPath.secretVersions(orgSlug, projectId, envSlug, secretName), {
+  const path = withQuery(apiPath.secretVersions(orgId, projectId, envSlug, secretName), {
     limit: PAGE_SIZE,
   });
 

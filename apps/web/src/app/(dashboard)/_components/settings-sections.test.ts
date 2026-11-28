@@ -308,16 +308,16 @@ describe('every section is a page, and every page is a section', () => {
 
   it('in an organisation’s settings', () => {
     const groups = organizationSettingsSections('acme', member('owner'));
-    expect(existsSync(`${app}[orgSlug]/settings/page.tsx`)).toBe(true);
-    expect(pageFolders('[orgSlug]/settings')).toEqual(
+    expect(existsSync(`${app}[orgId]/settings/page.tsx`)).toBe(true);
+    expect(pageFolders('[orgId]/settings')).toEqual(
       sectionFolders(groups, appPath.orgSettings('acme')),
     );
   });
 
   it('in an environment’s settings', () => {
     const groups = environmentSettingsSections(ENV_SETTINGS, member('owner'));
-    expect(existsSync(`${app}[orgSlug]/[projectId]/[envSlug]/settings/page.tsx`)).toBe(true);
-    expect(pageFolders('[orgSlug]/[projectId]/[envSlug]/settings')).toEqual(
+    expect(existsSync(`${app}[orgId]/[projectId]/[envSlug]/settings/page.tsx`)).toBe(true);
+    expect(pageFolders('[orgId]/[projectId]/[envSlug]/settings')).toEqual(
       sectionFolders(groups, ENV_SETTINGS),
     );
   });

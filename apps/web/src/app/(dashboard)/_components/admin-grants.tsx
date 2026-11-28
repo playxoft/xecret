@@ -40,7 +40,6 @@ function targetOf(grant: AdminGrantPayload): GrantTarget {
   return {
     id: grant.orgId,
     name: grant.orgName,
-    slug: grant.orgSlug,
     plan: grant.plan,
     seatLimit: grant.seatLimit,
     grant: { endsAt: grant.endsAt, note: grant.note },
@@ -87,7 +86,7 @@ export function GrantsTab() {
                 <TableRow key={grant.orgId}>
                   <TableCell>
                     <p className="text-fg text-sm font-medium">{grant.orgName}</p>
-                    <p className="text-fg-subtle font-mono text-sm">{grant.orgSlug}</p>
+                    <p className="text-fg-subtle font-mono text-sm break-all">{grant.orgId}</p>
                     {grant.note ? (
                       <p className="text-fg-muted mt-0.5 text-sm">{grant.note}</p>
                     ) : null}

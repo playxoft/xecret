@@ -43,8 +43,8 @@ import { canAdminister, useOrganization } from './session';
 /** The listing is clamped to 200 by the API, which is far more than a person scrolls. */
 const PAGE_SIZE = 200;
 
-export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
-  const organization = useOrganization(orgSlug);
+export function ProjectsScreen({ orgId }: { orgId: string }) {
+  const organization = useOrganization(orgId);
   const [creating, setCreating] = useState(false);
   // What somebody is looking for right now, so neither outlives the visit. The
   // layout is a preference, and is remembered — see `project-listing.ts`.
@@ -58,7 +58,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
   const searchRef = useRef<HTMLInputElement>(null);
 
   const projects = useApiResource<ProjectListResponse>(
-    withQuery(apiPath.projects(orgSlug), { pageSize: PAGE_SIZE }),
+    withQuery(apiPath.projects(orgId), { pageSize: PAGE_SIZE }),
   );
 
   const visible = useMemo(
@@ -120,7 +120,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
             <Button variant="ghost" asChild>
               {/* `rel="noreferrer"` as well as `noopener`: without it the target
                   site is told which dashboard URL the user came from, and these
-                  paths carry organisation slugs and project ids. */}
+                  paths carry organisation and project ids. */}
               <a
                 href="https://github.com/playxoft/xecret#how-it-works"
                 target="_blank"
@@ -141,7 +141,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter by name, slug or description"
+                placeholder="Filter by name, Project ID or description"
                 aria-label="Filter projects"
                 autoComplete="off"
                 startIcon={<SearchIcon className="size-4" />}
@@ -204,9 +204,9 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
               }
             />
           ) : view === 'list' ? (
-            <ProjectRows orgSlug={orgSlug} projects={visible} revealDescriptions={filtering} />
+            <ProjectRows orgId={orgId} projects={visible} revealDescriptions={filtering} />
           ) : (
-            <ProjectCards orgSlug={orgSlug} projects={visible} />
+            <ProjectCards orgId={orgId} projects={visible} />
           )}
 
           {projects.data.hasMore ? (
@@ -227,7 +227,7 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
         </p>
       ) : null}
 
-      <CreateProjectDialog orgSlug={orgSlug} open={creating} onOpenChange={setCreating} />
+      <CreateProjectDialog orgId={orgId} open={creating} onOpenChange={setCreating} />
     </div>
   );
 }

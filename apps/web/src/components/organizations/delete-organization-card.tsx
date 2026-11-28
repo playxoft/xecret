@@ -39,14 +39,16 @@ export interface DeleteOrganizationCardProps {
  * 403. The check here decides what is *drawn*; the server decides what is
  * *permitted*, and a browser that renders it anyway gets the same refusal.
  *
- * ── Why the confirmation demands the slug ──
+ * ── Why the confirmation demands the name ──
  * This is the widest blast radius the product has. Every project, environment
  * and secret in the organisation stops resolving at once — for every member, not
  * only for the person pressing the button — and the applications reading those
  * secrets keep working until their next deploy, so the mistake surfaces later,
  * to somebody else, during an outage. A dialog with a button under the pointer
- * is a speed bump; typing the slug is the step that cannot be completed by
- * muscle memory.
+ * is a speed bump; typing the organisation's name is the step that cannot be
+ * completed by muscle memory. The name rather than an identifier, because the
+ * name is what this page shows: the slug is shown to nobody, and an id is not
+ * something a person reads back.
  *
  * The server requires the same confirmation and re-checks the permission, so
  * neither of those is a client-side courtesy.
@@ -57,7 +59,7 @@ export function DeleteOrganizationCard({ organization, onDeleted }: DeleteOrgani
   const [confirming, setConfirming] = useState(false);
 
   async function deleteOrganization() {
-    await api.delete(apiPath.org(organization.slug), { confirm: organization.slug });
+    await api.delete(apiPath.org(organization.id), { confirm: organization.name });
 
     toast({ variant: 'success', title: `Deleted ${organization.name}` });
 
@@ -82,7 +84,7 @@ export function DeleteOrganizationCard({ organization, onDeleted }: DeleteOrgani
           <CardDescription>
             Hides {organization.name} and every project, environment and secret inside it,
             immediately, for every member. Applications pulling those secrets fail at their next
-            deploy — which is later, when this is hardest to connect to its cause.
+            deploy, which is later, when this is hardest to connect to its cause.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -101,7 +103,7 @@ export function DeleteOrganizationCard({ organization, onDeleted }: DeleteOrgani
 
       <ConfirmDialog
         strength="production"
-        confirmPhrase={organization.slug}
+        confirmPhrase={organization.name}
         open={confirming}
         onOpenChange={setConfirming}
         title={`Delete ${organization.name}?`}

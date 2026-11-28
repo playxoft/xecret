@@ -26,8 +26,10 @@ type Me struct {
 }
 
 type Organization struct {
-	// ID is a component of every secret ciphertext's AAD, so a client that only
-	// knows the slug cannot decrypt. Slugs are renameable; this is not.
+	// ID is the organisation's name everywhere this client names it, and a
+	// component of every secret ciphertext's AAD, so a client that only knows
+	// the slug cannot decrypt. Slug is the legacy alias, still read so that a
+	// credential holding nothing else can be matched to its organisation.
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug"`
@@ -84,7 +86,12 @@ type LoginResult struct {
 		Email       string  `json:"email"`
 		DisplayName *string `json:"displayName"`
 	} `json:"user"`
+	// Organization is the organisation the token was approved for. ID is
+	// absent from a server that predates organisation ids, which named it by
+	// Slug alone; the slug is still sent, for the binaries that read nothing
+	// else.
 	Organization struct {
+		ID   string `json:"id"`
 		Slug string `json:"slug"`
 		Name string `json:"name"`
 	} `json:"organization"`

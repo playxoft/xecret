@@ -60,7 +60,7 @@ const API_ID = '018f3f6a-0000-7000-8000-0000000000e2';
 const TOKEN_ID = '018f3f6a-0000-7000-8000-0000000000f1';
 const DELETED_ID = '018f3f6a-0000-7000-8000-0000000000f2';
 
-const TARGET = { orgSlug: 'acme', projectId: 'api', envSlug: 'legacy' };
+const TARGET = { orgId: 'acme', projectId: 'api', envSlug: 'legacy' };
 const BASE = '/api/orgs/acme/projects/api/environments/legacy';
 
 const posted: { path: string; body: unknown }[] = [];

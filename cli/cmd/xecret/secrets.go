@@ -98,9 +98,14 @@ func cmdSecrets(args []string) error {
 	}
 }
 
+// projectFlagHelp is how every `--project` that defaults to .xecret.yaml
+// describes itself. The value is a project's Project ID, which is the slug on
+// the wire; people are shown it under the dashboard's name for it.
+const projectFlagHelp = "project ID, e.g. payments-api (default: .xecret.yaml)"
+
 // scopedFlags declares the flags every secrets subcommand shares.
 func scopedFlags(flags *flag.FlagSet) (project, environment *string) {
-	project = flags.String("project", "", "project slug (default: .xecret.yaml)")
+	project = flags.String("project", "", projectFlagHelp)
 	environment = flags.String("environment", "", "environment slug (default: .xecret.yaml)")
 	return project, environment
 }

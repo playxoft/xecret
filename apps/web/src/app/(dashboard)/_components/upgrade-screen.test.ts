@@ -113,7 +113,7 @@ function render(
   viewer.organization = organization(role);
   return renderToStaticMarkup(
     createElement(UpgradeScreen, {
-      orgSlug: 'acme',
+      orgId: 'acme',
       returnedFromCheckout,
       payments: { taken, overageRate: RATE },
     }),

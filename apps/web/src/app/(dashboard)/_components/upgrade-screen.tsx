@@ -184,23 +184,23 @@ type Offer =
   | { kind: 'change'; plan: PaidPlanId };
 
 export function UpgradeScreen({
-  orgSlug,
+  orgId,
   returnedFromCheckout,
   payments,
 }: {
-  orgSlug: string;
+  orgId: string;
   returnedFromCheckout: boolean;
   payments: PaymentsHere;
 }) {
-  const membership = useOrganization(orgSlug);
+  const membership = useOrganization(orgId);
   const mayManage = canAdminister(membership, 'billing.manage');
   const selling = payments.taken;
   // Nothing is asked where nothing is sold: the plan read only decides which
   // button to draw, and there are none to draw.
   const resource = useApiResource<{ billing: Billing }>(
-    selling && mayManage ? apiPath.billing(orgSlug) : null,
+    selling && mayManage ? apiPath.billing(orgId) : null,
   );
-  const orgName = membership?.name ?? orgSlug;
+  const orgName = membership?.name ?? orgId;
 
   // A checkout refused as `forbidden` means the same as a refused read: the
   // session's idea of this viewer's role is out of date.
@@ -264,7 +264,7 @@ export function UpgradeScreen({
     setFailure(null);
     try {
       const { url } = await api.post<{ url: string }>(
-        apiPath.billingCheckout(orgSlug),
+        apiPath.billingCheckout(orgId),
         { plan, interval: period, ...(code === null ? {} : { promoCode: code }) },
         { idempotencyKey: key },
       );
@@ -343,7 +343,7 @@ export function UpgradeScreen({
             >
               {/* The period showing on this page goes with the link, so the
                   billing screen opens on the choice that was made here. */}
-              <Link href={switchPlanHref(orgSlug, offered.plan, period)}>
+              <Link href={switchPlanHref(orgId, offered.plan, period)}>
                 Switch to {offer.name}
                 <ArrowRightIcon className="size-4" />
               </Link>
@@ -410,7 +410,7 @@ export function UpgradeScreen({
       case 'change':
         return (
           <Button variant={variant} size="sm" className="w-full" asChild>
-            <Link href={switchPlanHref(orgSlug, offered.plan, period)}>Switch to {name}</Link>
+            <Link href={switchPlanHref(orgId, offered.plan, period)}>Switch to {name}</Link>
           </Button>
         );
     }
@@ -474,14 +474,14 @@ export function UpgradeScreen({
         actions={
           !selling || notOwner ? null : (
             <Button variant="ghost" asChild>
-              <Link href={appPath.orgBilling(orgSlug)}>Billing</Link>
+              <Link href={appPath.orgBilling(orgId)}>Billing</Link>
             </Button>
           )
         }
       />
 
       <Notices
-        orgSlug={orgSlug}
+        orgId={orgId}
         orgName={orgName}
         selling={selling}
         notOwner={notOwner}
@@ -552,7 +552,7 @@ export function UpgradeScreen({
             billing read allows a code at all — which also means an owner. */}
         {billing !== null && billing.actions.promoCode ? (
           <PromoCodeField
-            orgSlug={orgSlug}
+            orgId={orgId}
             applied={appliedPromo}
             onApplied={(next) => {
               setPromo(next);
@@ -630,7 +630,7 @@ function CurrentPlanMark() {
 /* ── The notices above the plans ───────────────────────────────────────────── */
 
 function Notices({
-  orgSlug,
+  orgId,
   orgName,
   selling,
   notOwner,
@@ -639,7 +639,7 @@ function Notices({
   loadFailed,
   onRetry,
 }: {
-  orgSlug: string;
+  orgId: string;
   orgName: string;
   selling: boolean;
   notOwner: boolean;
@@ -680,7 +680,7 @@ function Notices({
           The plan changes as soon as our payment provider confirms the payment — usually within a
           minute.{' '}
           <Link
-            href={withQuery(appPath.orgBilling(orgSlug), { checkout: 'returned' })}
+            href={withQuery(appPath.orgBilling(orgId), { checkout: 'returned' })}
             className="text-fg font-medium underline underline-offset-4"
           >
             Watch it on the billing screen
@@ -742,7 +742,7 @@ function Notices({
           <p>
             This organisation’s subscription cannot be changed from here right now.{' '}
             <Link
-              href={appPath.orgBilling(orgSlug)}
+              href={appPath.orgBilling(orgId)}
               className="text-fg font-medium underline underline-offset-4"
             >
               Open billing

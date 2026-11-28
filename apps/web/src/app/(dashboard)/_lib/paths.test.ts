@@ -4,6 +4,7 @@ import {
   adminTabFromQuery,
   apiPath,
   appPath,
+  canonicalOrgAddress,
   canonicalProjectAddress,
   parseDashboardPath,
   withQuery,
@@ -79,7 +80,7 @@ describe('the plans page', () => {
 
   it('is read as an organisation page, not a project', () => {
     expect(parseDashboardPath(appPath.orgPlans('acme'))).toEqual({
-      orgSlug: 'acme',
+      orgId: 'acme',
       projectId: null,
       envSlug: null,
       isAccountArea: false,
@@ -92,10 +93,11 @@ const PROJECT_ID = '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
 
 /**
  * A project's pages are named by its id, so an address never says what a
- * project is called. The organisation and the environment stay named by slug.
+ * project is called. The environment stays named by slug; the organisation is
+ * named by its id too (see "an organisation address" below).
  */
 describe('a project address', () => {
-  it('names the project by id, and the organisation and environment by slug', () => {
+  it('names the project by id, and the environment by slug', () => {
     expect(appPath.project('acme', PROJECT_ID)).toBe(`/app/acme/${PROJECT_ID}`);
     expect(appPath.environment('acme', PROJECT_ID, 'production')).toBe(
       `/app/acme/${PROJECT_ID}/production`,
@@ -107,14 +109,14 @@ describe('a project address', () => {
 
   it('is read back into the same three parts', () => {
     expect(parseDashboardPath(`/app/acme/${PROJECT_ID}`)).toEqual({
-      orgSlug: 'acme',
+      orgId: 'acme',
       projectId: PROJECT_ID,
       envSlug: null,
       isAccountArea: false,
       isAdminArea: false,
     });
     expect(parseDashboardPath(`/app/acme/${PROJECT_ID}/production/settings`)).toEqual({
-      orgSlug: 'acme',
+      orgId: 'acme',
       projectId: PROJECT_ID,
       envSlug: 'production',
       isAccountArea: false,
@@ -196,6 +198,89 @@ describe('the address an old project link is replaced with', () => {
 });
 
 /**
+ * An organisation is named by its id everywhere the dashboard builds an
+ * address: its own pages, its settings, its members, tokens and audit, and
+ * every project beneath it.
+ */
+describe('an organisation address', () => {
+  const ORG = '0193f2a1-0000-7000-8000-00000000a001';
+
+  it('names the organisation by id on every page and on the API', () => {
+    expect(appPath.org(ORG)).toBe(`/app/${ORG}`);
+    expect(appPath.orgSettings(ORG)).toBe(`/app/${ORG}/settings`);
+    expect(appPath.orgBilling(ORG)).toBe(`/app/${ORG}/settings/billing`);
+    expect(appPath.members(ORG)).toBe(`/app/${ORG}/members`);
+    expect(appPath.tokens(ORG)).toBe(`/app/${ORG}/tokens`);
+    expect(appPath.audit(ORG)).toBe(`/app/${ORG}/audit`);
+    expect(appPath.environment(ORG, PROJECT_ID, 'production')).toBe(
+      `/app/${ORG}/${PROJECT_ID}/production`,
+    );
+    expect(apiPath.org(ORG)).toBe(`/api/orgs/${ORG}`);
+    expect(apiPath.secrets(ORG, PROJECT_ID, 'production')).toBe(
+      `/api/orgs/${ORG}/projects/${PROJECT_ID}/environments/production/secrets`,
+    );
+  });
+
+  it('is read back as the organisation’s id', () => {
+    expect(parseDashboardPath(`/app/${ORG}/${PROJECT_ID}/production`)).toMatchObject({
+      orgId: ORG,
+      projectId: PROJECT_ID,
+      envSlug: 'production',
+    });
+    expect(parseDashboardPath(`/app/${ORG}/settings/roles`)).toMatchObject({
+      orgId: ORG,
+      projectId: null,
+    });
+  });
+
+  it('leaves the account area and the admin page where they were', () => {
+    expect(appPath.account()).toBe('/app/settings/account');
+    expect(appPath.admin()).toBe('/app/admin');
+    expect(parseDashboardPath('/app/settings/account').orgId).toBeNull();
+    expect(parseDashboardPath('/app/admin').orgId).toBeNull();
+  });
+});
+
+/**
+ * An address from before organisations were named by id: a bookmark, an email
+ * the product sent, a link an older CLI printed. It must arrive, at the same
+ * page, with the rest of the address untouched.
+ */
+describe('the address an old organisation link is replaced with', () => {
+  const ORG = '0193f2a1-0000-7000-8000-00000000a001';
+  const at = (pathname: string, search = '', hash = '') => ({ pathname, search, hash });
+
+  it('swaps the slug for the id and keeps every page beneath it', () => {
+    expect(canonicalOrgAddress(at('/app/acme'), ORG)).toBe(`/app/${ORG}`);
+    expect(canonicalOrgAddress(at('/app/acme/settings/billing'), ORG)).toBe(
+      `/app/${ORG}/settings/billing`,
+    );
+    expect(canonicalOrgAddress(at('/app/acme/members'), ORG)).toBe(`/app/${ORG}/members`);
+    expect(canonicalOrgAddress(at(`/app/acme/${PROJECT_ID}/production/settings`), ORG)).toBe(
+      `/app/${ORG}/${PROJECT_ID}/production/settings`,
+    );
+  });
+
+  it('keeps a project slug an even older address carries, for the project’s own redirect', () => {
+    expect(canonicalOrgAddress(at('/app/acme/payments-api/production'), ORG)).toBe(
+      `/app/${ORG}/payments-api/production`,
+    );
+  });
+
+  it('keeps the query string and the fragment exactly as they were', () => {
+    expect(
+      canonicalOrgAddress(at('/app/acme/settings/billing', '?checkout=returned', '#plans'), ORG),
+    ).toBe(`/app/${ORG}/settings/billing?checkout=returned#plans`);
+  });
+
+  it('touches nothing that names no organisation', () => {
+    for (const pathname of ['/app', '/app/settings/account', '/app/admin', '/other/acme', '']) {
+      expect(canonicalOrgAddress(at(pathname), ORG), pathname).toBeNull();
+    }
+  });
+});
+
+/**
  * The settings sections' addresses. Under `settings` at both places it
  * appears, so none of them can be shadowed: `settings` is reserved for
  * organisations and projects alike.
@@ -219,7 +304,7 @@ describe('the settings sections', () => {
   it('read every one of them as an organisation page, not a project', () => {
     for (const path of [appPath.orgWebhooks('acme'), appPath.orgDanger('acme')]) {
       expect(parseDashboardPath(path), path).toEqual({
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: null,
         envSlug: null,
         isAccountArea: false,
@@ -249,7 +334,7 @@ describe('the settings sections', () => {
         `${appPath.environmentSettings('acme', 'payments-api', 'production')}/policy`,
       ),
     ).toEqual({
-      orgSlug: 'acme',
+      orgId: 'acme',
       projectId: 'payments-api',
       envSlug: 'production',
       isAccountArea: false,
@@ -270,7 +355,7 @@ describe('the admin page', () => {
 
   it('is read as no organisation at all', () => {
     expect(parseDashboardPath(appPath.admin())).toEqual({
-      orgSlug: null,
+      orgId: null,
       projectId: null,
       envSlug: null,
       isAccountArea: false,
@@ -297,7 +382,7 @@ describe('the admin page', () => {
       '/app/admin/some/later/page',
     ]) {
       expect(parseDashboardPath(pathname), pathname).toEqual({
-        orgSlug: null,
+        orgId: null,
         projectId: null,
         envSlug: null,
         isAccountArea: false,

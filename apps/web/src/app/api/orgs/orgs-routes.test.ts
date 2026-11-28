@@ -11,16 +11,13 @@ import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from '@/server/schemas/resources';
  *
  * `routes.test.ts` covers everything a request is judged by *before* it reaches
  * a handler — the schemas, the slug derivation, the response shapes. This file
- * covers the three gates that live in the handlers themselves and are therefore
+ * covers the gates that live in the handlers themselves and are therefore
  * invisible to a schema test:
  *
  *  - **who may create an organisation, and how many.** The cap is the only thing
- *    standing between one account and an unbounded number of Org Master Keys,
- *    and an unbounded number of slugs claimed out of a namespace every tenant
- *    shares — permanently, because `organizations_slug_unique` is total.
- *  - **who may ask whether a slug is free.** `/api/orgs/availability` is the one
- *    endpoint in the product that answers a question about a resource the caller
- *    has no membership in, and it used to answer it for a CLI token.
+ *    standing between one account and an unbounded number of Org Master Keys.
+ *  - **what creating one takes.** A name, and nothing else: the slug is the
+ *    server's, derived from the new id, and one a client sends is ignored.
  *  - **that the refusals are written to the audit log**, not merely returned.
  *
  * Everything below the handler is stubbed, following `route.test.ts`: the
@@ -47,7 +44,6 @@ const actor = vi.hoisted(() => ({
 const repository = vi.hoisted(() => ({
   countOrganizationsHeldBy: vi.fn(),
   provisionOrganization: vi.fn(),
-  isOrgSlugAvailable: vi.fn(),
   listOrganizationsForUser: vi.fn(),
 }));
 
@@ -90,7 +86,6 @@ vi.mock('@/server/rate-limit', async (importOriginal) => ({
 }));
 
 const orgs = await import('./route');
-const availability = await import('./availability/route');
 
 const USER_ID = uuidv7();
 const ORG_ID = uuidv7();
@@ -184,7 +179,6 @@ beforeEach(() => {
   rateLimit.enforce.mockResolvedValue({ allowed: true, enforced: true });
 
   repository.countOrganizationsHeldBy.mockResolvedValue({ total: 0, latestId: null });
-  repository.isOrgSlugAvailable.mockResolvedValue(true);
   repository.listOrganizationsForUser.mockResolvedValue([]);
   repository.provisionOrganization.mockImplementation(async () => provisioned());
 });
@@ -223,18 +217,12 @@ function provisioned() {
   };
 }
 
-function createRequest(body: unknown = { name: 'Acme', slug: 'acme' }): Request {
+function createRequest(body: unknown = { name: 'Acme' }): Request {
   return new Request('https://xecret.playxoft.com/api/orgs', {
     method: 'POST',
     headers: { origin: 'https://xecret.playxoft.com', 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-}
-
-function availabilityRequest(slug: string): Request {
-  return new Request(
-    `https://xecret.playxoft.com/api/orgs/availability?slug=${encodeURIComponent(slug)}`,
-  );
 }
 
 /** Runs the audit flush the wrapper queued after the response. */
@@ -441,95 +429,57 @@ describe('POST /api/orgs — how many an account may hold', () => {
   });
 });
 
-describe('GET /api/orgs/availability — who may ask', () => {
+describe('POST /api/orgs — a name, and nothing else', () => {
+  it('provisions with the name alone, and leaves the slug to the server', async () => {
+    await orgs.POST(createRequest({ name: 'Acme' }));
+
+    const params = repository.provisionOrganization.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(params['name']).toBe('Acme');
+    expect(Object.keys(params)).not.toContain('slug');
+    expect(Object.keys(params)).not.toContain('slugSeed');
+  });
+
   /**
-   * The regression this test exists for.
-   *
-   * The endpoint refused only service tokens, on the stated grounds that being
-   * "authenticated and rate-limited" made it something other than a namespace
-   * scraper. A CLI token from a CI runner is authenticated, so a leaked one
-   * could walk the global organisation namespace one 400-millisecond debounce at
-   * a time — which is the enumeration the endpoint's own header argues cannot
-   * happen. Its sibling routes already required a browser session; this one now
-   * does too.
+   * A tab still running the form from before sends the slug it showed. That is
+   * somebody creating an organisation, so it succeeds, and what they sent is
+   * never read: the slug is derived from the new id.
    */
-  it.each([
-    ['a CLI token', cliTokenPrincipal],
-    ['a service token', serviceTokenPrincipal],
-  ])('refuses %s, so a leaked credential cannot enumerate the namespace', async (_l, principal) => {
-    actor.authenticate.mockResolvedValue({ principal, source: 'bearer' });
+  it('accepts a slug from an older form and never passes it on', async () => {
+    const response = await orgs.POST(createRequest({ name: 'Acme', slug: 'acme' }));
 
-    const response = await availability.GET(availabilityRequest('acme'));
-
-    expect(response.status).toBe(403);
-    // Refused before the lookup: no query, and no bucket spent on a caller that
-    // was never going to get an answer.
-    expect(repository.isOrgSlugAvailable).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    const params = repository.provisionOrganization.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(JSON.stringify(params)).not.toContain('"acme"');
   });
 
-  it('answers a browser session', async () => {
-    const payload = await body(await availability.GET(availabilityRequest('acme')));
-
-    expect(payload).toEqual({ slug: 'acme', available: true });
-  });
-});
-
-describe('GET /api/orgs/availability — the rules it applies', () => {
-  /**
-   * The categories come from `checkSlug`, the same function
-   * `organizationSlugSchema` is built from — so this endpoint cannot report a
-   * slug as available that `POST /api/orgs` is about to reject with a 422. It
-   * kept its own copy of the rules until a review pointed out that adding a rule
-   * to the schema would silently split the two apart.
-   */
-  it.each([
-    ['acme corp', 'invalid'],
-    ['acme_corp', 'invalid'],
-    ['acme-', 'invalid'],
-    ['-acme', 'invalid'],
-    ['acme--corp', 'invalid'],
-    ['settings', 'reserved'],
-    ['availability', 'reserved'],
-  ])('reports %s as %s without asking the database', async (slug, reason) => {
-    const payload = await body(await availability.GET(availabilityRequest(slug)));
-
-    expect(payload).toMatchObject({ available: false, reason });
-    expect(repository.isOrgSlugAvailable).not.toHaveBeenCalled();
+  it('allows a name another organisation already has, or one no slug could be made from', async () => {
+    for (const name of ['Acme', 'Acme', 'settings', '株式会社']) {
+      const response = await orgs.POST(createRequest({ name }));
+      expect(response.status, name).toBe(201);
+    }
   });
 
-  // Case is normalised rather than refused, exactly as the create form does it:
-  // somebody who types "ACME" is asking about `acme`, and telling them their
-  // slug is invalid would be answering a question they did not ask.
-  it('lowercases before deciding, and reports the slug it actually checked', async () => {
-    const payload = await body(await availability.GET(availabilityRequest('ACME')));
+  it('answers with the id the organisation is addressed by', async () => {
+    const payload = await body(await orgs.POST(createRequest({ name: 'Acme' })));
+    const organization = payload['organization'] as Record<string, unknown>;
 
-    expect(payload).toEqual({ slug: 'acme', available: true });
+    expect(typeof organization['id']).toBe('string');
+    expect(organization['name']).toBe('Acme');
   });
 
-  // The ceiling is refused by the query schema rather than reported as a
-  // category, because a slug longer than the field accepts is a malformed
-  // request rather than a name somebody might still choose.
-  it('rejects a slug past the organisation ceiling as a bad request', async () => {
-    const response = await availability.GET(availabilityRequest('a'.repeat(26)));
+  // A derived slug cannot collide in practice; if one ever does, there is no
+  // field the person could change, so it is a conflict to retry, not a field
+  // error pointing at an input that no longer exists.
+  it('answers a slug collision with a plain conflict, never a slug field error', async () => {
+    const { RepositoryError } = await import('@xecret/db/repositories');
+    repository.provisionOrganization.mockRejectedValue(
+      new RepositoryError('conflict', 'The organisation could not be created. Try again.'),
+    );
 
-    expect(response.status).toBe(422);
-    expect(repository.isOrgSlugAvailable).not.toHaveBeenCalled();
-  });
+    const response = await orgs.POST(createRequest({ name: 'Acme' }));
+    const payload = await body(response);
 
-  it('reports a well-formed slug somebody already holds as taken', async () => {
-    repository.isOrgSlugAvailable.mockResolvedValue(false);
-
-    const payload = await body(await availability.GET(availabilityRequest('acme')));
-
-    expect(payload).toMatchObject({ slug: 'acme', available: false, reason: 'taken' });
-  });
-
-  // The answer is one bit and a category. Never who holds it, or when.
-  it('says nothing beyond the slug, the bit, and the reason', async () => {
-    repository.isOrgSlugAvailable.mockResolvedValue(false);
-
-    const payload = await body(await availability.GET(availabilityRequest('acme')));
-
-    expect(Object.keys(payload).sort()).toEqual(['available', 'reason', 'slug']);
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(payload)).not.toContain('"slug"');
   });
 });

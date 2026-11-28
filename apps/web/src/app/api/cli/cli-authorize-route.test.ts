@@ -35,6 +35,7 @@ const actor = vi.hoisted(() => ({
 }));
 
 const repository = vi.hoisted(() => ({
+  findOrganizationByIdWithEntitlements: vi.fn(),
   findOrganizationBySlugWithEntitlements: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   createCliAuthCode: vi.fn(),
@@ -373,5 +374,67 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
       error: { code: 'validation_failed', fields: [{ field: 'orgSlug' }] },
     });
     expect(repository.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
+  });
+});
+
+function approveById(orgId: string): Request {
+  return new Request('https://xecret.playxoft.com/api/cli/authorize', {
+    method: 'POST',
+    headers: { origin: 'https://xecret.playxoft.com', 'content-type': 'application/json' },
+    body: JSON.stringify({ orgId, deviceName: 'DESKTOP-AIPE88H', codeChallenge: CHALLENGE }),
+  });
+}
+
+describe('POST /api/cli/authorize — the organisation named by its id', () => {
+  /** What the consent screen sends now: its picker holds ids, not slugs. */
+  it('approves in the organisation the id names, without a slug lookup', async () => {
+    repository.findOrganizationByIdWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp'),
+      entitlements: null,
+    });
+
+    const response = await route.POST(approveById(ORG_ID));
+
+    expect(response.status).toBe(200);
+    expect(repository.findOrganizationByIdWithEntitlements).toHaveBeenCalledWith(
+      expect.anything(),
+      ORG_ID,
+    );
+    expect(repository.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
+    expect(repository.createCliAuthCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an id that names no organisation of theirs, without minting a code', async () => {
+    repository.findOrganizationByIdWithEntitlements.mockResolvedValue(null);
+
+    const response = await route.POST(approveById(uuidv7()));
+
+    expect(response.status).toBe(404);
+    expect(repository.createCliAuthCode).not.toHaveBeenCalled();
+  });
+
+  it.each(['acme-corp', ORG_ID.toUpperCase(), ''])('refuses %o as an id', async (orgId) => {
+    const response = await route.POST(approveById(orgId));
+
+    expect(response.status).toBe(422);
+    expect(repository.findOrganizationByIdWithEntitlements).not.toHaveBeenCalled();
+    expect(repository.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('asks for exactly one of the two, never both and never neither', async () => {
+    const send = (fields: Record<string, string>) =>
+      new Request('https://xecret.playxoft.com/api/cli/authorize', {
+        method: 'POST',
+        headers: { origin: 'https://xecret.playxoft.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...fields,
+          deviceName: 'DESKTOP-AIPE88H',
+          codeChallenge: CHALLENGE,
+        }),
+      });
+
+    expect((await route.POST(send({ orgId: ORG_ID, orgSlug: 'acme-corp' }))).status).toBe(422);
+    expect((await route.POST(send({}))).status).toBe(422);
+    expect(repository.createCliAuthCode).not.toHaveBeenCalled();
   });
 });

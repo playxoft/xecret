@@ -19,12 +19,18 @@ import (
 
 // cmdInit writes .xecret.yaml in the current directory.
 //
-// Both slugs are validated against the server before anything is written —
-// a config file that 404s on first use is worse than an extra round trip
-// here. Interactively, the same listings drive the picker.
+// The project and environment are validated against the server before anything
+// is written — a config file that 404s on first use is worse than an extra
+// round trip here. Interactively, the same listings drive the picker.
+//
+// The file also records the organisation those listings came from, by its id.
+// That is what keeps this directory pointed at the project it was set up for
+// after `xecret orgs use` chooses another organisation: the alternative is a
+// file that quietly starts naming a project of the same Project ID somewhere
+// else.
 func cmdInit(args []string) error {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
-	projectFlag := flags.String("project", "", "project slug (skips the prompt)")
+	projectFlag := flags.String("project", "", "project ID, e.g. payments-api (skips the prompt)")
 	envFlag := flags.String("environment", "", "environment slug (skips the prompt)")
 	force := flags.Bool("force", false, "overwrite an existing "+config.Filename)
 	if err := parseFlagsOnly(flags, args); err != nil {
@@ -42,7 +48,6 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	org := credentials.OrgSlug
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -55,6 +60,16 @@ func cmdInit(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	// The file pins the organisation by id, so a credential from before ids
+	// learns its own first. Should that fail, the file is written without one
+	// and resolves as every file before this did.
+	if credentials.OrgID == "" {
+		if err := a.backfillIdentity(ctx, client, credentials); err != nil {
+			a.printer.Warnf("could not learn this organisation's id (%v); %s will not pin it.", err, config.Filename)
+		}
+	}
+	org := credentials.OrgRef()
 
 	interactive := output.StdoutIsTerminal()
 
@@ -77,12 +92,12 @@ func cmdInit(args []string) error {
 			names[i] = fmt.Sprintf("%s (%s)", project.Name, project.Slug)
 			slugs[i] = project.Slug
 		}
-		projectSlug, err = choose(a, "Project", names, slugs)
+		projectSlug, err = choose(a, "Project", "Project ID", names, slugs)
 		if err != nil {
 			return err
 		}
 	} else if !containsProject(projects, projectSlug) {
-		return fmt.Errorf("no project with slug %q — run 'xecret projects' to list them", projectSlug)
+		return fmt.Errorf("no project with the Project ID %q; run 'xecret projects' to list them", projectSlug)
 	}
 
 	environments, err := client.Environments(ctx, org, projectSlug)
@@ -108,7 +123,7 @@ func cmdInit(args []string) error {
 			names[i] = label
 			slugs[i] = environment.Slug
 		}
-		envSlug, err = choose(a, "Environment", names, slugs)
+		envSlug, err = choose(a, "Environment", "environment slug", names, slugs)
 		if err != nil {
 			return err
 		}
@@ -116,17 +131,27 @@ func cmdInit(args []string) error {
 		return fmt.Errorf("no environment with slug %q — run 'xecret environments --project %s'", envSlug, projectSlug)
 	}
 
-	if err := config.Write(target, config.Config{Project: projectSlug, Environment: envSlug}); err != nil {
+	if err := config.Write(target, config.Config{
+		Organization: credentials.OrgID,
+		Project:      projectSlug,
+		Environment:  envSlug,
+	}); err != nil {
 		return err
 	}
 
-	a.printer.Successf("Wrote %s — project %s, environment %s.", config.Filename, projectSlug, envSlug)
-	a.printer.Infof("The file holds slugs only, never secrets; commit it.")
+	if organization := credentials.OrgLabel(); organization != "" {
+		a.printer.Successf("Wrote %s: project %s, environment %s, organisation %s.",
+			config.Filename, projectSlug, envSlug, organization)
+	} else {
+		a.printer.Successf("Wrote %s: project %s, environment %s.", config.Filename, projectSlug, envSlug)
+	}
+	a.printer.Infof("The file holds identifiers only, never secrets; commit it.")
 	return nil
 }
 
-// choose prints a numbered list and reads a selection — a number or a slug.
-func choose(a *app, label string, names, slugs []string) (string, error) {
+// choose prints a numbered list and reads a selection: a number, or one of the
+// identifiers listed, which `what` names for the refusal.
+func choose(a *app, label, what string, names, slugs []string) (string, error) {
 	fmt.Fprintf(a.printer.Err, "\n%s:\n", label)
 	for i, name := range names {
 		fmt.Fprintf(a.printer.Err, "  %2d. %s\n", i+1, name)
@@ -151,7 +176,7 @@ func choose(a *app, label string, names, slugs []string) (string, error) {
 			return slug, nil
 		}
 	}
-	return "", fmt.Errorf("%q is neither a listed number nor a slug", answer)
+	return "", fmt.Errorf("%q is neither a listed number nor a listed %s", answer, what)
 }
 
 func containsProject(projects []api.Project, slug string) bool {

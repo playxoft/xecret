@@ -6,8 +6,10 @@ import { ApiError } from '@/lib/api';
 import type { ProjectResponse } from '@/components/projects/types';
 
 /**
- * An old project address — `/app/{org}/{projectSlug}/…`, from before project
- * pages were named by id — arriving at the page it always meant.
+ * An old project address — `/app/{orgId}/{projectSlug}/…`, from before project
+ * pages were named by id — arriving at the page it always meant. (An address
+ * older still, with the organisation's slug in it too, is moved to the
+ * organisation's id first: `legacy-org-address.test.ts`.)
  *
  * Three layers, each tested where it can be. Which addresses take the redirect
  * at all is the pages' decision — the settings area's layout's, for every
@@ -22,6 +24,8 @@ import type { ProjectResponse } from '@/components/projects/types';
  * to run one in — the same gap `projects-screen.test.ts` names. The effect is
  * two calls: the function tested below, then the router with its answer.
  */
+
+const ORG_ID_FOR_MOCKS = vi.hoisted(() => '0193f2a1-0000-7000-8000-00000000a001');
 
 const resource = vi.hoisted(() => ({
   current: { data: null, error: null } as { data: ProjectResponse | null; error: unknown },
@@ -38,8 +42,14 @@ vi.mock('../_lib/use-api-resource', () => ({
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: () => {}, push: () => {} }),
-  useParams: () => ({ orgSlug: 'acme' }),
-  usePathname: () => '/app/acme/payments-api/production',
+  useParams: () => ({ orgId: ORG_ID_FOR_MOCKS }),
+  usePathname: () => `/app/${ORG_ID_FOR_MOCKS}/payments-api/production`,
+}));
+
+// The organisation's legacy slug comes from the session the shell holds.
+vi.mock('./session', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./session')>()),
+  useOrganization: () => ({ id: ORG_ID_FOR_MOCKS, slug: 'acme', name: 'Acme' }),
 }));
 
 const { LegacyProjectAddress, leaveLegacyAddress, legacyProjectRedirect } =
@@ -49,11 +59,12 @@ const { modeIsAllowed, modePinKey, readModePins, recordModePin } =
 const { ProjectScreen } = await import('./project-screen');
 const { EnvironmentScreen } = await import('./environment-screen');
 const { EnvironmentSettingsLayout } = await import('./environment-settings-screen');
-const projectPage = await import('../app/[orgSlug]/[projectId]/page');
-const environmentPage = await import('../app/[orgSlug]/[projectId]/[envSlug]/page');
-const settingsLayout = await import('../app/[orgSlug]/[projectId]/[envSlug]/settings/layout');
+const projectPage = await import('../app/[orgId]/[projectId]/page');
+const environmentPage = await import('../app/[orgId]/[projectId]/[envSlug]/page');
+const settingsLayout = await import('../app/[orgId]/[projectId]/[envSlug]/settings/layout');
 
 const PROJECT_ID = '0193f2a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
+const ORG_ID = ORG_ID_FOR_MOCKS;
 
 beforeEach(() => {
   resource.current = { data: null, error: null };
@@ -71,21 +82,21 @@ async function pageFor(
 
 describe('which project addresses take the redirect', () => {
   it('sends a slug in the project segment to the redirect, on every project page', async () => {
-    const params = { orgSlug: 'acme', projectId: 'payments-api', envSlug: 'production' };
+    const params = { orgId: ORG_ID, projectId: 'payments-api', envSlug: 'production' };
 
     for (const page of [projectPage.default, environmentPage.default, settingsLayout.default]) {
       const element = await pageFor(page, params);
       expect(element.type).toBe(LegacyProjectAddress);
-      expect(element.props).toEqual({ orgSlug: 'acme', projectSlug: 'payments-api' });
+      expect(element.props).toEqual({ orgId: ORG_ID, projectSlug: 'payments-api' });
     }
   });
 
   it('opens the screen itself for an id, naming the project by it', async () => {
-    const params = { orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' };
+    const params = { orgId: ORG_ID, projectId: PROJECT_ID, envSlug: 'production' };
 
     const project = await pageFor(projectPage.default, params);
     expect(project.type).toBe(ProjectScreen);
-    expect(project.props).toMatchObject({ orgSlug: 'acme', projectId: PROJECT_ID });
+    expect(project.props).toMatchObject({ orgId: ORG_ID, projectId: PROJECT_ID });
 
     const environment = await pageFor(environmentPage.default, params);
     expect(environment.type).toBe(EnvironmentScreen);
@@ -100,7 +111,7 @@ describe('which project addresses take the redirect', () => {
     // Uppercase is no id the system issues — it is looked up as a slug, and
     // answered "not found" by the same request any unknown slug gets.
     const element = await pageFor(projectPage.default, {
-      orgSlug: 'acme',
+      orgId: ORG_ID,
       projectId: PROJECT_ID.toUpperCase(),
     });
     expect(element.type).toBe(LegacyProjectAddress);
@@ -113,18 +124,18 @@ describe('where an old address is sent', () => {
   it('is the same page under the id: environment, sub-path, query and fragment kept', () => {
     expect(
       legacyProjectRedirect(
-        at('/app/acme/payments-api/production/settings', '?from=digest', '#read-alerts'),
+        at(`/app/${ORG_ID}/payments-api/production/settings`, '?from=digest', '#read-alerts'),
         { id: PROJECT_ID },
       ),
-    ).toBe(`/app/acme/${PROJECT_ID}/production/settings?from=digest#read-alerts`);
-    expect(legacyProjectRedirect(at('/app/acme/payments-api'), { id: PROJECT_ID })).toBe(
-      `/app/acme/${PROJECT_ID}`,
+    ).toBe(`/app/${ORG_ID}/${PROJECT_ID}/production/settings?from=digest#read-alerts`);
+    expect(legacyProjectRedirect(at(`/app/${ORG_ID}/payments-api`), { id: PROJECT_ID })).toBe(
+      `/app/${ORG_ID}/${PROJECT_ID}`,
     );
   });
 
   it('is nowhere when the answer is not an id, whatever the server said', () => {
     for (const id of ['javascript:alert(1)', '../../evil', PROJECT_ID.toUpperCase(), '', 'api']) {
-      expect(legacyProjectRedirect(at('/app/acme/payments-api'), { id }), id).toBeNull();
+      expect(legacyProjectRedirect(at(`/app/${ORG_ID}/payments-api`), { id }), id).toBeNull();
     }
   });
 });
@@ -149,36 +160,52 @@ describe('the pins an old address leaves behind', () => {
     } as Storage;
   }
 
-  const at = { pathname: '/app/acme/api/production', search: '', hash: '' };
-  const idKey = modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' });
+  const at = { pathname: `/app/${ORG_ID}/api/production`, search: '', hash: '' };
+  const idKey = modePinKey({ orgId: ORG_ID, projectId: PROJECT_ID, envSlug: 'production' });
 
   it('holds when the server answers a different slug than the one in the URL', () => {
     const storage = memoryStorage();
-    recordModePin('mode:acme/api/production', 'e2ee', storage);
+    recordModePin(`mode:${ORG_ID}/api/production`, 'e2ee', storage);
 
     // A lying API: the right id, a slug that matches no pin. Carried from the
     // server's slug alone, the copy would do nothing and the id page would be
     // at first contact.
     const next = leaveLegacyAddress({
       location: at,
-      orgSlug: 'acme',
+      orgId: ORG_ID,
       projectSlug: 'api',
       found: { id: PROJECT_ID, slug: 'not-the-slug-you-pinned' },
       storage,
     });
 
-    expect(next).toBe(`/app/acme/${PROJECT_ID}/production`);
+    expect(next).toBe(`/app/${ORG_ID}/${PROJECT_ID}/production`);
     expect(modeIsAllowed(readModePins(storage), idKey, 'server').allowed).toBe(false);
   });
 
   it('holds for a slug typed in another case, through the server’s spelling', () => {
     const storage = memoryStorage();
+    recordModePin(`mode:${ORG_ID}/api/production`, 'e2ee', storage);
+
+    leaveLegacyAddress({
+      location: { ...at, pathname: `/app/${ORG_ID}/API/production` },
+      orgId: ORG_ID,
+      projectSlug: 'API',
+      found: { id: PROJECT_ID, slug: 'api' },
+      storage,
+    });
+
+    expect(modeIsAllowed(readModePins(storage), idKey, 'server').allowed).toBe(false);
+  });
+
+  it('holds for a pin filed under both slugs, from before either address was an id', () => {
+    const storage = memoryStorage();
     recordModePin('mode:acme/api/production', 'e2ee', storage);
 
     leaveLegacyAddress({
-      location: { ...at, pathname: '/app/acme/API/production' },
-      orgSlug: 'acme',
-      projectSlug: 'API',
+      location: at,
+      orgId: ORG_ID,
+      orgSlugs: ['acme'],
+      projectSlug: 'api',
       found: { id: PROJECT_ID, slug: 'api' },
       storage,
     });
@@ -188,13 +215,13 @@ describe('the pins an old address leaves behind', () => {
 
   it('carries nothing when the answer is not an id, and goes nowhere', () => {
     const storage = memoryStorage();
-    recordModePin('mode:acme/api/production', 'e2ee', storage);
+    recordModePin(`mode:${ORG_ID}/api/production`, 'e2ee', storage);
     const before = storage.getItem('xecret.pins.mode.v1');
 
     expect(
       leaveLegacyAddress({
         location: at,
-        orgSlug: 'acme',
+        orgId: ORG_ID,
         projectSlug: 'api',
         found: { id: 'not-an-id', slug: 'api' },
         storage,
@@ -207,7 +234,7 @@ describe('the pins an old address leaves behind', () => {
 describe('the page an old address shows for a moment', () => {
   it('says it is opening the project while the slug is looked up', () => {
     const html = renderToStaticMarkup(
-      createElement(LegacyProjectAddress, { orgSlug: 'acme', projectSlug: 'payments-api' }),
+      createElement(LegacyProjectAddress, { orgId: ORG_ID, projectSlug: 'payments-api' }),
     );
 
     expect(html).toContain('aria-busy="true"');
@@ -225,7 +252,7 @@ describe('the page an old address shows for a moment', () => {
       }),
     };
     const html = renderToStaticMarkup(
-      createElement(LegacyProjectAddress, { orgSlug: 'acme', projectSlug: 'ghost' }),
+      createElement(LegacyProjectAddress, { orgId: ORG_ID, projectSlug: 'ghost' }),
     );
 
     expect(html).not.toContain('Opening this project');

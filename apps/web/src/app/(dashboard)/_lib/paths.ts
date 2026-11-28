@@ -2,12 +2,14 @@
  * Every address the dashboard uses: the pages a person navigates to, and the API
  * routes behind them.
  *
- * The two halves live together because they have to agree. `/app/{org}/{projectId}`
- * and `/api/orgs/{org}/projects/{projectId}` name the same resource, and a screen
- * that reads one while linking to the other produces a 404 nobody notices until
- * somebody's slug is interesting. The API's project segment takes the project's
- * id or its slug (`resolveProject`), so a screen hands it whichever its own URL
- * holds, and the CLI keeps addressing projects by slug.
+ * The two halves live together because they have to agree.
+ * `/app/{orgId}/{projectId}` and `/api/orgs/{orgId}/projects/{projectId}` name
+ * the same resource, and a screen that reads one while linking to the other
+ * produces a 404 nobody notices until somebody's slug is interesting. The API's
+ * organisation segment takes the organisation's id or its legacy slug
+ * (`resolveOrg`), and its project segment the project's id or its slug
+ * (`resolveProject`), so a screen hands it whichever its own URL holds, and
+ * the CLI keeps addressing projects by slug.
  *
  * Two rules:
  *
@@ -78,38 +80,48 @@ export function adminTabFromQuery(value: string | null | undefined): AdminTab {
   return (ADMIN_TABS as readonly string[]).includes(value ?? '') ? (value as AdminTab) : 'overview';
 }
 
-/** Pages. Everything under `/app` requires a session. */
+/**
+ * Pages. Everything under `/app` requires a session.
+ *
+ * An organisation's pages are named by its **id**, `/app/{orgId}/…`, never by
+ * its slug: the slug is the server's, derived from the id, and shown to
+ * nobody. An address from before organisations were named this way still
+ * arrives (a bookmark, an email, an old CLI's printed link); the page reads a
+ * segment that is not shaped like an id as a legacy slug and replaces the URL
+ * with `canonicalOrgAddress`. The account area and the admin page sit beside
+ * the organisations, at `/app/settings` and `/app/admin`.
+ */
 export const appPath = {
   root: (): string => '/app',
-  org: (org: string): string => `/app/${segment(org)}`,
-  orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
+  org: (orgId: string): string => `/app/${segment(orgId)}`,
+  orgSettings: (orgId: string): string => `/app/${segment(orgId)}/settings`,
   /** The billing screen (P12). Owners only; Dodo's checkout and portal return here. */
-  orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
+  orgBilling: (orgId: string): string => `/app/${segment(orgId)}/settings/billing`,
   /**
    * The plans, inside the app. Every member may read it; only an owner is
    * offered a checkout from it. Where every in-app "Compare plans" link goes,
    * and the public pricing page's buttons for a signed-in visitor (through
    * `/app?to=plans`). The account menu's Upgrade opens the pricing page.
    *
-   * Under `settings`, beside billing, rather than at `/app/{org}/upgrade`: that
-   * is the slot a project slug takes, and claiming it would shadow any project
-   * already called `upgrade` — its overview, and every control that lives only
-   * there. `settings` is already reserved, so this path shadows nothing.
+   * Under `settings`, beside billing, rather than at `/app/{orgId}/upgrade`:
+   * that is the slot a project takes, and an old address still carries a
+   * project slug there, so claiming it would shadow any project already called
+   * `upgrade`. `settings` is already reserved, so this path shadows nothing.
    */
-  orgPlans: (org: string): string => `/app/${segment(org)}/settings/plans`,
+  orgPlans: (orgId: string): string => `/app/${segment(orgId)}/settings/plans`,
   // The rest of the organisation's settings sections, one address each — see
   // `settings-sections.ts` for the list they make and who is shown which.
   // General is `orgSettings` itself, so every link to the area as a whole
   // still lands on the page that names the organisation.
-  orgRoles: (org: string): string => `/app/${segment(org)}/settings/roles`,
+  orgRoles: (orgId: string): string => `/app/${segment(orgId)}/settings/roles`,
   /** Where the WorkOS setup portal sends an owner back to when they are done. */
-  orgSingleSignOn: (org: string): string => `/app/${segment(org)}/settings/single-sign-on`,
-  orgPolicies: (org: string): string => `/app/${segment(org)}/settings/policies`,
-  orgWebhooks: (org: string): string => `/app/${segment(org)}/settings/webhooks`,
-  orgDanger: (org: string): string => `/app/${segment(org)}/settings/danger`,
-  members: (org: string): string => `/app/${segment(org)}/members`,
-  tokens: (org: string): string => `/app/${segment(org)}/tokens`,
-  audit: (org: string): string => `/app/${segment(org)}/audit`,
+  orgSingleSignOn: (orgId: string): string => `/app/${segment(orgId)}/settings/single-sign-on`,
+  orgPolicies: (orgId: string): string => `/app/${segment(orgId)}/settings/policies`,
+  orgWebhooks: (orgId: string): string => `/app/${segment(orgId)}/settings/webhooks`,
+  orgDanger: (orgId: string): string => `/app/${segment(orgId)}/settings/danger`,
+  members: (orgId: string): string => `/app/${segment(orgId)}/members`,
+  tokens: (orgId: string): string => `/app/${segment(orgId)}/tokens`,
+  audit: (orgId: string): string => `/app/${segment(orgId)}/audit`,
   /** The invitation-acceptance page. Top-level: the visitor may have no session. */
   invite: (token: string): string => `/invite/${segment(token)}`,
   /**
@@ -117,17 +129,18 @@ export const appPath = {
    *
    * An id, so the address says nothing about what a project is called and is
    * the same address for as long as the project exists: a bookmark, a link in
-   * a chat, a URL in an emailed digest. The organisation and the environment
-   * are still named by slug, as `xecret run --env` names an environment. An
-   * address from before projects were named this way still arrives — the page
-   * reads a slug-shaped segment as one and replaces the URL with
+   * a chat, a URL in an emailed digest. The organisation is named by its id
+   * too; the environment is still named by slug, as `xecret run --env` names
+   * one. An address from before projects were named this way still arrives —
+   * the page reads a slug-shaped segment as one and replaces the URL with
    * `canonicalProjectAddress`.
    */
-  project: (org: string, projectId: string): string => `${appPath.org(org)}/${segment(projectId)}`,
-  environment: (org: string, projectId: string, env: string): string =>
-    `${appPath.project(org, projectId)}/${segment(env)}`,
-  environmentSettings: (org: string, projectId: string, env: string): string =>
-    `${appPath.environment(org, projectId, env)}/settings`,
+  project: (orgId: string, projectId: string): string =>
+    `${appPath.org(orgId)}/${segment(projectId)}`,
+  environment: (orgId: string, projectId: string, env: string): string =>
+    `${appPath.project(orgId, projectId)}/${segment(env)}`,
+  environmentSettings: (orgId: string, projectId: string, env: string): string =>
+    `${appPath.environment(orgId, projectId, env)}/settings`,
   account: (): string => '/app/settings/account',
   // The account area's other sections. There is no `settingsSecurity` any
   // more: `/app/settings/security` was one long page of five cards, and it is
@@ -146,18 +159,20 @@ export const appPath = {
    * it opens on (`adminTabFromQuery`). Linked from the account menu only for an
    * admin; for everybody else it is a 404, as its API is (`server/admin.ts`).
    *
-   * At the first position, where an organisation slug would go, which is safe
-   * only because `admin` is in the reserved slug list — no organisation can be
-   * called `admin` and be shadowed by this, as none can be called `settings`.
+   * At the first position, where an organisation goes. An organisation is
+   * named there by its id, which never spells a word, and `admin` is in the
+   * reserved slug list, so no legacy slug can be called `admin` and be
+   * shadowed by this either, as none can be called `settings`.
    */
   admin: (): string => '/app/admin',
   /** The admin page with one tab open, e.g. `/app/admin?tab=users`. Overview's is the page's own. */
   adminTab: (tab: AdminTab): string =>
     tab === 'overview' ? appPath.admin() : `${appPath.admin()}?tab=${segment(tab)}`,
   /**
-   * One organisation, and one account, on the admin page — by id, like the
-   * admin API: the admin is not a member, and a slug is the organisation's to
-   * rename. Under `/app/admin`, so the shell reads them as the admin area too.
+   * One organisation, and one account, on the admin page, by id like the
+   * admin API: the admin is not a member, and an id is what every address
+   * names an organisation by. Under `/app/admin`, so the shell reads them as
+   * the admin area too.
    */
   adminOrganization: (orgId: string): string =>
     `${appPath.admin()}/organizations/${segment(orgId)}`,
@@ -187,8 +202,7 @@ export const apiPath = {
   /**
    * One PIN attempt. A sibling of `/api/auth/vault/pin/{deviceId}` rather than a
    * nested route, which is unambiguous because a device id is always a uuid and
-   * `attempt` is not one — the same arrangement `/api/orgs/availability` has
-   * beside `/api/orgs/{orgSlug}`.
+   * `attempt` is not one.
    */
   vaultPinAttempt: (): string => '/api/auth/vault/pin/attempt',
   vaultPin: (deviceId: string): string => `${apiPath.vaultPins()}/${segment(deviceId)}`,
@@ -205,126 +219,126 @@ export const apiPath = {
   reauthVerify: (): string => '/api/auth/reauth/verify',
   orgs: (): string => '/api/orgs',
   /**
-   * Whether an organisation slug is free. Takes `?slug=`.
-   *
-   * A sibling of `/api/orgs/{orgSlug}` rather than a nested route, which works
-   * only because `availability` is in the reserved slug list — no organisation
-   * can claim it and shadow this.
+   * One organisation, and everything below it, by its id: what every address
+   * the dashboard builds holds. The API still takes a legacy slug in the same
+   * segment (`resolveOrg`), which is how an old address is looked up on its
+   * way to the id.
    */
-  orgSlugAvailability: (): string => '/api/orgs/availability',
-  org: (org: string): string => `/api/orgs/${segment(org)}`,
-  projects: (org: string): string => `${apiPath.org(org)}/projects`,
-  members: (org: string): string => `${apiPath.org(org)}/members`,
-  member: (org: string, memberId: string): string => `${apiPath.members(org)}/${segment(memberId)}`,
-  memberGrants: (org: string, memberId: string): string =>
-    `${apiPath.member(org, memberId)}/grants`,
-  memberAccess: (org: string, memberId: string): string =>
-    `${apiPath.member(org, memberId)}/access`,
-  invitations: (org: string): string => `${apiPath.org(org)}/invitations`,
-  invitation: (org: string, invitationId: string): string =>
-    `${apiPath.invitations(org)}/${segment(invitationId)}`,
+  org: (orgId: string): string => `/api/orgs/${segment(orgId)}`,
+  projects: (orgId: string): string => `${apiPath.org(orgId)}/projects`,
+  members: (orgId: string): string => `${apiPath.org(orgId)}/members`,
+  member: (orgId: string, memberId: string): string =>
+    `${apiPath.members(orgId)}/${segment(memberId)}`,
+  memberGrants: (orgId: string, memberId: string): string =>
+    `${apiPath.member(orgId, memberId)}/grants`,
+  memberAccess: (orgId: string, memberId: string): string =>
+    `${apiPath.member(orgId, memberId)}/access`,
+  invitations: (orgId: string): string => `${apiPath.org(orgId)}/invitations`,
+  invitation: (orgId: string, invitationId: string): string =>
+    `${apiPath.invitations(orgId)}/${segment(invitationId)}`,
   invitationLookup: (): string => '/api/invitations/lookup',
   invitationAccept: (): string => '/api/invitations/accept',
   /** The viewer's own authority, and the level they could grant on each environment. */
-  authority: (org: string): string => `${apiPath.org(org)}/authority`,
+  authority: (orgId: string): string => `${apiPath.org(orgId)}/authority`,
   /** The organisation's custom roles. */
-  roles: (org: string): string => `${apiPath.org(org)}/roles`,
-  role: (org: string, roleId: string): string => `${apiPath.roles(org)}/${segment(roleId)}`,
+  roles: (orgId: string): string => `${apiPath.org(orgId)}/roles`,
+  role: (orgId: string, roleId: string): string => `${apiPath.roles(orgId)}/${segment(roleId)}`,
   /** The organisation's single sign-on: status, turning it on, and its two policies. */
-  sso: (org: string): string => `${apiPath.org(org)}/sso`,
+  sso: (orgId: string): string => `${apiPath.org(orgId)}/sso`,
   /** `POST` mints a WorkOS Admin Portal link for setting up the identity provider. */
-  ssoPortal: (org: string): string => `${apiPath.sso(org)}/portal`,
+  ssoPortal: (orgId: string): string => `${apiPath.sso(orgId)}/portal`,
   /** The billing screen's status (P12). */
-  billing: (org: string): string => `${apiPath.org(org)}/billing`,
+  billing: (orgId: string): string => `${apiPath.org(orgId)}/billing`,
   /** `POST` a plan and period: a Dodo checkout URL to send the browser to. */
-  billingCheckout: (org: string): string => `${apiPath.billing(org)}/checkout`,
+  billingCheckout: (orgId: string): string => `${apiPath.billing(orgId)}/checkout`,
   /** `GET` previews and `POST` requests a move to another plan or period. */
-  billingChange: (org: string): string => `${apiPath.billing(org)}/change`,
+  billingChange: (orgId: string): string => `${apiPath.billing(orgId)}/change`,
   /** `POST` mints a link into Dodo's customer portal. */
-  billingPortal: (org: string): string => `${apiPath.billing(org)}/portal`,
+  billingPortal: (orgId: string): string => `${apiPath.billing(orgId)}/portal`,
   /** `POST {code}`: what a promo code would do here. Changes nothing. */
-  billingPromoCode: (org: string): string => `${apiPath.billing(org)}/promo-code`,
+  billingPromoCode: (orgId: string): string => `${apiPath.billing(orgId)}/promo-code`,
   /** `POST {code}`: applies a free-plan code now. A discount code goes to checkout instead. */
-  billingPromoCodeRedeem: (org: string): string => `${apiPath.billingPromoCode(org)}/redeem`,
-  serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
-  cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
-  token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
-    `${apiPath.org(org)}/tokens/${kind}/${segment(tokenId)}`,
-  audit: (org: string): string => `${apiPath.org(org)}/audit`,
+  billingPromoCodeRedeem: (orgId: string): string => `${apiPath.billingPromoCode(orgId)}/redeem`,
+  serviceTokens: (orgId: string): string => `${apiPath.org(orgId)}/tokens/service`,
+  cliTokens: (orgId: string): string => `${apiPath.org(orgId)}/tokens/cli`,
+  token: (orgId: string, kind: 'cli' | 'service', tokenId: string): string =>
+    `${apiPath.org(orgId)}/tokens/${kind}/${segment(tokenId)}`,
+  audit: (orgId: string): string => `${apiPath.org(orgId)}/audit`,
   /**
    * One project, and everything below it. `project` is the project's id — what
    * every dashboard address holds — or its slug, which is all some payloads
    * carry; the API resolves either, within the organisation (`resolveProject`).
    */
-  project: (org: string, project: string): string => `${apiPath.projects(org)}/${segment(project)}`,
-  environments: (org: string, project: string): string =>
-    `${apiPath.project(org, project)}/environments`,
+  project: (orgId: string, project: string): string =>
+    `${apiPath.projects(orgId)}/${segment(project)}`,
+  environments: (orgId: string, project: string): string =>
+    `${apiPath.project(orgId, project)}/environments`,
   /** Who can reach one project, and at what level — the transpose of `memberAccess`. */
-  projectMembers: (org: string, project: string): string =>
-    `${apiPath.project(org, project)}/members`,
-  environment: (org: string, project: string, env: string): string =>
-    `${apiPath.environments(org, project)}/${segment(env)}`,
-  secrets: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/secrets`,
-  secret: (org: string, project: string, env: string, name: string): string =>
-    `${apiPath.secrets(org, project, env)}/${segment(name)}`,
-  secretVersions: (org: string, project: string, env: string, name: string): string =>
-    `${apiPath.secret(org, project, env, name)}/versions`,
-  secretRestore: (org: string, project: string, env: string, name: string): string =>
-    `${apiPath.secret(org, project, env, name)}/restore`,
+  projectMembers: (orgId: string, project: string): string =>
+    `${apiPath.project(orgId, project)}/members`,
+  environment: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environments(orgId, project)}/${segment(env)}`,
+  secrets: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/secrets`,
+  secret: (orgId: string, project: string, env: string, name: string): string =>
+    `${apiPath.secrets(orgId, project, env)}/${segment(name)}`,
+  secretVersions: (orgId: string, project: string, env: string, name: string): string =>
+    `${apiPath.secret(orgId, project, env, name)}/versions`,
+  secretRestore: (orgId: string, project: string, env: string, name: string): string =>
+    `${apiPath.secret(orgId, project, env, name)}/restore`,
   secretVersion: (
-    org: string,
+    orgId: string,
     project: string,
     env: string,
     name: string,
     version: number,
-  ): string => `${apiPath.secretVersions(org, project, env, name)}/${version}`,
-  import: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/import`,
-  export: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/export`,
-  pull: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/pull`,
+  ): string => `${apiPath.secretVersions(orgId, project, env, name)}/${version}`,
+  import: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/import`,
+  export: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/export`,
+  pull: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/pull`,
 
   // ── P19: the paid secret features ──
   /** `PUT {parent: slug|null}` — what this environment inherits from. */
-  environmentParent: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/parent`,
+  environmentParent: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/parent`,
   /** `PATCH {plaintextExport?, readAlerts?}` — the environment's two switches. */
-  environmentPolicy: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/policy`,
+  environmentPolicy: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/policy`,
   /** The new addresses this environment has been read from. Takes `?limit=`. */
-  readSightings: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/read-sightings`,
+  readSightings: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/read-sightings`,
   /** The caller's own personal overrides in one environment. */
-  overrides: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/overrides`,
-  override: (org: string, project: string, env: string, name: string): string =>
-    `${apiPath.overrides(org, project, env)}/${segment(name)}`,
+  overrides: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/overrides`,
+  override: (orgId: string, project: string, env: string, name: string): string =>
+    `${apiPath.overrides(orgId, project, env)}/${segment(name)}`,
   /** `POST` into `env` — the *target* — from the source named in the body. */
-  promote: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/promote`,
+  promote: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/promote`,
   /** `GET ?at=` previews a point-in-time restore; `POST` applies it. */
-  restorePoint: (org: string, project: string, env: string): string =>
-    `${apiPath.environment(org, project, env)}/restore-point`,
+  restorePoint: (orgId: string, project: string, env: string): string =>
+    `${apiPath.environment(orgId, project, env)}/restore-point`,
   /** The organisation's token and secret policies. */
-  policies: (org: string): string => `${apiPath.org(org)}/policies`,
-  webhooks: (org: string): string => `${apiPath.org(org)}/webhooks`,
-  webhook: (org: string, webhookId: string): string =>
-    `${apiPath.webhooks(org)}/${segment(webhookId)}`,
-  webhookRotateSecret: (org: string, webhookId: string): string =>
-    `${apiPath.webhook(org, webhookId)}/rotate-secret`,
-  webhookTest: (org: string, webhookId: string): string =>
-    `${apiPath.webhook(org, webhookId)}/test`,
-  webhookDeliveries: (org: string, webhookId: string): string =>
-    `${apiPath.webhook(org, webhookId)}/deliveries`,
+  policies: (orgId: string): string => `${apiPath.org(orgId)}/policies`,
+  webhooks: (orgId: string): string => `${apiPath.org(orgId)}/webhooks`,
+  webhook: (orgId: string, webhookId: string): string =>
+    `${apiPath.webhooks(orgId)}/${segment(webhookId)}`,
+  webhookRotateSecret: (orgId: string, webhookId: string): string =>
+    `${apiPath.webhook(orgId, webhookId)}/rotate-secret`,
+  webhookTest: (orgId: string, webhookId: string): string =>
+    `${apiPath.webhook(orgId, webhookId)}/test`,
+  webhookDeliveries: (orgId: string, webhookId: string): string =>
+    `${apiPath.webhook(orgId, webhookId)}/deliveries`,
 
   // ── The admin page (`server/admin.ts`): 404 to everybody but xecret's staff ──
   /** `GET` — how many accounts, organisations, projects, environments and secrets, and recent sign-ups. */
   adminOverview: (): string => '/api/admin/overview',
   /**
    * `GET` — every organisation, newest first (`?cursor=`); `GET ?q=` —
-   * organisations by a member's email address or by slug.
+   * organisations by a member's email address, by id, or by legacy slug.
    */
   adminOrganizations: (): string => '/api/admin/organizations',
   /** `GET` — one organisation, with its members. */
@@ -335,8 +349,7 @@ export const apiPath = {
   adminUser: (userId: string): string => `${apiPath.adminUsers()}/${segment(userId)}`,
   /**
    * `POST` gives the organisation a free plan, or replaces the one it has.
-   * Keyed by id, not slug: the admin is not a member, and a slug is the
-   * organisation's to rename.
+   * Keyed by id, as every organisation address is.
    */
   adminGrant: (orgId: string): string => `/api/admin/organizations/${segment(orgId)}/grant`,
   /** `POST {reason}` ends a free plan now; the organisation returns to Free. */
@@ -395,19 +408,27 @@ export function withQuery(
  * rather than appearing a beat later.
  *
  * `settings` is unambiguous at both places it appears. At the first position it
- * is `/app/settings/account`, and no organisation can shadow it because
- * `settings` is in the reserved slug list; at the second it is the organisation
- * settings page, and nothing in the project slot can shadow it — an id never
- * spells a word, and the slug an old address carries there is barred from the
- * list for the same reason.
+ * is `/app/settings/account`, and no organisation can shadow it: an
+ * organisation is named there by its id, which never spells a word, and an old
+ * address's slug is barred from `settings` by the reserved list. At the second
+ * it is the organisation settings page, and nothing in the project slot can
+ * shadow it either, for the same two reasons.
  *
  * `admin` at the first position is the admin page, by the same reasoning. Read
- * as a slug it would point the whole shell at an organisation called "admin" —
+ * as an organisation it would point the whole shell at one called "admin" —
  * every sidebar link to `/app/admin/members` and the like, and the tab's
  * remembered organisation overwritten with one the viewer is not a member of.
  */
 export interface DashboardLocation {
-  orgSlug: string | null;
+  /**
+   * The organisation segment as the URL spells it: the organisation's id at
+   * every address the dashboard builds, or, for a moment on an address from
+   * before organisations were named by id, its legacy slug, which the page then
+   * replaces with the id (`canonicalOrgAddress`). Anything that keys state on
+   * it, or reads it as an id, checks `isUuid` first; nothing should show it to
+   * a person.
+   */
+  orgId: string | null;
   /**
    * The project segment as the URL spells it: the project's id at every address
    * the dashboard builds, or — for a moment, on an address from before projects
@@ -426,7 +447,7 @@ export interface DashboardLocation {
 export function parseDashboardPath(pathname: string): DashboardLocation {
   const [root, first, second, third] = pathname.split('/').filter(Boolean);
   const empty: DashboardLocation = {
-    orgSlug: null,
+    orgId: null,
     projectId: null,
     envSlug: null,
     isAccountArea: false,
@@ -444,12 +465,47 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
     second === 'settings' || second === 'members' || second === 'tokens' || second === 'audit';
 
   return {
-    orgSlug: decodeURIComponent(first),
+    orgId: decodeURIComponent(first),
     projectId: second === undefined || orgPage ? null : decodeURIComponent(second),
     envSlug: third === undefined || orgPage ? null : decodeURIComponent(third),
     isAccountArea: false,
     isAdminArea: false,
   };
+}
+
+/**
+ * Where an organisation page reached by an old address belongs: the same page,
+ * named by the organisation's id, with everything after it kept — the project,
+ * the environment, the section, the query string and the fragment.
+ *
+ * ── Why an old address has to keep working ──
+ * Until organisations were named by id they were named by slug, and those
+ * addresses are in bookmarks, browser history, chat threads, the emails the
+ * product has sent and the links an older CLI printed. So a segment not shaped
+ * like an id is looked up as a slug (the API still takes one) and the address
+ * is *replaced*, not pushed, so Back does not return to a page that only
+ * redirects.
+ *
+ * Only the organisation segment changes. The rest is taken from the address as
+ * it stands, so a project slug an even older address carries survives the move
+ * and is replaced by the project's own redirect on the next page.
+ *
+ * `null` for a path that names no organisation: the account area, the admin
+ * page, the picker. No caller should reach that.
+ */
+export function canonicalOrgAddress(
+  location: { pathname: string; search: string; hash: string },
+  orgId: string,
+): string | null {
+  if (parseDashboardPath(location.pathname).orgId === null) return null;
+
+  // `['', 'app', org, …rest]`: checked rather than assumed, as in
+  // `canonicalProjectAddress`, so a doubled slash never overwrites another
+  // segment.
+  const segments = location.pathname.split('/');
+  if (segments[0] !== '' || segments[1] !== 'app' || !segments[2]) return null;
+  segments[2] = segment(orgId);
+  return `${segments.join('/')}${location.search}${location.hash}`;
 }
 
 /**

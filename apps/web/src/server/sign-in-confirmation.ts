@@ -60,7 +60,7 @@ export async function parkSignIn(
     email: prepared.user.email,
     signInMethod: prepared.facts.signInMethod,
     ssoWorkosOrgId: prepared.facts.ssoWorkosOrgId,
-    organization: linked === null ? null : { name: linked.name, slug: linked.slug },
+    organization: linked === null ? null : { name: linked.name, id: linked.id },
     purpose: params.purpose,
     next: params.next,
     flowIssuedAt: params.flowIssuedAt,
@@ -109,7 +109,7 @@ export interface ConfirmationView {
    * presents it as a claim, made inert like the address. `null` for a single
    * sign-on through an organisation not linked to any here.
    */
-  organization: { name: string; slug: string } | null;
+  organization: { name: string; id: string } | null;
   reason: SignInConfirmationReason;
   purpose: OAuthPurpose;
   /** Whether continuing makes the account a member of that organisation. */
@@ -141,8 +141,9 @@ export async function confirmationView(
         ? null
         : {
             name: inertText(value.organization.name, SHOWN_NAME_MAX),
-            // A slug is lower-case ASCII by the parser's own check.
-            slug: value.organization.slug,
+            // Lower-case ASCII by the parser's own check: an id, or the slug
+            // a cookie sealed before ids carries in its place.
+            id: value.organization.id,
           },
     reason: value.reason,
     purpose: value.purpose,

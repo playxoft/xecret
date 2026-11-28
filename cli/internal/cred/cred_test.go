@@ -2,6 +2,7 @@ package cred
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/playxoft/xecret/cli/internal/keyring"
@@ -63,6 +64,115 @@ func TestLoadRejectsEmptyToken(t *testing.T) {
 	store := memoryStore{"credentials": `{"apiUrl":"https://x","token":"","orgSlug":"a","email":"e"}`}
 	if _, err := Load(store); !errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("an empty token is not a login; got %v", err)
+	}
+}
+
+const acmeID = "0192f0a1-0000-7000-8000-00000000a001"
+
+// A login stores the organisation's id, its name for output, and the slug as a
+// hidden alias, and all three come back.
+func TestTheOrganisationRoundTripsByIdNameAndAlias(t *testing.T) {
+	store := memoryStore{}
+	saved := Credentials{
+		APIURL: "https://xecret.example", Token: "xct_live_secret", Email: "dev@example.com",
+		OrgID: acmeID, OrgName: "Acme Corp", OrgSlug: "acme", UserID: "u-1",
+	}
+	if err := Save(store, saved); err != nil {
+		t.Fatal(err)
+	}
+	// The alias is still written under the key an older binary reads, so a
+	// downgrade keeps addressing the same organisation.
+	if !strings.Contains(store[storeKey], `"orgSlug":"acme"`) ||
+		!strings.Contains(store[storeKey], `"orgId":"`+acmeID+`"`) ||
+		!strings.Contains(store[storeKey], `"orgName":"Acme Corp"`) {
+		t.Fatalf("stored payload = %s", store[storeKey])
+	}
+
+	loaded, err := Load(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *loaded != saved {
+		t.Errorf("round trip changed the credential: %+v", loaded)
+	}
+	if loaded.OrgRef() != acmeID {
+		t.Errorf("OrgRef = %q, want the id", loaded.OrgRef())
+	}
+	if loaded.OrgLabel() != "Acme Corp" {
+		t.Errorf("OrgLabel = %q, want the name", loaded.OrgLabel())
+	}
+}
+
+// What a build from before organisation ids wrote: a slug and nothing else. It
+// still loads, and still addresses the API, by the slug.
+func TestASlugOnlyCredentialStillAddressesTheAPI(t *testing.T) {
+	store := memoryStore{storeKey: `{"apiUrl":"https://x","token":"xct_live_old","orgSlug":"acme","email":"e"}`}
+	loaded, err := Load(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.OrgID != "" || loaded.OrgName != "" {
+		t.Fatalf("an old credential grew fields it never had: %+v", loaded)
+	}
+	if loaded.OrgRef() != "acme" {
+		t.Errorf("OrgRef = %q, want the slug until the id is known", loaded.OrgRef())
+	}
+	if loaded.OrgLabel() != "" {
+		t.Errorf("OrgLabel = %q; output must never fall back to the slug", loaded.OrgLabel())
+	}
+}
+
+func TestOrganisationMatching(t *testing.T) {
+	full := &Credentials{OrgID: acmeID, OrgSlug: "acme"}
+	slugOnly := &Credentials{OrgSlug: "acme"}
+
+	if !full.NamesOrg(acmeID) || !full.NamesOrg("acme") || full.NamesOrg("side") || full.NamesOrg("") {
+		t.Error("NamesOrg must accept the id and the alias, and nothing else")
+	}
+	if slugOnly.NamesOrg("") {
+		t.Error("an empty reference names no organisation")
+	}
+
+	// The id decides once it is known: a listing that pairs the alias with a
+	// different id is a different organisation.
+	if !full.IsOrg(acmeID, "acme") || full.IsOrg("0192f0a1-0000-7000-8000-00000000a002", "acme") {
+		t.Error("IsOrg must match by id when the credential holds one")
+	}
+	if !slugOnly.IsOrg(acmeID, "acme") || slugOnly.IsOrg(acmeID, "side") || slugOnly.IsOrg(acmeID, "") {
+		t.Error("IsOrg must match by slug for a credential that holds nothing else")
+	}
+
+	if (&Credentials{OrgID: acmeID, OrgSlug: "acme"}).OrgLabel() != acmeID {
+		t.Error("with no name known, output names the organisation by its id")
+	}
+}
+
+// Slugs are citext on the server, so `Acme` and `acme` are one organisation
+// there and must be one here. Ids are compared exactly, once canonical.
+func TestSlugsMatchWithoutRegardToCaseAndIdsExactly(t *testing.T) {
+	full := &Credentials{OrgID: acmeID, OrgSlug: "acme"}
+	slugOnly := &Credentials{OrgSlug: "Acme"}
+
+	for _, ref := range []string{"acme", "ACME", "Acme"} {
+		if !full.NamesOrg(ref) || !slugOnly.NamesOrg(ref) {
+			t.Errorf("NamesOrg(%q) must match the slug in any case", ref)
+		}
+	}
+	if !full.NamesOrg(strings.ToUpper(acmeID)) {
+		t.Error("an id in another case is still the canonical id")
+	}
+	if slugOnly.NamesOrg(acmeID) {
+		t.Error("a credential that holds no id cannot claim one by its slug")
+	}
+	if full.NamesOrg("acme-corp") || full.NamesOrg("0192f0a1-0000-7000-8000-00000000a002") {
+		t.Error("NamesOrg matched another organisation")
+	}
+
+	if !slugOnly.IsOrg(acmeID, "ACME") || !slugOnly.IsOrg(acmeID, "acme") {
+		t.Error("IsOrg must match the slug in any case for a credential that holds nothing else")
+	}
+	if !SameSlug("Acme", "aCME") || SameSlug("", "") || SameSlug("acme", "") || SameSlug("acme", "acme-2") {
+		t.Error("SameSlug must compare present slugs without regard to case, and nothing else")
 	}
 }
 

@@ -122,7 +122,7 @@ function OrganizationDetail({ orgId }: { orgId: string }) {
         }
         description={
           <>
-            <code className="font-mono">{organization.slug}</code> · created{' '}
+            <code className="font-mono break-all">{organization.id}</code> · created{' '}
             {formatAbsoluteTime(organization.createdAt)} · owned by{' '}
             {ownersText(organization.ownerEmails)}
           </>

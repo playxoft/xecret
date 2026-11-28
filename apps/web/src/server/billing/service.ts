@@ -248,8 +248,8 @@ function providerFailure(
     : errors.billingProviderUnavailable(`unexpected failure while ${doing}`);
 }
 
-const billingPage = (services: ServiceContext, slug: string) =>
-  `${publicOrigin(services.env)}/app/${encodeURIComponent(slug)}/settings/billing`;
+const billingPage = (services: ServiceContext, orgId: string) =>
+  `${publicOrigin(services.env)}/app/${encodeURIComponent(orgId)}/settings/billing`;
 
 /* ── status ────────────────────────────────────────────────────────────────── */
 
@@ -480,7 +480,7 @@ export async function startCheckout(
             row.dodoCustomerId !== null && sameMode(row, config)
               ? { customerId: row.dodoCustomerId }
               : { email: principal.user.email, name: principal.user.displayName },
-          returnUrl: `${billingPage(services, scope.organization.slug)}?checkout=returned`,
+          returnUrl: `${billingPage(services, scope.organization.id)}?checkout=returned`,
           orgId,
           nonce,
           regionLock: lockHolds ? { country: row.billingCountry!, currency: row.currency! } : null,
@@ -695,7 +695,7 @@ export async function openPortal(services: ServiceContext, scope: OrgScope): Pro
   try {
     ({ link } = await billingProvider(config).createPortalSession(
       row.dodoCustomerId,
-      billingPage(services, scope.organization.slug),
+      billingPage(services, scope.organization.id),
     ));
   } catch (cause) {
     throw providerFailure(services, cause, 'opening the customer portal');

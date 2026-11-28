@@ -10,6 +10,7 @@ import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { planRefusal } from '@/server/template-writes';
+import { uuidField } from '@/server/schemas/ids';
 import { authorize, resolveOrg, usesOwnerSsoExemption } from '@/server/tenancy';
 
 /**
@@ -59,39 +60,53 @@ import { authorize, resolveOrg, usesOwnerSsoExemption } from '@/server/tenancy';
  */
 const UNEXPECTED_FIELD = 'The request contains a field this endpoint does not accept.';
 
-const authorizeRequest = z.strictObject(
-  {
-    /*
-     * `slugReferenceSchema`, not `slugSchema`.
-     *
-     * This names an organisation the caller already belongs to — it came out of
-     * their own switcher, which is populated from `GET /api/auth/me`. The
-     * reserved-name list is a rule about *claiming* a slug, and applying it here
-     * refused the approval outright for any organisation holding one, with a
-     * `validation_failed` whose message ("The request could not be processed.")
-     * named neither the field nor the reason. `xecret login` was unusable for
-     * those organisations and there was nothing on the screen to say why.
-     *
-     * Nothing is loosened by this: the slug still has to resolve to an
-     * organisation, `resolveOrg` still 404s when it does not, and `member.read`
-     * below still settles whether this person may approve anything in it.
-     */
-    orgSlug: slugReferenceSchema,
-    deviceName: z.string().check(
-      z.trim(),
-      z.minLength(1, 'A device name is required.'),
-      z.maxLength(100, 'A device name must be at most 100 characters.'),
-      // Control characters are refused: this string lands in the consent UI,
-      // the token listing and the audit log, where a carriage return is a
-      // spoof.
-      z.regex(/^\P{C}+$/u, 'A device name cannot contain control characters.'),
-    ),
-    codeChallenge: z
-      .string()
-      .check(z.regex(PKCE_CHALLENGE_PATTERN, 'The code challenge is not a valid S256 value.')),
-  },
-  UNEXPECTED_FIELD,
-);
+const authorizeRequest = z
+  .strictObject(
+    {
+      /*
+       * The organisation the device is approved in, by its id: what the consent
+       * screen's picker holds, from `GET /api/auth/me`.
+       */
+      orgId: z.optional(uuidField('An organisation is named by its id.')),
+      /*
+       * The same organisation by its legacy slug, from a consent screen loaded
+       * before organisations were named by id. Exactly one of the two is sent.
+       *
+       * `slugReferenceSchema`, not `slugSchema`.
+       *
+       * This names an organisation the caller already belongs to — it came out of
+       * their own switcher, which is populated from `GET /api/auth/me`. The
+       * reserved-name list is a rule about *claiming* a slug, and applying it here
+       * refused the approval outright for any organisation holding one, with a
+       * `validation_failed` whose message ("The request could not be processed.")
+       * named neither the field nor the reason. `xecret login` was unusable for
+       * those organisations and there was nothing on the screen to say why.
+       *
+       * Nothing is loosened by this: the slug still has to resolve to an
+       * organisation, `resolveOrg` still 404s when it does not, and `member.read`
+       * below still settles whether this person may approve anything in it.
+       */
+      orgSlug: z.optional(slugReferenceSchema),
+      deviceName: z.string().check(
+        z.trim(),
+        z.minLength(1, 'A device name is required.'),
+        z.maxLength(100, 'A device name must be at most 100 characters.'),
+        // Control characters are refused: this string lands in the consent UI,
+        // the token listing and the audit log, where a carriage return is a
+        // spoof.
+        z.regex(/^\P{C}+$/u, 'A device name cannot contain control characters.'),
+      ),
+      codeChallenge: z
+        .string()
+        .check(z.regex(PKCE_CHALLENGE_PATTERN, 'The code challenge is not a valid S256 value.')),
+    },
+    UNEXPECTED_FIELD,
+  )
+  .check(
+    z.refine((body) => (body.orgId === undefined) !== (body.orgSlug === undefined), {
+      message: 'Choose the organisation to approve this device in.',
+    }),
+  );
 
 export const POST = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
   if (principal.kind !== 'user') {
@@ -103,7 +118,8 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
 
   const body = await parseJsonBody(request, authorizeRequest);
 
-  const scope = await resolveOrg(principal, body.orgSlug, services);
+  // One of the two is present: the schema refuses neither and both.
+  const scope = await resolveOrg(principal, body.orgId ?? body.orgSlug ?? '', services);
   const orgId = scope.organization.id;
 
   try {

@@ -51,7 +51,7 @@ import { ErrorState } from './resource-states';
  *
  * ── The list ──
  * Every live organisation, fifty at a time with "Load more": its name and
- * slug, its owner's address, its plan, and how many members, projects,
+ * id, its owner's address, its plan, and how many members, projects,
  * environments and secrets it has. Counts, never names — what a customer calls
  * its projects is theirs, and the server never sends it. Each row opens the
  * organisation's page (`/app/admin/organizations/{id}`), where its members
@@ -59,10 +59,11 @@ import { ErrorState } from './resource-states';
  *
  * ── The search ──
  * An admin often arrives with a person ("the owner wrote in from
- * ada@acme.dev") or an organisation's address (`/app/acme`), so the search
- * takes exactly those: an owner's or member's email address, or the slug.
- * Anything shorter than three characters is not either, and is answered here
- * rather than sent.
+ * ada@acme.dev") or an organisation's address (`/app/{id}`), so the search
+ * takes exactly those: an owner's or member's email address, or the
+ * organisation's id. A legacy slug, from an address older than ids, is still
+ * found too, though nothing shows one any more. Anything shorter than three
+ * characters is none of these, and is answered here rather than sent.
  *
  * Each search result says what the grant dialog has to know before anybody
  * opens it: the plan and how it came to be, whether Dodo bills it — a grant
@@ -91,7 +92,7 @@ export function OrganizationsTab({
     event.preventDefault();
     const q = typed.trim();
     if (q.length < 3) {
-      setProblem('Type at least three characters — an email address or an organisation’s slug.');
+      setProblem('Type at least three characters: an email address or an organisation ID.');
       return;
     }
     setProblem(null);
@@ -115,7 +116,7 @@ export function OrganizationsTab({
         <Field
           label="Find an organisation"
           error={problem}
-          hint="An owner’s or a member’s email address, or the organisation’s slug — the part after /app/."
+          hint="An owner’s or a member’s email address, or the organisation ID (the part after /app/)."
         >
           <div className="flex flex-wrap gap-2">
             <Input
@@ -125,7 +126,7 @@ export function OrganizationsTab({
                 setTyped(event.target.value);
                 setProblem(null);
               }}
-              placeholder="ada@example.com or acme"
+              placeholder="ada@example.com or an organisation ID"
               startIcon={<SearchIcon />}
               autoComplete="off"
               spellCheck={false}
@@ -156,7 +157,7 @@ export function OrganizationsTab({
         <EmptyState
           icon={<SearchIcon />}
           title={`Nothing found for “${query}”`}
-          description="Nobody signs in with that address, and no organisation has that slug. An address has to match exactly; so does a slug."
+          description="Nobody signs in with that address, and no organisation has that ID. An address has to match exactly, and so does an ID."
         />
       ) : (
         <ul className="flex flex-col gap-3" aria-label={`Organisations for ${query}`}>
@@ -240,7 +241,7 @@ function OrganizationList() {
                   >
                     {organization.name}
                   </Link>
-                  <p className="text-fg-subtle font-mono text-sm">{organization.slug}</p>
+                  <p className="text-fg-subtle font-mono text-sm break-all">{organization.id}</p>
                 </TableCell>
                 <TableCell className="text-fg-muted max-w-64 truncate text-sm">
                   {ownersText(organization.ownerEmails)}
@@ -299,7 +300,7 @@ function OrganizationResult({
           >
             {organization.name}
           </Link>
-          <code className="text-fg-subtle font-mono text-sm">{organization.slug}</code>
+          <code className="text-fg-subtle font-mono text-sm break-all">{organization.id}</code>
           {organization.role !== null ? (
             <span className="text-fg-muted text-sm">
               · their role: {roleLabel(organization.role)}

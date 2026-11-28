@@ -286,9 +286,12 @@ export type ImportPolicyCheck = (entry: {
   newName: boolean;
 }) => string | null;
 
-/** Where the environment is, and who is asking. */
+/**
+ * Where the environment is: the segments its address names it by. `orgId` is
+ * also the organisation every value's AAD binds, which is the id this browser
+ * addressed rather than one a response supplied.
+ */
 export interface SecretIoContext {
-  orgSlug: string;
   orgId: string;
   projectId: string;
   envSlug: string;
@@ -296,28 +299,28 @@ export interface SecretIoContext {
 
 /** The `server`-mode IO: exactly the requests the dashboard always sent. */
 export function serverSecretIo(context: SecretIoContext): SecretIo {
-  const { orgSlug, projectId, envSlug } = context;
+  const { orgId, projectId, envSlug } = context;
 
   return {
     mode: 'server',
 
     reveal: async (secret) => {
       const response = await api.get<{ secret: { value: string } }>(
-        apiPath.secret(orgSlug, projectId, envSlug, secret.name),
+        apiPath.secret(orgId, projectId, envSlug, secret.name),
       );
       return response.secret.value;
     },
 
     revealVersion: async (secret, version) => {
       const response = await api.get<{ secret: { value: string } }>(
-        apiPath.secretVersion(orgSlug, projectId, envSlug, secret.name, version),
+        apiPath.secretVersion(orgId, projectId, envSlug, secret.name, version),
       );
       return response.secret.value;
     },
 
     pull: async (options) => {
       const document = await api.get<Record<string, unknown>>(
-        withQuery(apiPath.pull(orgSlug, projectId, envSlug), { format: 'json' }),
+        withQuery(apiPath.pull(orgId, projectId, envSlug), { format: 'json' }),
         options,
       );
       return plaintextsOf(document);
@@ -325,7 +328,7 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
 
     pullEnvironment: async (options) => {
       const document = await api.get<Record<string, unknown>>(
-        withQuery(apiPath.pull(orgSlug, projectId, envSlug), { format: 'json' }),
+        withQuery(apiPath.pull(orgId, projectId, envSlug), { format: 'json' }),
         options,
       );
       // A `server`-mode environment cannot inherit or hold a template — both
@@ -339,7 +342,7 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
     },
 
     create: (input) =>
-      api.post<SecretWriteResponse>(apiPath.secrets(orgSlug, projectId, envSlug), {
+      api.post<SecretWriteResponse>(apiPath.secrets(orgId, projectId, envSlug), {
         name: input.name,
         value: input.value,
         valueType: input.valueType,
@@ -347,13 +350,13 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
       }),
 
     update: (secret, input) =>
-      api.patch<SecretWriteResponse>(apiPath.secret(orgSlug, projectId, envSlug, secret.name), {
+      api.patch<SecretWriteResponse>(apiPath.secret(orgId, projectId, envSlug, secret.name), {
         value: input.value,
         ...(input.valueType === undefined ? {} : { valueType: input.valueType }),
       }),
 
     patchMetadata: async (secret, patch) => {
-      await api.put(apiPath.secret(orgSlug, projectId, envSlug, secret.name), {
+      await api.put(apiPath.secret(orgId, projectId, envSlug, secret.name), {
         ...(patch.name === undefined ? {} : { name: patch.name }),
         ...(patch.note === undefined ? {} : { note: patch.note }),
         ...(patch.valueType === undefined ? {} : { valueType: patch.valueType }),
@@ -367,12 +370,12 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
 
     restore: (secret, fromVersion) =>
       api.post<SecretRestoreResponse>(
-        apiPath.secretRestore(orgSlug, projectId, envSlug, secret.name),
+        apiPath.secretRestore(orgId, projectId, envSlug, secret.name),
         { version: fromVersion },
       ),
 
     runImport: (input) =>
-      api.post<ImportPlanResponse>(apiPath.import(orgSlug, projectId, envSlug), {
+      api.post<ImportPlanResponse>(apiPath.import(orgId, projectId, envSlug), {
         content: input.content,
         ...(input.format === 'auto' ? {} : { format: input.format }),
         ...(input.filename === null ? {} : { filename: input.filename }),
@@ -403,7 +406,7 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
  * same call.
  */
 export function clientSecretIo(context: SecretIoContext, material: EnvKeyMaterial): SecretIo {
-  const { orgSlug, projectId, envSlug } = context;
+  const { orgId, projectId, envSlug } = context;
 
   const targetFor = (secretId: string): SecretTarget => ({
     orgId: context.orgId,
@@ -442,7 +445,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
    * `runImport`.
    */
   async function listAllSecrets(): Promise<SecretRef[]> {
-    const path = apiPath.secrets(orgSlug, projectId, envSlug);
+    const path = apiPath.secrets(orgId, projectId, envSlug);
     const all: SecretRef[] = [];
     let cursor: string | null = null;
 
@@ -501,7 +504,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
    */
   async function pullOwn(options?: { signal?: AbortSignal }): Promise<PulledEnvironment> {
     const bundle = await api.get<ClientEnvironmentBundle>(
-      withQuery(apiPath.pull(orgSlug, projectId, envSlug), OWN_VALUES_QUERY),
+      withQuery(apiPath.pull(orgId, projectId, envSlug), OWN_VALUES_QUERY),
       options,
     );
 
@@ -533,7 +536,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
       withEnvKey(material, async () => {
         const response = await api.get<{
           secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
-        }>(apiPath.secret(orgSlug, projectId, envSlug, secret.name));
+        }>(apiPath.secret(orgId, projectId, envSlug, secret.name));
         return open(response.secret);
       }),
 
@@ -541,7 +544,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
       withEnvKey(material, async () => {
         const response = await api.get<{
           secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
-        }>(apiPath.secretVersion(orgSlug, projectId, envSlug, secret.name, version));
+        }>(apiPath.secretVersion(orgId, projectId, envSlug, secret.name, version));
         return open(response.secret);
       }),
 
@@ -561,7 +564,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         const value = await encryptValue({ material, target, version: 1, plaintext: input.value });
         const encNote = await encodeNote({ material, target, note: input.note });
 
-        return api.post<SecretWriteResponse>(apiPath.secrets(orgSlug, projectId, envSlug), {
+        return api.post<SecretWriteResponse>(apiPath.secrets(orgId, projectId, envSlug), {
           id,
           name: input.name,
           value,
@@ -590,7 +593,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         });
 
         return api.patch<SecretWriteResponse>(
-          apiPath.secret(orgSlug, projectId, envSlug, secret.name),
+          apiPath.secret(orgId, projectId, envSlug, secret.name),
           {
             value,
             // Stated, not assumed. The server derives the same number from the
@@ -614,7 +617,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           note: patch.note,
         });
 
-        await api.put(apiPath.secret(orgSlug, projectId, envSlug, secret.name), {
+        await api.put(apiPath.secret(orgId, projectId, envSlug, secret.name), {
           ...(patch.name === undefined ? {} : { name: patch.name }),
           // `encNote` rather than `note`: sending a plaintext note to an `e2ee`
           // environment is refused rather than ignored, and rightly — a note is
@@ -685,7 +688,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         // again for the version about to be written.
         const previous = await api.get<{
           secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
-        }>(apiPath.secretVersion(orgSlug, projectId, envSlug, secret.name, fromVersion));
+        }>(apiPath.secretVersion(orgId, projectId, envSlug, secret.name, fromVersion));
 
         const plaintext = await open(previous.secret);
 
@@ -704,7 +707,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         });
 
         return api.post<SecretRestoreResponse>(
-          apiPath.secretRestore(orgSlug, projectId, envSlug, secret.name),
+          apiPath.secretRestore(orgId, projectId, envSlug, secret.name),
           // Two different versions, and the names say which is which:
           // `version` is the one being restored *from*, `expectedVersion` is the
           // one these bytes are bound to. A drawer that restored once and kept its
@@ -798,7 +801,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
                 dryRun: boolean;
                 counts: { create: number; overwrite: number; unchanged: number };
                 items: { name: string; status: string }[];
-              }>(apiPath.import(orgSlug, projectId, envSlug), {
+              }>(apiPath.import(orgId, projectId, envSlug), {
                 entries,
                 dryRun: input.dryRun,
               });

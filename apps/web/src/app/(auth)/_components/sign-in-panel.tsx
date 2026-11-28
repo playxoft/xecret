@@ -245,8 +245,8 @@ export function SignInPanel({ next, initialError = null }: SignInPanelProps) {
  * "Sign in with single sign-on" — for an organisation that signs its people in
  * through its own identity provider.
  *
- * A plain `GET` form to the login route, with the organisation's address on
- * xecret (its slug), and no script. The login route sends any `org=` it was
+ * A plain `GET` form to the login route, with the organisation's ID on xecret
+ * (what follows `/app/` in its dashboard's address), and no script. The login route sends any `org=` it was
  * not given by the warning page's own button to that page first
  * (`/sign-in?org=…`, the deep link's login-CSRF defence), so this costs one
  * confirmation, and the identity provider is reached only from there. A form
@@ -268,8 +268,8 @@ function SingleSignOn({ next }: { next: string }) {
       </summary>
       <form method="get" action={LOGIN_ROUTE} className="flex flex-col gap-4 px-3.5 pb-4">
         <Field
-          label="Your organisation’s address on xecret"
-          hint="The name after /app/ in your dashboard’s address — for example, acme-corp. Your administrator can tell you."
+          label="Your organisation’s ID on xecret"
+          hint="The part after /app/ in your dashboard’s address. It is also shown in your organisation’s settings, and your administrator can tell you."
         >
           <Input
             name="org"
@@ -278,7 +278,8 @@ function SingleSignOn({ next }: { next: string }) {
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            placeholder="acme-corp"
+            placeholder="Organisation ID"
+            className="font-mono"
           />
         </Field>
         {next !== POST_SIGN_IN_PATH ? <input type="hidden" name="next" value={next} /> : null}

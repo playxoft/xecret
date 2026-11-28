@@ -381,6 +381,7 @@ interface Body {
   data?: { id: string; meetsPolicy?: boolean }[];
   token?: string;
   expiresAt?: string | null;
+  organization?: { id: string; name: string; slug: string };
 }
 
 interface Answer {
@@ -752,6 +753,18 @@ describe('the token policy at `xecret login`', () => {
     const answer = await exchange(org);
     expect(answer.status).toBe(201);
     expect(answer.body.expiresAt).toBeNull();
+  });
+
+  /**
+   * A current CLI addresses the API by the id this answers; one installed
+   * before organisations were named by id reads `slug` and nothing else, so
+   * both are there.
+   */
+  it('names the organisation by its id, and still by its slug for an older CLI', async () => {
+    const org = await seedOrg('free');
+    const answer = await exchange(org);
+    expect(answer.status).toBe(201);
+    expect(answer.body.organization).toEqual({ id: org.orgId, name: 'Acme', slug: org.slug });
   });
 });
 

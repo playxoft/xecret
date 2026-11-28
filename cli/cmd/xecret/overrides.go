@@ -203,7 +203,7 @@ func overridesSet(args []string) error {
 			resolved.Project, resolved.Environment)
 	}
 
-	principal, err := a.principal(ctx, client, credentials)
+	principal, err := a.principal(ctx, client, credentials, resolved)
 	if err != nil {
 		return withE2eeHint(err)
 	}

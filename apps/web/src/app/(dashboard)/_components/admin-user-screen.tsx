@@ -155,7 +155,9 @@ function UserDetail({ userId }: { userId: string }) {
                       >
                         {organization.name}
                       </Link>
-                      <p className="text-fg-subtle font-mono text-sm">{organization.slug}</p>
+                      <p className="text-fg-subtle font-mono text-sm break-all">
+                        {organization.id}
+                      </p>
                     </TableCell>
                     <TableCell className="text-sm">{roleLabel(organization.role)}</TableCell>
                     <TableCell className="text-sm">

@@ -56,7 +56,6 @@ import type { BadgeTone } from '@/components/ui';
 import { useVaultKeys } from '@/components/vault';
 
 export interface PromoteDialogProps {
-  orgSlug: string;
   orgId: string;
   projectId: string;
   /** The environment being promoted *into* — the one whose page this is. */
@@ -125,7 +124,6 @@ type Phase =
     };
 
 function PromoteBody({
-  orgSlug,
   orgId,
   projectId,
   target,
@@ -169,13 +167,13 @@ function PromoteBody({
       // Sequential: two audited pulls, each its own `secret.read` record, and
       // the second is pointless if the first is refused.
       const read = await readSnapshot({
-        ref: { orgSlug, projectId, envSlug: source.slug },
+        ref: { orgId, projectId, envSlug: source.slug },
         orgId,
         vault,
         label: source.name,
       });
       const here = await readSnapshot({
-        ref: { orgSlug, projectId, envSlug: target.slug },
+        ref: { orgId, projectId, envSlug: target.slug },
         orgId,
         vault,
         label: target.name,

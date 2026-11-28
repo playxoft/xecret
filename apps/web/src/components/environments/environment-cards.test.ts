@@ -106,7 +106,7 @@ describe('InheritanceCard', () => {
   it('explains that a server-mode environment cannot inherit, and offers nothing', () => {
     const html = render(
       createElement(InheritanceCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment({ encryptionMode: 'server' }),
         canManage: true,
@@ -121,7 +121,7 @@ describe('InheritanceCard', () => {
   it('names the whole chain, and lets a manager stop inheriting', () => {
     const html = render(
       createElement(InheritanceCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment({ parent: 'staging' }),
         canManage: true,
@@ -139,7 +139,7 @@ describe('InheritanceCard', () => {
   it('tells somebody who cannot manage the environment who can', () => {
     const html = render(
       createElement(InheritanceCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment({ parent: 'staging' }),
         canManage: false,
@@ -162,7 +162,7 @@ describe('EnvironmentPolicyCard', () => {
 
     const html = render(
       createElement(EnvironmentPolicyCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment({ readAlerts: false, readAlertsActive: false }),
         canManage: true,
@@ -185,7 +185,7 @@ describe('EnvironmentPolicyCard', () => {
 
     const html = render(
       createElement(EnvironmentPolicyCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment({ plaintextExport: 'disabled' }),
         canManage: true,
@@ -204,7 +204,7 @@ describe('EnvironmentPolicyCard', () => {
   it('leaves the switches usable while the plan is unknown', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment({ isProduction: false, readAlertsActive: false }),
         canManage: true,
@@ -235,7 +235,7 @@ describe('EnvironmentPolicyCard', () => {
 
     const html = render(
       createElement(EnvironmentPolicyCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment(),
         canManage: true,
@@ -253,7 +253,7 @@ describe('EnvironmentPolicyCard', () => {
   it('fetches no read list for somebody who cannot manage the environment', () => {
     const html = render(
       createElement(EnvironmentPolicyCard, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         environment: environment(),
         canManage: false,

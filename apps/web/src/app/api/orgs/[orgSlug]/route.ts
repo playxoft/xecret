@@ -23,8 +23,9 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * One organisation: the settings page, the only field of it that can change, and
  * its removal.
  *
- * `resolveOrg` is what makes a slug from another tenant indistinguishable from
- * one that never existed — it looks the organisation up and then requires a
+ * The segment is the organisation's id, or the legacy slug an older client
+ * still sends (`resolveOrg` takes either). `resolveOrg` is also what makes
+ * another tenant's organisation indistinguishable from one that never existed — it looks the organisation up and then requires a
  * membership, reporting the same `not_found` for a miss at either step.
  */
 
@@ -50,8 +51,9 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
 /**
  * Renames an organisation.
  *
- * The name only. The slug is immutable, and an attempt to change it is refused
- * with an explanation rather than ignored — see `assertSlugImmutable`.
+ * The name only, and any name: names are not unique. The slug is the
+ * server's, and an attempt to change it is refused with an explanation rather
+ * than ignored; see `assertSlugImmutable`.
  */
 export const PATCH = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
@@ -116,7 +118,7 @@ export const PATCH = authenticatedRoute<Params>(
  *    build machine must not be able to erase the organisation it reads from.
  *  - **`org.delete`.** Owners only, and only owners — it is the single action an
  *    admin is denied (`roles.ts`). Nothing a grant can widen.
- *  - **The slug, typed back.** A permission check answers "may they?"; this
+ *  - **The name, typed back.** A permission check answers "may they?"; this
  *    answers "did they mean to?", and it is the second question that goes wrong.
  *    The owner entitled to do this is exactly the person clicking through a
  *    settings page at speed.
@@ -156,7 +158,14 @@ export const DELETE = authenticatedRoute<Params>(
     }
 
     const body = await parseJsonBody(request, destructiveRequestSchema);
-    if (!confirmationMatches(scope.organization.slug, body.confirm)) {
+    // The name is what the settings page shows and asks for. The slug is
+    // still accepted, so a script written while it was the confirmation keeps
+    // working: this guards against a mistake, and either spelling is one
+    // somebody had to look up and type on purpose.
+    if (
+      !confirmationMatches(scope.organization.name, body.confirm) &&
+      !confirmationMatches(scope.organization.slug, body.confirm)
+    ) {
       // Recorded rather than merely refused: a run of unconfirmed attempts
       // against one organisation is a signal, and it only exists if the refusal
       // writes a record too.
@@ -164,7 +173,7 @@ export const DELETE = authenticatedRoute<Params>(
 
       throw errors.badRequest(
         'Deleting an organisation removes every project and secret in it for every member. ' +
-          'Repeat the request with {"confirm": "<organisation slug>"}.',
+          'Repeat the request with {"confirm": "<organisation name>"}.',
       );
     }
 

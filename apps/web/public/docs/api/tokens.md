@@ -3,7 +3,7 @@ title: Tokens and credentials
 navTitle: Tokens
 description: Sessions, CLI tokens and service tokens — what each can do, how they are scoped and stored, how to rotate them, and what happens when one leaks.
 keywords: [service token, cli token xct, xst token, api authentication, token rotation, revoke token]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Three ways to prove who you are. Choosing the right one is most of the security
@@ -131,12 +131,15 @@ curl https://xecret.playxoft.com/api/tokens/self \
 
 ```json
 {
-  "token":       { "name": "ci-build", "accessLevel": "read" },
-  "organization": { "slug": "acme",        "name": "Acme" },
+  "token":        { "name": "ci-build", "accessLevel": "read" },
+  "organization": { "id": "0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f", "name": "Acme", "slug": "…" },
   "project":      { "slug": "checkout-api", "name": "Checkout API" },
   "environment":  { "slug": "production",   "name": "Production" }
 }
 ```
+
+The organisation is named by its `id`; its `slug` is a legacy field, kept for
+older clients. The project's `slug` is its Project ID.
 
 The answer derives from the credential row alone — there is no parameter to lie
 in. This is how `XECRET_TOKEN=… xecret run` learns its scope with no

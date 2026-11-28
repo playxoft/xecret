@@ -15,14 +15,14 @@ import { useApiResource } from '../_lib/use-api-resource';
 import { CardGridSkeleton, ErrorState } from './resource-states';
 import { canAdminister, useOrganization, useSession } from './session';
 
-export function ProjectScreen({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
-  const organization = useOrganization(orgSlug);
+export function ProjectScreen({ orgId, projectId }: { orgId: string; projectId: string }) {
+  const organization = useOrganization(orgId);
   const { refreshTrail } = useSession();
-  const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectId));
+  const project = useApiResource<ProjectResponse>(apiPath.project(orgId, projectId));
   const [creating, setCreating] = useState(false);
 
   const environments = project.data?.environments;
-  const counts = useSecretCounts(orgSlug, projectId, environments);
+  const counts = useSecretCounts(orgId, projectId, environments);
 
   const canCreateEnvironment = canAdminister(organization, 'environment.create');
 
@@ -44,7 +44,7 @@ export function ProjectScreen({ orgSlug, projectId }: { orgSlug: string; project
               {/* Import archive is an item of this menu (`projectMenuItems`). */}
               {organization !== null ? (
                 <ProjectActions
-                  orgSlug={orgSlug}
+                  orgId={orgId}
                   project={project.data.project}
                   environments={project.data.environments}
                   organization={organization}
@@ -82,7 +82,7 @@ export function ProjectScreen({ orgSlug, projectId }: { orgSlug: string; project
         />
       ) : project.data !== null ? (
         <EnvironmentCards
-          orgSlug={orgSlug}
+          orgId={orgId}
           projectId={projectId}
           environments={project.data.environments}
           counts={counts}
@@ -91,7 +91,7 @@ export function ProjectScreen({ orgSlug, projectId }: { orgSlug: string; project
 
       {project.data !== null ? (
         <CreateEnvironmentDialog
-          orgSlug={orgSlug}
+          orgId={orgId}
           projectId={projectId}
           nextSortOrder={project.data.environments.length}
           open={creating}
@@ -121,7 +121,7 @@ export function ProjectScreen({ orgSlug, projectId }: { orgSlug: string; project
  * which blocks the first paint.
  */
 function useSecretCounts(
-  orgSlug: string,
+  orgId: string,
   projectId: string,
   environments: readonly { slug: string }[] | undefined,
 ): SecretCounts {
@@ -150,7 +150,7 @@ function useSecretCounts(
         slugs.map(async (slug) => {
           try {
             const response = await api.get<EnvironmentResponse>(
-              apiPath.environment(orgSlug, projectId, slug),
+              apiPath.environment(orgId, projectId, slug),
               { signal },
             );
             if (!signal.aborted) record(forKey, slug, response.environment.secretCount);
@@ -167,7 +167,7 @@ function useSecretCounts(
         }),
       );
     },
-    [orgSlug, projectId, record],
+    [orgId, projectId, record],
   );
 
   useEffect(() => {

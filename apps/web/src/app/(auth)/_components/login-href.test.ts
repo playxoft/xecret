@@ -102,6 +102,14 @@ describe('loginHref', () => {
     );
   });
 
+  /** What the sign-in page asks for now: the organisation's id. */
+  it('carries an SSO deep link for an organisation id, as for a legacy slug', () => {
+    const id = '0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f';
+    const url = new URL(loginHref({ org: id, next: `/app/${id}` }), ORIGIN);
+    expect(url.searchParams.get('org')).toBe(id);
+    expect(ssoOrgParam(id)).toBe(id);
+  });
+
   it('carries the warning page’s continue token beside a deep link, and only beside one', () => {
     const token = 'k1.1790000000.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ';
     const url = new URL(loginHref({ org: 'acme', continueToken: token }), ORIGIN);

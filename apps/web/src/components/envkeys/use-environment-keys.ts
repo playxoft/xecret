@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api } from '@/lib/api';
-import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useVaultKeys } from '@/components/vault/vault-keys';
 import type { VaultKeyMaterial } from '@/components/vault/key-store';
-import { fetchEnvironmentKeys, keysPath, openEnvironmentKeys } from './env-keys';
+import {
+  fetchEnvironmentKeys,
+  fetchModePinAliases,
+  keysPath,
+  openEnvironmentKeys,
+} from './env-keys';
 import type { EnvKeyUnavailable, EnvironmentRef } from './env-keys';
 import type { EnvKeyMaterial } from './env-key-store';
 import { admitEncryptionMode } from './pins';
@@ -50,15 +53,13 @@ export interface EnvironmentKeyHandle {
   reload: () => void;
 }
 
-export function useEnvironmentKeys(
-  target: EnvironmentRef & { orgId: string | null },
-): EnvironmentKeyHandle {
+export function useEnvironmentKeys(target: EnvironmentRef): EnvironmentKeyHandle {
   const vault = useVaultKeys();
   const [state, setState] = useState<EnvironmentKeyState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
 
-  const { orgSlug, projectId, envSlug, orgId } = target;
-  const path = keysPath({ orgSlug, projectId, envSlug });
+  const { orgId, projectId, envSlug } = target;
+  const path = keysPath({ orgId, projectId, envSlug });
 
   // Compared during render rather than in an effect: an effect runs after paint,
   // so a table rendered against the previous environment's key would be on
@@ -73,16 +74,14 @@ export function useEnvironmentKeys(
   useEffect(() => {
     const controller = new AbortController();
 
-    void readEnvironmentKeyState(
-      { orgSlug, projectId, envSlug, orgId },
-      vault,
-      controller.signal,
-    ).then((next) => {
-      if (next !== null && !controller.signal.aborted) setState(next);
-    });
+    void readEnvironmentKeyState({ orgId, projectId, envSlug }, vault, controller.signal).then(
+      (next) => {
+        if (next !== null && !controller.signal.aborted) setState(next);
+      },
+    );
 
     return () => controller.abort();
-  }, [orgSlug, projectId, envSlug, orgId, vault, attempt]);
+  }, [orgId, projectId, envSlug, vault, attempt]);
 
   const reload = useCallback(() => setAttempt((current) => current + 1), []);
 
@@ -97,17 +96,19 @@ export function useEnvironmentKeys(
  * the downgrade check above all.
  */
 export async function readEnvironmentKeyState(
-  target: EnvironmentRef & { orgId: string | null },
+  target: EnvironmentRef,
   vault: VaultKeyMaterial | null,
   signal: AbortSignal,
 ): Promise<EnvironmentKeyState | null> {
-  const { orgSlug, projectId, envSlug, orgId } = target;
+  const { orgId, projectId, envSlug } = target;
 
   try {
-    const keys = await fetchEnvironmentKeys({ orgSlug, projectId, envSlug }, { signal });
+    const keys = await fetchEnvironmentKeys({ orgId, projectId, envSlug }, { signal });
     if (signal.aborted) return null;
 
-    const context = { orgSlug, orgId: orgId ?? '', projectId, envSlug };
+    // The organisation's id addresses the API and binds every value's AAD: the
+    // one this browser's URL holds, never one a response named.
+    const context = { orgId, projectId, envSlug };
 
     // ── The mode is checked before it is believed ──
     // `encryptionMode` decides whether the editor above sends ciphertext or
@@ -120,20 +121,15 @@ export async function readEnvironmentKeyState(
     // the downgrade is offered.
     //
     // A `server` answer at an address with no pin of its own waits for the
-    // pins this browser filed under the project's slug to be carried to its
-    // id, read from the project itself rather than left to the shell's trail,
-    // which a server could simply hold back until this had decided. A project
-    // that cannot be read here is an error, not a reason to believe `server`.
+    // pins this browser filed under an older address, the organisation's slug
+    // or the project's, to be carried to the ids, read from the organisation
+    // and the project themselves rather than left to the shell's trail, which a
+    // server could simply hold back until this had decided. Either that cannot
+    // be read here is an error, not a reason to believe `server`.
     const admitted = await admitEncryptionMode(
-      { orgSlug, projectId, envSlug },
+      { orgId, projectId, envSlug },
       keys.encryptionMode,
-      async () => {
-        const { project } = await api.get<{ project: { slug: string } }>(
-          apiPath.project(orgSlug, projectId),
-          { signal },
-        );
-        return [project.slug];
-      },
+      () => fetchModePinAliases({ orgId, projectId }, {}, { signal }),
     );
     if (signal.aborted) return null;
     if (!admitted) return { status: 'unavailable', keys, reason: 'downgraded' };
@@ -141,12 +137,6 @@ export async function readEnvironmentKeyState(
     if (keys.encryptionMode !== 'e2ee') {
       return { status: 'server', keys, io: serverSecretIo(context) };
     }
-
-    // The organisation id is an AAD component of every value in this
-    // environment, and it comes from the session. Without it nothing can be
-    // encrypted or decrypted, so the environment reads as unopenable rather
-    // than opening into an IO whose first call would fail.
-    if (orgId === null) return { status: 'unavailable', keys, reason: 'locked' };
 
     const opened = await openEnvironmentKeys(keys, vault);
     if (signal.aborted) return null;

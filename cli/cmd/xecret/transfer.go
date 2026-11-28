@@ -507,7 +507,7 @@ func cmdPull(args []string) error {
 	if pulled.Bundle != nil {
 		// The server rendered nothing, because it could not read anything. The
 		// same five formats, produced here from values this process decrypted.
-		secrets, openErr := a.openEnvironment(ctx, client, credentials, pulled)
+		secrets, openErr := a.openEnvironment(ctx, client, credentials, resolved, pulled)
 		if openErr != nil {
 			return withE2eeHint(openErr)
 		}

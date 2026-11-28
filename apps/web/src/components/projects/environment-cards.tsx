@@ -19,7 +19,7 @@ import type { Environment } from './types';
 export type SecretCounts = Readonly<Record<string, number | null | undefined>>;
 
 export interface EnvironmentCardsProps {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   environments: readonly Environment[];
   counts: SecretCounts;
@@ -39,7 +39,7 @@ export interface EnvironmentCardsProps {
  * what to ask for.
  */
 export function EnvironmentCards({
-  orgSlug,
+  orgId,
   projectId,
   environments,
   counts,
@@ -52,7 +52,7 @@ export function EnvironmentCards({
         return (
           <li key={environment.slug}>
             <Link
-              href={appPath.environment(orgSlug, projectId, environment.slug)}
+              href={appPath.environment(orgId, projectId, environment.slug)}
               className={cn(
                 'group bg-surface shadow-raised relative flex h-full flex-col overflow-hidden rounded-xl border p-5 transition-colors',
                 environment.isProduction

@@ -516,7 +516,6 @@ describe('the grant dialog', () => {
   const target = (over: Partial<GrantTarget> = {}): GrantTarget => ({
     id: 'org-1',
     name: 'Acme',
-    slug: 'acme',
     plan: 'free',
     seatLimit: 3,
     grant: null,

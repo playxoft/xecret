@@ -8,6 +8,7 @@ import { api, endSession, errorMessage, SIGN_IN_PATH } from '@/lib/api';
 import { beginLeavingPage, beginSignInRedirect } from '@/lib/page-exit';
 import { releaseVaultKeys } from '@/components/vault';
 import { Alert, Button, Card, CardContent, Spinner } from '@/components/ui';
+import { appPath } from '@/app/(dashboard)/_lib/paths';
 import { InviteKeyStep } from '@/components/envkeys';
 import type { InviteKeyGrant } from '@/components/envkeys';
 import { ROLE_LABELS } from '@/components/members/types';
@@ -61,7 +62,7 @@ interface Me {
 }
 
 interface AcceptResponse {
-  organization: { name: string; slug: string };
+  organization: { id: string; name: string };
   role: OrgRole;
   /** The `recipientId` bound into each grant's AAD, and the claim's key. */
   invitationId: string;
@@ -125,7 +126,7 @@ export function InviteScreen({ token }: { token: string }) {
       // environments are all `server`-mode, or an invitation created before the
       // two-channel flow, carries no grants and has no second step.
       if (result.inviteKeyGrants.length === 0) {
-        router.replace(`/app/${encodeURIComponent(result.organization.slug)}`);
+        router.replace(appPath.org(result.organization.id));
         return;
       }
 
@@ -150,7 +151,7 @@ export function InviteScreen({ token }: { token: string }) {
           </div>
 
           <InviteKeyStep
-            orgSlug={accepted.organization.slug}
+            orgId={accepted.organization.id}
             invitationId={accepted.invitationId}
             grants={accepted.inviteKeyGrants}
             vaultGate={{
@@ -158,7 +159,7 @@ export function InviteScreen({ token }: { token: string }) {
               configured: viewer.vault.configured,
               onChanged: reloadViewer,
             }}
-            onDone={() => router.replace(`/app/${encodeURIComponent(accepted.organization.slug)}`)}
+            onDone={() => router.replace(appPath.org(accepted.organization.id))}
           />
         </CardContent>
       </Card>

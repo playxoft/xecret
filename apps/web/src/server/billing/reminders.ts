@@ -82,7 +82,7 @@ export async function sendBillingReminder(
     return 'duplicate';
   }
 
-  const billingUrl = `${publicOrigin(services.env)}/app/${encodeURIComponent(organization.slug)}/settings/billing`;
+  const billingUrl = `${publicOrigin(services.env)}/app/${encodeURIComponent(organization.id)}/settings/billing`;
   let delivered = 0;
   for (const recipient of recipients) {
     try {

@@ -3,7 +3,7 @@ title: Troubleshooting
 navTitle: Troubleshooting
 description: Every error message the CLI and API produce, what it actually means, and the fix — from "command not found" to "no such environment" in CI.
 keywords: [xecret error, command not found, not signed in, 401 xecret, no xecret.yaml, ci token not accepted, debugging]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Find your message. If it is not here, `xecret version` and the `requestId` from
@@ -99,11 +99,14 @@ xecret whoami          # under a token, prints the pinned scope
 cat .xecret.yaml
 ```
 
-### `no project with slug "…"`
+### `no project with the Project ID "…"`
 
-The slug does not exist, or you cannot see it. `xecret projects` lists what you
-can reach. Remember that "not visible to you" and "does not exist" deliberately
-look identical — that is what stops the API being used to enumerate another
+No project in that organisation has that Project ID, or you cannot see it.
+`xecret projects` lists what you can reach in the organisation your login
+addresses, and `xecret orgs` shows which one that is. A `.xecret.yaml` with an
+`organization` line looks in that organisation instead, whichever one you
+chose. Remember that "not visible to you" and "does not exist" deliberately
+look identical: that is what stops the API being used to enumerate another
 company's projects.
 
 ## Running your app
@@ -217,8 +220,8 @@ value, or change the type with `xecret secrets set NAME --type string`.
 
 ### `409 conflict`
 
-A name or slug is already taken, or two writes raced. Retry; if it persists,
-the name genuinely exists.
+A name, Project ID or environment slug is already taken, or two writes raced.
+Retry; if it persists, the name genuinely exists.
 
 ## Permissions
 

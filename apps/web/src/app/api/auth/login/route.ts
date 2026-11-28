@@ -12,7 +12,11 @@ import {
 } from '@xecret/core/auth';
 import type { OAuthPurpose } from '@xecret/core/auth';
 import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
-import { findOrganizationBySlugWithEntitlements } from '@xecret/db/repositories';
+import { isUuid } from '@xecret/core/ids';
+import {
+  findOrganizationByIdWithEntitlements,
+  findOrganizationBySlugWithEntitlements,
+} from '@xecret/db/repositories';
 import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import { MissingBindingError, publicOrigin } from '@/server/bindings';
@@ -59,13 +63,16 @@ import { workosProvider } from '@/server/workos';
  *    re-authentication, both of which say where the person must sign in.
  *  - `hint=sign-up` — open AuthKit on its sign-up screen. Nothing links here
  *    with it any more; kept for links already out there.
- *  - `org=<slug>` — an SSO deep link: start that organisation's single sign-on
- *    directly. Upper-case letters and surrounding spaces are forgiven — the
- *    sign-in page's "Sign in with single sign-on" asks a person to type the
- *    address — and anything that is still not a slug, an organisation without
- *    SSO, or one that does not exist, is sent back to the sign-in page's
- *    `sso-not-found` error rather than on to AuthKit's hosted page, which
- *    nobody signing in should see. The redirect does reveal the WorkOS
+ *  - `org=<id>` — an SSO deep link: start that organisation's single sign-on
+ *    directly. The organisation is named by its id, which is what follows
+ *    `/app/` in its dashboard's address and what the sign-in page's "Sign in
+ *    with single sign-on" asks for; a legacy slug, from a link made before
+ *    organisations were named by id, is still honoured. Upper-case letters and
+ *    surrounding spaces are forgiven, because a person pastes or types this
+ *    one, and anything that is still neither an id nor a slug, an
+ *    organisation without SSO, or one that does not exist, is sent back to the
+ *    sign-in page's `sso-not-found` error rather than on to AuthKit's hosted
+ *    page, which nobody signing in should see. The redirect does reveal the WorkOS
  *    organisation id of a slug that has SSO — it has to, to deep-link — so the
  *    lookups are rate limited per address, and over the limit the answer is
  *    the same `sso-not-found` as for a slug without SSO: no second oracle
@@ -260,7 +267,7 @@ function single(params: URLSearchParams, name: string): string | null {
  */
 async function ssoOrganization(
   services: ServiceContext,
-  slug: string,
+  reference: string,
   clientId: string,
 ): Promise<string | undefined> {
   const allowed = await consume(
@@ -269,15 +276,24 @@ async function ssoOrganization(
     rateLimitKey(['login_org', services.meta.ipAddress]),
   );
   if (!allowed.allowed) return undefined;
-  const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
+  // An id or a legacy slug, told apart by shape as `resolveOrg` tells them.
+  const found = isUuid(reference)
+    ? await findOrganizationByIdWithEntitlements(services.db, reference)
+    : await findOrganizationBySlugWithEntitlements(services.db, reference);
   if (!found || found.organization.workosClientId !== clientId) return undefined;
   return found.organization.workosOrgId ?? undefined;
 }
 
 /**
- * `org=` as a slug, or `null` for anything that is not one. Surrounding spaces
- * and ASCII capitals are forgiven, because a person types this one; nothing
- * else is — a non-ASCII letter is not folded into a slug it might resemble.
+ * `org=` as an organisation reference, or `null` for anything that is not one.
+ * Surrounding spaces and ASCII capitals are forgiven, because a person types
+ * this one; nothing else is — a non-ASCII letter is not folded into a slug it
+ * might resemble.
+ *
+ * One test covers both spellings: a canonical id, lowercased, is lowercase hex
+ * in single-hyphen groups, which is the slug pattern, at well under the slug
+ * ceiling. So an id passes here, through the continue token (an HMAC over the
+ * same string) and on to `ssoOrganization`, which reads it as an id by shape.
  */
 function wellFormedSlug(value: string | null): string | null {
   if (value === null) return null;

@@ -34,14 +34,14 @@ import type { Member } from './types';
  * decides what is rendered, never what is permitted.
  */
 export function MemberRowActions({
-  orgSlug,
+  orgId,
   member,
   assignableRoles,
   canRemove,
   customRoles,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   member: Member;
   /** The roles the viewer may manage and hand out, from their session authority. */
   assignableRoles: readonly OrgRole[];
@@ -75,7 +75,7 @@ export function MemberRowActions({
     if (role === member.role || pending) return;
     setPending(true);
     try {
-      await api.patch(apiPath.member(orgSlug, member.id), { role });
+      await api.patch(apiPath.member(orgId, member.id), { role });
       toast({
         variant: 'success',
         title: `${member.displayName ?? member.email} is now ${ROLE_LABELS[role].toLowerCase()}`,
@@ -121,7 +121,7 @@ export function MemberRowActions({
 
       {customRoles !== null ? (
         <CustomRoleSelect
-          orgSlug={orgSlug}
+          orgId={orgId}
           member={member}
           choices={customRoles}
           onChanged={onChanged}
@@ -174,7 +174,7 @@ export function MemberRowActions({
         confirmLabel={member.status === 'suspended' ? 'Reinstate' : 'Suspend'}
         confirmVariant={member.status === 'suspended' ? 'primary' : 'danger'}
         onConfirm={async () => {
-          await api.patch(apiPath.member(orgSlug, member.id), {
+          await api.patch(apiPath.member(orgId, member.id), {
             status: member.status === 'suspended' ? 'active' : 'suspended',
           });
           toast({
@@ -196,7 +196,7 @@ export function MemberRowActions({
         description="Their membership and every access grant they hold are deleted. Secrets they created stay — history is not rewritten. They can be invited again later."
         confirmLabel="Remove member"
         onConfirm={async () => {
-          await api.delete(apiPath.member(orgSlug, member.id));
+          await api.delete(apiPath.member(orgId, member.id));
           toast({ variant: 'success', title: `Removed ${member.displayName ?? member.email}` });
           setRemoving(false);
           onChanged();

@@ -28,7 +28,7 @@ import type { SessionOrganization } from './session';
  *
  * So the account area is reached from the user menu — where "Account settings"
  * already lives, and where account-shaped things belong — and the sidebar keeps
- * showing the organisation throughout. `orgSlug` falls back to the last
+ * showing the organisation throughout. `orgId` falls back to the last
  * organisation the tab was in for exactly this case, resolved by the chrome;
  * nothing highlights, because none of the account routes is beneath an
  * organisation's path.
@@ -44,7 +44,7 @@ export interface DashboardNavParams {
    * picker. See the note above about why the sidebar does not empty itself out
    * on those routes.
    */
-  orgSlug: string | null;
+  orgId: string | null;
   /**
    * The project the URL is inside, or `null` on every other page — the
    * projects index included. Read for one thing: "Projects" stays highlighted
@@ -63,7 +63,7 @@ export interface DashboardNavParams {
 
 /** The nav itself, without the memo — what `useDashboardNav` renders. */
 export function dashboardNav({
-  orgSlug,
+  orgId,
   projectId,
   viewer,
 }: DashboardNavParams): readonly NavSection[] {
@@ -71,7 +71,7 @@ export function dashboardNav({
   // shell answers with its own empty state rather than a sidebar. An empty nav
   // rather than a placeholder section: there is genuinely nowhere to go, and
   // the account area is reached from the user menu regardless.
-  if (orgSlug === null) return [];
+  if (orgId === null) return [];
 
   // Tokens and the audit log are rendered only for viewers whose authority can
   // open them — the usual rule: authority decides what is drawn, the server
@@ -85,7 +85,7 @@ export function dashboardNav({
     {
       items: [
         {
-          href: appPath.org(orgSlug),
+          href: appPath.org(orgId),
           label: 'Projects',
           icon: <BoxIcon />,
           // Chords are the initial of the label, which is the only mapping
@@ -103,7 +103,7 @@ export function dashboardNav({
           exact: projectId === null,
         },
         {
-          href: appPath.members(orgSlug),
+          href: appPath.members(orgId),
           label: 'Members',
           icon: <UsersIcon />,
           shortcut: ['M'],
@@ -111,7 +111,7 @@ export function dashboardNav({
         ...(showTokens
           ? [
               {
-                href: appPath.tokens(orgSlug),
+                href: appPath.tokens(orgId),
                 label: 'Tokens',
                 icon: <TerminalIcon />,
                 shortcut: ['T'],
@@ -121,7 +121,7 @@ export function dashboardNav({
         ...(showAudit
           ? [
               {
-                href: appPath.audit(orgSlug),
+                href: appPath.audit(orgId),
                 label: 'Audit',
                 icon: <FileTextIcon />,
                 shortcut: ['A'],
@@ -129,7 +129,7 @@ export function dashboardNav({
             ]
           : []),
         {
-          href: appPath.orgSettings(orgSlug),
+          href: appPath.orgSettings(orgId),
           // Named in full, because another "Settings" exists: the account
           // area behind the avatar menu. Two entries that differ only by
           // where they sit is how someone changes the wrong one.
@@ -146,11 +146,11 @@ export function dashboardNav({
 }
 
 export function useDashboardNav({
-  orgSlug,
+  orgId,
   projectId,
   viewer,
 }: DashboardNavParams): readonly NavSection[] {
   // Memoised because `useNavShortcuts` rebuilds its key map whenever the nav's
   // identity changes, and the chrome re-renders on every navigation.
-  return useMemo(() => dashboardNav({ orgSlug, projectId, viewer }), [orgSlug, projectId, viewer]);
+  return useMemo(() => dashboardNav({ orgId, projectId, viewer }), [orgId, projectId, viewer]);
 }

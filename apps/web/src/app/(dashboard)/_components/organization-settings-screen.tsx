@@ -43,26 +43,25 @@ import { organizationSettingsSections } from './settings-sections';
  * page it replaces; billing and the plans keep their own screens.
  *
  * Creating and deleting still sit in the same area deliberately. They are the
- * two ends of an organisation's life, and the person who has just discovered
- * on General that the slug is permanent is exactly the person who wants to
- * start over with a different name — so "New organisation" is in the area's
+ * two ends of an organisation's life, and somebody tidying up one organisation
+ * is often about to start another, so "New organisation" is in the area's
  * header, on every section.
  */
 export function OrganizationSettingsLayout({
-  orgSlug,
+  orgId,
   children,
 }: {
-  orgSlug: string;
+  orgId: string;
   children: ReactNode;
 }) {
-  const membership = useOrganization(orgSlug);
+  const membership = useOrganization(orgId);
   // The create dialog belongs to the shell, which is what has to refresh after
   // one is created — see `SessionValue.createOrganization`. This screen used to
   // mount a third copy of it, underneath the shell's two.
   const { createOrganization } = useSession();
   const groups = useMemo(
-    () => organizationSettingsSections(orgSlug, membership),
-    [orgSlug, membership],
+    () => organizationSettingsSections(orgId, membership),
+    [orgId, membership],
   );
 
   return (
@@ -94,13 +93,13 @@ export function OrganizationSettingsLayout({
  * with the loading and failure states every section of it shares.
  */
 function WithOrganization({
-  orgSlug,
+  orgId,
   children,
 }: {
-  orgSlug: string;
+  orgId: string;
   children: (organization: Organization, reload: () => void) => ReactNode;
 }) {
-  const organization = useApiResource<OrganizationResponse>(apiPath.org(orgSlug));
+  const organization = useApiResource<OrganizationResponse>(apiPath.org(orgId));
   const loaded = organization.data?.organization;
 
   if (organization.loading && organization.data === null) return <FormSkeleton />;
@@ -116,18 +115,18 @@ function WithOrganization({
   return loaded ? <>{children(loaded, () => void organization.reload())}</> : null;
 }
 
-/** General — the name, the slug that can never change, and who you are here. */
-export function OrganizationGeneralSettings({ orgSlug }: { orgSlug: string }) {
-  const membership = useOrganization(orgSlug);
+/** General — the name, the id that can never change, and who you are here. */
+export function OrganizationGeneralSettings({ orgId }: { orgId: string }) {
+  const membership = useOrganization(orgId);
   const { refresh } = useSession();
   const canManage = canAdminister(membership, 'org.update');
 
   return (
-    <WithOrganization orgSlug={orgSlug}>
+    <WithOrganization orgId={orgId}>
       {(loaded, reload) => (
         <div className="flex flex-col gap-6">
           <OrganizationForm
-            orgSlug={orgSlug}
+            orgId={orgId}
             organization={loaded}
             canManage={canManage}
             onSaved={() => {
@@ -169,13 +168,13 @@ export function OrganizationGeneralSettings({ orgSlug }: { orgSlug: string }) {
 }
 
 /** Roles — the custom roles that narrow a built-in one. */
-export function OrganizationRolesSettings({ orgSlug }: { orgSlug: string }) {
-  return <RolesCard orgSlug={orgSlug} organization={useOrganization(orgSlug)} />;
+export function OrganizationRolesSettings({ orgId }: { orgId: string }) {
+  return <RolesCard orgId={orgId} organization={useOrganization(orgId)} />;
 }
 
 /** Single sign-on — the identity provider, and the two policies that lean on it. */
-export function OrganizationSingleSignOnSettings({ orgSlug }: { orgSlug: string }) {
-  return <SingleSignOnCard orgSlug={orgSlug} organization={useOrganization(orgSlug)} />;
+export function OrganizationSingleSignOnSettings({ orgId }: { orgId: string }) {
+  return <SingleSignOnCard orgId={orgId} organization={useOrganization(orgId)} />;
 }
 
 /**
@@ -184,10 +183,10 @@ export function OrganizationSingleSignOnSettings({ orgSlug }: { orgSlug: string 
  * member, because every client that writes enforces it; changed by owners and
  * admins.
  */
-export function OrganizationPoliciesSettings({ orgSlug }: { orgSlug: string }) {
+export function OrganizationPoliciesSettings({ orgId }: { orgId: string }) {
   return (
     <div className="flex flex-col gap-6">
-      <PolicyCards orgSlug={orgSlug} organization={useOrganization(orgSlug)} />
+      <PolicyCards orgId={orgId} organization={useOrganization(orgId)} />
     </div>
   );
 }
@@ -196,8 +195,8 @@ export function OrganizationPoliciesSettings({ orgSlug }: { orgSlug: string }) {
  * Webhooks — where changes are announced (P19 §5), and the one section here
  * that sends anything out of xecret.
  */
-export function OrganizationWebhooksSettings({ orgSlug }: { orgSlug: string }) {
-  return <WebhooksCard orgSlug={orgSlug} organization={useOrganization(orgSlug)} />;
+export function OrganizationWebhooksSettings({ orgId }: { orgId: string }) {
+  return <WebhooksCard orgId={orgId} organization={useOrganization(orgId)} />;
 }
 
 /**
@@ -209,8 +208,8 @@ export function OrganizationWebhooksSettings({ orgSlug }: { orgSlug: string }) {
  * is not shown the section at all; one who arrives at its address anyway is
  * told who can, rather than shown an empty page.
  */
-export function OrganizationDangerSettings({ orgSlug }: { orgSlug: string }) {
-  const membership = useOrganization(orgSlug);
+export function OrganizationDangerSettings({ orgId }: { orgId: string }) {
+  const membership = useOrganization(orgId);
   const { refresh } = useSession();
 
   if (!canAdminister(membership, 'org.delete')) {
@@ -225,7 +224,7 @@ export function OrganizationDangerSettings({ orgSlug }: { orgSlug: string }) {
   }
 
   return (
-    <WithOrganization orgSlug={orgSlug}>
+    <WithOrganization orgId={orgId}>
       {(loaded) => <DeleteOrganizationCard organization={loaded} onDeleted={refresh} />}
     </WithOrganization>
   );
@@ -254,12 +253,12 @@ export function organizationNameChanged(saved: string, draft: string): boolean {
  * offering to send the new one again.
  */
 export function OrganizationForm({
-  orgSlug,
+  orgId,
   organization,
   canManage,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   organization: Organization;
   canManage: boolean;
   onSaved: () => void;
@@ -293,7 +292,7 @@ export function OrganizationForm({
     setSaving(true);
     setError(null);
     try {
-      await api.patch(apiPath.org(orgSlug), { name: trimmed });
+      await api.patch(apiPath.org(orgId), { name: trimmed });
       setSaved(trimmed);
       // The field holds what was sent, so a name saved with stray spaces does
       // not read as an edit the moment it is saved.
@@ -348,10 +347,10 @@ export function OrganizationForm({
             </Field>
 
             <Field
-              label="Slug"
-              hint="Permanent. It is in every dashboard and API URL, in the .xecret.yaml committed to each repository, and in the CI configuration of everyone who consumes this organisation — so a rename would break all of them the instant it took effect, and the API does not offer one."
+              label="Organisation ID"
+              hint="Fixed for the life of the organisation. It is what every dashboard address, the API and the CLI name this organisation by, and what people enter to sign in with single sign-on. The name above can change freely, and does not have to be unique."
             >
-              <Input value={organization.slug} readOnly disabled className="font-mono" />
+              <Input value={organization.id} readOnly className="font-mono select-all" />
             </Field>
 
             {canManage ? (

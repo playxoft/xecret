@@ -24,7 +24,7 @@ function render(): string {
       Toaster,
       null,
       createElement(ImportDialog, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'api',
         envSlug: 'staging',
         isProduction: false,

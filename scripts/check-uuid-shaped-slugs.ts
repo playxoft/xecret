@@ -40,7 +40,7 @@ import { sql } from 'drizzle-orm';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
 
 interface UuidShapedRow {
-  org_slug: string;
+  org_id: string;
   project_id: string;
   project_slug: string;
   deleted: boolean;
@@ -62,14 +62,14 @@ async function main(): Promise<void> {
     // and the address is not — only the lowercase spelling is read as an id.
     const rows = (await db.execute(sql`
       SELECT
-        o.slug AS org_slug,
+        o.id::text AS org_id,
         p.id AS project_id,
         p.slug AS project_slug,
         p.deleted_at IS NOT NULL AS deleted
       FROM projects p
       JOIN organizations o ON o.id = p.org_id
       WHERE p.slug::text ~ ${UUID_SHAPE}
-      ORDER BY o.slug, p.slug
+      ORDER BY o.id, p.slug
     `)) as unknown as UuidShapedRow[];
 
     if (rows.length === 0) {
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
 
     for (const row of rows) {
       console.warn(
-        `  ${row.org_slug}/${row.project_slug}  (id ${row.project_id})${row.deleted ? '  — deleted' : ''}`,
+        `  ${row.org_id}/${row.project_slug}  (id ${row.project_id})${row.deleted ? '  (deleted)' : ''}`,
       );
     }
 

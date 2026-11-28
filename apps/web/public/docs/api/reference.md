@@ -3,11 +3,13 @@ title: API endpoint reference
 navTitle: Endpoint reference
 description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Every route, grouped the way you will look for them. Paths are relative to
-`/api`, and `{…}` segments are slugs.
+`/api`. `{orgId}` is the organisation's id, `{project}` is a project's id or its
+Project ID, and `{envSlug}` is an environment's slug;
+[the overview](../api.md#shape) says how each one is resolved.
 
 Read [the API overview](../api.md) first for authentication, errors and
 pagination — none of it is repeated here.
@@ -47,7 +49,7 @@ deployment is configured, which is not public.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/auth/login` | Starts a sign-in: sets a short-lived signed cookie and redirects (**307**) to the identity provider's hosted sign-in page. Optional `?next=` (a path on this site to land on afterwards), `?hint=sign-up`, `?org=<slug>` (start that organisation's single sign-on directly, if it has one). A link, not an API call. |
+| `GET` | `/auth/login` | Starts a sign-in: sets a short-lived signed cookie and redirects (**307**) to the identity provider's hosted sign-in page. Optional `?next=` (a path on this site to land on afterwards), `?hint=sign-up`, `?org=<organisation id>` (start that organisation's single sign-on directly, if it has one; a legacy slug still works). A link, not an API call. |
 | `GET` | `/auth/callback` | Where the identity provider sends the browser back. Checks the flow belongs to this browser, verifies the sign-in with the provider, creates the account on first sign-in, bootstraps a personal organisation, sets the session and CSRF cookies, and redirects (**303**) to `next`. |
 | `DELETE` | `/auth/session` | Signs out. Idempotent. Answers `{ logoutUrl }`: the sign-in provider's logout address for the session you signed in with, which the dashboard opens so that you are signed out there too — or `null` when there is none to end. |
 | `GET` | `/auth/me` | You, your organisations, your role in each — with `sso: { required, blocked }`, whether the organisation requires single sign-on and whether that refuses the credential you are using — and `vault`: whether you have one and whether this session has unlocked it. |
@@ -125,8 +127,8 @@ against this server rather than the identity provider.
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/cli/authorize` | Session + CSRF only. Body `{ orgSlug, deviceName, codeChallenge }`. Mints a single-use code, 10-minute TTL, hashed at rest. |
-| `POST` | `/cli/token` | Public — the caller holds no credential yet. Body `{ code, codeVerifier }`. Returns the `xct_` token exactly once. Every failure is the same fixed 401. |
+| `POST` | `/cli/authorize` | Session + CSRF only. Body `{ orgId, deviceName, codeChallenge }`; an older consent screen's `orgSlug` is accepted in place of `orgId` (exactly one of the two). Mints a single-use code, 10-minute TTL, hashed at rest. |
+| `POST` | `/cli/token` | Public: the caller holds no credential yet. Body `{ code, codeVerifier }`. Returns the `xct_` token exactly once, with `organization: { id, name, slug }` (the slug only for older CLIs). Every failure is the same fixed 401. |
 | `DELETE` | `/cli/token` | The token revokes itself — this is `xecret logout`. Idempotent. |
 
 The code is consumed **before** the PKCE check, so a failed binding kills it
@@ -137,19 +139,18 @@ rather than leaving it guessable.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/orgs` | Your memberships. Refused for a service token, which is pinned to one organisation. |
-| `GET` | `/orgs/availability?slug=` | `{ slug, available, reason?: invalid\|reserved\|taken }`. A snapshot, not a reservation. |
-| `POST` | `/orgs` | Body `{ name, slug? }`. Name is 25 characters at most. Session + CSRF only. Creates the organisation, your owner membership and the organisation's key in one transaction. No project is seeded — create the first one from the dashboard, which generates its environment keys in your browser. |
-| `GET` | `/orgs/{orgSlug}` | Any active member. |
-| `PATCH` | `/orgs/{orgSlug}` | The name only. A slug change is refused with an explanation rather than ignored. |
-| `DELETE` | `/orgs/{orgSlug}` | Soft delete, erased for good after 30 days. Owners only, browser session only, body `{ confirm: "<orgSlug>" }`. |
+| `POST` | `/orgs` | Body `{ name }`: any text, 25 characters at most, and not unique (two organisations can share a name; their ids tell them apart). A `slug` in the body is accepted and ignored. Session + CSRF only. Creates the organisation, your owner membership and the organisation's key in one transaction, and answers `organization: { id, name, slug, role, createdAt, updatedAt }`, where `slug` is a legacy field nothing needs. No project is seeded: create the first one from the dashboard, which generates its environment keys in your browser. |
+| `GET` | `/orgs/{orgId}` | Any active member. |
+| `PATCH` | `/orgs/{orgId}` | The name only. A `slug` in the body is refused with a 400 that says why, rather than ignored. |
+| `DELETE` | `/orgs/{orgId}` | Soft delete, erased for good after 30 days. Owners only, browser session only, body `{ confirm: "<organisation name>" }` (the legacy slug is accepted too). |
 
 ## Projects and environments
 
 | Method | Path |
 |---|---|
-| `GET` `POST` | `/orgs/{orgSlug}/projects` |
-| `GET` `PATCH` `DELETE` | `/orgs/{orgSlug}/projects/{projectSlug}` |
-| `GET` `POST` | `…/projects/{projectSlug}/environments` |
+| `GET` `POST` | `/orgs/{orgId}/projects` |
+| `GET` `PATCH` `DELETE` | `/orgs/{orgId}/projects/{project}` |
+| `GET` `POST` | `…/projects/{project}/environments` |
 | `GET` `PATCH` `DELETE` | `…/environments/{envSlug}` |
 
 Both deletes are soft. A hard delete would orphan the audit records saying the
@@ -157,12 +158,18 @@ thing existed and who removed it.
 
 Creating a project or an environment also creates the encryption keys, in the
 same transaction. A project arrives with `development`, `staging` and
-`production`, so `POST /orgs/{orgSlug}/projects` carries the keys for all three:
+`production`, so `POST /orgs/{orgId}/projects` carries the keys for all three:
 `{ name, slug?, description?, environments: [{ slug, id, keys: { grant } }] }`,
 where each `slug` names which of the three defaults the entry is for. Both
 creates need a browser session with an unlocked vault — the keys are generated
 there and sealed to you — and are refused for a CLI or service token. An
 environment without a key cannot hold a secret and cannot be repaired.
+
+The project's own `slug` is its **Project ID**: lowercase letters, digits and
+single hyphens, unique within the organisation, and derived from the name when
+it is left out. It is fixed once the project exists, because `.xecret.yaml`, CLI
+commands and CI configuration name the project by it: a `PATCH` that names
+`slug` is refused with a 400. Every project payload carries its `id` beside it.
 
 ## Secrets
 
@@ -261,10 +268,10 @@ a read of the environment itself.
 | `POST` | `…/environments/{envSlug}/restore-point` | Body `{ at, writes, dryRun }`. Each entry is checked against the instant's value tag. Past the plan's window: **403** `plan_limit`. |
 | `PATCH` | `…/environments/{envSlug}/policy` | Body `{ plaintextExport?: allowed\|disabled, readAlerts?: boolean \| null }`. Owners and admins. Disabling export needs Team; switching alerts on, Pro. |
 | `GET` | `…/environments/{envSlug}/read-sightings` | Recent new addresses that read the environment, and whether alerts are on. Owners and admins. |
-| `GET` | `/orgs/{orgSlug}/policies` | The [token and secret policies](../features/policies.md), and which the plan lets you turn on. Readable by every member and service token. |
-| `PATCH` | `/orgs/{orgSlug}/policies` | Body `{ tokens?, secrets? }`, each whole. Owners and admins, from a session. Tightening needs the plan; loosening never does. |
-| `GET` `POST` | `/orgs/{orgSlug}/webhooks` | [Webhooks](../features/webhooks.md). Body `{ url, description?, eventTypes }`. The signing secret is returned **once**. |
-| `GET` `PATCH` `DELETE` | `/orgs/{orgSlug}/webhooks/{webhookId}` | `PATCH` takes `url`, `description`, `eventTypes`, `enabled`. |
+| `GET` | `/orgs/{orgId}/policies` | The [token and secret policies](../features/policies.md), and which the plan lets you turn on. Readable by every member and service token. |
+| `PATCH` | `/orgs/{orgId}/policies` | Body `{ tokens?, secrets? }`, each whole. Owners and admins, from a session. Tightening needs the plan; loosening never does. |
+| `GET` `POST` | `/orgs/{orgId}/webhooks` | [Webhooks](../features/webhooks.md). Body `{ url, description?, eventTypes }`. The signing secret is returned **once**. |
+| `GET` `PATCH` `DELETE` | `/orgs/{orgId}/webhooks/{webhookId}` | `PATCH` takes `url`, `description`, `eventTypes`, `enabled`. |
 | `POST` | `…/webhooks/{webhookId}/rotate-secret` | A new signing secret, returned **once**. |
 | `POST` | `…/webhooks/{webhookId}/test` | One `webhook.test` delivery, attempted inline. |
 | `GET` | `…/webhooks/{webhookId}/deliveries` | The delivery log, newest first. |
@@ -277,15 +284,15 @@ the JSON pull `xecret run` reads with `x-xecret-plaintext-export: disabled`.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/orgs/{orgSlug}/members` | Names, emails, roles (with any custom role, by name), status, join dates, seat count. Never access grants — those are per-project and belong on a member's own page. |
-| `POST` | `/orgs/{orgSlug}/members` | Invite by email. Session + CSRF only. Enforces the role hierarchy and the seat limit. Returns the acceptance link **once**. |
-| `PATCH` | `/orgs/{orgSlug}/members/{memberId}` | Exactly one of `{ role }`, `{ status }` or `{ customRoleId }` per request — they are different acts with different audit records. `customRoleId: null` takes a custom role off. Refuses self-changes; last-owner guarded. Putting somebody on a custom role needs the Enterprise plan; taking one off never does. An owner cannot hold one (**409**). |
-| `DELETE` | `/orgs/{orgSlug}/members/{memberId}` | Refuses self-removal; last-owner guarded. Grants cascade. |
-| `PUT` `DELETE` | `…/members/{memberId}/grants` | One grant, addressed by `{ projectSlug, environmentSlug?, accessLevel }`. Absent or null `environmentSlug` means the whole project. |
+| `GET` | `/orgs/{orgId}/members` | Names, emails, roles (with any custom role, by name), status, join dates, seat count. Never access grants: those are per-project and belong on a member's own page. |
+| `POST` | `/orgs/{orgId}/members` | Invite by email. Session + CSRF only. Enforces the role hierarchy and the seat limit. Returns the acceptance link **once**. |
+| `PATCH` | `/orgs/{orgId}/members/{memberId}` | Exactly one of `{ role }`, `{ status }` or `{ customRoleId }` per request, because they are different acts with different audit records. `customRoleId: null` takes a custom role off. Refuses self-changes; last-owner guarded. Putting somebody on a custom role needs the Enterprise plan; taking one off never does. An owner cannot hold one (**409**). |
+| `DELETE` | `/orgs/{orgId}/members/{memberId}` | Refuses self-removal; last-owner guarded. Grants cascade. |
+| `PUT` `DELETE` | `…/members/{memberId}/grants` | One grant, addressed by `{ projectSlug, environmentSlug?, accessLevel }`, where `projectSlug` is the Project ID. Absent or null `environmentSlug` means the whole project. |
 | `GET` | `…/members/{memberId}/access` | The effective-permission preview: every project and environment with the resolved level and the rule that produced it. Computed by the same function enforcement calls. |
-| `GET` | `/orgs/{orgSlug}/authority` | What *you* could grant: per environment, the highest level a grant you write there may carry. The dashboard caps its level controls with it. |
-| `GET` | `/orgs/{orgSlug}/invitations` | Open invitations, expired ones included. |
-| `DELETE` | `/orgs/{orgSlug}/invitations/{invitationId}` | Withdraws one; the emailed link stops working at commit. |
+| `GET` | `/orgs/{orgId}/authority` | What *you* could grant: per environment, the highest level a grant you write there may carry. The dashboard caps its level controls with it. |
+| `GET` | `/orgs/{orgId}/invitations` | Open invitations, expired ones included. |
+| `DELETE` | `/orgs/{orgId}/invitations/{invitationId}` | Withdraws one; the emailed link stops working at commit. |
 | `POST` | `/invitations/lookup` | Public — the holder may have no account. Body `{ token }`. Returns the organisation name, invited address, role, state and expiry, and nothing else. |
 | `POST` | `/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one. |
 
@@ -297,10 +304,10 @@ anybody more than the role it is based on. See
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/orgs/{orgSlug}/roles` | Every role with how many members hold it, and whether the plan lets you define and assign them. Needs the manage-members permission. Never plan-gated. |
-| `POST` | `/orgs/{orgSlug}/roles` | Body `{ name, baseRole: admin\|developer\|viewer, allowedActions, accessCeiling?: { nonProduction, production } \| null }`. Names are unique per organisation as a reader sees them — two names that differ only in case, letter width, spacing or lookalike letters are one name (**409**) — and may not be, or imitate, a built-in role's. Invisible characters, and Latin letters mixed with Cyrillic or Greek ones, are refused (**422**), as is a list naming an action the base cannot perform. |
-| `PATCH` | `/orgs/{orgSlug}/roles/{roleId}` | Any of the fields above. Refused if anybody holding the role is beyond your authority, or holds access grants beyond yours that the change would switch on. A change that changes nothing writes nothing. |
-| `DELETE` | `/orgs/{orgSlug}/roles/{roleId}` | Only a role nobody holds — otherwise **409**: move its members to another role, or to none, first. Never plan-gated. |
+| `GET` | `/orgs/{orgId}/roles` | Every role with how many members hold it, and whether the plan lets you define and assign them. Needs the manage-members permission. Never plan-gated. |
+| `POST` | `/orgs/{orgId}/roles` | Body `{ name, baseRole: admin\|developer\|viewer, allowedActions, accessCeiling?: { nonProduction, production } \| null }`. Names are unique per organisation as a reader sees them (two names that differ only in case, letter width, spacing or lookalike letters are one name, **409**), and may not be, or imitate, a built-in role's. Invisible characters, and Latin letters mixed with Cyrillic or Greek ones, are refused (**422**), as is a list naming an action the base cannot perform. |
+| `PATCH` | `/orgs/{orgId}/roles/{roleId}` | Any of the fields above. Refused if anybody holding the role is beyond your authority, or holds access grants beyond yours that the change would switch on. A change that changes nothing writes nothing. |
+| `DELETE` | `/orgs/{orgId}/roles/{roleId}` | Only a role nobody holds; otherwise **409**: move its members to another role, or to none, first. Never plan-gated. |
 
 ## Single sign-on
 
@@ -318,18 +325,23 @@ sign in.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/orgs/{orgSlug}/sso` | The status. |
-| `POST` | `/orgs/{orgSlug}/sso` | Owners. Turns SSO on: creates the organisation's account at WorkOS, with no domains — domains are added and verified in the setup portal. **201** the first time; **200** and nothing created once on. |
-| `POST` | `/orgs/{orgSlug}/sso/portal` | Owners, within ten minutes of signing in again (**403** `reauth_required` otherwise) — by password, passkey, Google, single sign-on or an emailed code. `{ link }` — a WorkOS setup-portal link, valid for a few minutes, that returns to the organisation's settings. **409** before SSO is on. Every link is audited. |
-| `PATCH` | `/orgs/{orgSlug}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`. Switching either on is for owners; switching off, for owners and admins. Requiring SSO needs an active connection and a verified domain (**409** otherwise), and takes effect **immediately**: from then on, members who did not sign in through your identity provider — and CLI devices approved from such a sign-in — get **403** `sso_required` for this organisation, and keep every other. The response's `nonSsoAccess` says how many sessions and CLI tokens that affected. Members who get `sso_required` sign in again through the organisation's single sign-on (the dashboard offers the link; the CLI says to run `xecret login` through it). Owners are always exempt, so a misconfigured identity provider cannot lock the organisation out; every time an owner signs in, approves a CLI device or accepts an invitation that way, the audit log says so. `jitJoinEnabled` lets anybody your identity provider signs in, at a verified domain, join as a viewer while seats last — never somebody you removed; off, they need an invitation. |
+| `GET` | `/orgs/{orgId}/sso` | The status. |
+| `POST` | `/orgs/{orgId}/sso` | Owners. Turns SSO on: creates the organisation's account at WorkOS, with no domains: domains are added and verified in the setup portal. **201** the first time; **200** and nothing created once on. |
+| `POST` | `/orgs/{orgId}/sso/portal` | Owners, within ten minutes of signing in again (**403** `reauth_required` otherwise), by password, passkey, Google, single sign-on or an emailed code. `{ link }`: a WorkOS setup-portal link, valid for a few minutes, that returns to the organisation's settings. **409** before SSO is on. Every link is audited. |
+| `PATCH` | `/orgs/{orgId}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`. Switching either on is for owners; switching off, for owners and admins. Requiring SSO needs an active connection and a verified domain (**409** otherwise), and takes effect **immediately**: from then on, members who did not sign in through your identity provider (and CLI devices approved from such a sign-in) get **403** `sso_required` for this organisation, and keep every other. The response's `nonSsoAccess` says how many sessions and CLI tokens that affected. Members who get `sso_required` sign in again through the organisation's single sign-on (the dashboard offers the link; the CLI says to run `xecret login` through it). Owners are always exempt, so a misconfigured identity provider cannot lock the organisation out; every time an owner signs in, approves a CLI device or accepts an invitation that way, the audit log says so. `jitJoinEnabled` lets anybody your identity provider signs in, at a verified domain, join as a viewer while seats last, never somebody you removed; off, they need an invitation. |
+
+Members sign in through it with a link to `/api/auth/login?org=<organisation id>`,
+or from the sign-in page's *Sign in with single sign-on*, which asks for the
+organisation's ID on xecret: the part after `/app/` in the dashboard's address,
+also shown on the organisation's settings General page as *Organisation ID*.
 
 ## Tokens
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/orgs/{orgSlug}/tokens/service` | Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist? }`. `read` by default; `admin` is unrepresentable. Returned **once**. |
-| `GET` | `/orgs/{orgSlug}/tokens/cli` | "Your devices" — your own CLI tokens only, revoked ones included. |
-| `DELETE` | `/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Anyone else's, or any service token: needs the revoke permission. |
+| `GET` `POST` | `/orgs/{orgId}/tokens/service` | Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist? }`, where `projectSlug` is the Project ID. `read` by default; `admin` is unrepresentable. Returned **once**. |
+| `GET` | `/orgs/{orgId}/tokens/cli` | "Your devices": your own CLI tokens only, revoked ones included. |
+| `DELETE` | `/orgs/{orgId}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Anyone else's, or any service token: needs the revoke permission. |
 | `GET` | `/tokens/self` | Service-token introspection: the pinned organisation, project and environment, plus the token's name and level. Derived from the credential row alone — there is no parameter to lie in. |
 
 A created token's value appears in exactly one response and is never
@@ -339,7 +351,7 @@ retrievable again. No listing function selects the stored hash.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/orgs/{orgSlug}/audit` | Owners and admins. Filters: `actorId`, `action`, `projectSlug` (+ `environmentSlug`), `outcome`, `from`, `to`. Keyset pagination behind an opaque cursor. |
+| `GET` | `/orgs/{orgId}/audit` | Owners and admins. Filters: `actorId`, `action`, `projectSlug` (+ `environmentSlug`), `outcome`, `from`, `to`. Keyset pagination behind an opaque cursor. |
 
 The response includes the `window` actually scanned, because the range is
 clamped to 90 days and a caller that asked for more must be told it got less.

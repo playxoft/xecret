@@ -13,7 +13,6 @@ import {
   CardTitle,
   Skeleton,
 } from '@/components/ui';
-import { useOrganization } from '@/app/(dashboard)/_components/session';
 import { EncryptionUpgradePanel } from './encryption-upgrade-panel';
 import { EnvKeyUnavailableState } from './env-key-notice';
 import type { EnvironmentRef } from './env-keys';
@@ -40,7 +39,7 @@ import { useEnvironmentKeys } from './use-environment-keys';
  * the rest of this card appears as it does for every other environment.
  */
 export function EnvironmentKeyCard({
-  orgSlug,
+  orgId,
   projectId,
   envSlug,
   environmentName,
@@ -52,10 +51,8 @@ export function EnvironmentKeyCard({
   /** Rotation is `environment.update`. Everyone else reads the state only. */
   canManage: boolean;
 }) {
-  const organization = useOrganization(orgSlug);
   const keys = useEnvironmentKeys({
-    orgSlug,
-    orgId: organization?.id ?? null,
+    orgId,
     projectId,
     envSlug,
   });
@@ -86,8 +83,7 @@ export function EnvironmentKeyCard({
           </Alert>
         ) : keys.state.status === 'server' ? (
           <EncryptionUpgradePanel
-            target={{ orgSlug, projectId, envSlug }}
-            orgId={organization?.id ?? null}
+            target={{ orgId, projectId, envSlug }}
             environmentName={environmentName}
             isProduction={isProduction}
             canManage={canManage}
@@ -150,7 +146,7 @@ export function EnvironmentKeyCard({
 
             {material !== null && pendingCount > 0 ? (
               <PendingSharesBanner
-                target={{ orgSlug, projectId, envSlug }}
+                target={{ orgId, projectId, envSlug }}
                 material={material}
                 pendingCount={pendingCount}
                 onShared={keys.reload}
@@ -174,7 +170,7 @@ export function EnvironmentKeyCard({
 
       {material !== null ? (
         <RotationDialog
-          target={{ orgSlug, projectId, envSlug }}
+          target={{ orgId, projectId, envSlug }}
           material={material}
           environmentName={environmentName}
           isProduction={isProduction}
