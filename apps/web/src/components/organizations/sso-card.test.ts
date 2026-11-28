@@ -128,7 +128,10 @@ describe('SingleSignOnCard', () => {
 
     expect(html).toContain('Single sign-on is an add-on');
     expect(html).toContain('href="/contact"');
-    expect(html).not.toContain('Turn on single sign-on');
+    // Drawn where an owner would press it, locked rather than failing.
+    expect(html).toMatch(
+      /<button[^>]*aria-disabled="true"[^>]*data-plan-locked=""[^>]*>(?:(?!<\/button>)[\s\S])*Turn on single sign-on/,
+    );
   });
 
   it('shows the connection, the domains, the portal and both policies once SSO is on', () => {

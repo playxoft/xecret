@@ -194,6 +194,53 @@ describe('the hourly job’s complimentary plans', () => {
     expect(dodo.getSubscription).not.toHaveBeenCalled();
   });
 
+  /**
+   * Back on Free while the account that created it already has two other open
+   * Free organisations: this one, and no other, waits for a paid plan, and its
+   * owners are told. Where no payment can be taken the rule does not apply.
+   */
+  it.each([
+    ['takes payments', BILLING_ENV, true],
+    ['takes none', NO_BILLING_ENV, false],
+  ] as const)(
+    'leaves an ended grant waiting for a plan past its creator’s allowance, where the deployment %s',
+    async (_label, env, waits) => {
+      const endsAt = new Date(NOW.getTime() - 60_000);
+      const orgId = await seedGrant(endsAt, 'Lapsed Co');
+      const creator = await t.pg.query<{ created_by: string }>(
+        `select created_by from organizations where id = $1`,
+        [orgId],
+      );
+      const ownerId = creator.rows[0]!.created_by;
+      const others: string[] = [];
+      for (let index = 0; index < 2; index += 1) {
+        const other = randomUUID();
+        await t.pg.query(
+          `insert into organizations (id, name, slug, created_by) values ($1, 'Other', $2, $3)`,
+          [other, `free-${other.slice(0, 8)}`, ownerId],
+        );
+        others.push(other);
+      }
+
+      await runHourlyBillingJob(services(env), NOW);
+
+      const flags = await t.pg.query<{ id: string; awaiting: boolean }>(
+        `select id, awaiting_paid_plan_since is not null as awaiting from organizations
+         where id = any($1::uuid[])`,
+        [[orgId, ...others]],
+      );
+      const awaiting = Object.fromEntries(flags.rows.map((row) => [row.id, row.awaiting]));
+      expect(awaiting[orgId]).toBe(waits);
+      for (const other of others) expect(awaiting[other]).toBe(false);
+
+      const kinds = (await remindersOf(orgId)).map((reminder) => reminder.kind);
+      expect(kinds.includes('awaiting_paid_plan')).toBe(waits);
+      expect(mail.sent.some((message) => message.subject === 'Lapsed Co needs a paid plan')).toBe(
+        waits,
+      );
+    },
+  );
+
   it('reminds a week out, then a day out, keyed by the end date', async () => {
     const inThreeDays = new Date(NOW.getTime() + 3 * DAY);
     const inTwelveHours = new Date(NOW.getTime() + 12 * HOUR);

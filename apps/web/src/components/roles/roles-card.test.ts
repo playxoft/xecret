@@ -126,8 +126,11 @@ describe('RolesCard', () => {
 
     const html = render(organization('owner'));
 
-    expect(html).toContain('needs the Enterprise plan');
-    expect(html).not.toContain('New role');
+    // "New role" is drawn locked, naming the plan, rather than hidden.
+    expect(html).toMatch(
+      /<button[^>]*aria-disabled="true"[^>]*data-plan-locked=""[^>]*>(?:(?!<\/button>)[\s\S])*New role/,
+    );
+    expect(html).toContain('Custom roles are on Enterprise.');
     expect(html).not.toContain('Edit role');
     expect(html).toContain('aria-label="Delete role Deployer"');
   });

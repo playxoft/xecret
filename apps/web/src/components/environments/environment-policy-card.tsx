@@ -7,7 +7,12 @@ import { api } from '@/lib/api';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { ChangeError, PlanLock } from '@/components/plans/plan-notice';
+import type { PlanFeatures } from '@xecret/core/entitlements';
+import { ChangeError } from '@/components/plans/plan-notice';
+import { useControlPlaneLock } from '@/components/plans/plan-entitlements';
+import { featureLockFrom } from '@/components/plans/plan-gate';
+import type { PlanBlock } from '@/components/plans/plan-gate';
+import { LockedAction, PlanLockBadge } from '@/components/plans/plan-lock';
 import { useOrgPolicies } from '@/components/policies/secret-policy-context';
 import type { EnvironmentChangeResponse, EnvironmentDetail } from '@/components/projects/types';
 import {
@@ -104,6 +109,12 @@ export function EnvironmentPolicyCard({
   const resetLocked =
     reset !== null && reset.turnsOn && features !== null && !features.newIpReadAlerts.enabled;
   const dormant = alertsDormant(environment, features?.newIpReadAlerts ?? null);
+  // Resetting to the default switches alerts on here, so it needs what
+  // switching them on needs.
+  const resetLock =
+    resetLocked && features !== null
+      ? featureLockFrom('newIpReadAlerts', features.newIpReadAlerts)
+      : null;
 
   async function patch(
     kind: Exclude<Pending, null>,
@@ -165,7 +176,7 @@ export function EnvironmentPolicyCard({
           }
           checked={disabled}
           lock={exportLock}
-          lockWhat="Disabling plaintext export"
+          lockFeature="disableEnvExport"
           canManage={canManage}
           saving={pending === 'export'}
           busy={pending !== null}
@@ -202,7 +213,7 @@ export function EnvironmentPolicyCard({
           }
           checked={alertsOn}
           lock={alertsLock}
-          lockWhat="Switching read alerts on"
+          lockFeature="newIpReadAlerts"
           canManage={canManage}
           saving={pending === 'alerts'}
           busy={pending !== null}
@@ -226,28 +237,24 @@ export function EnvironmentPolicyCard({
               ) : null}
               {canManage && reset !== null ? (
                 <div className="mt-2 flex flex-col items-start gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="-ml-2"
-                    loading={pending === 'reset'}
-                    disabled={(pending !== null && pending !== 'reset') || resetLocked}
-                    onClick={() =>
-                      void patch(
-                        'reset',
-                        { readAlerts: null },
-                        `Read alerts for ${environment.name} are back to the default`,
-                      )
-                    }
-                  >
-                    Reset to default ({readAlertDefault(environment.isProduction) ? 'on' : 'off'})
-                  </Button>
-                  {resetLocked && features !== null ? (
-                    <PlanLock
-                      what="Resetting to the default, which switches alerts on here,"
-                      upgradeTo={features.newIpReadAlerts.upgradeTo}
-                    />
-                  ) : null}
+                  <LockedAction lock={resetLock}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="-ml-2"
+                      loading={pending === 'reset'}
+                      disabled={pending !== null && pending !== 'reset'}
+                      onClick={() =>
+                        void patch(
+                          'reset',
+                          { readAlerts: null },
+                          `Read alerts for ${environment.name} are back to the default`,
+                        )
+                      }
+                    >
+                      Reset to default ({readAlertDefault(environment.isProduction) ? 'on' : 'off'})
+                    </Button>
+                  </LockedAction>
                 </div>
               ) : null}
             </>
@@ -278,8 +285,9 @@ export function EnvironmentPolicyCard({
 }
 
 /**
- * One switch, its explanation, and — only where switching it on is refused by
- * the plan — the plan that would allow it.
+ * One switch, its explanation, and, only where switching it on is refused by
+ * the plan, a lock beside it naming the plan that would allow it. The switch
+ * stays disabled; the lock is what takes focus and explains.
  */
 function PolicySwitch({
   id,
@@ -287,7 +295,7 @@ function PolicySwitch({
   description,
   checked,
   lock,
-  lockWhat,
+  lockFeature,
   canManage,
   saving,
   busy,
@@ -299,35 +307,39 @@ function PolicySwitch({
   description: ReactNode;
   checked: boolean;
   lock: SwitchLock;
-  /** The act the lock is about, as a phrase that can start a sentence. */
-  lockWhat: string;
+  /** The plan feature the lock is about, for its sentence. */
+  lockFeature: keyof PlanFeatures;
   canManage: boolean;
   saving: boolean;
   busy: boolean;
   onChange: (next: boolean) => void;
   footer?: ReactNode;
 }) {
-  const hintId = `${id}-plan`;
+  // While the organisation waits for a paid plan nothing can be changed, in
+  // either direction.
+  const controlLock = useControlPlaneLock();
+  const planLock: PlanBlock | null =
+    controlLock ??
+    (lock.locked
+      ? featureLockFrom(lockFeature, { enabled: false, upgradeTo: lock.upgradeTo })
+      : null);
   return (
     <div className="border-line rounded-lg border p-3.5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <Label htmlFor={id}>{label}</Label>
           <p className="text-fg-muted mt-1 text-sm leading-5">{description}</p>
-          {lock.locked && canManage ? (
-            <div className="mt-1.5">
-              <PlanLock id={hintId} what={lockWhat} upgradeTo={lock.upgradeTo} />
-            </div>
-          ) : null}
         </div>
-        <Switch
-          id={id}
-          checked={checked}
-          disabled={!canManage || lock.locked || busy}
-          aria-busy={saving || undefined}
-          aria-describedby={lock.locked ? hintId : undefined}
-          onCheckedChange={onChange}
-        />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {planLock !== null && canManage ? <PlanLockBadge lock={planLock} /> : null}
+          <Switch
+            id={id}
+            checked={checked}
+            disabled={!canManage || planLock !== null || busy}
+            aria-busy={saving || undefined}
+            onCheckedChange={onChange}
+          />
+        </div>
       </div>
       {footer}
     </div>
@@ -367,11 +379,19 @@ function SightingsList({
   return (
     <>
       {notice !== null ? (
-        <div className="flex flex-col gap-1">
-          <p className="text-fg-subtle text-sm leading-5">{notice.text}</p>
+        <div className="flex items-start gap-1.5">
           {notice.kind === 'unentitled' ? (
-            <PlanLock what="Recording new addresses" upgradeTo={response.alerts.upgradeTo} />
+            <PlanLockBadge
+              lock={
+                featureLockFrom('newIpReadAlerts', {
+                  enabled: false,
+                  upgradeTo: response.alerts.upgradeTo,
+                }) ?? { kind: 'feature', reason: notice.text, upgradeTo: null }
+              }
+              className="-mt-0.5"
+            />
           ) : null}
+          <p className="text-fg-subtle text-sm leading-5">{notice.text}</p>
         </div>
       ) : null}
 

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+import { FREE_ORGANIZATIONS_PER_ACCOUNT, MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 import type { PlanFeatures } from '@xecret/core/entitlements';
 import {
   NOT_YET,
@@ -265,9 +265,16 @@ describe('every claim is one the product keeps', () => {
     );
     expect(offer('free').features).toContain(`${free.auditRetentionDays} days of audit history`);
 
+    expect(offer('free').features).toContain(
+      `${FREE_ORGANIZATIONS_PER_ACCOUNT} free organisations per account`,
+    );
     expect(offer('pro').features).toContain(
       `${pro.projects} projects, ${pro.environmentsPerProject} environments each`,
     );
+    // A plan covers the organisation it is bought for: no organisation count.
+    for (const id of ['pro', 'team'] as const) {
+      expect(offer(id).features.join(' ')).not.toMatch(/organisations?/);
+    }
     expect(offer('pro').features).toContain(`${pro.auditRetentionDays} days of audit history`);
     expect(offer('team').features).toContain(
       `${team.projects} projects, ${team.environmentsPerProject} environments each`,

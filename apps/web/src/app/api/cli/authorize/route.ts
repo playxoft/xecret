@@ -118,8 +118,13 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
 
   const body = await parseJsonBody(request, authorizeRequest);
 
-  // One of the two is present: the schema refuses neither and both.
-  const scope = await resolveOrg(principal, body.orgId ?? body.orgSlug ?? '', services);
+  // One of the two is present: the schema refuses neither and both. Open while
+  // the control plane is closed: a device sign-in is how a person reads secrets
+  // from a terminal, and the data plane never closes (`guardControlPlane` in
+  // `tenancy.ts`).
+  const scope = await resolveOrg(principal, body.orgId ?? body.orgSlug ?? '', services, {
+    controlPlane: 'exempt',
+  });
   const orgId = scope.organization.id;
 
   try {

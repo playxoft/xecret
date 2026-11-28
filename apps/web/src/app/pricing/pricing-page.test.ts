@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { PLANS } from '@xecret/core/entitlements';
+import { FREE_ORGANIZATIONS_PER_ACCOUNT, PLANS } from '@xecret/core/entitlements';
 
 /**
  * The pricing page against the engine that enforces it.
@@ -115,7 +115,6 @@ describe('the page derives its limits rather than restating them', () => {
     // number they wrote may even be correct today; the point is that nothing
     // will tell them when it stops being.
     for (const field of [
-      'organizations',
       'projects',
       'environmentsPerProject',
       'seats',
@@ -127,12 +126,20 @@ describe('the page derives its limits rather than restating them', () => {
         `LIMITS.free.${field}`,
       );
     }
+    // The free organisations are an account's allowance rather than a plan
+    // limit, and are read from the engine all the same.
+    expect(SOURCE).toContain('${FREE_ORGANIZATIONS} free organisations per account');
+  });
+
+  it('states no organisation count on a paid plan: each covers its own organisation', () => {
+    expect(SOURCE).not.toMatch(/LIMITS\.\w+\.organizations/);
+    expect(SOURCE).not.toMatch(/projects across/);
   });
 
   it('states the Free ceilings the engine actually enforces', () => {
     // Read from the same constants the page renders, so this asserts the
     // pricing plan's numbers rather than merely that two files agree.
-    expect(PLANS.free.limits.organizations).toBe(1);
+    expect(FREE_ORGANIZATIONS_PER_ACCOUNT).toBe(2);
     expect(PLANS.free.limits.projects).toBe(5);
     expect(PLANS.free.limits.environmentsPerProject).toBe(3);
     expect(PLANS.free.limits.seats).toBe(3);
@@ -483,7 +490,6 @@ describe('one fact, rendered in one place', () => {
   it('states Pro and Team ceilings as numbers the engine holds', () => {
     for (const plan of ['pro', 'team'] as const) {
       for (const resource of [
-        'organizations',
         'projects',
         'environmentsPerProject',
         'serviceTokens',

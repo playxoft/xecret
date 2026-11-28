@@ -181,9 +181,12 @@ describe('the first personal override is set from the environment’s menu', () 
   it('offered in every end-to-end encrypted environment', () => {
     expect(screen).toMatch(/const offersOverride = keyFacts\?\.encryptionMode === 'e2ee';/);
     expect(screen).toMatch(/\{canChangeInBulk \|\| offersOverride \? \(/);
+    // Behind the plan's lock: a plan without personal overrides draws the item
+    // locked rather than opening a dialog that ends in a refusal.
     expect(screen).toMatch(
-      /\{offersOverride \? \([\s\S]*?<DropdownMenuItem onSelect=\{\(\) => setOverrideFor\(''\)\}>[\s\S]*?Set a personal override…/,
+      /\{offersOverride \? \([\s\S]*?<LockedMenuItem lock=\{overrideLock\} onSelect=\{\(\) => setOverrideFor\(''\)\}>[\s\S]*?Set a personal override…/,
     );
+    expect(screen).toMatch(/const overrideLock = usePlanFeature\('personalOverrides'\);/);
   });
 
   it('opening the set dialog the card owns', () => {
@@ -338,6 +341,58 @@ describe('a page with no account to show still has a way out', () => {
     expect(chrome).toMatch(/<ChromeFrame signOut>\s*<EmptyState/);
     expect(chrome).toMatch(/\{signOut \? <SignOutButton \/> : null\}/);
     expect(chrome).toMatch(/function ChromeNotice[\s\S]*?<ChromeFrame>/);
+  });
+});
+
+describe('the plan, read once and locked before it is asked', () => {
+  // The shell reads `GET …/entitlements` once per organisation it describes,
+  // and nothing asks again on a timer: the database the API reads is on a plan
+  // where a poll from every open tab would be the largest load put on it.
+  it('is read by the shell, once, for the organisation it describes', () => {
+    const chrome = source('./dashboard-chrome.tsx');
+    expect(chrome.match(/<PlanEntitlementsProvider/g)).toHaveLength(1);
+    expect(chrome).toMatch(/orgId=\{currentOrg\?\.id \?\? null\}/);
+    expect(chrome).toMatch(/owner=\{canAdminister\(currentOrg \?\? null, 'billing\.manage'\)\}/);
+  });
+
+  it('never asks on a timer, only on focus and on a press', () => {
+    const provider = source('../../../components/plans/plan-entitlements.tsx');
+    expect(provider).not.toMatch(/setInterval|setTimeout|refetchInterval/);
+    expect(provider.match(/useApiResource</g)).toHaveLength(1);
+    expect(provider).toMatch(/window\.addEventListener\('focus', onFocus\)/);
+    expect(provider).toMatch(/rechecksOnFocus\(readAt\.current, now/);
+  });
+
+  it('re-reads the plan when a locked control is pressed', () => {
+    const lock = source('../../../components/plans/plan-lock.tsx');
+    expect(lock).toMatch(
+      /pending\.current = pressAt\(form, Date\.now\(\)\);\s*void view\.recheck\(\);/,
+    );
+    expect(lock).toMatch(
+      /if \(continuesPress\(waiting, lock, Date\.now\(\)\)\) proceed\(waiting\);/,
+    );
+  });
+
+  // The refusal the project-create flow used to show was the server's own
+  // sentence; a race now gets the lock's words, inline.
+  it('answers a plan refusal in the create-project flow with the lock’s notice', () => {
+    const dialog = source('../../../components/projects/create-project-dialog.tsx');
+    expect(dialog).toMatch(/if \(isPlanRefusal\(cause\)\) \{\s*setPlanError\(cause\);/);
+    expect(dialog).toContain('<PlanLockNotice error={planError} />');
+  });
+
+  it('opens an organisation created past the free allowance on its plans page', () => {
+    const dialog = source('../../../components/organizations/create-organization-dialog.tsx');
+    expect(dialog).toMatch(
+      /awaiting\s*\?\s*appPath\.orgPlans\(created\.organization\.id\)\s*:\s*appPath\.org\(created\.organization\.id\)/,
+    );
+    expect(dialog).toContain('freeAllowanceNotice(view.entitlements)');
+    expect(dialog).toMatch(/<LockedAction lock=\{createLock\}>\s*<Button\s+type="submit"/);
+  });
+
+  it('puts the banner above every page of an organisation awaiting a plan', () => {
+    const chrome = source('./dashboard-chrome.tsx');
+    expect(chrome).toMatch(/<AwaitingPlanBanner[\s\S]*?\{children\}/);
   });
 });
 

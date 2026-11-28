@@ -48,11 +48,11 @@ import type { SignInErrorCode } from '@/lib/sign-in-errors';
 import { DatabaseAuditSink } from './audit-sink';
 import type { Bindings } from './bindings';
 import { MissingBindingError } from './bindings';
+import { billingConfigured } from './billing/config';
 import { scheduleSeatSync } from './billing/seats';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
 import { attemptKey, consume } from './rate-limit';
-import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from './schemas/resources';
 import type { WorkosIdentityProvider } from './workos';
 
 /**
@@ -437,7 +437,9 @@ async function provisionPersonalOrganization(
   const created = await provisionOrganization(services.db, {
     user,
     envelope: services.envelope,
-    limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
+    // An account reaching this holds no organisation, so the allowance never
+    // bites here; it is said anyway, as every creation says it.
+    freeAllowance: billingConfigured(services.env),
   });
 
   services.waitUntil(

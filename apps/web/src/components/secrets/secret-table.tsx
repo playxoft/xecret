@@ -47,6 +47,9 @@ import {
 } from '@/components/ui';
 import type { SecretIo } from '@/components/envkeys';
 import { useSecretPolicy } from '@/components/policies/secret-policy-context';
+import { useControlPlaneLock, usePlanLimit } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
+import type { PlanBlock } from '@/components/plans/plan-gate';
 import type { EnvironmentTarget } from './environment-target';
 import { AbsentRow } from './absent-row';
 import { useComparedSecrets } from './use-compared-secrets';
@@ -278,6 +281,24 @@ export function SecretTable({
   const staged = useStagedChanges(io);
   const compared = useComparedSecrets(orgId, projectId, comparedEnvironments);
   const secretPolicy = useSecretPolicy();
+
+  /**
+   * The plan's ceiling on secrets in an environment, asked before anything is
+   * typed rather than after Save. Each draft row is one more key here, so
+   * adding one is locked once the keys held and the drafts staged reach the
+   * ceiling, and Save is locked when the drafts would carry it past (a paste
+   * that expanded into more rows than fit). The count is this listing's: once
+   * every page is in it is exact, and before then it is the least the
+   * environment holds, so a lock drawn from it is never wrong, only sometimes
+   * late, and the server's refusal is reported on the rows it stopped.
+   *
+   * Import is locked only while the organisation's control plane is closed:
+   * an import can overwrite as well as add, and its preview, which is the
+   * server's dry run, is what says whether its additions fit.
+   */
+  const addLock = usePlanLimit('secretsPerEnvironment', secrets.length + staged.drafts.length);
+  const saveLock = usePlanLimit('secretsPerEnvironment', secrets.length, staged.drafts.length);
+  const importLock = useControlPlaneLock();
 
   // Compared during render rather than in an effect: an effect runs after paint,
   // so the superseded value would be on screen for a frame — and could be
@@ -930,7 +951,8 @@ export function SecretTable({
     toggleHoverReveal();
   });
   useGlobalShortcut('shift:KeyN', () => {
-    if (staged.saving) return;
+    // The button the shortcut stands in for is locked: so is the shortcut.
+    if (staged.saving || addLock !== null) return;
     staged.addDraft(undefined, 'start');
   });
   useGlobalShortcut('mod:KeyK', () => {
@@ -947,6 +969,8 @@ export function SecretTable({
         // From the top of the table, so the new row lands where the button that
         // made it is. The one under the last row appends instead.
         onAddDraft={() => staged.addDraft(undefined, 'start')}
+        addLock={addLock}
+        importLock={importLock}
         disabled={staged.saving}
         revealAll={revealAll}
         onRevealAll={revealEverything}
@@ -1051,19 +1075,23 @@ export function SecretTable({
           title="No secrets in this environment yet"
           description="Add one here, or import an existing .env file and have every value in it here in a few seconds."
           action={
-            <Button variant="primary" onClick={() => staged.addDraft()}>
-              <PlusIcon className="size-4" />
-              Add a secret
-            </Button>
+            <LockedAction lock={addLock}>
+              <Button variant="primary" onClick={() => staged.addDraft()}>
+                <PlusIcon className="size-4" />
+                Add a secret
+              </Button>
+            </LockedAction>
           }
           {...(onImport === undefined
             ? {}
             : {
                 secondaryAction: (
-                  <Button variant="secondary" onClick={onImport}>
-                    <UploadIcon className="size-4" />
-                    Import a file
-                  </Button>
+                  <LockedAction lock={importLock}>
+                    <Button variant="secondary" onClick={onImport}>
+                      <UploadIcon className="size-4" />
+                      Import a file
+                    </Button>
+                  </LockedAction>
                 ),
               })}
         />
@@ -1162,7 +1190,9 @@ export function SecretTable({
                     onPatchValueIn={(slug, value) => staged.setDraftValueIn(draft.id, slug, value)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
-                    onAddNext={() => staged.addDraft(undefined, draft.placement)}
+                    onAddNext={() => {
+                      if (addLock === null) staged.addDraft(undefined, draft.placement);
+                    }}
                     onCommit={saveStaged}
                   />
                 ))}
@@ -1287,23 +1317,27 @@ export function SecretTable({
                     onPatchValueIn={(slug, value) => staged.setDraftValueIn(draft.id, slug, value)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
-                    onAddNext={() => staged.addDraft(undefined, draft.placement)}
+                    onAddNext={() => {
+                      if (addLock === null) staged.addDraft(undefined, draft.placement);
+                    }}
                     onCommit={saveStaged}
                   />
                 ))}
 
                 <TableRow className="hover:bg-transparent">
                   <TableCell colSpan={3} className="py-1.5">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-fg-muted w-full justify-start"
-                      disabled={staged.saving}
-                      onClick={() => staged.addDraft(undefined, 'end')}
-                    >
-                      <PlusIcon className="size-4" />
-                      Add a secret
-                    </Button>
+                    <LockedAction lock={addLock}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-fg-muted w-full justify-start"
+                        disabled={staged.saving}
+                        onClick={() => staged.addDraft(undefined, 'end')}
+                      >
+                        <PlusIcon className="size-4" />
+                        Add a secret
+                      </Button>
+                    </LockedAction>
                   </TableCell>
                 </TableRow>
               </TableBody>
@@ -1346,6 +1380,7 @@ export function SecretTable({
       <SaveBar
         count={staged.pendingCount}
         saving={staged.saving}
+        lock={saveLock}
         isProduction={isProduction}
         onDiscard={staged.discardAll}
         onSave={saveStaged}
@@ -1468,6 +1503,8 @@ function Toolbar({
   onQueryChange,
   filterRef,
   onAddDraft,
+  addLock,
+  importLock,
   disabled,
   revealAll,
   onRevealAll,
@@ -1485,6 +1522,10 @@ function Toolbar({
   /** So ⌘/Ctrl+K can put the caret here from anywhere on the screen. */
   filterRef: RefObject<HTMLInputElement | null>;
   onAddDraft: () => void;
+  /** The plan's ceiling on secrets, reached: see `addLock` in the table. */
+  addLock: PlanBlock | null;
+  /** Every write closed while the organisation waits for a paid plan. */
+  importLock: PlanBlock | null;
   disabled: boolean;
   revealAll: RevealAll;
   /**
@@ -1588,10 +1629,12 @@ function Toolbar({
         ) : null}
 
         {onImport ? (
-          <Button variant="ghost" size="sm" onClick={onImport}>
-            <UploadIcon className="size-4" />
-            Import
-          </Button>
+          <LockedAction lock={importLock}>
+            <Button variant="ghost" size="sm" onClick={onImport}>
+              <UploadIcon className="size-4" />
+              Import
+            </Button>
+          </LockedAction>
         ) : null}
         {onExport ? (
           <Button variant="ghost" size="sm" onClick={onExport}>
@@ -1601,21 +1644,23 @@ function Toolbar({
         ) : null}
       </div>
 
-      <Button
-        variant="primary"
-        onClick={onAddDraft}
-        disabled={disabled}
-        aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'N'])}
-      >
-        <PlusIcon className="size-4" />
-        Add secret
-        {/* On the accent fill the cap's own surface would fight the button, so
-            it borrows the foreground it sits on at reduced opacity. */}
-        <Shortcut
-          keys={['Shift', 'N']}
-          className="hidden lg:inline-flex [&>kbd]:border-transparent [&>kbd]:bg-white/15 [&>kbd]:text-current"
-        />
-      </Button>
+      <LockedAction lock={addLock}>
+        <Button
+          variant="primary"
+          onClick={onAddDraft}
+          disabled={disabled}
+          aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'N'])}
+        >
+          <PlusIcon className="size-4" />
+          Add secret
+          {/* On the accent fill the cap's own surface would fight the button, so
+              it borrows the foreground it sits on at reduced opacity. */}
+          <Shortcut
+            keys={['Shift', 'N']}
+            className="hidden lg:inline-flex [&>kbd]:border-transparent [&>kbd]:bg-white/15 [&>kbd]:text-current"
+          />
+        </Button>
+      </LockedAction>
     </div>
   );
 }
@@ -1638,12 +1683,15 @@ function Toolbar({
 function SaveBar({
   count,
   saving,
+  lock,
   isProduction,
   onDiscard,
   onSave,
 }: {
   count: number;
   saving: boolean;
+  /** Why the plan would refuse this save, before it is pressed: see `saveLock`. */
+  lock: PlanBlock | null;
   isProduction: boolean;
   onDiscard: () => void;
   onSave: () => void;
@@ -1675,9 +1723,11 @@ function SaveBar({
         <Button variant="ghost" onClick={onDiscard} disabled={saving}>
           Discard
         </Button>
-        <Button variant="primary" onClick={onSave} loading={saving}>
-          {isProduction ? 'Save to production' : 'Save changes'}
-        </Button>
+        <LockedAction lock={lock}>
+          <Button variant="primary" onClick={onSave} loading={saving}>
+            {isProduction ? 'Save to production' : 'Save changes'}
+          </Button>
+        </LockedAction>
       </div>
     </div>
   );

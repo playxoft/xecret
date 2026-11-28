@@ -28,6 +28,8 @@ import type { Organization, OrganizationResponse } from '@/components/projects/t
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
+import { useOrganizationCreateLock } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { canAdminister, useOrganization, useSession } from './session';
 import { SettingsLayout } from './settings-layout';
 import { organizationSettingsSections } from './settings-sections';
@@ -59,6 +61,8 @@ export function OrganizationSettingsLayout({
   // one is created — see `SessionValue.createOrganization`. This screen used to
   // mount a third copy of it, underneath the shell's two.
   const { createOrganization } = useSession();
+  // Locked while this account holds an organisation still waiting for a plan.
+  const createLock = useOrganizationCreateLock();
   const groups = useMemo(
     () => organizationSettingsSections(orgId, membership),
     [orgId, membership],
@@ -74,10 +78,12 @@ export function OrganizationSettingsLayout({
           title="Organisation settings"
           description="Who this organisation is, the identifier every consumer of it depends on, and the rules and notifications that apply across it."
           actions={
-            <Button variant="secondary" onClick={createOrganization}>
-              <PlusIcon className="size-4" />
-              New organisation
-            </Button>
+            <LockedAction lock={createLock}>
+              <Button variant="secondary" onClick={createOrganization}>
+                <PlusIcon className="size-4" />
+                New organisation
+              </Button>
+            </LockedAction>
           }
         />
       }

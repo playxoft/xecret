@@ -16,11 +16,13 @@ export {
 } from './limits';
 export type { PlanLimitError } from './limits';
 export {
+  AWAITING_ORGANIZATIONS_PER_ACCOUNT,
   cheapestPlanWithFeature,
   cheapestPlanWithLimit,
   DEFAULT_PLAN,
   FAIR_USE,
   FETCHES_PER_METERED_UNIT,
+  FREE_ORGANIZATIONS_PER_ACCOUNT,
   MINIMUM_SEATS,
   NO_ADDONS,
   NULLABLE_LIMITS,

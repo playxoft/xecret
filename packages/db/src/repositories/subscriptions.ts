@@ -39,6 +39,13 @@ export interface SubscriptionEntitlementRow {
   addonDirectorySync: boolean;
   limitOverrides: Record<string, number | null> | null;
   currentPeriodEnd: Date | null;
+  /**
+   * Whether the organisation is recorded as waiting for a paid plan: the
+   * organisation's `awaiting_paid_plan_since` (migration 0037), carried by the
+   * tenancy lookup. Absent from every read that does not carry it, which
+   * resolves as `false`.
+   */
+  awaitingPaidPlan?: boolean | undefined;
 }
 
 /**
@@ -72,6 +79,7 @@ export function entitlementsFromRow(
     addonDirectorySync: row.addonDirectorySync,
     limitOverrides: row.limitOverrides ?? undefined,
     currentPeriodEnd: row.currentPeriodEnd,
+    awaitingPaidPlan: row.awaitingPaidPlan === true,
   });
 }
 

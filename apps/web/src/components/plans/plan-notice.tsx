@@ -7,7 +7,8 @@ import type { ReactNode } from 'react';
 import { appPath, parseDashboardPath } from '@/app/(dashboard)/_lib/paths';
 import { errorMessage, isApiError } from '@/lib/api';
 import { Alert } from '@/components/ui';
-import { planName, planRefusalOf, upgradeSentence, withoutReasonPrefix } from './plan-copy';
+import { planRefusalOf, upgradeSentence, withoutReasonPrefix } from './plan-copy';
+import { PlanLockNotice } from './plan-lock';
 
 /**
  * Where "compare plans" goes when there is no organisation to compare them for.
@@ -74,16 +75,20 @@ export function ChangeError({
   const refusal = planRefusalOf(error);
   const comparePlans = usePlansHref();
 
+  // A plan refusal is said the way the lock on the control would have said
+  // it: what the plan allows, and an owner's way to the plans page.
+  if (refusal !== null && refusal.plan !== null) {
+    return (
+      <div className="flex flex-col gap-2">
+        <PlanLockNotice error={error} />
+        {children}
+      </div>
+    );
+  }
+
   if (refusal !== null) {
     return (
-      <Alert
-        tone="info"
-        title={
-          refusal.upgradeTo === null
-            ? 'Not part of this plan'
-            : `Available on the ${planName(refusal.upgradeTo)} plan`
-        }
-      >
+      <Alert tone="info" title="Not part of this plan">
         <p>{withoutReasonPrefix(refusal.message)}</p>
         <p className="mt-1.5">
           <Link href={comparePlans} className={LINK}>

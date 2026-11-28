@@ -76,15 +76,6 @@ import { randomBytes } from '../packages/core/src/crypto/encoding.ts';
 import { uuidv7 } from '../packages/core/src/ids/index.ts';
 import { DEFAULT_ENVIRONMENTS } from '../packages/core/src/validation/index.ts';
 
-/**
- * The ceiling `provisionOrganization` refuses past.
- *
- * Stated rather than omitted: the parameter is required precisely so that no
- * caller can create an organisation without naming one, and a smoke test that
- * passed `undefined` would be exercising a quota check that never fires.
- */
-const ORGANIZATION_LIMIT = 10;
-
 /** Thrown to unwind the transaction once the checks have run. */
 class Rollback extends Error {
   constructor() {
@@ -190,11 +181,7 @@ async function main(): Promise<void> {
       );
 
       // ── 2. Organisation bootstrap: the org, the membership, the master key ─
-      const account = await provisionOrganization(tx, {
-        user,
-        envelope,
-        limit: ORGANIZATION_LIMIT,
-      });
+      const account = await provisionOrganization(tx, { user, envelope, freeAllowance: false });
       step(
         'organisation bootstrapped',
         account.membership.role === 'owner',

@@ -24,6 +24,7 @@ import { projects } from '../schema/resources';
 import { invitations, orgMembers, organizations } from '../schema/tenancy';
 import { serviceTokens } from '../schema/tokens';
 import { liveServiceToken } from './capacity';
+import { settleAwaitingPaidPlan } from './free-allowance';
 import type { Executor, Transaction } from './shared';
 import type { SubscriptionPatch, SubscriptionRecord } from './subscriptions';
 
@@ -348,14 +349,31 @@ export async function detachFromProvider(
  * `seats.billed` is what the provider bills (its `quantity`); `seats.enforced`
  * is what invitations are refused against (`organizations.seat_limit`). See
  * `providerSeats` in `@xecret/core/entitlements` for how the pair is decided.
+ *
+ * A patch that moves the plan settles the free allowance in the same
+ * transaction (`settleAwaitingPaidPlan`): a paid plan stops the organisation
+ * waiting, and a subscription ending past its creator's allowance starts it.
+ * Only the billing paths write here, and they run only where payments are
+ * taken, so the allowance always applies. `becameAwaitingPaidPlan` says it
+ * started waiting, so the caller can tell its owners once the change commits.
  */
 export async function writeSubscriptionState(
   tx: Transaction,
   orgId: string,
   patch: ProviderSubscriptionPatch,
   seats?: { billed: number; enforced: number },
-): Promise<SubscriptionRecord | null> {
+): Promise<(SubscriptionRecord & { readonly becameAwaitingPaidPlan: boolean }) | null> {
   const now = new Date();
+  const previous =
+    patch.plan === undefined
+      ? undefined
+      : (
+          await tx
+            .select({ plan: orgSubscriptions.plan })
+            .from(orgSubscriptions)
+            .where(eq(orgSubscriptions.orgId, orgId))
+            .limit(1)
+        )[0];
   const [row] = await tx
     .update(orgSubscriptions)
     .set({ ...patch, ...(seats ? { seats: seats.billed } : {}), updatedAt: now })
@@ -368,7 +386,17 @@ export async function writeSubscriptionState(
       .set({ seatLimit: seats.enforced, updatedAt: now })
       .where(eq(organizations.id, orgId));
   }
-  return row ?? null;
+  if (!row) return null;
+
+  const settled =
+    patch.plan === undefined || previous === undefined
+      ? { becameAwaiting: false }
+      : await settleAwaitingPaidPlan(tx, orgId, {
+          previousPlan: previous.plan,
+          plan: row.plan,
+          applies: true,
+        });
+  return { ...row, becameAwaitingPaidPlan: settled.becameAwaiting };
 }
 
 /**

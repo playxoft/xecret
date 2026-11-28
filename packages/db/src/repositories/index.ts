@@ -175,7 +175,6 @@ export type { MintPinPepperParams, PinAttemptOutcome, PinDeviceRecord } from './
 
 export {
   accountLockQuery,
-  accountOrganizationCeiling,
   countNonSsoAccess,
   countOrganizationsHeldBy,
   findOrganizationById,
@@ -212,6 +211,15 @@ export type {
   ProvisionedOrganization,
   ProvisionOrganizationParams,
 } from './organizations';
+
+export {
+  countAwaitingOrganizations,
+  countOpenFreeOrganizations,
+  freeOrganizationAllowance,
+  openFreeOrganizationsQuery,
+  settleAwaitingPaidPlan,
+} from './free-allowance';
+export type { AllowanceSettlement, FreeAllowance } from './free-allowance';
 
 export {
   accountMembershipSummary,

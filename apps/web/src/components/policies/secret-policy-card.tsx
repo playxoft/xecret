@@ -25,7 +25,10 @@ import {
   Textarea,
   useToast,
 } from '@/components/ui';
-import { ChangeError, PlanLock } from '@/components/plans/plan-notice';
+import { ChangeError } from '@/components/plans/plan-notice';
+import { useControlPlaneLock } from '@/components/plans/plan-entitlements';
+import { featureLockFrom } from '@/components/plans/plan-gate';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { planName } from '@/components/plans/plan-copy';
 import {
   fieldProblemsUnder,
@@ -153,6 +156,11 @@ function SecretPolicyForm({
    */
   const enableLocked = !feature.enabled && !stored.enabled && !draft.enabled;
   const editable = canManage && !saving;
+  // The lock the "Enforce" checkbox carries where the plan keeps it off, and
+  // the one on Save when the draft asks what the plan does not include. Every
+  // write, while the organisation waits for a paid plan.
+  const controlLock = useControlPlaneLock();
+  const featureLock = featureLockFrom('secretPolicy', feature);
 
   function patch(change: Partial<SecretPolicyDraft>) {
     setDraft((current) => ({ ...current, ...change }));
@@ -212,18 +220,14 @@ function SecretPolicyForm({
         </Alert>
       ) : null}
 
-      {!feature.enabled ? (
-        stored.enabled ? (
-          <p className="text-fg-subtle text-sm leading-5">
-            This organisation’s plan no longer includes the secret policy. It stays enforced, and
-            you can switch it off;{' '}
-            {feature.upgradeTo === null
-              ? 'changing it while it is on is not part of this plan.'
-              : `changing it while it is on needs the ${planName(feature.upgradeTo)} plan.`}
-          </p>
-        ) : (
-          <PlanLock what="Switching the secret policy on" upgradeTo={feature.upgradeTo} />
-        )
+      {!feature.enabled && stored.enabled ? (
+        <p className="text-fg-subtle text-sm leading-5">
+          This organisation’s plan no longer includes the secret policy. It stays enforced, and you
+          can switch it off;{' '}
+          {feature.upgradeTo === null
+            ? 'changing it while it is on is not part of this plan.'
+            : `changing it while it is on needs the ${planName(feature.upgradeTo)} plan.`}
+        </p>
       ) : null}
 
       <Alert tone="info" title="Who enforces which rule">
@@ -248,7 +252,8 @@ function SecretPolicyForm({
         label="Enforce this policy"
         description="When this is off the rules below are kept but not applied, so they can be prepared before anybody is held to them."
         checked={draft.enabled}
-        disabled={!editable || enableLocked}
+        disabled={!editable || enableLocked || controlLock !== null}
+        lock={canManage ? (controlLock ?? (enableLocked ? featureLock : null)) : null}
         onCheckedChange={(checked) => patch({ enabled: checked })}
       />
 
@@ -369,22 +374,13 @@ function SecretPolicyForm({
         />
       </Field>
 
-      {blocked && feature.enabled === false && (stored.enabled || draft.enabled) ? (
-        <PlanLock
-          what={
-            stored.enabled
-              ? 'Changing the secret policy while it is on'
-              : 'Switching the secret policy on'
-          }
-          upgradeTo={feature.upgradeTo}
-        />
-      ) : null}
-
       {canManage ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" variant="primary" loading={saving} disabled={!changed || blocked}>
-            Save secret policy
-          </Button>
+          <LockedAction lock={controlLock ?? (blocked ? featureLock : null)}>
+            <Button type="submit" variant="primary" loading={saving} disabled={!changed || blocked}>
+              Save secret policy
+            </Button>
+          </LockedAction>
           <Button variant="ghost" onClick={() => patch(withDefaultRules(draft))} disabled={saving}>
             Use the defaults
           </Button>

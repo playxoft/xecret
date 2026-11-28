@@ -948,6 +948,44 @@ describe('the subscription lifecycle', () => {
     expect(ended!.metadata).toMatchObject({ previousPlan: 'team', reason: 'subscription ended' });
   });
 
+  /**
+   * The lapse the free allowance is about: this organisation, past its
+   * creator's two other open Free organisations, waits for a paid plan; the
+   * two others, which worked yesterday, keep working; and its owners are told.
+   */
+  it('expiry past the creator’s free allowance leaves that organisation waiting, and says so', async () => {
+    const { orgId, subscriptionId, customerId } = await activeTeam();
+    const creator = await t.pg.query<{ created_by: string }>(
+      `select created_by from organizations where id = $1`,
+      [orgId],
+    );
+    const others: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const other = randomUUID();
+      await t.pg.query(
+        `insert into organizations (id, name, slug, created_by) values ($1, 'Other', $2, $3)`,
+        [other, `other-${other.slice(0, 8)}`, creator.rows[0]!.created_by],
+      );
+      others.push(other);
+    }
+    mail.sent = [];
+
+    await deliver({
+      type: 'subscription.expired',
+      data: subscriptionData({ subscriptionId, customerId, orgId, status: 'expired' }),
+    });
+
+    const flags = await t.pg.query<{ id: string; awaiting: boolean }>(
+      `select id, awaiting_paid_plan_since is not null as awaiting from organizations
+       where id = any($1::uuid[])`,
+      [[orgId, ...others]],
+    );
+    const awaiting = Object.fromEntries(flags.rows.map((row) => [row.id, row.awaiting]));
+    expect(awaiting[orgId]).toBe(true);
+    for (const other of others) expect(awaiting[other]).toBe(false);
+    expect(mail.sent.map((message) => message.subject)).toContain('Acme needs a paid plan');
+  });
+
   it('a plan change moves plan and seats', async () => {
     const { orgId, subscriptionId, customerId } = await activeTeam({ quantity: 3 });
     mail.sent = [];

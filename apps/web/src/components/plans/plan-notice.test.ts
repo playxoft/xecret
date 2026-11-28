@@ -16,6 +16,7 @@ vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
 
 const { ApiError } = await import('@/lib/api');
 const { ChangeError, PLANS_HREF, PlanLock, plansHref } = await import('./plan-notice');
+const { planView, withPlan } = await import('./plan-test-view');
 
 beforeEach(() => {
   navigation.pathname = null;
@@ -72,10 +73,21 @@ describe('the notices link there', () => {
         upgradeTo: 'pro',
       },
     });
-    const html = renderToStaticMarkup(createElement(ChangeError, { error }));
+    // Said the way the lock on the control would have said it: an owner is
+    // offered the plans page, anybody else is told to ask one.
+    const owner = renderToStaticMarkup(
+      withPlan(planView({ owner: true }), createElement(ChangeError, { error })),
+    );
+    expect(owner).toContain('Environment promotion is on Pro and above.');
+    expect(owner).toContain('href="/app/acme/settings/plans"');
+    expect(owner).toContain('>Upgrade</a>');
+    expect(owner).not.toContain('Promotion needs the Pro plan.');
 
-    expect(html).toContain('Available on the Pro plan');
-    expect(html).toContain('href="/app/acme/settings/plans"');
+    const member = renderToStaticMarkup(
+      withPlan(planView({ owner: false }), createElement(ChangeError, { error })),
+    );
+    expect(member).toContain('Environment promotion is on Pro and above. Ask an owner to upgrade.');
+    expect(member).not.toContain('href="/app/acme/settings/plans"');
   });
 
   it('the pricing page, where there is no organisation', () => {

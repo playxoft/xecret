@@ -11,6 +11,7 @@ import {
 import { catalogEntryFor } from '../config';
 import type { BillingConfig } from '../config';
 import { subscriptionResource } from '../audit';
+import { awaitingPaidPlanMail } from '../effects';
 import type { HandlerOutcome } from '../effects';
 import type { DodoSubscription } from '../payloads';
 import { decideSnapshot, trialEndedUnpaid } from '../snapshot';
@@ -179,7 +180,12 @@ export async function applySubscriptionSnapshot(
     if (!spent) return unverified();
   }
 
-  await writeSubscriptionState(tx, orgId, decision.patch, decision.seats);
+  const written = await writeSubscriptionState(tx, orgId, decision.patch, decision.seats);
+  // A subscription that ended past the creator's free allowance leaves the
+  // organisation waiting for a paid plan; its owners are told once it commits.
+  if (written?.becameAwaitingPaidPlan === true) {
+    outcome.effects.push(awaitingPaidPlanMail(orgId, input.now));
+  }
   // An activation's seat count is owed from this commit — the checkout's
   // quantity may be out of date — so the debt is written with it, as a
   // membership change writes its own. The push after the commit pays it; an

@@ -260,6 +260,13 @@
       "when": 1789300000000,
       "tag": "0036_billing_trials_and_reschedules",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789400000000,
+      "tag": "0037_awaiting_paid_plan",
+      "breakpoints": true
     }
   ]
 }

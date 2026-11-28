@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, isApiError } from '@/lib/api';
 import { PageHeader } from '@/components/layout';
 import { Button, EmptyState, LayersIcon } from '@/components/ui';
+import { usePlanLimit } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { CreateEnvironmentDialog } from '@/components/projects/create-environment-dialog';
 import { EnvironmentCards } from '@/components/projects/environment-cards';
 import type { SecretCounts } from '@/components/projects/environment-cards';
@@ -25,6 +27,9 @@ export function ProjectScreen({ orgId, projectId }: { orgId: string; projectId: 
   const counts = useSecretCounts(orgId, projectId, environments);
 
   const canCreateEnvironment = canAdminister(organization, 'environment.create');
+  // The ceiling is per project, and this screen lists the project's
+  // environments, so the count is the listing's own.
+  const createLock = usePlanLimit('environmentsPerProject', environments?.length ?? null);
 
   return (
     <div className="flex flex-col gap-6">
@@ -37,9 +42,11 @@ export function ProjectScreen({ orgId, projectId }: { orgId: string; projectId: 
           project.data === null ? undefined : (
             <>
               {canCreateEnvironment ? (
-                <Button variant="secondary" onClick={() => setCreating(true)}>
-                  New environment
-                </Button>
+                <LockedAction lock={createLock}>
+                  <Button variant="secondary" onClick={() => setCreating(true)}>
+                    New environment
+                  </Button>
+                </LockedAction>
               ) : null}
               {/* Import archive is an item of this menu (`projectMenuItems`). */}
               {organization !== null ? (
@@ -74,9 +81,11 @@ export function ProjectScreen({ orgId, projectId }: { orgId: string; projectId: 
           description="An environment is where secrets live — one per deployment target. Each gets its own encryption key, so a compromise of one does not reach the others."
           action={
             canCreateEnvironment ? (
-              <Button variant="primary" onClick={() => setCreating(true)}>
-                Create an environment
-              </Button>
+              <LockedAction lock={createLock}>
+                <Button variant="primary" onClick={() => setCreating(true)}>
+                  Create an environment
+                </Button>
+              </LockedAction>
             ) : undefined
           }
         />

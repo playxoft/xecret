@@ -32,18 +32,21 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: availability and change, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-11-27';
+const UPDATED = '2026-11-28';
 /**
- * The day it was written: this version says how free trials work from now on —
- * one per organisation and per account, and a trial that ends unpaid returns
- * the organisation to Free after 2 days on hold rather than 14. No subscription
- * was in a trial or on hold when it was written, so it changes no arrangement
- * anybody has, which is why §Changes says it is not a material change. Ship it
- * the day it is deployed: if the build carrying it goes out later, move both
- * dates to that day. The versions before it — 23 November (the company, the
- * encryption) and 3 November 2026 (the plan limits) — are in §Changes too.
+ * The day it was written: this version says a plan covers the one organisation
+ * it is bought for, gives every account two free organisations rather than one,
+ * holds a later Free one until it is bought a plan, and moves Team's project
+ * ceiling to 60. When it was written no organisation was on a paid plan billed
+ * through live payments (the only paid ones were one in Dodo's test mode and
+ * one complimentary grant), so it changes nothing anybody pays for, which is
+ * why §Changes says it is not a material change. Ship it the day it is
+ * deployed: if the build carrying it goes out later, move both dates to that
+ * day. The versions before it (27 November, the trials; 23 November, the
+ * company and the encryption; 3 November 2026, the plan limits) are in
+ * §Changes too.
  */
-const EFFECTIVE: string | null = '2026-11-27';
+const EFFECTIVE: string | null = '2026-11-28';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -268,32 +271,31 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         clauses.opening,
         [
           <>
-            <strong className="text-fg font-medium">Free — $0, forever.</strong> 1 organisation, 5
-            projects, 3 members, 3 environments per project, 250 secrets in each, 10 service tokens,
-            2 CLI devices per member, no webhooks, 7 days of audit history, community support on
-            GitHub.
+            <strong className="text-fg font-medium">Free: $0, forever.</strong> 2 free organisations
+            per account, each with 5 projects, 3 members, 3 environments per project, 250 secrets in
+            each, 10 service tokens, 2 CLI devices per member, no webhooks, 7 days of audit history,
+            community support on GitHub. A further Free organisation an account creates waits for a
+            paid plan before it can be used, and an account can hold one such organisation at a
+            time.
           </>,
           <>
-            <strong className="text-fg font-medium">Pro — $8 per member per month</strong>, or $5
-            per member per month billed yearly. 3 organisations, 25 projects, 10 environments per
-            project, 1,000 secrets in each, unlimited members, 50 service tokens, 5 CLI devices per
-            member, 3 webhooks, 30 days of audit history, 200,000 secret fetches a month, email
-            support.
+            <strong className="text-fg font-medium">Pro: $8 per member per month</strong>, or $5 per
+            member per month billed yearly. 25 projects, 10 environments per project, 1,000 secrets
+            in each, unlimited members, 50 service tokens, 5 CLI devices per member, 3 webhooks, 30
+            days of audit history, 200,000 secret fetches a month, email support.
           </>,
           <>
-            <strong className="text-fg font-medium">Team — $19 per member per month</strong>, or $12
-            per member per month billed yearly. Everything in Pro, plus 10 organisations, 100
-            projects, 25 environments per project, 5,000 secrets in each, 250 service tokens, 10 CLI
-            devices per member, 25 webhooks, 180 days of audit history, 1,000,000 secret fetches a
-            month, roles and per-environment access, and priority support with a one-business-day
-            response target.
+            <strong className="text-fg font-medium">Team: $19 per member per month</strong>, or $12
+            per member per month billed yearly. Everything in Pro, plus 60 projects, 25 environments
+            per project, 5,000 secrets in each, 250 service tokens, 10 CLI devices per member, 25
+            webhooks, 180 days of audit history, 1,000,000 secret fetches a month, roles and
+            per-environment access, and priority support with a one-business-day response target.
           </>,
           <>
-            <strong className="text-fg font-medium">Enterprise — custom.</strong> Everything in
-            Team, without the organisation, project, environment, secret, token, device or webhook
-            ceilings, plus a year of audit history, invoiced billing, a self-hosting support
-            contract, a named contact, and a contractual SLA. SAML single sign-on is included at
-            this tier.
+            <strong className="text-fg font-medium">Enterprise: custom.</strong> Everything in Team,
+            without the project, environment, secret, token, device or webhook ceilings, plus a year
+            of audit history, invoiced billing, a self-hosting support contract, a named contact,
+            and a contractual SLA. SAML single sign-on is included at this tier.
           </>,
           <>
             <strong className="text-fg font-medium">Add-ons, charged per connection.</strong> SAML
@@ -308,6 +310,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
             the community, or an Enterprise contract.
           </>,
         ],
+        'Each plan covers the one organisation it is bought for: every organisation on a paid plan is billed on its own, and an account may hold as many of them as it pays for.',
         'Team is billed from a minimum of 3 members and Enterprise from 10, whatever the number of people actually in the organisation. Below the minimum you are billed for it; you are never prevented from running with fewer. Free and Pro have no minimum.',
         clauses.billing,
         <>
@@ -319,19 +322,26 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           The limits above have applied since the version of 3 November 2026 was published. Once an
           organisation is at one, the next project, environment, secret, service token, CLI device,
           webhook or member past it is refused, and the refusal names the plan that would allow it
-          {paymentsLive ? ' — which an owner can move to from the billing page' : ''}. Reaching a
+          {paymentsLive ? ', which an owner can move to from the billing page' : ''}. Reaching a
           limit, or a plan lapsing, deletes none of the organisation&rsquo;s projects, environments,
-          secrets or tokens: they stay readable and editable, and only adding more is refused. A
-          lower plan does stop three things. On a plan that allows no webhooks, existing webhook
-          endpoints are kept but paused &mdash; they send nothing, and cannot be edited, switched
-          back on or tested until the plan allows them again, though switching one off or deleting
-          it is never refused. On a plan without new-address read alerts, the alerts stop: new
-          addresses reading an environment are not recorded and no alert or digest is sent until the
-          plan includes them again. And any other feature the plan does not include, such as
-          personal overrides or secret templates, keeps working as it was set but cannot be changed
-          or added to, though what was set can always be removed. The current numbers are on{' '}
-          <LegalLink href="/pricing">the pricing page</LegalLink>, and if they ever disagree with
-          this section, this section is the one you agreed to.
+          secrets or tokens: they stay readable and editable, and only adding more is refused. An
+          organisation waiting for a paid plan deletes nothing and stays readable: its secrets are
+          still served in the dashboard, to the CLI and to service tokens, and the people it already
+          admits can still be given the keys to what they may read. Until a plan is bought for it,
+          it refuses every other change except buying a plan, deleting the organisation, and taking
+          access away: removing or suspending members and lowering their roles, revoking tokens,
+          grants and invitations, rotating keys, and switching webhooks off. An organisation that
+          drops back to Free from a paid plan waits only when the account that created it already
+          has two other Free organisations open. A lower plan does stop three things. On a plan that
+          allows no webhooks, existing webhook endpoints are kept but paused: they send nothing, and
+          cannot be edited, switched back on or tested until the plan allows them again, though
+          switching one off or deleting it is never refused. On a plan without new-address read
+          alerts, the alerts stop: new addresses reading an environment are not recorded and no
+          alert or digest is sent until the plan includes them again. And any other feature the plan
+          does not include, such as personal overrides or secret templates, keeps working as it was
+          set but cannot be changed or added to, though what was set can always be removed. The
+          current numbers are on <LegalLink href="/pricing">the pricing page</LegalLink>, and if
+          they ever disagree with this section, this section is the one you agreed to.
         </>,
         clauses.refunds,
       ],
@@ -426,25 +436,39 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       paragraphs: [
         'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
-        // The sentence the legal-date guard reads stays on both versions of the
-        // page — this version takes effect the day it was written whether or
-        // not payments are taken — and only what it says about trials follows
-        // the clauses it describes, which render only once payments are live.
+        // The sentence the legal-date guard reads is the first one, the same on
+        // both versions of the page: this version takes effect the day it was
+        // written whether or not payments are taken. What the 27 November one
+        // says about trials still follows the clauses it describes, which
+        // render only once payments are live.
         <>
-          The version of 27 November 2026 is not a material change.{' '}
+          The version of 28 November 2026 is not a material change. It says that a plan covers the
+          one organisation it is bought for, with every organisation on a paid plan billed on its
+          own. Before it, how many organisations an account could hold followed the best plan among
+          the ones it had created: one on Free, three on Pro and ten on Team. Now every account gets
+          two Free organisations and as many paid ones as it pays for. That is one more for an
+          account on Free alone, and can be fewer for an account that held a paid plan, whose
+          organisations beyond its paid ones and two Free ones now need plans of their own. A Free
+          organisation past the two can still be created, and waits for a paid plan before it can be
+          changed. It also sets Team at 60 projects. When it was published no organisation was on a
+          paid plan billed through live payments, and no account held more than one Free
+          organisation it had created, so it changes nothing anybody pays for or already holds.
+        </>,
+        <>
+          The version of 27 November 2026 was not a material change either.{' '}
           {paymentsLive ? (
             <>
-              It says how free trials work from now on: one per organisation and one per
+              It said how free trials work from then on: one per organisation and one per
               person&rsquo;s account, and a trial that ends without any payment returns the
               organisation to Free after 2 days on hold rather than 14. When it was published no
-              subscription was in a trial or on hold, so it changes no arrangement anybody already
-              has; a trial started after it is started under it. Nothing you have paid for, and
-              nothing a paying subscription gets, has changed &mdash; a subscription that has paid
-              still has 14 days on hold before it ends.
+              subscription was in a trial or on hold, so it changed no arrangement anybody already
+              had; a trial started after it is started under it. Nothing you had paid for, and
+              nothing a paying subscription gets, changed: a subscription that has paid still has 14
+              days on hold before it ends.
             </>
           ) : (
             <>
-              It changes nothing this page says while no payment is taken: it adds how free trials
+              It changed nothing this page says while no payment is taken: it added how free trials
               will work once payments are taken, which this page states from that day.
             </>
           )}

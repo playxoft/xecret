@@ -13,7 +13,6 @@ import {
   ConfirmDialog,
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -33,6 +32,8 @@ import {
   useEnvironmentKeys,
 } from '@/components/envkeys';
 import { OverridesCard } from '@/components/overrides/overrides-card';
+import { usePlanFeature } from '@/components/plans/plan-entitlements';
+import { LockedMenuItem } from '@/components/plans/plan-lock';
 import { secretPolicyFrom } from '@/components/policies/policy-checks';
 import { SecretPolicyProvider, useOrgPolicies } from '@/components/policies/secret-policy-context';
 import { EnvironmentBadge } from '@/components/projects/environment-badge';
@@ -267,6 +268,13 @@ export function EnvironmentScreen({
    */
   const offersOverride = keyFacts?.encryptionMode === 'e2ee';
 
+  // The three acts in the "Changes" menu each need a feature of the plan. The
+  // items are drawn locked, with the plan that includes them, rather than
+  // opening a dialog whose last step is a refusal.
+  const promoteLock = usePlanFeature('environmentPromotion');
+  const restoreLock = usePlanFeature('pointInTimeRestore');
+  const overrideLock = usePlanFeature('personalOverrides');
+
   /** A write this table did not make — see `externalWrites`. */
   function wroteElsewhere() {
     setExternalWrites((current) => current + 1);
@@ -328,14 +336,14 @@ export function EnvironmentScreen({
                   <DropdownMenuContent>
                     {canChangeInBulk ? (
                       <>
-                        <DropdownMenuItem onSelect={() => setPromoting(true)}>
+                        <LockedMenuItem lock={promoteLock} onSelect={() => setPromoting(true)}>
                           <LayersIcon className="size-4" />
                           Promote from another environment…
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => setRestoringPoint(true)}>
+                        </LockedMenuItem>
+                        <LockedMenuItem lock={restoreLock} onSelect={() => setRestoringPoint(true)}>
                           <HistoryIcon className="size-4" />
                           Restore to a point in time…
-                        </DropdownMenuItem>
+                        </LockedMenuItem>
                       </>
                     ) : null}
                     {/* Where the first override is set, now that the card it
@@ -346,10 +354,10 @@ export function EnvironmentScreen({
                       <>
                         {canChangeInBulk ? <DropdownMenuSeparator /> : null}
                         <DropdownMenuLabel>Only for you</DropdownMenuLabel>
-                        <DropdownMenuItem onSelect={() => setOverrideFor('')}>
+                        <LockedMenuItem lock={overrideLock} onSelect={() => setOverrideFor('')}>
                           <UserIcon className="size-4" />
                           Set a personal override…
-                        </DropdownMenuItem>
+                        </LockedMenuItem>
                       </>
                     ) : null}
                   </DropdownMenuContent>

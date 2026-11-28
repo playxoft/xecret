@@ -19,6 +19,7 @@ import {
   operatorManaged,
   raiseCurrentUsageAllowance,
 } from './billing';
+import { settleAwaitingPaidPlan } from './free-allowance';
 import type { Executor, Transaction } from './shared';
 import { isUniqueViolation } from './users';
 import type { SubscriptionRecord } from './subscriptions';
@@ -209,6 +210,13 @@ export async function applyPlanGrant(
   // does for `plan:set --plan`.
   await raiseCurrentUsageAllowance(tx, request.orgId);
 
+  // A grant is a plan: an organisation that was waiting for one stops waiting.
+  await settleAwaitingPaidPlan(tx, request.orgId, {
+    previousPlan: previous.plan,
+    plan: updated.plan,
+    applies: true,
+  });
+
   return {
     ok: true,
     previous,
@@ -227,12 +235,21 @@ export async function applyPlanGrant(
  * back to one, the access ceiling back to Free's, nobody already seated
  * removed. Add-ons and support's limit overrides are kept — they were set on
  * the organisation, not bought with the plan, and they are raise-only.
+ *
+ * Back on Free, the organisation waits for a paid plan when its creator has
+ * two other open Free organisations and the free allowance applies here
+ * (`freeAllowance`: the deployment takes payments). `becameAwaitingPaidPlan`
+ * says so, for the email that tells its owners.
  */
 export async function endPlanGrant(
   tx: Transaction,
   orgId: string,
-  options: { dueBy?: Date } = {},
-): Promise<{ previous: SubscriptionRecord; row: SubscriptionRecord } | null> {
+  options: { dueBy?: Date | undefined; freeAllowance: boolean },
+): Promise<{
+  previous: SubscriptionRecord;
+  row: SubscriptionRecord;
+  becameAwaitingPaidPlan: boolean;
+} | null> {
   const row = await lockSubscription(tx, orgId);
   if (row === null || !operatorManaged(row)) return null;
   if (
@@ -263,7 +280,12 @@ export async function endPlanGrant(
     .set({ seatLimit: FREE_SEAT_LIMIT, updatedAt: now })
     .where(eq(organizations.id, orgId));
 
-  return { previous: row, row: updated };
+  const settled = await settleAwaitingPaidPlan(tx, orgId, {
+    previousPlan: row.plan,
+    plan: updated.plan,
+    applies: options.freeAllowance,
+  });
+  return { previous: row, row: updated, becameAwaitingPaidPlan: settled.becameAwaiting };
 }
 
 /** A grant, as the admin page lists it. */

@@ -29,7 +29,8 @@ import type { Principal } from './actor';
 import { ADMIN_ACTOR_LABEL, adminAudit } from './admin';
 import { subscriptionResource } from './billing/audit';
 import { billingProvider, DodoApiError } from './billing/client';
-import { billingSetup, productFor } from './billing/config';
+import { billingConfigured, billingSetup, productFor } from './billing/config';
+import { awaitingPaidPlanMail, runBillingEffects } from './billing/effects';
 import type { BillingConfig } from './billing/config';
 import { fractionDigits } from './billing/money';
 import { promoCodeState, summarizePromoCode } from './billing/promo-codes';
@@ -270,8 +271,11 @@ export async function endGrant(
   orgId: string,
   reason: string,
 ): Promise<AdminOrganizationPayload> {
-  await services.db.transaction(async (tx) => {
-    const ended = await endPlanGrant(tx, orgId);
+  const awaiting = await services.db.transaction(async (tx) => {
+    // The free allowance applies only where a plan can be bought.
+    const ended = await endPlanGrant(tx, orgId, {
+      freeAllowance: billingConfigured(services.env),
+    });
     if (ended === null) {
       throw errors.conflict('This organisation has no complimentary plan to end.');
     }
@@ -287,7 +291,11 @@ export async function endGrant(
         reason: `complimentary plan ended by support: ${reason}`,
       }),
     ]);
+    return ended.becameAwaitingPaidPlan;
   });
+  // Back on Free past the creator's allowance, it waits for a paid plan, and
+  // its owners are told so.
+  if (awaiting) await runBillingEffects(services, [awaitingPaidPlanMail(orgId, new Date())]);
   services.log.at('endGrant').info('An admin ended an organisation’s complimentary plan', {
     orgId,
     adminUserId: admin.user.id,

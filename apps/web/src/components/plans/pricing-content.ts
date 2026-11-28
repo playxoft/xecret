@@ -1,4 +1,7 @@
-import { PLANS as PLAN_DEFINITIONS } from '@xecret/core/entitlements';
+import {
+  FREE_ORGANIZATIONS_PER_ACCOUNT,
+  PLANS as PLAN_DEFINITIONS,
+} from '@xecret/core/entitlements';
 import type { PlanFeatures } from '@xecret/core/entitlements';
 
 // Type-only, so nothing of the marketing kit reaches the dashboard bundle that
@@ -115,6 +118,17 @@ export const LIMITS = {
   team: PLAN_DEFINITIONS.team.limits,
   enterprise: PLAN_DEFINITIONS.enterprise.limits,
 } as const;
+
+/**
+ * How many Free organisations an account gets, read from the engine like the
+ * limits above.
+ *
+ * Not a plan limit: a plan covers the one organisation it is bought for, and
+ * each paid one is billed on its own, so Pro, Team and Enterprise state no
+ * organisation count at all. Free states this one, per account. A later Free
+ * organisation can be created and waits for a paid plan before it can be used.
+ */
+export const FREE_ORGANIZATIONS = FREE_ORGANIZATIONS_PER_ACCOUNT;
 
 /**
  * The smallest number of seats a plan can be bought with.
@@ -358,12 +372,7 @@ export interface MatrixGroup {
 function limitRow(
   label: string,
   resource:
-    | 'organizations'
-    | 'projects'
-    | 'seats'
-    | 'environmentsPerProject'
-    | 'serviceTokens'
-    | 'secretsPerEnvironment',
+    'projects' | 'seats' | 'environmentsPerProject' | 'serviceTokens' | 'secretsPerEnvironment',
   hint: string,
 ): MatrixRow {
   return {
@@ -443,11 +452,20 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
   {
     title: 'Limits',
     rows: [
-      limitRow(
-        'Organisations',
-        'organizations',
-        'A separate tenant, with its own members, projects and master key. Most teams need one.',
-      ),
+      {
+        // Not a `limitRow`: no plan has an organisation ceiling. A plan covers
+        // the one organisation it is bought for, so the paid columns say that,
+        // and Free states the account's allowance.
+        label: 'Organisations',
+        hint: 'A separate tenant, with its own members, projects and master key. Most teams need one. Each paid organisation is billed on its own.',
+        values: {
+          free: `${FREE_ORGANIZATIONS} per account`,
+          pro: 'One per plan',
+          team: 'One per plan',
+          enterprise: 'One per plan',
+          'self-hosted': UNLIMITED,
+        },
+      },
       limitRow(
         'Projects',
         'projects',
@@ -1032,7 +1050,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     // wrong in a way no test would catch, because the cards would still be
     // right. Stating the limit rather than the first value above it lets the
     // sentence read from `LIMITS` like everything else on the page.
-    answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked.`,
+    answer: `Nothing breaks and nothing is deleted. Every account gets ${FREE_ORGANIZATIONS} free organisations, and each covers ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members. The limits apply now: the next project, environment or member past one is refused, with the plan that allows more named. A third organisation can be created, and needs a paid plan before it can be used. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked.`,
     // Both answers say the ceilings apply from the day they are published —
     // the owner's decision (docs/operations/billing.md §6) — and that only
     // the next creation past one is refused. The live one adds what fetches
@@ -1040,13 +1058,13 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     // has no subscription to bill them to.
     whenPaymentsLive: {
       question: 'What happens when I exceed the free tier?',
-      answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named, and an owner can move up from the billing page. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
+      answer: `Nothing breaks and nothing is deleted. Every account gets ${FREE_ORGANIZATIONS} free organisations, and each covers ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members. The limits apply now: the next project, environment or member past one is refused, with the plan that allows more named, and an owner can move up from the billing page. A third organisation can be created, and needs a paid plan before it can be used. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
     },
     // The plans page is where an owner moves up, so its answer says so
     // rather than sending them to the billing page to start.
     inApp: {
       question: 'What happens when I exceed the free tier?',
-      answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and the limits apply now: the next one of any of those past the limit is refused, with the plan that allows more named, and an owner can move up from this page. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
+      answer: `Nothing breaks and nothing is deleted. Every account gets ${FREE_ORGANIZATIONS} free organisations, and each covers ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members. The limits apply now: the next project, environment or member past one is refused, with the plan that allows more named, and an owner can move up from this page. A third organisation can be created, and needs a paid plan before it can be used. Everything already stored keeps working, stays editable and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate.`,
     },
   },
   {
@@ -1109,7 +1127,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     id: 'stopping',
     question: 'What happens to my data if I stop paying?',
     answer:
-      'Your organisation drops to the Free plan. Nothing is deleted: every secret is still readable, still exportable and still injectable by the CLI. If you are over the free limits, new members, projects and environments are blocked until you are back inside them or you export and self-host. We will not hold a credential hostage over a billing dispute.',
+      'Your organisation drops to the Free plan. Nothing is deleted: every secret is still readable, still exportable and still injectable by the CLI. If you are over the free limits, new members, projects and environments are blocked until you are back inside them or you export and self-host. If the account that created it already has two other free organisations open, it waits for a paid plan before it can be changed again: it keeps serving its secrets meanwhile, and its members can still be removed, its tokens revoked and the organisation deleted. We will not hold a credential hostage over a billing dispute.',
   },
   {
     id: 'discounts',

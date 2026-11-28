@@ -141,6 +141,9 @@ export const DELETE = authenticatedRoute<Params>(
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
 
+    // Open while the control plane is closed, as every DELETE is: deleting an
+    // organisation awaiting a plan is one of the two ways out of it
+    // (`guardControlPlane` in `tenancy.ts`).
     const scope = await resolveOrg(principal, params.orgSlug, services);
     const orgId = scope.organization.id;
     const resource = { type: 'org' as const, id: orgId };

@@ -115,15 +115,15 @@ describe('PolicyCards', () => {
     shows(policies({ features: FREE_FEATURES }));
     const html = render('owner');
 
-    expect(html).toContain('Setting a token policy needs the Pro plan.');
+    // Each rule the plan keeps off carries a lock beside it.
+    expect(html).toContain('aria-label="Locked. The token policy is on Pro and above."');
     expect(disabled(html, 'token-policy-allowlist')).toBe(true);
     expect(disabled(html, 'token-policy-cap')).toBe(true);
 
-    expect(html).toContain('Switching the secret policy on needs the Team plan.');
+    expect(html).toContain('aria-label="Locked. The secret policy is on Team and above."');
     expect(disabled(html, 'secret-policy-enabled')).toBe(true);
     // Preparing the rules while the policy is off never needs a plan.
     expect(disabled(html, 'secret-policy-names')).toBe(false);
-    expect(html).toContain('Compare plans');
   });
 
   it('never locks a rule that is already on, so a downgraded organisation can switch it off', () => {

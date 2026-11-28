@@ -2,6 +2,7 @@ import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 
 import {
   formatRetention,
+  FREE_ORGANIZATIONS,
   LIMITS,
   PLAN_COMPARISON,
   PRICING_FAQ,
@@ -219,7 +220,7 @@ export function savingLine(plan: OfferPlanId, period: BillingPeriod): string | n
 // this page and the pricing page read one constant rather than two of the same
 // name.
 
-/** `3` → "3 members", `1` → "1 organisation", `null` → "Unlimited members". */
+/** `3` → "3 members", `1` → "1 project", `null` → "Unlimited members". */
 function many(limit: number | null, one: string, other: string): string {
   if (limit === null) return `Unlimited ${other}`;
   return `${limit.toLocaleString('en-GB')} ${limit === 1 ? one : other}`;
@@ -282,6 +283,9 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
     features: [
       many(LIMITS.free.seats, 'member', 'members'),
       room('free'),
+      // The one thing on this card that is the account's rather than the
+      // organisation's: past it, a Free organisation waits for a paid plan.
+      `${FREE_ORGANIZATIONS} free organisations per account`,
       `${formatRetention(LIMITS.free.auditRetentionDays)} of audit history`,
     ],
     includedFetches: LIMITS.free.includedFetchesPerMonth,

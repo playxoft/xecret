@@ -50,6 +50,7 @@ const EXAMPLES: { [K in BillingReminder['kind']]: Example<K> } = {
   grant_ending_7d: { kind: 'grant_ending_7d', plan: 'team', endsAt: new Date('2026-12-01') },
   grant_ending_1d: { kind: 'grant_ending_1d', plan: 'team', endsAt: new Date('2026-12-01') },
   grant_ended: { kind: 'grant_ended', plan: 'team' },
+  awaiting_paid_plan: { kind: 'awaiting_paid_plan' },
 };
 
 describe('billingMail', () => {

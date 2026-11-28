@@ -30,7 +30,9 @@ export const POST = authenticatedRoute<Params>(
     const user = requireBillingSession(principal);
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal), 'promo-code']));
 
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Open while the control plane is closed: paying is how an organisation
+    // awaiting a plan is opened (`guardControlPlane` in `tenancy.ts`).
+    const scope = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
     const orgAudit = audit(scope.organization.id);
     authorizeBilling(scope, { audit: orgAudit, record }, ['plan.changed']);
 
@@ -39,7 +41,9 @@ export const POST = authenticatedRoute<Params>(
 
     // Resolved again: the scope above carries the entitlements of the plan
     // the organisation had, and the screen's warnings are read from them.
-    const fresh = await resolveOrg(principal, params.orgSlug, services);
+    // Open while the control plane is closed: paying is how an organisation
+    // awaiting a plan is opened (`guardControlPlane` in `tenancy.ts`).
+    const fresh = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
     return json({ billing: await billingStatus(services, fresh) });
   },
 );

@@ -7,6 +7,8 @@ import {
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
 import { cn } from '@/lib/cn';
+import { usePlanFeature } from '@/components/plans/plan-entitlements';
+import { LockedMenuItem } from '@/components/plans/plan-lock';
 import {
   ChevronDownIcon,
   DropdownMenu,
@@ -61,6 +63,10 @@ export function ValueTypeMenu({
 }: ValueTypeMenuProps) {
   const current = toSecretValueType(value);
   const descriptor = SECRET_VALUE_TYPE_DESCRIPTORS[current];
+  // A template reads other secrets, which is the plan's `secretReferencing`.
+  // Choosing it is drawn locked where the plan lacks it, rather than refused
+  // at Save; a secret that is already a template keeps its type.
+  const templateLock = usePlanFeature('secretReferencing');
 
   return (
     <DropdownMenu>
@@ -104,11 +110,17 @@ export function ValueTypeMenu({
           value={current}
           onValueChange={(next) => onChange(toSecretValueType(next))}
         >
-          {SECRET_VALUE_TYPE_ORDER.map((type) => (
-            <DropdownMenuRadioItem key={type} value={type}>
-              {SECRET_VALUE_TYPE_DESCRIPTORS[type].label}
-            </DropdownMenuRadioItem>
-          ))}
+          {SECRET_VALUE_TYPE_ORDER.map((type) =>
+            type === 'template' && current !== 'template' && templateLock !== null ? (
+              <LockedMenuItem key={type} lock={templateLock} onSelect={() => onChange(type)}>
+                <span className="pl-6">{SECRET_VALUE_TYPE_DESCRIPTORS[type].label}</span>
+              </LockedMenuItem>
+            ) : (
+              <DropdownMenuRadioItem key={type} value={type}>
+                {SECRET_VALUE_TYPE_DESCRIPTORS[type].label}
+              </DropdownMenuRadioItem>
+            ),
+          )}
         </DropdownMenuRadioGroup>
         <p className="text-fg-subtle border-line-subtle mt-1 border-t px-2 pt-2 pb-1 text-sm leading-5">
           {descriptor.hint}

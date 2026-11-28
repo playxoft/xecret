@@ -4,11 +4,13 @@ import {
   featureError,
   isControlPlaneActive,
   limitError,
+  PLAN_IDS,
 } from '@xecret/core/entitlements';
 import type {
   Entitlements,
   LimitedResource,
   PlanFeatures,
+  PlanId,
   PlanLimitError,
 } from '@xecret/core/entitlements';
 import { errors } from './errors';
@@ -55,8 +57,9 @@ import { errors } from './errors';
  *    of it so the refusal reaches a browser where an old device can be revoked;
  *  - `webhooks` — `POST …/webhooks`.
  *
- * Two ceilings are enforced elsewhere, by mechanisms that predate this file:
- * `organizations`, in `provisionOrganization` under the account lock, and
+ * Two bounds are enforced elsewhere, by mechanisms that predate this file: the
+ * free allowance of organisations per account, in `provisionOrganization` under
+ * the account lock (one organisation awaiting a paid plan at a time), and
  * `seats`, by `assertSeatAvailable` against `organizations.seat_limit` — which
  * defaults to `FREE_LIMITS.seats` (3) since migration 0033 brought the two
  * together. See the note on `seats` in `packages/core/src/entitlements/plans.ts`.
@@ -217,15 +220,39 @@ export function hasCeiling(entitlements: Entitlements, resource: LimitedResource
 }
 
 /**
- * Refuse a control-plane write when the subscription has fully lapsed.
+ * What a refusal for an organisation awaiting a paid plan says. One sentence,
+ * the same one the dashboard's lock shows, so the two cannot drift.
+ */
+export const AWAITING_PAID_PLAN_MESSAGE = 'Choose a plan to start using this organisation.';
+
+/**
+ * Refuse a control-plane write when the organisation's control plane is
+ * closed: it is awaiting a paid plan, or its subscription has fully lapsed.
  *
- * Deliberately permissive: `past_due` and `on_hold` still pass. A declined card
- * must not lock an owner out of the dashboard, because the page that fixes the
- * card is in the dashboard. Only `cancelled` past its period and `expired`
- * close this, and even then nothing is deleted and no secret becomes
- * unreadable.
+ * Called for every write by `resolveOrg` (`guardControlPlane` in
+ * `tenancy.ts`), with the few exemptions listed there.
+ *
+ * Deliberately permissive about the subscription: `past_due` and `on_hold`
+ * still pass. A declined card must not lock an owner out of the dashboard,
+ * because the page that fixes the card is in the dashboard. Only `cancelled`
+ * past its period and `expired` close this, and even then nothing is deleted
+ * and no secret becomes unreadable.
+ *
+ * An organisation awaiting a paid plan (`awaitingPaidPlan`, past its creator's
+ * free allowance) is refused with `resource: 'awaitingPaidPlan'` and the
+ * cheapest plan, so the dashboard can say "choose a plan" rather than "upgrade
+ * to more".
  */
 export function requireControlPlane(entitlements: Entitlements): void {
+  if (entitlements.awaitingPaidPlan) {
+    throw errors.planLimit(AWAITING_PAID_PLAN_MESSAGE, {
+      resource: 'awaitingPaidPlan',
+      limit: null,
+      current: null,
+      plan: entitlements.plan,
+      upgradeTo: cheapestPaidPlan(),
+    });
+  }
   if (isControlPlaneActive(entitlements.status)) return;
 
   throw errors.planLimit(
@@ -238,6 +265,11 @@ export function requireControlPlane(entitlements: Entitlements): void {
       upgradeTo: null,
     },
   );
+}
+
+/** The cheapest plan that is not Free: what an organisation waiting for one would buy. */
+function cheapestPaidPlan(): PlanId | null {
+  return PLAN_IDS.find((id) => id !== 'free') ?? null;
 }
 
 /**

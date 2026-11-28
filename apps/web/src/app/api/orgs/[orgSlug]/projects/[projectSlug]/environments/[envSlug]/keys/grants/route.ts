@@ -43,7 +43,13 @@ interface Params {
 
 export const POST = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
-    const scope = await resolveEnvironmentPath(principal, params, services);
+    // Open while the control plane is closed: a key grant only hands an
+    // environment's key to somebody already allowed to read it, and without it
+    // a member of an end-to-end encrypted organisation could not decrypt what
+    // they may read. The data plane never closes (`guardControlPlane`).
+    const scope = await resolveEnvironmentPath(principal, params, services, {
+      controlPlane: 'exempt',
+    });
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
 

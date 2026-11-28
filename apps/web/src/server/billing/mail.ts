@@ -83,7 +83,14 @@ export type BillingReminder =
   /** A complimentary plan (migration 0035) ending on `endsAt`, a week or a day out. */
   | { kind: 'grant_ending_7d' | 'grant_ending_1d'; plan: string; endsAt: Date }
   /** A complimentary plan that has ended: the organisation is on Free. */
-  | { kind: 'grant_ended'; plan: string };
+  | { kind: 'grant_ended'; plan: string }
+  /**
+   * The organisation dropped back to Free while the account that created it
+   * already had two other open Free organisations, so it waits for a paid plan
+   * (`organizations.awaiting_paid_plan_since`, migration 0037). Owners only:
+   * the reason names somebody else's account, which members are not told.
+   */
+  | { kind: 'awaiting_paid_plan' };
 
 /** Every kind the database accepts has a template — the type and the CHECK agree. */
 const KINDS: Readonly<Record<BillingReminderKind, true>> = {
@@ -100,6 +107,7 @@ const KINDS: Readonly<Record<BillingReminderKind, true>> = {
   grant_ending_7d: true,
   grant_ending_1d: true,
   grant_ended: true,
+  awaiting_paid_plan: true,
 };
 export const REMINDER_KINDS = Object.keys(KINDS) as BillingReminderKind[];
 
@@ -312,6 +320,20 @@ function compose(reminder: BillingReminder, organization: string): Composed {
             'still there and still readable.',
           BUILDS_UNAFFECTED,
           `To return to ${planName(reminder.plan)}, choose it from the billing page.`,
+        ],
+        action: 'Open billing',
+      };
+    case 'awaiting_paid_plan':
+      return {
+        subject: `${organization} needs a paid plan`,
+        lines: [
+          `${organization} is on the Free plan, and the account that created it already has two ` +
+            `other free organisations, so ${organization} now needs a paid plan before it can be ` +
+            'changed again. Nothing was deleted: every secret is still there and still readable.',
+          BUILDS_UNAFFECTED,
+          'Until it has a plan you can still remove members, revoke tokens and grants, rotate keys, ' +
+            'switch webhooks off or delete the organisation. Choose a plan from the billing page ' +
+            'to start using it again.',
         ],
         action: 'Open billing',
       };

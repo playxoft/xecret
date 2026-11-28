@@ -28,7 +28,9 @@ export const POST = authenticatedRoute<Params>(
     const user = requireBillingSession(principal);
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal), 'promo-code']));
 
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Open while the control plane is closed: paying is how an organisation
+    // awaiting a plan is opened (`guardControlPlane` in `tenancy.ts`).
+    const scope = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
     authorizeBilling(scope, { audit: audit(scope.organization.id), record }, []);
 
     const { code } = await parseJsonBody(request, promoCodeBodySchema);

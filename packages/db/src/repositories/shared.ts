@@ -64,24 +64,15 @@ export class RepositoryError extends Error {
 }
 
 /**
- * A `quotaExceeded` refusal that carries the number it was refused against.
+ * A `quotaExceeded` refusal: creating an organisation while the account already
+ * holds one waiting for a paid plan (`provisionOrganization`).
  *
- * The ceiling is not a constant any more: `accountOrganizationCeiling` resolves
- * it from the plans of the organisations an account already holds, so it is one
- * on Free and ten on anything paid. A route that wants to *state* the ceiling
- * therefore cannot know it — the transaction that computed it is the only place
- * it existed, and it used to be thrown away with the message.
- *
- * Carried as a field rather than parsed back out of the message, because a
- * message is not an API contract (see `RepositoryError`) and a regular
- * expression over one is exactly the coupling that rule exists to prevent.
+ * A class of its own rather than a bare `RepositoryError`, so the route can
+ * answer it with the plan refusal it is without matching the message, which is
+ * not an API contract (see `RepositoryError`).
  */
 export class QuotaExceededError extends RepositoryError {
-  constructor(
-    message: string,
-    /** The ceiling that was applied, after the plan and the abuse cap were reconciled. */
-    readonly ceiling: number,
-  ) {
+  constructor(message: string) {
     super('quotaExceeded', message);
     this.name = 'QuotaExceededError';
   }
@@ -91,9 +82,8 @@ export class QuotaExceededError extends RepositoryError {
  * A `conflict` about one field of the request — a name somebody else already
  * holds.
  *
- * Carries the field for the reason `QuotaExceededError` carries its ceiling:
- * so a route can answer on that field, and a form can put the message beside
- * the input it is about, without either matching the sentence.
+ * Carries the field so a route can answer on that field, and a form can put the
+ * message beside the input it is about, without either matching the sentence.
  */
 export class FieldConflictError extends RepositoryError {
   constructor(

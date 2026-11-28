@@ -698,7 +698,8 @@ export const billingTrials = pgTable(
 
 /**
  * The billing emails, by kind. The database refuses any other (migration
- * 0024; `plan_ended_unpaid` from 0025; the three `grant_*` from 0035).
+ * 0024; `plan_ended_unpaid` from 0025; the three `grant_*` from 0035;
+ * `awaiting_paid_plan` from 0037).
  */
 export const BILLING_REMINDER_KINDS = [
   'trial_ending_3d',
@@ -714,6 +715,7 @@ export const BILLING_REMINDER_KINDS = [
   'grant_ending_7d',
   'grant_ending_1d',
   'grant_ended',
+  'awaiting_paid_plan',
 ] as const;
 
 export type BillingReminderKind = (typeof BILLING_REMINDER_KINDS)[number];

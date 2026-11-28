@@ -25,6 +25,8 @@ type Params = { orgSlug: string; invitationId: string };
 
 export const DELETE = authenticatedRoute<Params>(
   async ({ params, principal, services, audit, record }) => {
+    // Open while the control plane is closed, as every DELETE is: withdrawing
+    // a way in must never wait on a payment (`guardControlPlane`).
     const scope = await resolveOrg(principal, params.orgSlug, services);
     const orgId = scope.organization.id;
 

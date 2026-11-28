@@ -18,10 +18,12 @@ import {
   meteredUnitsOwed,
 } from './limits';
 import {
+  AWAITING_ORGANIZATIONS_PER_ACCOUNT,
   cheapestPlanWithFeature,
   cheapestPlanWithLimit,
   FAIR_USE,
   FETCHES_PER_METERED_UNIT,
+  FREE_ORGANIZATIONS_PER_ACCOUNT,
   MINIMUM_SEATS,
   NULLABLE_LIMITS,
   PLAN_IDS,
@@ -134,6 +136,32 @@ describe('the control plane does fail closed', () => {
     expect(isControlPlaneActive(status)).toBe(false);
   });
 
+  /**
+   * An organisation past its creator's free allowance. The repository works
+   * the flag out; this pins what it does to the resolved entitlements.
+   */
+  it('closes the control plane of a Free organisation awaiting a paid plan', () => {
+    const awaiting = resolveEntitlements(state({ awaitingPaidPlan: true }));
+    expect(awaiting.awaitingPaidPlan).toBe(true);
+    expect(awaiting.controlPlaneActive).toBe(false);
+    // The data plane is never closed, whatever the reason.
+    expect(isDataPlaneActive(awaiting.status)).toBe(true);
+  });
+
+  it('never marks an organisation on a paid plan as awaiting one', () => {
+    for (const plan of ['pro', 'team', 'enterprise', 'scale'] as const) {
+      const resolved = resolveEntitlements(state({ plan, awaitingPaidPlan: true }));
+      expect(resolved.awaitingPaidPlan, plan).toBe(false);
+      expect(resolved.controlPlaneActive, plan).toBe(true);
+    }
+  });
+
+  it('reads an absent flag as open', () => {
+    const open = resolveEntitlements(state());
+    expect(open.awaitingPaidPlan).toBe(false);
+    expect(open.controlPlaneActive).toBe(true);
+  });
+
   it('keeps the dashboard reachable on a declined card', () => {
     // past_due must not lock the owner out, or they cannot reach the page that
     // fixes the card. Dunning is an email's job, not a lockout's.
@@ -237,7 +265,8 @@ describe('plan definitions', () => {
 describe('the published Free-tier limits', () => {
   const free = PLANS.free.limits;
 
-  it('1 organisation', () => expect(free.organizations).toBe(1));
+  it('sets no organisation ceiling: the allowance is per account', () =>
+    expect('organizations' in free).toBe(false));
   it('5 projects', () => expect(free.projects).toBe(5));
   it('3 environments per project', () => expect(free.environmentsPerProject).toBe(3));
   it('3 seats', () => expect(free.seats).toBe(3));
@@ -250,7 +279,29 @@ describe('the published Free-tier limits', () => {
   it('no webhooks', () => expect(free.webhooks).toBe(0));
 });
 
+describe('organisations per account', () => {
+  it('gives every account two free organisations that work', () => {
+    expect(FREE_ORGANIZATIONS_PER_ACCOUNT).toBe(2);
+  });
+
+  it('lets an account hold one organisation awaiting a paid plan at a time', () => {
+    expect(AWAITING_ORGANIZATIONS_PER_ACCOUNT).toBe(1);
+  });
+
+  it('puts no organisation ceiling on any plan: each one covers its own organisation', () => {
+    for (const plan of PLAN_IDS) {
+      expect('organizations' in PLANS[plan].limits, plan).toBe(false);
+    }
+  });
+});
+
 describe('the published paid-tier limits', () => {
+  it('projects per plan', () => {
+    expect(PLANS.pro.limits.projects).toBe(25);
+    expect(PLANS.team.limits.projects).toBe(60);
+    expect(PLANS.enterprise.limits.projects).toBeNull();
+  });
+
   it('included fetches per plan', () => {
     expect(PLANS.pro.limits.includedFetchesPerMonth).toBe(200_000);
     expect(PLANS.team.limits.includedFetchesPerMonth).toBe(1_000_000);
@@ -282,7 +333,6 @@ describe('the published paid-tier limits', () => {
    */
   it('publishes a number, not "unlimited", for every countable on Pro and Team', () => {
     const countable = [
-      'organizations',
       'projects',
       'environmentsPerProject',
       'serviceTokens',
@@ -300,13 +350,11 @@ describe('the published paid-tier limits', () => {
 
   it('leaves the countables uncapped only on Enterprise, where a contract sets them', () => {
     expect(PLANS.enterprise.limits.projects).toBeNull();
-    expect(PLANS.enterprise.limits.organizations).toBeNull();
     expect(PLANS.enterprise.limits.secretsPerEnvironment).toBeNull();
   });
 
   it('gives every paid rung more of each countable than the one below it', () => {
     const countable = [
-      'organizations',
       'projects',
       'environmentsPerProject',
       'serviceTokens',
@@ -557,7 +605,6 @@ describe('limit overrides are raise-only', () => {
   /** Every `LimitedResource` is nullable, and nothing else is. */
   it('NULLABLE_LIMITS names exactly the countable resources', () => {
     for (const resource of [
-      'organizations',
       'projects',
       'environmentsPerProject',
       'serviceTokens',
@@ -617,7 +664,7 @@ describe('limit overrides are raise-only', () => {
   it('leaves untouched fields alone', () => {
     const e = entitlementsFor('free', { limitOverrides: { projects: 50 } });
     expect(e.limits.environmentsPerProject).toBe(3);
-    expect(e.limits.organizations).toBe(1);
+    expect(e.limits.serviceTokens).toBe(10);
   });
 });
 
@@ -648,10 +695,26 @@ describe('checkLimit', () => {
     expect(checkLimit(enterprise, 'projects', 1_000_000).kind).not.toBe('exceeded');
   });
 
-  it('warns — never refuses — past a fair-use ceiling', () => {
-    const enterprise = entitlementsFor('enterprise');
-    const verdict = checkLimit(enterprise, 'projects', FAIR_USE.projects);
+  it('warns, never refuses, past a fair-use ceiling raised to unlimited by support', () => {
+    const raised = entitlementsFor('pro', { limitOverrides: { projects: null } });
+    const verdict = checkLimit(raised, 'projects', FAIR_USE.projects);
     expect(verdict).toMatchObject({ kind: 'warn', reason: 'fairUse', limit: null });
+  });
+
+  /**
+   * Enterprise is sold as unlimited with no fair-use wording, so nothing warns
+   * it: not projects at any count, and not any other countable either.
+   */
+  it('never warns an Enterprise organisation, past any fair-use ceiling', () => {
+    const enterprise = entitlementsFor('enterprise');
+    for (const [resource, ceiling] of Object.entries(FAIR_USE)) {
+      if (typeof ceiling !== 'number') continue;
+      expect(checkLimit(enterprise, resource as LimitedResource, ceiling * 10), resource).toEqual({
+        kind: 'ok',
+        limit: null,
+        current: ceiling * 10,
+      });
+    }
   });
 
   /**
@@ -678,7 +741,6 @@ describe('checkLimit', () => {
   });
 
   it.each([
-    'organizations',
     'projects',
     'environmentsPerProject',
     'serviceTokens',
@@ -778,7 +840,7 @@ describe('error bodies', () => {
   });
 
   it('says a limit the way the pricing page does, in the singular when it is one', () => {
-    expect(describeLimit('organizations', 1)).toBe('1 organisation');
+    expect(describeLimit('webhooks', 1)).toBe('1 webhook');
     expect(describeLimit('secretsPerEnvironment', 1_000)).toBe('1,000 secrets per environment');
     expect(describeLimit('environmentsPerProject', 3)).toBe('3 environments per project');
     expect(describeLimit('cliDevicesPerUser', 2)).toBe('2 CLI devices per person');

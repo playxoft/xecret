@@ -331,7 +331,7 @@ describe('endPlanGrant', () => {
       [orgId],
     );
 
-    const ended = await t.db.transaction((tx) => endPlanGrant(tx, orgId));
+    const ended = await t.db.transaction((tx) => endPlanGrant(tx, orgId, { freeAllowance: true }));
 
     expect(ended?.previous.plan).toBe('team');
     expect(await findSubscription(t.db, orgId)).toMatchObject({
@@ -353,7 +353,9 @@ describe('endPlanGrant', () => {
       eventAt: new Date(),
     });
 
-    expect(await t.db.transaction((tx) => endPlanGrant(tx, orgId))).toBeNull();
+    expect(
+      await t.db.transaction((tx) => endPlanGrant(tx, orgId, { freeAllowance: true })),
+    ).toBeNull();
     expect((await findSubscription(t.db, orgId))?.plan).toBe('pro');
   });
 
@@ -363,7 +365,9 @@ describe('endPlanGrant', () => {
       applyPlanGrant(tx, grant(orgId, { endsAt: new Date(Date.now() + 10 * DAY) })),
     );
 
-    const ended = await t.db.transaction((tx) => endPlanGrant(tx, orgId, { dueBy: new Date() }));
+    const ended = await t.db.transaction((tx) =>
+      endPlanGrant(tx, orgId, { dueBy: new Date(), freeAllowance: true }),
+    );
 
     expect(ended).toBeNull();
     expect((await findSubscription(t.db, orgId))?.plan).toBe('team');

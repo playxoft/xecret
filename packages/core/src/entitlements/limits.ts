@@ -48,6 +48,10 @@ export function checkLimit(
 
   // ── Unlimited for billing: only fair use applies, and it only warns. ──
   if (limit === null) {
+    // Enterprise is sold as unlimited with no fair-use wording, so nothing here
+    // warns it. A fair-use ceiling is only reached by another plan whose limit
+    // support raised to unlimited.
+    if (entitlements.plan === 'enterprise') return { kind: 'ok', limit: null, current };
     const ceiling = FAIR_USE_BY_RESOURCE[resource];
     if (typeof ceiling === 'number' && current >= ceiling) {
       return { kind: 'warn', limit: null, current, reason: 'fairUse' };
@@ -142,7 +146,6 @@ export interface PlanLimitError {
  * `resource`, beside it.
  */
 const RESOURCE_NOUNS: Readonly<Record<LimitedResource, readonly [string, string]>> = Object.freeze({
-  organizations: ['organisation', 'organisations'],
   projects: ['project', 'projects'],
   environmentsPerProject: ['environment per project', 'environments per project'],
   serviceTokens: ['service token', 'service tokens'],
@@ -152,7 +155,7 @@ const RESOURCE_NOUNS: Readonly<Record<LimitedResource, readonly [string, string]
   secretsPerEnvironment: ['secret per environment', 'secrets per environment'],
 });
 
-/** `5 projects`, `1 organisation`, `1,000 secrets per environment`. */
+/** `5 projects`, `1 webhook`, `1,000 secrets per environment`. */
 export function describeLimit(resource: LimitedResource, limit: number): string {
   const [one, many] = RESOURCE_NOUNS[resource];
   return `${limit.toLocaleString('en-US')} ${limit === 1 ? one : many}`;

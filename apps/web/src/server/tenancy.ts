@@ -25,6 +25,8 @@ import type {
 } from '@xecret/db/repositories';
 import type { CredentialSignIn, Principal } from './actor';
 import type { ServiceContext } from './context';
+import { billingConfigured } from './billing/config';
+import { requireControlPlane } from './entitlements';
 import { errors } from './errors';
 import { isUuid } from './schemas/ids';
 
@@ -75,6 +77,91 @@ export interface EnvironmentScope extends ProjectScope {
 }
 
 /**
+ * How a route reaches its organisation, beyond the id or slug.
+ *
+ * `controlPlane: 'exempt'` is for the writes an organisation whose control
+ * plane is closed must still accept (see `guardControlPlane`). A route whose
+ * answer depends on the body (a member's role lowered or raised, a webhook
+ * switched off or edited) passes it too, and asks `requireControlPlane` itself
+ * once it knows the change gives access rather than taking it away. Every
+ * other write is gated by default, so a new route cannot forget the gate:
+ * leaving it on takes nothing, and taking it off has to be said, at the call,
+ * where a reviewer reads it.
+ */
+export interface ResolveOrgOptions {
+  controlPlane?: 'exempt' | undefined;
+}
+
+/**
+ * The methods a closed control plane never refuses: the reads, because the
+ * data plane never closes, and `DELETE`, because every one below an
+ * organisation takes something away (a member, a grant, a token, an
+ * invitation, a key grant, an override, a role, a webhook, a secret, the
+ * organisation itself) and taking away must never wait on a payment.
+ */
+const OPEN_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'DELETE']);
+
+/**
+ * Refuses a write to an organisation whose control plane is closed: one
+ * awaiting a paid plan (past its creator's free allowance) or one whose
+ * subscription has lapsed. See `Entitlements.controlPlaneActive`.
+ *
+ * ── One place, by method ──
+ * Every route below `/api/orgs/{org}` resolves its organisation here, so
+ * this is the one gate every one of them passes. It is keyed on the request's
+ * method rather than on the action a route authorises, because several reads
+ * authorise a write's capability (the service tokens are listed for whoever may
+ * mint or revoke one, the webhooks for whoever may change them), and those
+ * must keep answering. A read is never refused for a billing reason: the data
+ * plane (the CLI's pulls, a service token's fetches, the dashboard's listings)
+ * keeps working, and nothing is deleted.
+ *
+ * ── What stays open ──
+ * Every read and every `DELETE` (`OPEN_METHODS`). Then the routes that pass
+ * `controlPlane: 'exempt'`, each for the reason it states:
+ *
+ *  - paying, which is how the organisation is opened: checkout, plan change,
+ *    the portal, promo codes;
+ *  - taking access away that is not a `DELETE`: suspending a member or lowering
+ *    their role, and switching a webhook off (each route refuses anything else
+ *    itself), and rotating an environment's key after somebody leaves;
+ *  - reaching what people may already read: sharing an environment's key with
+ *    a member who holds access to it, and the CLI's device sign-in.
+ *
+ * After the membership and single sign-on checks, so a stranger still learns
+ * nothing about the organisation and a member is told the first thing that
+ * actually stands in the way.
+ */
+function guardControlPlane(
+  entitlements: Entitlements,
+  services: Pick<ServiceContext, 'meta'>,
+  options: ResolveOrgOptions,
+): void {
+  if (options.controlPlane === 'exempt') return;
+  // Absent only from the stubbed contexts of the tenancy unit tests, which
+  // resolve without a request; the route wrapper always stamps it.
+  const method = (services.meta as ServiceContext['meta'] | undefined)?.method ?? 'GET';
+  if (OPEN_METHODS.has(method.toUpperCase())) return;
+  requireControlPlane(entitlements);
+}
+
+/**
+ * The organisation's entitlements as this deployment reads them. Where it takes
+ * no payments, nobody can buy a plan, so the free allowance does not apply: an
+ * organisation recorded as waiting for a paid plan is read as open, rather
+ * than locked with no way out.
+ */
+function resolvedEntitlements(
+  row: Parameters<typeof entitlementsFromRow>[0],
+  services: Pick<ServiceContext, 'env'>,
+): Entitlements {
+  if (row?.awaitingPaidPlan !== true || billingConfigured(services.env)) {
+    return entitlementsFromRow(row);
+  }
+  return entitlementsFromRow({ ...row, awaitingPaidPlan: false });
+}
+
+/**
  * Resolves an organisation, named by its id or by its legacy slug, for the
  * current principal.
  *
@@ -92,17 +179,24 @@ export interface EnvironmentScope extends ProjectScope {
  *
  * Everything after the lookup is the same for both spellings: the membership,
  * the single sign-on requirement and a service token's pin are checked against
- * the row that was found, never against the value that found it.
+ * the row that was found, never against the value that found it. So is the
+ * closed control plane: the entitlements, the stored awaiting state included,
+ * ride on that same row, whichever spelling found it.
  *
  * Note the order: the organisation is looked up first, then membership, and a
  * miss at *either* step produces the same `not_found`. Checking membership first
  * and reporting "no such organisation" separately would let an attacker
  * enumerate which organisations exist.
+ *
+ * A write to an organisation whose control plane is closed is refused here as
+ * well, unless the route says it is one of the few that stay open: see
+ * `guardControlPlane`.
  */
 export async function resolveOrg(
   principal: Principal,
   segment: string,
   services: ServiceContext,
+  options: ResolveOrgOptions = {},
 ): Promise<OrgScope> {
   const found = isUuid(segment)
     ? await findOrganizationByIdWithEntitlements(services.db, segment)
@@ -110,7 +204,7 @@ export async function resolveOrg(
   if (!found) throw errors.notFound('no organisation with that id or slug');
 
   const { organization } = found;
-  const entitlements = entitlementsFromRow(found.entitlements);
+  const entitlements = resolvedEntitlements(found.entitlements, services);
 
   if (principal.kind === 'serviceToken') {
     // A service token carries its organisation; it does not get to name one.
@@ -121,6 +215,7 @@ export async function resolveOrg(
     if (principal.orgId !== organization.id) throw errors.notFound('service token org mismatch');
 
     bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
+    guardControlPlane(entitlements, services, options);
 
     return {
       organization,
@@ -155,6 +250,7 @@ export async function resolveOrg(
   }
 
   bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
+  guardControlPlane(entitlements, services, options);
 
   return {
     organization,
@@ -340,9 +436,10 @@ export async function resolveProjectPath(
   principal: Principal,
   params: { orgSlug: string; projectSlug: string },
   services: ServiceContext,
+  options: ResolveOrgOptions = {},
 ): Promise<ProjectScope> {
   return resolveProject(
-    await resolveOrg(principal, params.orgSlug, services),
+    await resolveOrg(principal, params.orgSlug, services, options),
     params.projectSlug,
     services,
   );
@@ -352,9 +449,10 @@ export async function resolveEnvironmentPath(
   principal: Principal,
   params: { orgSlug: string; projectSlug: string; envSlug: string },
   services: ServiceContext,
+  options: ResolveOrgOptions = {},
 ): Promise<EnvironmentScope> {
   return resolveEnvironment(
-    await resolveProjectPath(principal, params, services),
+    await resolveProjectPath(principal, params, services, options),
     params.envSlug,
     services,
   );

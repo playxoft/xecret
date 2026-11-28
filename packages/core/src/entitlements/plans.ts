@@ -80,9 +80,14 @@ export const RETIRED_PLANS: Readonly<Record<string, PlanId>> = Object.freeze({
  * They exist to catch abuse and runaway loops — a script creating projects in a
  * `while (true)` — not to upsell. Treating them as hard limits would break the
  * three commitments published beside them.
+ *
+ * ── Never for Enterprise ──
+ * Enterprise is the plan whose ceilings are whatever its contract says, and it
+ * is sold as unlimited with no fair-use wording at all. So `checkLimit` asks
+ * none of these of an Enterprise organisation: they are only reached by
+ * another plan whose limit support raised to unlimited with an override.
  */
 export const FAIR_USE = Object.freeze({
-  organizations: 25,
   projects: 500,
   // Both of these were sized when Pro and Team were unlimited and every tier
   // could reach them. Only Enterprise can now — so leaving them at Team's own
@@ -113,7 +118,6 @@ export const FAIR_USE = Object.freeze({
  * a key that is not one fails too.
  */
 const NULLABLE_LIMIT_KEYS = Object.freeze({
-  organizations: true,
   projects: true,
   environmentsPerProject: true,
   serviceTokens: true,
@@ -253,9 +257,9 @@ const ENTERPRISE_FEATURES: PlanFeatures = {
  * Free — pricing-plan.md §3.
  *
  * The tightest ceilings in the product, and deliberately generous enough to run
- * one real project with the two people who would actually run it. One
- * organisation is the sharpest of these: it is what makes a personal account a
- * personal account.
+ * one real project with the two people who would actually run it. How many Free
+ * organisations an account gets is not a limit of the plan but of the account:
+ * see `FREE_ORGANIZATIONS_PER_ACCOUNT`.
  *
  * Three seats rather than one. A single seat made Free a demo — the product's
  * whole subject is a secret *shared* between people, and a plan that cannot be
@@ -264,7 +268,6 @@ const ENTERPRISE_FEATURES: PlanFeatures = {
  * production) rather than the wall of not being able to invite anyone at all.
  */
 const FREE_LIMITS: PlanLimits = {
-  organizations: 1,
   projects: 5,
   environmentsPerProject: 3,
   serviceTokens: 10,
@@ -317,7 +320,6 @@ const FREE_LIMITS: PlanLimits = {
  * on `perEnvironmentGrants` in `types.ts`.
  */
 const PRO_LIMITS: PlanLimits = {
-  organizations: 3,
   projects: 25,
   environmentsPerProject: 10,
   serviceTokens: 50,
@@ -334,16 +336,16 @@ const PRO_LIMITS: PlanLimits = {
 /**
  * Team — the top of the self-serve ladder since Scale was removed.
  *
- * The countables are about four times Pro's rather than unlimited, for the
- * reason on `PRO_LIMITS`. The retention figures moved up when Scale went: a
+ * The countables are a few times Pro's rather than unlimited, for the reason
+ * on `PRO_LIMITS`; projects stop at 60, the owner's figure for the rung below a
+ * contract. The retention figures moved up when Scale went: a
  * year of audit history stayed with Enterprise, but 90 days was Team's number
  * when there was a rung above it to sell, and with none there it is the wrong
  * side of the six-month window most security reviews ask about.
  */
 const TEAM_LIMITS: PlanLimits = {
   ...PRO_LIMITS,
-  organizations: 10,
-  projects: 100,
+  projects: 60,
   environmentsPerProject: 25,
   serviceTokens: 250,
   cliDevicesPerUser: 10,
@@ -366,9 +368,9 @@ const TEAM_LIMITS: PlanLimits = {
 const ENTERPRISE_LIMITS: PlanLimits = {
   ...TEAM_LIMITS,
   // The only plan where a countable is genuinely uncapped, and the only one
-  // where that is honest: an Enterprise ceiling is whatever the contract says,
-  // and `FAIR_USE` is what the abuse bound falls back to in the absence of one.
-  organizations: null,
+  // where that is honest: an Enterprise ceiling is whatever the contract says.
+  // Nothing warns about these either: `checkLimit` asks no fair-use ceiling of
+  // an Enterprise organisation.
   projects: null,
   environmentsPerProject: null,
   serviceTokens: null,
@@ -437,6 +439,39 @@ export const PLANS: Readonly<Record<PlanId, Plan>> = Object.freeze({
 
 /** The plan every organisation has until something says otherwise. */
 export const DEFAULT_PLAN: PlanId = 'free';
+
+/* ── Organisations per account ─────────────────────────────────────────────── */
+
+/**
+ * How many Free organisations an account gets that work.
+ *
+ * A plan is bought for one organisation and covers that one only, so no plan
+ * says anything about how many organisations an account may hold: every paid
+ * one is billed on its own, and an account may hold as many as it pays for.
+ * What is limited is the free tier. An account's open Free organisations (the
+ * ones it created, on Free and not waiting, whether or not it is still a member)
+ * work up to two. One created while it holds two, or one that drops back to
+ * Free from a paid plan while it holds two others, is *awaiting a paid plan*
+ * (`Entitlements.awaitingPaidPlan`, stored by the repository, migration 0037):
+ * its control plane is closed until it is bought a plan or deleted, and its
+ * data plane keeps working. No other organisation ever changes when one does.
+ *
+ * Joining somebody else's Free organisation never spends this, because only
+ * the organisations an account *created* are counted, and a complimentary grant
+ * counts as paid: the organisation is on the granted plan, not on Free.
+ */
+export const FREE_ORGANIZATIONS_PER_ACCOUNT = 2;
+
+/**
+ * How many organisations awaiting a paid plan one account may hold at a time.
+ *
+ * Creating an organisation is allowed past the free allowance, so that somebody
+ * can start one and then buy it a plan. This is the one bound on that: an
+ * account holding an organisation that is still waiting must pay for it or
+ * delete it before it starts another. It is what keeps the number of
+ * Org Master Keys an account can mint without paying at three.
+ */
+export const AWAITING_ORGANIZATIONS_PER_ACCOUNT = 1;
 
 /**
  * The cheapest plan whose features include `feature`, or `null` if none does.

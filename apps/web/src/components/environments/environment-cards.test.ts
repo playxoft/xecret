@@ -170,14 +170,18 @@ describe('EnvironmentPolicyCard', () => {
       }),
     );
 
-    expect(html).toContain('Disabling plaintext export needs the Team plan.');
-    expect(html).toContain('Switching read alerts on needs the Pro plan.');
+    // A lock beside each switch, focusable and named by what the plan allows.
+    expect(html).toContain(
+      'aria-label="Locked. Turning off plaintext export is on Team and above."',
+    );
+    expect(html).toContain('aria-label="Locked. New-address read alerts are on Pro and above."');
     expect(switchFor(html, 'export-production')).toContain('disabled=""');
     expect(switchFor(html, 'alerts-production')).toContain('disabled=""');
     // Resetting production back to its default would switch alerts on, so the
-    // reset is locked too — and says why.
-    expect(html).toContain('Reset to default (on)');
-    expect(html).toContain('which switches alerts on here, needs the Pro plan.');
+    // reset is locked too, with the same reason.
+    expect(html).toMatch(
+      /<button[^>]*aria-disabled="true"[^>]*data-plan-locked=""[^>]*>(?:(?!<\/button>)[\s\S])*Reset to default \(on\)/,
+    );
   });
 
   it('never locks a switch that is already on, and says a downgrade keeps it', () => {
