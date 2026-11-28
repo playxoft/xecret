@@ -276,7 +276,7 @@ export const PATCH = authenticatedRoute<Params>(
         throw errors.conflict(
           !active
             ? 'Requiring single sign-on needs an active identity-provider connection. Finish ' +
-                'setting one up in the setup portal first — until then nobody but owners could ' +
+                'setting one up in the setup portal first. Until then nobody but owners could ' +
                 'sign in.'
             : 'Requiring single sign-on needs at least one verified domain. Verify your ' +
                 'company’s domain in the setup portal first: your identity provider can only sign ' +

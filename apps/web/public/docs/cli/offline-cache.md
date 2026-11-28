@@ -1,7 +1,7 @@
 ---
 title: The offline cache
 navTitle: Offline cache
-description: How xecret keeps working when the network does not — what the encrypted local cache stores, exactly when it answers, and why a revoked credential is never softened by it.
+description: How xecret keeps working when the network does not: what the encrypted local cache stores, exactly when it answers, and why a revoked credential is never softened by it.
 keywords: [xecret offline, offline cache, xecret run offline, encrypted cache, revocation]
 updated: 2026-08-16
 ---
@@ -29,7 +29,7 @@ when it *will not*.**
 
 A 401, 403 or 404 is a *decision*, and the most important decision in that list
 is **revocation**. When an admin revokes a laptop's access, that must take
-effect immediately — not "immediately unless the laptop turns off its Wi-Fi".
+effect immediately, not "immediately unless the laptop turns off its Wi-Fi".
 Softening a rejection with a local file would make the revoke button a
 suggestion.
 
@@ -41,7 +41,7 @@ you are still allowed, so falling back is safe.
 Every time the cache answers, the CLI writes to **stderr**:
 
 ```text
-warning: xecret API unreachable — using cached secrets
+warning: xecret API unreachable, using cached secrets
          cached 2026-08-15 17:41 (18 hours ago), 24 secrets
 ```
 
@@ -60,7 +60,7 @@ organisation, project, environment)**.
 
 That last point is the one worth understanding. The scope is cryptographically
 bound into the ciphertext, so a cache file cannot be renamed from `staging` to
-`production` and decrypted as production — the authentication tag fails and the
+`production` and decrypted as production: the authentication tag fails and the
 CLI treats the file as absent. Local ciphertext gets the same treatment as
 server-side ciphertext.
 
@@ -95,13 +95,13 @@ there rather than configurable.
 ## When the cache does not exist
 
 The first `xecret run` in a new environment has nothing cached. If that first
-run is also the moment the API is down, the command fails — there is nothing to
+run is also the moment the API is down, the command fails. There is nothing to
 fall back to. This is worth knowing before you rely on offline mode on a fresh
 machine: run once while online.
 
 ## Next
 
-- [Command reference](commands.md#run) — every `run` flag.
-- [Troubleshooting](../troubleshooting.md) — what each failure message means.
-- [Trust model](../security/trust-model.md) — the server-side half of the same
+- [Command reference](commands.md#run): every `run` flag.
+- [Troubleshooting](../troubleshooting.md): what each failure message means.
+- [Trust model](../security/trust-model.md): the server-side half of the same
   story.

@@ -125,7 +125,7 @@ export function SingleSignOnCard({
       <CardHeader>
         <CardTitle>Single sign-on</CardTitle>
         <CardDescription>
-          Let your team sign in through your company’s identity provider — Okta, Microsoft Entra ID,
+          Let your team sign in through your company’s identity provider: Okta, Microsoft Entra ID,
           Google Workspace, or any SAML or OIDC provider. Set up and verified through WorkOS, which
           runs sign-in for xecret.
         </CardDescription>
@@ -306,7 +306,7 @@ function SsoSettings({
       {!mayManage ? (
         <p className="text-fg-subtle text-sm">
           Only an owner can turn single sign-on on, open the setup portal or switch a sign-in policy
-          on — whoever does decides which identity provider vouches for every member. You can still
+          on. Whoever does decides which identity provider vouches for every member. You can still
           switch a policy off.
         </p>
       ) : null}
@@ -414,7 +414,7 @@ function SsoSettings({
                 {pluralize(sso.membersOutsideVerifiedDomains, 'member')}{' '}
                 {sso.membersOutsideVerifiedDomains === 1 ? 'has' : 'have'} an address your identity
                 provider cannot sign in, because its domain is not verified here. While single
-                sign-on is required they cannot use this organisation — verify their domain, or
+                sign-on is required they cannot use this organisation. Verify their domain, or
                 change their address. Owners are exempt.
               </Alert>
             ) : null}
@@ -451,8 +451,8 @@ function SsoSettings({
               <>
                 Members can use this organisation only after signing in through your identity
                 provider. It takes effect immediately for this organisation’s resources: anyone
-                signed in another way — a password, Google, or a CLI device approved from such a
-                session — loses access to it on their next request. Their other organisations are
+                signed in another way (a password, Google, or a CLI device approved from such a
+                session) loses access to it on their next request. Their other organisations are
                 unaffected. Owners are always exempt, so a misconfigured identity provider cannot
                 lock the organisation out, and every time an owner uses that exemption the audit log
                 records it.
@@ -471,12 +471,11 @@ function SsoSettings({
             description={
               <>
                 Anybody your identity provider signs in, with an address at a verified domain, joins
-                this organisation as a <span className="text-fg font-medium">Viewer</span> — no
-                invitation needed — while seats last ({pluralize(sso.seatLimit, 'seat')} in all). A
+                this organisation as a <span className="text-fg font-medium">Viewer</span>, no
+                invitation needed, while seats last ({pluralize(sso.seatLimit, 'seat')} in all). A
                 Viewer can read the secrets of every environment except production, and cannot
                 change anything; give them more on the Members page. Somebody you removed does not
-                rejoin this way — invite them again. When this is off, everybody needs an
-                invitation.
+                rejoin this way. Invite them again. When this is off, everybody needs an invitation.
               </>
             }
             checked={sso.jitJoinEnabled}
@@ -648,9 +647,9 @@ export function ssoControls(
         : !sso.providerReachable
           ? 'WorkOS could not be reached to confirm an active connection. Try again shortly.'
           : !hasActiveConnection
-            ? 'Connect an identity provider and finish its setup first — until a connection is active, requiring it would leave only owners able to sign in.'
+            ? 'Connect an identity provider and finish its setup first. Until a connection is active, requiring it would leave only owners able to sign in.'
             : !hasVerifiedDomain
-              ? 'Verify at least one of your company’s domains in the setup portal first — your identity provider can only sign in addresses at a verified domain.'
+              ? 'Verify at least one of your company’s domains in the setup portal first. Your identity provider can only sign in addresses at a verified domain.'
               : null,
     joinUnavailable: !mayManage ? ownerOnly : !sso.addon.enabled ? addonMissing : null,
   };

@@ -185,7 +185,7 @@ export const ACCESS_LEVEL_LABELS: Readonly<Record<AccessLevel, string>> = {
 };
 
 export const ACCESS_SOURCE_LABELS: Readonly<Record<AccessSource, string>> = {
-  suspended: 'Suspended — everything resolves to no access',
+  suspended: 'Suspended: everything resolves to no access',
   'environment-grant': 'Environment grant',
   'project-grant': 'Project grant',
   'role-default': 'Role default',

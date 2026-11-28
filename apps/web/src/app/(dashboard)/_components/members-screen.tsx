@@ -428,7 +428,7 @@ export function MembersScreen({ orgId }: { orgId: string }) {
                               {member.customRole !== null ? (
                                 <Badge
                                   className="max-w-40 min-w-0"
-                                  title={`${member.customRole.name} — a custom role narrowing ${ROLE_LABELS[member.role]}`}
+                                  title={`${member.customRole.name}: a custom role narrowing ${ROLE_LABELS[member.role]}`}
                                 >
                                   <span className="sr-only">Custom role: </span>
                                   <span className="truncate">{member.customRole.name}</span>

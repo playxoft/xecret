@@ -193,7 +193,7 @@ export function MemberRowActions({
         open={removing}
         onOpenChange={setRemoving}
         title={`Remove ${member.displayName ?? member.email}?`}
-        description="Their membership and every access grant they hold are deleted. Secrets they created stay — history is not rewritten. They can be invited again later."
+        description="Their membership and every access grant they hold are deleted. Secrets they created stay. History is not rewritten. They can be invited again later."
         confirmLabel="Remove member"
         onConfirm={async () => {
           await api.delete(apiPath.member(orgId, member.id));

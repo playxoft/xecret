@@ -550,7 +550,7 @@ export function renderMarkdown(source: string, slug: string, basePath = '/docs')
 
     if (usedIds.has(explicit)) {
       throw new Error(
-        `${slug}.md declares the heading id "${explicit}" twice — a pinned ` +
+        `${slug}.md declares the heading id "${explicit}" twice. A pinned ` +
           'fragment is a promise that one heading owns it.',
       );
     }

@@ -84,11 +84,11 @@ export const metadata: Metadata = {
  */
 function summaryFor(paymentsLive: boolean): readonly string[] {
   return [
-    'No SLA below an Enterprise agreement, no warranty, and APIs that change as the product does — keep your own copy of anything you cannot rebuild.',
+    'No SLA below an Enterprise agreement, no warranty, and APIs that change as the product does. Keep your own copy of anything you cannot rebuild.',
     paymentsLive
       ? 'Paid plans are bought by an organisation’s owner, at the checkout of Dodo Payments, our merchant of record. A declined card never stops a build.'
       : 'No card is collected and nothing is charged. Each plan’s limits have applied since the version of 3 November 2026 was published; nothing starts charging without telling you first.',
-    'Your secret values are end-to-end encrypted, so we cannot read them — or recover them. You are responsible for your account, your passphrase and recovery codes, and your tokens, including revoking one when a laptop or a CI system goes away.',
+    'Your secret values are end-to-end encrypted, so we cannot read them, or recover them. You are responsible for your account, your passphrase and recovery codes, and your tokens, including revoking one when a laptop or a CI system goes away.',
     'The server is AGPL-3.0 and the CLI is MIT. Running it yourself is governed by those licences, not by these terms, and we receive nothing from your deployment.',
     paymentsLive
       ? 'Our total liability is capped at the greater of what you paid us in the last twelve months and US$100. Read section 13 before you store something whose loss would be catastrophic.'
@@ -103,8 +103,8 @@ function billingClauses(paymentsLive: boolean) {
       ? 'Paid plans are bought from an organisation’s billing page, by one of its owners, at the checkout of Dodo Payments. Dodo is the merchant of record: it takes the payment, charges the tax your country requires and issues the invoice, and its own terms apply to the purchase. The prices below are the published ones; the checkout shows the price in your currency before you pay.'
       : 'No card is collected and nothing is charged on this service today. The limits of each plan below have applied since the version of 3 November 2026 was published, and the prices below are the ones a paid plan is billed at once billing starts.',
     billing: paymentsLive
-      ? 'Paid plans are billed in advance, per member, for the term the owner chooses — monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges — it is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. Each organisation, and each person’s account, has one free trial: a later subscription, for that organisation or by that person for any organisation, starts with a paid period. A trial that ends without a payment — no card, or a first charge that is declined — puts the subscription on hold with the plan still working for 2 days, after which the organisation returns to Free. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
-      : 'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
+      ? 'Paid plans are billed in advance, per member, for the term the owner chooses: monthly, or yearly at the lower per-member rate. When somebody joins, the difference for the rest of the current period is charged at once; when somebody leaves, the difference for the rest of the period is kept as credit on the organisation’s billing account with Dodo Payments and used against its next charges. It is not paid back to the card. Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited, and a new period at the new price starts that day. Moving to a lower plan takes effect at the end of the period already paid for. A trial that runs to its end is charged only after the owners have been emailed three days and one day before it; moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once, as any move up is. Each organisation, and each person’s account, has one free trial: a later subscription, for that organisation or by that person for any organisation, starts with a paid period. A trial that ends without a payment (no card, or a first charge that is declined) puts the subscription on hold with the plan still working for 2 days, after which the organisation returns to Free. A yearly term is paid up front and is not refunded part-way through if you leave. Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.'
+      : 'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose: monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
     refunds: paymentsLive
       ? 'Refunds: your statutory rights apply in full. Beyond those, we do not refund part-months, and credit left by a member who leaves or a plan change is applied to the organisation’s next charges rather than paid back. A refund we agree to is made by Dodo Payments, to the card that paid.'
       : 'Refunds: nothing has been charged, so there is nothing to refund. Once billing starts, your statutory rights apply in full; beyond those, we do not refund part-months.',
@@ -134,7 +134,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           Two documents sit alongside these terms and are part of the deal:{' '}
           <LegalLink href="/privacy">the privacy policy</LegalLink>, and{' '}
           <LegalLink href="/docs/security/trust-model">what xecret can and cannot see</LegalLink>.
-          Read the second one before you store a real credential — it is the document that says
+          Read the second one before you store a real credential. It is the document that says
           exactly what we can read, and what we cannot.
         </>,
       ],
@@ -144,7 +144,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       heading: 'Eligibility',
       paragraphs: [
         'You must be at least 16 and able to enter into a contract. You must not be barred from using the service by the sanctions or export-control laws that apply to either of us, and you must not be using it from a jurisdiction we are prohibited from serving.',
-        'One person, one account. Accounts are not shared: a colleague gets their own account and a role. That is not bureaucracy — a shared login makes every row of the audit log attribute an action to the wrong person, which is the one thing the log exists to prevent.',
+        'One person, one account. Accounts are not shared: a colleague gets their own account and a role. That is not bureaucracy: a shared login makes every row of the audit log attribute an action to the wrong person, which is the one thing the log exists to prevent.',
       ],
     },
     {
@@ -197,9 +197,9 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
         'Do not:',
         [
           'use the service unlawfully, or to store credentials you are not entitled to hold;',
-          'attack it — no probing for vulnerabilities outside the disclosure process, no denial of service, no attempt to reach another organisation’s data;',
+          'attack it: no probing for vulnerabilities outside the disclosure process, no denial of service, no attempt to reach another organisation’s data;',
           'work around a rate limit or a plan limit, or automate the creation of accounts;',
-          'resell the hosted service or run it as a service for third parties under our name — running the software yourself is governed by the AGPL, and section 10 says what that means;',
+          'resell the hosted service or run it as a service for third parties under our name (running the software yourself is governed by the AGPL, and section 10 says what that means);',
           'upload malware, or use the service to distribute it;',
           'misrepresent who you are, or use somebody else’s account.',
         ],
@@ -217,7 +217,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       heading: 'Your content, and your own compliance',
       paragraphs: [
         'Your secrets, your names, your structure and your audit history are yours. We claim no ownership of them. You grant us only the licence we need to run the service: to store, transmit, back up, and display that content to the people you have authorised, and, for an older environment still on server-side encryption, to encrypt and decrypt its values on your instruction. Values and notes in an end-to-end encrypted environment reach us already encrypted, and we have no means to decrypt them.',
-        'What you store is your decision, and so is whether you are permitted to store it. If personal data ends up inside a secret value, you are its controller and we process it on your instructions. If you are subject to a regime with specific requirements — PCI DSS, HIPAA, a sector regulator, a customer contract — decide whether this service meets them before you store anything under it. We hold no certification and publish no attestation, and we would rather write that sentence than let you assume otherwise.',
+        'What you store is your decision, and so is whether you are permitted to store it. If personal data ends up inside a secret value, you are its controller and we process it on your instructions. If you are subject to a regime with specific requirements (PCI DSS, HIPAA, a sector regulator, a customer contract), decide whether this service meets them before you store anything under it. We hold no certification and publish no attestation, and we would rather write that sentence than let you assume otherwise.',
         <>
           Read <LegalLink href="/docs/security/trust-model">the trust model</LegalLink> first.
           Secret values and notes are end-to-end encrypted: they are encrypted on your devices, and
@@ -302,10 +302,10 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
             single sign-on is $199 per connection per month from Team, and is included with
             Enterprise. It is billed per identity-provider connection rather than per member.
             Directory sync (SCIM) is included with Enterprise and is not sold below it. Neither is
-            built yet — nothing is charged for either until it is.
+            built yet, and nothing is charged for either until it is.
           </>,
           <>
-            <strong className="text-fg font-medium">Self-hosted — free, always.</strong> The whole
+            <strong className="text-fg font-medium">Self-hosted: free, always.</strong> The whole
             server under AGPL-3.0 on your own infrastructure, with no feature held back. Support is
             the community, or an Enterprise contract.
           </>,
@@ -317,7 +317,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           Cancelling stops the next renewal, and the organisation returns to Free at the end of the
           period you have paid for.
           {paymentsLive
-            ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way — or after 2 days, when the hold follows a free trial that ended without any payment.'
+            ? ' A subscription whose payment fails is put on hold, with the plan still working, and if it is still unpaid after 14 days on hold the organisation returns to Free in the same way (or after 2 days, when the hold follows a free trial that ended without any payment).'
             : ''}{' '}
           The limits above have applied since the version of 3 November 2026 was published. Once an
           organisation is at one, the next project, environment, secret, service token, CLI device,
@@ -372,7 +372,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       heading: 'Intellectual property and licences',
       paragraphs: [
         'The server is licensed under the GNU Affero General Public License v3.0. The CLI is MIT. Those licences are what govern the software, they are in the repository, and nothing on this page narrows a right either of them grants you.',
-        'These terms govern the hosted service we operate — the account, the availability, the support and the price. They are not a software licence.',
+        'These terms govern the hosted service we operate: the account, the availability, the support and the price. They are not a software licence.',
         'The xecret name, the Playxoft name and our logos are ours. An open-source licence covers code, not trade marks: fork the software freely, and do not present the fork as xecret.',
         'Feedback: if you send us a suggestion, we may use it without owing you anything for it. Do not send anything confidential in a public issue.',
       ],
@@ -381,7 +381,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       id: 'self-hosting',
       heading: 'Self-hosting',
       paragraphs: [
-        'Running your own instance is governed by the AGPL-3.0, not by these terms. You do not need our permission, we make no promises about your deployment, and we receive nothing from it — no telemetry, no phone-home, no licence check.',
+        'Running your own instance is governed by the AGPL-3.0, not by these terms. You do not need our permission, we make no promises about your deployment, and we receive nothing from it: no telemetry, no phone-home, no licence check.',
         <>
           The AGPL&rsquo;s network clause applies to you in turn: if you offer a modified version to
           users over a network, they are entitled to the source of your modifications.{' '}
@@ -402,7 +402,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           <LegalLink href="/privacy#sub-processors">The privacy policy</LegalLink> names each of
           them and says what it processes.
         </>,
-        'Anything you connect xecret to — your CI system, your cloud provider, your own applications — is between you and them. We are not responsible for what a third party does with a secret you gave it access to.',
+        'Anything you connect xecret to (your CI system, your cloud provider, your own applications) is between you and them. We are not responsible for what a third party does with a secret you gave it access to.',
       ],
     },
     {
@@ -434,7 +434,7 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
       id: 'changes',
       heading: 'Changes to these terms',
       paragraphs: [
-        'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in — you can see what it said before without taking our word for it.',
+        'We may change these terms. The date at the top of the page changes with them, and the history is the git history of the repository this page lives in: you can see what it said before without taking our word for it.',
         'For a material change we will give notice by email to organisation owners and in the product before it takes effect, 30 days ahead where we reasonably can. Continuing to use the service after a change takes effect is acceptance of it. If you do not accept a change, delete your account: before the change takes effect, where we gave notice of it; or, where a change took effect on publication without notice, before you use the service again.',
         // The sentence the legal-date guard reads is the first one, the same on
         // both versions of the page: this version takes effect the day it was
@@ -491,9 +491,9 @@ function sectionsFor(paymentsLive: boolean): readonly LegalSection[] {
           bring the organisation under them or export it&rdquo;. Since then, neither of those is
           provided for the limits under{' '}
           <LegalLink href="#plans">Plans, prices and billing</LegalLink>: we do not tell you in
-          advance what exceeds a limit, and there is no window before a limit applies &mdash; each
-          has applied since that version was published. What a limit does, and does not do, to what
-          an organisation already holds is set out in that section.
+          advance what exceeds a limit, and there is no window before a limit applies. Each has
+          applied since that version was published. What a limit does, and does not do, to what an
+          organisation already holds is set out in that section.
         </>,
       ],
     },
@@ -575,7 +575,7 @@ export default async function TermsPage() {
     <LegalPage
       eyebrow="Legal"
       title="Terms of service"
-      description="The agreement for the hosted xecret service — what we owe you, what you owe us, and which parts are governed by the AGPL instead."
+      description="The agreement for the hosted xecret service: what we owe you, what you owe us, and which parts are governed by the AGPL instead."
       updated={UPDATED}
       effective={EFFECTIVE}
       summary={summaryFor(paymentsLive)}

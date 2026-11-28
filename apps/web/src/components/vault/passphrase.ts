@@ -137,7 +137,7 @@ export function passphraseProblem(input: {
   if (input.passphrase.length === 0) return 'Choose a master passphrase.';
 
   if (input.passphrase.length < PASSPHRASE_MIN_LENGTH) {
-    return `Use at least ${PASSPHRASE_MIN_LENGTH} characters — a phrase of several words is easier to remember and much harder to guess.`;
+    return `Use at least ${PASSPHRASE_MIN_LENGTH} characters. A phrase of several words is easier to remember and much harder to guess.`;
   }
 
   // Not yet estimated. Refusing rather than allowing: the button is disabled for

@@ -140,7 +140,7 @@ export function FingerprintList({ recipients }: { recipients: readonly Recipient
           <p>
             {changed.length === 1 ? 'One principal is' : `${changed.length} principals are`}{' '}
             presenting a different key from the one this browser recorded. That happens when
-            somebody resets their vault — and it is also exactly what a substituted key looks like.
+            somebody resets their vault, and it is also exactly what a substituted key looks like.
             Confirm the new fingerprint with them out of band before continuing.
           </p>
         </Alert>

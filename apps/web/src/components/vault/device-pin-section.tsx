@@ -174,7 +174,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
           <h3 className="text-fg text-sm font-medium">PIN for this browser</h3>
           <p className="text-fg-subtle mt-1 text-sm leading-6">
             A {DEVICE_PIN_LENGTH}-digit PIN unlocks your vault on this browser without the master
-            passphrase. Convenient, not as strong as your passphrase — {DEVICE_PIN_MAX_ATTEMPTS}{' '}
+            passphrase. Convenient, not as strong as your passphrase, and {DEVICE_PIN_MAX_ATTEMPTS}{' '}
             wrong tries disables it. It works only here: the encrypted copy of your key never leaves
             this browser, and xecret holds the other half of what opens it.
           </p>
@@ -182,7 +182,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
 
         {vault.keys === null ? (
           <Alert tone="info" title="Unlock your vault to change this">
-            Setting up a PIN encrypts a copy of your key, which needs the key — so it can only be
+            Setting up a PIN encrypts a copy of your key, which needs the key, so it can only be
             done from an unlocked session. Turning one off does not.
           </Alert>
         ) : null}
@@ -191,7 +191,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
           <form onSubmit={save} noValidate className="flex flex-col gap-3">
             <Field
               label={enrolled ? 'New PIN' : 'Choose a PIN'}
-              hint={`${DEVICE_PIN_LENGTH} digits. Avoid your birthday and 123456 — this is the one credential here that a person holding your laptop could plausibly guess.`}
+              hint={`${DEVICE_PIN_LENGTH} digits. Avoid your birthday and 123456. This is the one credential here that a person holding your laptop could plausibly guess.`}
               error={problem?.field === 'pin' ? problem.message : null}
             >
               {/* No `onComplete`: the sixth digit of a PIN being *chosen* is
@@ -305,7 +305,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
           if (!open) setRevoking(null);
         }}
         title="Turn off this browser’s PIN?"
-        description="Its encrypted copy of your key can never be opened again — not even with the correct PIN. Whoever uses that browser unlocks with the master passphrase, and can set a new PIN up afterwards."
+        description="Its encrypted copy of your key can never be opened again, not even with the correct PIN. Whoever uses that browser unlocks with the master passphrase, and can set a new PIN up afterwards."
         confirmLabel="Turn it off"
         onConfirm={revoke}
       />

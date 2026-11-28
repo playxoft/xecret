@@ -70,7 +70,7 @@ import { takesPayments } from '@/server/billing/payments-live';
 
 const TITLE = 'About: open-source secret management from Playxoft';
 const DESCRIPTION =
-  'xecret is open-source secret management from Playxoft — an AGPL-3.0 server, an MIT CLI, and end-to-end encryption you can verify. What ships today, and what is next.';
+  'xecret is open-source secret management from Playxoft: an AGPL-3.0 server, an MIT CLI, and end-to-end encryption you can verify. What ships today, and what is next.';
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -145,7 +145,7 @@ const PRINCIPLES = [
     icon: EyeIcon,
     title: 'We describe the trust model as it is',
     body: 'Your secret values are encrypted on your device, under keys shared only with the people and tokens you choose, so we cannot read them. Names, structure and the audit log are not encrypted, and we list exactly what we can see rather than letting "end-to-end" imply more than it covers.',
-    cost: 'No escrow means no rescue. If you lose your passphrase and every recovery code, we cannot open your vault for you — a teammate has to share your environments with you again.',
+    cost: 'No escrow means no rescue. If you lose your passphrase and every recovery code, we cannot open your vault for you. A teammate has to share your environments with you again.',
   },
   {
     icon: GitHubIcon,
@@ -163,7 +163,7 @@ const PRINCIPLES = [
     icon: AlertTriangleIcon,
     title: 'Colour means status and nothing else',
     body: 'Production is marked with a reserved colour, an uppercase label and hazard hatching, all three at once, so the marking survives colour blindness, a greyscale print-out and a failing monitor. Nothing else in the product is allowed to borrow that colour.',
-    cost: 'It rules out most of the tricks a marketing site uses to look lively — no gradient headings, no colour-coded feature cards, no accent that means "click me". A mislabelled production environment costs an outage; a plain-looking page costs nothing.',
+    cost: 'It rules out most of the tricks a marketing site uses to look lively: no gradient headings, no colour-coded feature cards, no accent that means "click me". A mislabelled production environment costs an outage; a plain-looking page costs nothing.',
   },
   {
     icon: BookIcon,
@@ -309,13 +309,13 @@ const STACK = [
   },
   {
     role: 'Data',
-    name: 'PostgreSQL — Neon, or vanilla',
+    name: 'PostgreSQL (Neon, or vanilla)',
     body: 'Boring on purpose. Neon backs the hosted service and a plain PostgreSQL server backs a self-hosted one, on the same schema either way. Self-hosting is not a second implementation that quietly falls behind the first.',
   },
   {
     role: 'Identity',
     name: 'WorkOS for identity',
-    body: 'Sign-in, password reset and email verification are solved problems with a long tail of abuse cases, so xecret relies on an implementation that has already met them all. WorkOS checks who you are and sees your email address, your name and your sign-in events — never a secret — and xecret then issues its own session, which you can list and revoke. A self-hosted install uses its own WorkOS account.',
+    body: 'Sign-in, password reset and email verification are solved problems with a long tail of abuse cases, so xecret relies on an implementation that has already met them all. WorkOS checks who you are and sees your email address, your name and your sign-in events (never a secret), and xecret then issues its own session, which you can list and revoke. A self-hosted install uses its own WorkOS account.',
   },
   {
     role: 'Client',
@@ -338,17 +338,17 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret really open source, or is it open core?',
     answer:
-      'Really open source. The server is AGPL-3.0 and the CLI is MIT, and a self-hosted install gets the whole server with no feature held back — no enterprise-only build, no licence key gating a capability inside a binary you compiled yourself. What we sell is the hosted service and, for organisations that want one, a support contract.',
+      'Really open source. The server is AGPL-3.0 and the CLI is MIT, and a self-hosted install gets the whole server with no feature held back: no enterprise-only build, no licence key gating a capability inside a binary you compiled yourself. What we sell is the hosted service and, for organisations that want one, a support contract.',
   },
   {
     question: 'What happens to my secrets if Playxoft disappears?',
     answer:
-      'The software outlives the company. The server is AGPL-3.0 and self-hosting is a documented path — Cloudflare Workers, a PostgreSQL database and your own WorkOS account — so an instance can be stood up without us. Your values also come back out as the .env file they went in as, which means the exit path is a file format you already know how to use.',
+      'The software outlives the company. The server is AGPL-3.0 and self-hosting is a documented path (Cloudflare Workers, a PostgreSQL database and your own WorkOS account), so an instance can be stood up without us. Your values also come back out as the .env file they went in as, which means the exit path is a file format you already know how to use.',
   },
   {
     question: 'Can you read my secrets?',
     answer:
-      'No. Secret values and notes are encrypted on your device — in the browser or the CLI — under a key generated for each environment and shared only with the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. What we can see — secret names, project and environment names, and the audit log — is listed plainly in the trust model. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
+      'No. Secret values and notes are encrypted on your device, in the browser or the CLI, under a key generated for each environment and shared only with the members and service tokens you give access to. We store ciphertext and hold no key that opens it, so neither our staff nor anyone who obtains our database can read your values. What we can see (secret names, project and environment names, and the audit log) is listed plainly in the trust model. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment, and its key settings say so.',
   },
   {
     question: 'How do you make money?',
@@ -443,7 +443,7 @@ export default async function AboutPage() {
           headingId="why-heading"
           eyebrow="Why we built it"
           title="Secret management split into two camps, and most teams live in the worse one."
-          description="Not because they do not know better — every engineer who has pasted a production key into a direct message knew exactly what they were doing as they did it — but because the first camp costs more than the problem appears to, right up until the week it does not."
+          description="Not because they do not know better (every engineer who has pasted a production key into a direct message knew exactly what they were doing as they did it), but because the first camp costs more than the problem appears to, right up until the week it does not."
         />
 
         <RevealGroup className="mt-12 grid gap-4 md:grid-cols-2">
@@ -512,7 +512,7 @@ export default async function AboutPage() {
                   command to run your application, an offline cache so a flaky connection does not
                   stop your dev server, and an importer that takes the{' '}
                   <code className="text-fg-muted font-mono text-[0.8125rem]">.env</code> file you
-                  already have. And it keeps the one thing that file can never keep — an append-only
+                  already have. And it keeps the one thing that file can never keep: an append-only
                   record of who read which value, in which environment, and when.
                 </p>
               </div>
@@ -528,7 +528,7 @@ export default async function AboutPage() {
                   >
                     {PUBLISHER.name}
                   </a>
-                  , and it is built so that you never have to trust anyone with a value — including
+                  , and it is built so that you never have to trust anyone with a value, including
                   us. Secrets are encrypted on your device and shared only with the teammates and
                   tokens you choose; we store ciphertext we cannot open. The price is a master
                   passphrase and a set of recovery codes that are yours to keep, because there is no

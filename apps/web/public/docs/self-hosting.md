@@ -1,7 +1,7 @@
 ---
 title: Self-hosting xecret
 navTitle: Self-hosting
-description: Run xecret yourself — the honest dependency list, the root-key ceremony, a step-by-step deployment, and what you are signing up to operate.
+description: Run xecret yourself: the honest dependency list, the root-key ceremony, a step-by-step deployment, and what you are signing up to operate.
 keywords: [self host secret manager, cloudflare workers deployment, open source secrets manager, agpl, neon postgres, root key]
 updated: 2026-11-22
 ---
@@ -18,9 +18,9 @@ about the one thing it sells.
 | **Cloudflare Workers** (paid plan) | Runs the web app and API. The paid plan's CPU limits are assumed. | Yes |
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the root key, bound to the Worker. | Yes |
-| **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise single sign-on (though single sign-on connections cannot be set up from xecret yet). xecret checks the result once, server to server, and issues its own sessions. | Yes, and **this is real friction**. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. An identity-provider interface exists so another provider can be contributed. |
-| **A mail provider** | Invitation emails, and the archive emailed before every vault reset. | **Yes, in production** — a production deployment without one resets no vault, because a vault is never reset without its archive being emailed first; the reset screen says so. Elsewhere optional: invitations return a shareable link instead, and a vault resets only when the person ticks "Reset without the emailed archive". |
-| **A deploy-time secret source** | Where *your* copy of the root key lives between deploys. The Worker never calls it at runtime. | Your choice — anything that can populate environment variables at deploy time. |
+| **A WorkOS account** | Identity only: AuthKit's hosted pages handle password, Google, MFA and enterprise single sign-on (though single sign-on connections cannot be set up from xecret yet). xecret checks the result once, server to server, and issues its own sessions. | Yes, and **this is real friction**. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. An identity-provider interface exists so another provider can be contributed. |
+| **A mail provider** | Invitation emails, and the archive emailed before every vault reset. | **Yes, in production**: a production deployment without one resets no vault, because a vault is never reset without its archive being emailed first; the reset screen says so. Elsewhere optional: invitations return a shareable link instead, and a vault resets only when the person ticks "Reset without the emailed archive". |
+| **A deploy-time secret source** | Where *your* copy of the root key lives between deploys. The Worker never calls it at runtime. | Your choice: anything that can populate environment variables at deploy time. |
 
 If that list looks like a lot for a tool that injects environment variables:
 it is, and it is stated up front for that reason.
@@ -32,12 +32,12 @@ browsers and CLIs, under keys only those users hold, and your deployment can no
 more read them than ours can.
 
 The root key protects what the server itself must be able to open: each
-organisation's key, and under it the deployment's own operational secrets —
-webhook signing secrets, for instance — plus any environment on the older
+organisation's key, and under it the deployment's own operational secrets
+(webhook signing secrets, for instance), plus any environment on the older
 server-side encryption. A new deployment creates none of those; every
 environment it makes is end-to-end encrypted.
 
-> **Important** — If you lose the root key, what it protects is permanently
+> **Important**: If you lose the root key, what it protects is permanently
 > unrecoverable: every webhook needs a new signing secret, and any server-side
 > encrypted environment is gone. End-to-end encrypted values are unaffected.
 > There is no support ticket, no recovery mode and no vendor that can help,
@@ -70,7 +70,7 @@ npm run db:migrate      # reads DATABASE_URL / MIGRATION_DATABASE_URL
 ```
 
 Two roles, deliberately: migrations run as a role that can change the schema,
-and the application runs as one that cannot — and in particular cannot alter
+and the application runs as one that cannot. In particular it cannot alter
 the audit table, which is what makes "append-only" a grant rather than a
 promise.
 
@@ -82,12 +82,12 @@ No identity-provider code runs in the browser, and nothing about the provider is
 needed when the app is built. Set it up in the WorkOS dashboard:
 
 1. **Pick the environment.** A WorkOS account has a **Staging** and a
-   **Production** environment, and they share nothing — not users, not keys.
+   **Production** environment, and they share nothing: not users, not keys.
    Use Staging for local development and staging deployments, Production for
    production. Every value below must come from the environment the deployment
    signs people in against; a key from one and a client id from the other fails
    every sign-in in a way that looks like a bug and is not.
-2. **Register the redirect URI**, exactly `<your origin>/api/auth/callback` —
+2. **Register the redirect URI**, exactly `<your origin>/api/auth/callback`:
    for example `https://secrets.your-company.com/api/auth/callback`, and
    `http://localhost:3030/api/auth/callback` in Staging for local development.
    xecret derives it from `XECRET_PUBLIC_URL`, so there is nothing to configure
@@ -96,7 +96,7 @@ needed when the app is built. Set it up in the WorkOS dashboard:
 3. **Set the sign-in endpoint** to `<your origin>/api/auth/login`. When AuthKit
    needs xecret to *start* a sign-in rather than finish one, it sends the browser
    there. A sign-in xecret did not start is refused as expired.
-4. **Enable the sign-in methods** — email and password, and Google. Staging can
+4. **Enable the sign-in methods**: email and password, and Google. Staging can
    use WorkOS's demonstration Google credentials; **Production needs your own**
    Google OAuth client, created in the Google Cloud Console with the redirect URI
    WorkOS shows you, and its client id and secret entered in WorkOS. MFA is a
@@ -107,10 +107,10 @@ needed when the app is built. Set it up in the WorkOS dashboard:
    IT admin the setup link, and make single sign-on required are not built.
 5. **Enable Magic Auth**, and leave WorkOS's default Magic Auth email on.
    Resetting a vault asks for a one-time code that WorkOS creates and emails, and
-   WorkOS refuses to create one while Magic Auth is disabled — so with it off,
+   WorkOS refuses to create one while Magic Auth is disabled, so with it off
    nobody can reset a vault. Enabling it also offers "email me a code" as a way
    to sign in; that never counts as the reset's first check, which counts only a
-   password, a passkey, Google or single sign-on — no other OAuth provider.
+   password, a passkey, Google or single sign-on (no other OAuth provider).
 6. **Collect three values.** The client id (`client_…`); the environment's
    secret API key; and a cookie password you generate yourself, at least 32
    random characters:
@@ -121,18 +121,18 @@ needed when the app is built. Set it up in the WorkOS dashboard:
 
    The cookie password signs the short-lived cookie that ties a sign-in to the
    browser that started it. It must not be the API key. Do not judge which
-   environment an API key belongs to by its prefix — check where you copied it
+   environment an API key belongs to by its prefix. Check where you copied it
    from.
 
-> **Warning** — Keep each environment's database to itself. Never point a
-> deployment that signs in through Staging — local development included — at a
+> **Warning**: Keep each environment's database to itself. Never point a
+> deployment that signs in through Staging (local development included) at a
 > database whose accounts sign in through Production. The first sign-in there
 > with an existing person's address links their account to a Staging identity,
 > and from then on their real sign-in is refused until somebody repairs the row
 > by hand. If you cannot be sure, test sign-in locally only with a brand-new
 > address.
 
-> **Warning** — Know what the vault reset's two checks do not stop. The first
+> **Warning**: Know what the vault reset's two checks do not stop. The first
 > asks AuthKit to demand the credential again, which WorkOS documents only for
 > its own sign-in: it does not make Google or a single sign-on provider ask
 > again, so for those accounts a live session there passes it silently.
@@ -141,18 +141,18 @@ needed when the app is built. Set it up in the WorkOS dashboard:
 > alone, by resetting the password first. A reset is not only destructive:
 > whoever does it sets up a new vault on the account, can read its server-mode
 > environments, and teammates are asked to re-share the end-to-end-encrypted
-> ones. An authenticator app enrolled in WorkOS is the defence — with one, the
+> ones. An authenticator app enrolled in WorkOS is the defence: with one, the
 > emailed code alone is not enough. That path is tested against WorkOS's
 > documented behaviour, but has not yet been exercised against a WorkOS
 > environment with MFA turned on.
 
-> **Important** — Email verification is load-bearing. The first time somebody
+> **Important**: Email verification is load-bearing. The first time somebody
 > signs in, xecret adopts the existing account that holds the same *verified*
 > address, and refuses an unverified one. AuthKit verifies every address and,
 > at the time of writing, has no switch to stop it. If WorkOS ever adds one, it
 > must stay on in both environments.
 
-The client id is not a secret — it appears in every sign-in URL — and goes in
+The client id is not a secret (it appears in every sign-in URL) and goes in
 `wrangler.toml` (step 4). The API key and the cookie password are secrets and go
 on the Worker:
 
@@ -165,15 +165,15 @@ Put the client id in your deploy-time secret source as well. The config
 checker in step 5 reads it from there, and `npm run check:deploy` compares that
 copy with the one in `wrangler.toml`.
 
-Without any of the three, nobody can sign in, and the sign-in pages say so —
-the browser lands on the sign-in page's "unavailable" error — rather than
+Without any of the three, nobody can sign in, and the sign-in pages say so
+(the browser lands on the sign-in page's "unavailable" error) rather than
 guess.
 
 ### 3. Cloudflare
 
 Create:
 
-- a **Hyperdrive** binding for the database (pointed at the *direct* endpoint —
+- a **Hyperdrive** binding for the database (pointed at the *direct* endpoint:
   Hyperdrive pools, so a pooling endpoint must not be used underneath it);
 - the **rate-limit** bindings;
 - a **Secrets Store** entry holding the root key.
@@ -184,7 +184,7 @@ The repository's `wrangler.toml` names every binding the code expects, and
 ### 4. Tell the deployment it is yours
 
 `apps/web/wrangler.toml` is committed to the repository, and everything
-account-specific in it is **ours** — the domain, and the ids of the resources
+account-specific in it is **ours**: the domain, and the ids of the resources
 step 3 just told you to create. Nothing you have done so far has changed any of
 it, and nothing later on this page checks it for you. Edit it now, before the
 first deploy:
@@ -208,7 +208,7 @@ store_id = "<your secrets store id>"
 secret_name = "XECRET_ROOT_KEYS"
 ```
 
-The ids are not credentials — they are useless to anyone without an API token
+The ids are not credentials: they are useless to anyone without an API token
 for the account that owns them, which is why they are committed at all. But
 left as shipped, `wrangler deploy` authenticates as **you** and then addresses
 resources belonging to **us**, and the failure reads like a permissions problem
@@ -226,7 +226,7 @@ top-level `[vars]` the same way.
   Left as shipped, your deployment tells every crawler that our site is the
   canonical version of your pages.
 - **At runtime, by the Worker.** It is what the `Origin` header on every
-  mutation is compared against — deliberately, rather than the request's own
+  mutation is compared against, deliberately, rather than the request's own
   `Host`, so that an attacker who can reach the Worker cannot choose the value
   the check uses. It is also the base of the links in invitation emails, and of
   the sign-in redirect URI. Left as shipped, mutations from your
@@ -250,8 +250,8 @@ phase run --env Production -- npm run check:env   # states exactly what is missi
 phase run --env Production -- npm run smoke       # proves the whole stack against the real database
 ```
 
-Without Phase, export the same variables into the shell first —
-`set -a; . ./.env; set +a` — and then run `npm run check:env` and
+Without Phase, export the same variables into the shell first
+(`set -a; . ./.env; set +a`) and then run `npm run check:env` and
 `npm run smoke`. Run both. The config checker catches the missing binding you
 will otherwise discover from a 503 in production.
 
@@ -275,7 +275,7 @@ not care which.
 
 It reads `XECRET_PUBLIC_URL` and `XECRET_ENV` out of `wrangler.toml` for the
 environment you named, exports them into the build, and refuses to go on if
-that environment declares no `WORKOS_CLIENT_ID` — the Worker reads it at runtime
+that environment declares no `WORKOS_CLIENT_ID`. The Worker reads it at runtime
 and the build never does, so nothing else would notice it missing until every
 sign-in failed. Then it prints what it resolved before it starts:
 
@@ -302,8 +302,8 @@ npx opennextjs-cloudflare deploy --env production
 ```
 
 Set `XECRET_ENV` even though it looks redundant beside `--env production`. Two
-things make it load-bearing. `--env` puts nothing into the build's *environment*
-— it selects which environment's `compatibility_date` and `assets` settings the
+things make it load-bearing. `--env` puts nothing into the build's *environment*:
+it selects which environment's `compatibility_date` and `assets` settings the
 adapter reads, and none of that reaches `next build`. And the build only
 *refuses* to guess an origin when `XECRET_ENV` names a deployment: with
 `XECRET_ENV` unset it does not error at all, it quietly falls back to
@@ -331,7 +331,7 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
 - **The audit log.** Append-only and partitioned by quarter, with the child
   tables kept in the `audit_parts` schema. Migration 0010 pre-creates eight
   quarters, counting the current one, and nothing extends that automatically
-  yet, so run this before the runway ends — once a quarter's rows land in the
+  yet, so run this before the runway ends; once a quarter's rows land in the
   default partition, that quarter can no longer be given a real partition:
 
   ```sql
@@ -343,11 +343,11 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   ) AS d;
   ```
 
-  Run it as the owner of the audit tables — it issues `CREATE TABLE` and
+  Run it as the owner of the audit tables: it issues `CREATE TABLE` and
   `GRANT`, and the application role holds neither. It fills every quarter to the
   end of the runway, so it is idempotent and any cadence shorter than 21 months
   is safe. If any quarter in the range already has rows in the default
-  partition, the whole statement aborts and no quarter is created — recover
+  partition, the whole statement aborts and no quarter is created. Recover
   those first, oldest first, then re-run it.
 
   Recovering one is a single transaction, as the table owner, substituting that
@@ -380,9 +380,9 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   `public.audit_logs` and holds it to `COMMIT`, so audit writes block
   throughout, and a blocked audit write fails the request that produced it.
 
-  That covers the case you are likely to meet. Two rarer ones — a partition left
+  That covers the case you are likely to meet. Two rarer ones (a partition left
   detached by an interrupted repair, and a partition attached over the wrong
-  range because it was created from a non-UTC session — need a wider procedure,
+  range because it was created from a non-UTC session) need a wider procedure,
   in `docs/operations/database-setup.md` in the repository. The migration names
   that file in the error it raises for each.
 - **Mail, monitoring and error reporting.** Yours to wire. The log pipeline
@@ -395,7 +395,7 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   session, so a returning person may not be asked for a credential. Resetting a
   vault asks AuthKit for a fresh sign-in, and the server checks the sign-in
   really happened during that request, but the check never reaches a Google or
-  single sign-on session — see the warning in step 2.
+  single sign-on session; see the warning in step 2.
 - **Key rotation.** Every layer of the hierarchy is versioned so it can be
   rotated independently. Have a runbook before you need one.
 - **Webhook egress.** A [webhook](features/webhooks.md) is a URL an
@@ -403,14 +403,14 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   `http`, credentials in the URL, local names and every private, loopback,
   link-local, reserved and IPv6 transition-mechanism address *literal*, before
   every attempt, and never follows a redirect. It does not resolve DNS, so a
-  public name that points at a private address — or is re-pointed at one later
-  (DNS rebinding) — gets through that check. On Cloudflare Workers the
+  public name that points at a private address, or is re-pointed at one later
+  (DNS rebinding), gets through that check. On Cloudflare Workers the
   platform closes the gap: a Worker cannot reach a private network or a
   metadata endpoint. **Anywhere else it is open**, and the server would send
   requests into your own network. Put an egress control in front of it that
-  judges the address after resolution — a forward proxy that refuses private
+  judges the address after resolution (a forward proxy that refuses private
   destinations, or a network policy denying private, link-local and metadata
-  egress — and until you have one, do not create webhook endpoints.
+  egress), and until you have one, do not create webhook endpoints.
 
 ## The trust model you are accepting
 
@@ -418,7 +418,7 @@ Self-hosting does not change the encryption model. Your deployment cannot
 decrypt the secret values it stores, any more than ours can: they are encrypted
 and decrypted on your users' devices.
 
-What moves to you is everything else — the secret names and other metadata, the
+What moves to you is everything else: the secret names and other metadata, the
 audit log, availability, the root key's custody, and the dashboard's
 JavaScript, which your users' browsers now trust you to serve unaltered. Read
 [what xecret can and cannot see](security/trust-model.md) before you accept
@@ -435,6 +435,6 @@ licence friction.
 
 ## Next
 
-- [Trust model](security/trust-model.md) — the model you are taking on.
-- [Configuration](cli/configuration.md) — pointing clients at your deployment.
-- [The audit log](security/audit-log.md) — what your deployment records.
+- [Trust model](security/trust-model.md): the model you are taking on.
+- [Configuration](cli/configuration.md): pointing clients at your deployment.
+- [The audit log](security/audit-log.md): what your deployment records.

@@ -38,12 +38,12 @@ export function invitationMail(params: InvitationMailParams): MailMessage {
     params.url,
     '',
     `The link works once and expires in ${DAYS} days. Signing in with this email`,
-    'address is required — the invitation is addressed to you, not to the link.',
+    'address is required: the invitation is addressed to you, not to the link.',
     '',
     'If you were not expecting this, you can ignore this email. Nothing is',
     'shared with you unless you accept.',
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -68,7 +68,7 @@ export function invitationMail(params: InvitationMailParams): MailMessage {
       </p>
       <p style="margin:0 0 24px;font-size:13px;line-height:1.6;color:#6b7078;">
         The link works once and expires in ${DAYS} days. Signing in with this email address
-        is required — the invitation is addressed to you, not to the link.
+        is required: the invitation is addressed to you, not to the link.
       </p>
       <hr style="border:0;border-top:1px solid #e3e5e8;margin:0 0 24px;" />
       <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7078;">

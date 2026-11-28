@@ -466,8 +466,8 @@ describe('the dialog', () => {
   it('marks, in the preview, every value the chosen strategy would not write', () => {
     expect(describePlanStatus('create')).toBe('new');
     expect(describePlanStatus('overwrite')).toBe('replaces the current value');
-    expect(describePlanStatus('skip')).toBe('not written — the current value is kept');
-    expect(describePlanStatus('unchanged')).toBe('not written — already this value');
+    expect(describePlanStatus('skip')).toBe('not written (the current value is kept)');
+    expect(describePlanStatus('unchanged')).toBe('not written (already this value)');
     expect(describePlanStatus('invalid')).toBe('not written');
   });
 

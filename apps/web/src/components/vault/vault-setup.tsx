@@ -252,13 +252,13 @@ function ExplainStep({
       <div className="text-fg-muted flex flex-col gap-3 text-sm leading-6">
         <p>
           Everything you store in xecret is encrypted on your device before it leaves it. The key
-          comes from a <span className="text-fg">master passphrase</span> only you know — we never
+          comes from a <span className="text-fg">master passphrase</span> only you know. We never
           see it and can&apos;t recreate it.
         </p>
         <p>
           That privacy has one honest catch: if you forget your passphrase, we can&apos;t reset it.
-          Nobody can. Your safety net is the five recovery codes you&apos;re about to get — tuck
-          them somewhere safe.
+          Nobody can. Your safety net is the five recovery codes you&apos;re about to get. Tuck them
+          somewhere safe.
         </p>
       </div>
 
@@ -295,7 +295,7 @@ function GeneratingStep() {
       <div className="flex flex-col gap-1">
         <p className="text-fg text-sm font-medium">Securing your vault…</p>
         <p className="text-fg-subtle text-sm leading-6">
-          Stretching your passphrase and generating your keys. This takes a moment on purpose — the
+          Stretching your passphrase and generating your keys. This takes a moment on purpose: the
           same work is what makes guessing it expensive.
         </p>
       </div>

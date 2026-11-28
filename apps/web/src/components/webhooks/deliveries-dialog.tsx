@@ -170,7 +170,7 @@ function DeliveryEntry({ delivery }: { delivery: WebhookDelivery }) {
         </pre>
         {delivery.bodyTruncated ? (
           <p className="text-fg-subtle mt-1 text-sm">
-            Shortened for the log — the receiver was sent the whole body.
+            Shortened for the log. The receiver was sent the whole body.
           </p>
         ) : null}
       </details>

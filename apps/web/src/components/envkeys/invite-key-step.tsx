@@ -136,7 +136,7 @@ export function InviteKeyStep({
     } catch (cause) {
       setProblem(
         cause instanceof RecoveryCodeError && cause.reason === 'checksum'
-          ? 'That code has a typo in it — the check character does not match. Compare it with what you were sent.'
+          ? 'That code has a typo in it: the check character does not match. Compare it with what you were sent.'
           : 'That does not look like a key code. It is 27 characters in six groups, like ABCDE-FGHJK-MNPQR-STVWX-YZ012-3A.',
       );
       return;
@@ -161,7 +161,7 @@ export function InviteKeyStep({
         // anybody can act on.
         setPhase({ kind: 'entering' });
         setProblem(
-          'That code did not unlock anything. It is well-formed, so it is probably from a different invitation — check you copied the right one.',
+          'That code did not unlock anything. It is well-formed, so it is probably from a different invitation. Check you copied the right one.',
         );
         return;
       }
@@ -183,7 +183,7 @@ export function InviteKeyStep({
         <p>
           You can now read {pluralize(phase.opened, 'environment')} straight away.
           {phase.failed > 0
-            ? ` ${pluralize(phase.failed, 'environment')} could not be unlocked — a teammate will share ${phase.failed === 1 ? 'that one' : 'those'} with you.`
+            ? ` ${pluralize(phase.failed, 'environment')} could not be unlocked. A teammate will share ${phase.failed === 1 ? 'that one' : 'those'} with you.`
             : ''}
         </p>
         <div className="mt-2">
@@ -200,7 +200,7 @@ export function InviteKeyStep({
       <div className="flex flex-col gap-1.5">
         <h2 className="text-fg text-base font-semibold">Enter the key code</h2>
         <p className="text-fg-muted text-sm leading-5">
-          Whoever invited you sent a short code by a different route from the link — a message, a
+          Whoever invited you sent a short code by a different route from the link: a message, a
           call, in person. It unlocks {pluralize(grants.length, 'environment')} immediately. It was
           never sent to us, which is the point: the link alone decrypts nothing.
         </p>

@@ -47,7 +47,7 @@ export const SIGN_IN_METHOD_LABELS: Readonly<
 };
 
 export function signInMethodLabel(method: AdminAccountPayload['lastSignInMethod']): string {
-  return method === null ? '—' : (SIGN_IN_METHOD_LABELS[method] ?? method);
+  return method === null ? 'None' : (SIGN_IN_METHOD_LABELS[method] ?? method);
 }
 
 const STATUS: Record<AdminOrganizationPayload['status'], { label: string; tone: BadgeTone }> = {
@@ -93,8 +93,8 @@ export function VerifiedBadge({ verified }: { verified: boolean }) {
   );
 }
 
-/** A moment, absolute, with how long ago underneath — or a dash for never. */
-export function Moment({ value, never = '—' }: { value: string | null; never?: string }) {
+/** A moment, absolute, with how long ago underneath — or "Never" when there is none. */
+export function Moment({ value, never = 'Never' }: { value: string | null; never?: string }) {
   if (value === null) return <span className="text-fg-subtle">{never}</span>;
   return (
     <>
@@ -223,7 +223,7 @@ export function LoadMore({
     <div className="flex flex-col items-center gap-2">
       {list.moreError !== null ? (
         <p role="status" className="text-danger-text text-sm">
-          Couldn’t load more — {errorMessage(list.moreError)}
+          Couldn’t load more: {errorMessage(list.moreError)}
         </p>
       ) : null}
       <Button variant="secondary" loading={list.loadingMore} onClick={list.loadMore}>

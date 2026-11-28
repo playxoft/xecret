@@ -76,8 +76,8 @@ interface Channel {
 function KeychainNote({ where }: { where: string }) {
   return (
     <>
-      The credential lives in <span className="text-fg-muted">{where}</span> — never in a dotfile
-      you might commit or sync.
+      The credential lives in <span className="text-fg-muted">{where}</span>, never in a dotfile you
+      might commit or sync.
     </>
   );
 }
@@ -152,8 +152,8 @@ function buildChannels(installUrl: string, releasesUrl: string): readonly Channe
       // caveat; the landing page must not be the one that promises otherwise.
       note: (
         <>
-          The credential lives in <span className="text-fg-muted">Secret Service</span>, your
-          desktop keyring — or, on a headless box with none, a{' '}
+          The credential lives in <span className="text-fg-muted">Secret Service</span> (your
+          desktop keyring) or, on a headless box with none, a{' '}
           <span className="text-fg-muted">0600 file</span> that{' '}
           <span className="text-fg-muted">xecret doctor</span> names for you.
         </>

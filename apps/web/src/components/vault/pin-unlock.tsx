@@ -120,14 +120,14 @@ export function PinUnlock({
           return;
         case 'burned':
           onGone(
-            'That was the fifth wrong PIN, so it is now switched off on this browser — the ' +
+            'That was the fifth wrong PIN, so it is now switched off on this browser, and the ' +
               'encrypted copy of your key here can never be opened again. Your master passphrase ' +
               'still works, and you can set a new PIN up afterwards.',
           );
           return;
         case 'unknown':
           onGone(
-            'The PIN for this browser has been turned off. Use your master passphrase — you can ' +
+            'The PIN for this browser has been turned off. Use your master passphrase. You can ' +
               'set a new PIN up from Security afterwards.',
           );
           return;

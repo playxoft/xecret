@@ -125,7 +125,7 @@ const FEATURES: readonly Feature[] = [
   {
     icon: KeyIcon,
     title: 'A key for every environment',
-    body: "Each environment is created with its own data key, generated in your browser and stored in the same database transaction as the environment itself — there is no moment where one exists without the other. That key is sealed to the public key of each member and service token allowed to read the environment, and never to us. Ciphertext copied out of staging cannot be read with production's key.",
+    body: "Each environment is created with its own data key, generated in your browser and stored in the same database transaction as the environment itself. There is no moment where one exists without the other. That key is sealed to the public key of each member and service token allowed to read the environment, and never to us. Ciphertext copied out of staging cannot be read with production's key.",
     proofKind: 'Key hierarchy',
     proof: 'passphrase → private key → environment → version',
   },
@@ -139,14 +139,14 @@ const FEATURES: readonly Feature[] = [
   {
     icon: FileTextIcon,
     title: 'Import that parses in your browser',
-    body: '.env, JSON, YAML and export KEY=value scripts are parsed client-side, and only the resulting plan is sent — so a pasted blob of production credentials never becomes a request body. The dry run is produced by the same planning code the real import runs, which is why the preview cannot disagree with the outcome.',
+    body: '.env, JSON, YAML and export KEY=value scripts are parsed client-side, and only the resulting plan is sent, so a pasted blob of production credentials never becomes a request body. The dry run is produced by the same planning code the real import runs, which is why the preview cannot disagree with the outcome.',
     proofKind: 'Command',
     proof: 'xecret import .env --dry-run',
   },
   {
     icon: HistoryIcon,
     title: 'An append-only audit log',
-    body: "Every value fetched, every mutation and every denial is recorded; a log of what succeeded cannot show an attack in progress. Append-only is enforced by database grants rather than by convention, so the application's own credentials cannot alter it. No record can hold a secret value — the metadata type is a fixed allowlist of field names with no catch-all.",
+    body: "Every value fetched, every mutation and every denial is recorded; a log of what succeeded cannot show an attack in progress. Append-only is enforced by database grants rather than by convention, so the application's own credentials cannot alter it. No record can hold a secret value: the metadata type is a fixed allowlist of field names with no catch-all.",
     proofKind: 'Audit events',
     proof: 'secret.read · secret.revealed · access.denied',
   },
@@ -160,14 +160,14 @@ const FEATURES: readonly Feature[] = [
   {
     icon: UsersIcon,
     title: 'Roles, and production denied by default',
-    body: 'Four roles — viewer, developer, admin, owner — decide what class of action exists for you, and per-project or per-environment grants decide where. Developers and viewers get no production access until somebody who manages members grants it explicitly, and that grant lands in the audit log with a name attached. The safe state is the one that costs nothing to maintain.',
+    body: 'Four roles (viewer, developer, admin, owner) decide what class of action exists for you, and per-project or per-environment grants decide where. Developers and viewers get no production access until somebody who manages members grants it explicitly, and that grant lands in the audit log with a name attached. The safe state is the one that costs nothing to maintain.',
     proofKind: 'Access rule',
     proof: 'developer → production = none',
   },
   {
     icon: RefreshIcon,
     title: 'An offline cache with one rule',
-    body: 'The CLI keeps an AES-256-GCM copy of the last environment it fetched, with the key in your OS keychain and the exact scope bound into the ciphertext, so a cache file cannot be renamed from staging to production and decrypted. It answers when the API cannot — DNS failure, timeout, 5xx — and never when the API will not. A 401 is a decision, usually a revocation, and a local file is not allowed to soften it.',
+    body: 'The CLI keeps an AES-256-GCM copy of the last environment it fetched, with the key in your OS keychain and the exact scope bound into the ciphertext, so a cache file cannot be renamed from staging to production and decrypted. It answers when the API cannot (DNS failure, timeout, 5xx) and never when the API will not. A 401 is a decision, usually a revocation, and a local file is not allowed to soften it.',
     proofKind: 'Command',
     proof: 'xecret run --offline -- npm run dev',
   },
@@ -206,7 +206,7 @@ const TERMINAL_LINES = [
   { kind: 'command', text: 'rm .env' },
   { kind: 'command', text: 'xecret run -- npm run dev' },
   { kind: 'child', text: '> storefront@0.4.2 dev' },
-  { kind: 'child', text: 'ready — http://localhost:3000' },
+  { kind: 'child', text: 'ready on http://localhost:3000' },
 ] as const;
 
 const AUDIT_ROWS = [
@@ -309,7 +309,7 @@ const COMPARISON = [
     axis: 'Knowing who read it',
     dotenv: 'You cannot. A file that has been copied leaves no record of the copy.',
     xecret:
-      'One row per read, with the actor, the outcome and a count — including the reads that were refused.',
+      'One row per read, with the actor, the outcome and a count, including the reads that were refused.',
   },
   {
     axis: 'Somebody leaves',
@@ -326,7 +326,7 @@ const COMPARISON = [
   {
     axis: 'What the provider can read',
     dotenv:
-      'Nothing, for as long as the file stays on machines you control — which lasts until the first time somebody pastes it into a chat.',
+      'Nothing, for as long as the file stays on machines you control, which lasts until the first time somebody pastes it into a chat.',
     xecret:
       'Not your values or notes: they are encrypted on your device before they are sent, under keys we never hold. Names, structure and the audit log are visible to us.',
   },
@@ -336,7 +336,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Is xecret zero-knowledge?',
     answer:
-      'Yes, for the values and notes you store. Every environment has its own data key, generated in your browser and sealed only to the members and service tokens you give access to, and values are encrypted and decrypted on your device, in the browser or the CLI. We hold no key that opens them, so xecret cannot read your secrets. Secret names, project and environment names and the audit log are not encrypted, so that listing and search stay fast — the trust model lists everything we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
+      'Yes, for the values and notes you store. Every environment has its own data key, generated in your browser and sealed only to the members and service tokens you give access to, and values are encrypted and decrypted on your device, in the browser or the CLI. We hold no key that opens them, so xecret cannot read your secrets. Secret names, project and environment names and the audit log are not encrypted, so that listing and search stay fast. The trust model lists everything we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment, and its key settings say so.',
   },
   {
     question: 'Do I still need a .env file?',
@@ -346,7 +346,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'What happens when the xecret API is unreachable?',
     answer:
-      'The CLI falls back to an encrypted local cache of the last environment it fetched, and says so loudly on stderr rather than stdout, so it never contaminates a pipe. The rule is that the cache answers when the API cannot — a DNS failure, a timeout, a 5xx — and never when the API will not. A 401, 403 or 404 is a decision, revocation above all, and softening a revocation with a local file would make the revoke button a suggestion.',
+      'The CLI falls back to an encrypted local cache of the last environment it fetched, and says so loudly on stderr rather than stdout, so it never contaminates a pipe. The rule is that the cache answers when the API cannot (a DNS failure, a timeout, a 5xx) and never when the API will not. A 401, 403 or 404 is a decision, revocation above all, and softening a revocation with a local file would make the revoke button a suggestion.',
   },
   {
     question: 'How does this work in CI?',
@@ -356,7 +356,7 @@ const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can I self-host xecret?',
     answer:
-      'Yes, and no feature is held back. The server is AGPL-3.0 and the CLI is MIT. It runs on Cloudflare Workers with PostgreSQL and Cloudflare Secrets Store for the root key, plus a WorkOS account for identity — that last dependency is real friction, and the self-hosting guide says so instead of burying it. One warning worth reading before you start: if you lose the root key, every secret is permanently unrecoverable, including by us.',
+      'Yes, and no feature is held back. The server is AGPL-3.0 and the CLI is MIT. It runs on Cloudflare Workers with PostgreSQL and Cloudflare Secrets Store for the root key, plus a WorkOS account for identity. That last dependency is real friction, and the self-hosting guide says so instead of burying it. One warning worth reading before you start: if you lose the root key, every secret is permanently unrecoverable, including by us.',
   },
   {
     question: 'What does xecret cost?',
@@ -387,7 +387,7 @@ export default async function FeaturesPage() {
         height="screen"
         eyebrow="Features"
         title="Encrypted environment variables, injected by a CLI, logged on every read"
-        description="xecret stores your environment variables once, encrypted per environment, and hands them to whatever you run — locally, in CI, in production. This is the whole feature set, including the limits."
+        description="xecret stores your environment variables once, encrypted per environment, and hands them to whatever you run: locally, in CI, in production. This is the whole feature set, including the limits."
       >
         <div className="flex flex-wrap items-center justify-center gap-3">
           <Button asChild variant="primary" size="lg" className="rounded-full">
@@ -462,8 +462,8 @@ export default async function FeaturesPage() {
                   <code className="font-mono text-[0.9375rem]">xecret run</code> resolves the
                   environment at the moment the process starts and injects it into the child.
                   Everything after <code className="font-mono text-[0.9375rem]">--</code> is your
-                  command, unchanged — there is no SDK to install and no import to write, because
-                  the application still reads{' '}
+                  command, unchanged. There is no SDK to install and no import to write, because the
+                  application still reads{' '}
                   <code className="font-mono text-[0.9375rem]">process.env</code> exactly as it did
                   before.
                 </p>
@@ -497,7 +497,7 @@ export default async function FeaturesPage() {
                   <code className="font-mono text-[0.9375rem]">secret.revealed</code> are the two
                   rows that mean somebody was handed a value. A 200-secret pull writes one{' '}
                   <code className="font-mono text-[0.9375rem]">secret.read</code> row with a count,
-                  not 200 rows — an audit table that grows with every value read becomes a
+                  not 200 rows. An audit table that grows with every value read becomes a
                   denial-of-service surface aimed at itself.
                 </p>
                 <p className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
@@ -522,8 +522,8 @@ export default async function FeaturesPage() {
                   neighbours.
                 </p>
                 <p>
-                  The marking is a reserved colour, an uppercase label and diagonal hazard hatching
-                  — three signals, so it survives colour blindness, a greyscale print-out and a
+                  The marking is a reserved colour, an uppercase label and diagonal hazard hatching:
+                  three signals, so it survives colour blindness, a greyscale print-out and a
                   failing external monitor. The single-signal version of this is how a value ends up
                   in the wrong environment at two in the morning.
                 </p>
@@ -618,7 +618,7 @@ export default async function FeaturesPage() {
                 generated in your browser and sealed only to the members and service tokens you give
                 access to; values are encrypted and decrypted on your device, in the browser or the
                 CLI. We store ciphertext and hold no key that opens it, which means we{' '}
-                <span className="text-fg font-medium">cannot</span> read your secrets — and neither
+                <span className="text-fg font-medium">cannot</span> read your secrets, and neither
                 can anyone who obtains our database. Names, structure and the audit log are not
                 encrypted, so the dashboard can list and search them.
               </p>
@@ -670,8 +670,7 @@ export default async function FeaturesPage() {
 
         <Reveal delay={120} className="mt-6">
           <p className="text-fg-muted mx-auto max-w-2xl text-center text-sm leading-7">
-            The rest — SSO, data residency, what happens to your secrets if we shut down — are on
-            the{' '}
+            The rest (SSO, data residency, what happens to your secrets if we shut down) are on the{' '}
             <Link href="/faq" className={QUIET_LINK}>
               frequently asked questions page
             </Link>

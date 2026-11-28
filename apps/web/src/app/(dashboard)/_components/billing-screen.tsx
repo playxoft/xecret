@@ -203,7 +203,7 @@ function BillingDetails({
       onApplied={setPromo}
       discounts={billing.actions.checkout}
       onRedeemed={(_, redeemed) => {
-        toast({ variant: 'success', title: `${redeemed.summary} — active now` });
+        toast({ variant: 'success', title: `Active now: ${redeemed.summary}` });
         onChanged();
       }}
     />
@@ -218,18 +218,18 @@ function BillingDetails({
             // A trial that ended with nothing paid holds for two days, not
             // fourteen (`TRIAL_HOLD_LIMIT_MS` in `server/billing/jobs.ts`).
             <p>
-              The trial has ended and its first payment did not go through — there is no card on
+              The trial has ended and its first payment did not go through: there is no card on
               file, or the card was declined. Every secret, every <code>xecret run</code> and every
               CI job keeps working; add a card from the customer portal to keep the plan. Unless it
-              is paid by {formatAbsoluteTime(billing.hold.endsAt)}, the organisation moves to Free —
-              nothing is deleted.
+              is paid by {formatAbsoluteTime(billing.hold.endsAt)}, the organisation moves to Free.
+              Nothing is deleted.
             </p>
           ) : (
             <p>
               Your card was declined. Every secret, every <code>xecret run</code> and every CI job
               keeps working; update the card from the customer portal to keep the plan. A
               subscription still unpaid after 14 days on hold ends, and the organisation moves to
-              Free — nothing is deleted.
+              Free. Nothing is deleted.
             </p>
           )}
           {billing.actions.portal ? (
@@ -243,8 +243,8 @@ function BillingDetails({
       {waitingForPayment ? (
         <Alert tone="info" title="Waiting for the payment to be confirmed">
           <p>
-            Your plan changes as soon as our payment provider confirms the payment — usually within
-            a minute. Nothing more to do here; this page updates on its own.
+            Your plan changes as soon as our payment provider confirms the payment, usually within a
+            minute. Nothing more to do here; this page updates on its own.
           </p>
         </Alert>
       ) : null}
@@ -271,9 +271,9 @@ function BillingDetails({
               <li key={warning.resource}>
                 {count(warning.current)} {RESOURCE_NAME[warning.resource]}
                 {warning.limit === null
-                  ? ' — past the fair-use level we check in about. Nothing is blocked.'
+                  ? ', past the fair-use level we check in about. Nothing is blocked.'
                   : warning.atLimit
-                    ? ` — at the limit of ${count(warning.limit)}.`
+                    ? `, at the limit of ${count(warning.limit)}.`
                     : ` of ${count(warning.limit)}.`}
               </li>
             ))}
@@ -405,7 +405,7 @@ function CurrentPlan({ billing }: { billing: Billing }) {
         <CardTitle>Current plan</CardTitle>
         {billing.cancelAtPeriodEnd ? (
           <CardDescription>
-            Cancelled — the plan stays until the end of the period already paid for, then the
+            Cancelled. The plan stays until the end of the period already paid for, then the
             organisation moves to Free. Nothing is deleted.
           </CardDescription>
         ) : null}
@@ -442,9 +442,9 @@ function Usage({ billing }: { billing: Billing }) {
         <CardDescription>
           Since {formatAbsoluteTime(billing.usage.periodStart)}
           {billing.interval === 'yearly'
-            ? ' — a yearly plan’s allowance is monthly, from its billing date'
+            ? ' (a yearly plan’s allowance is monthly, from its billing date)'
             : ''}
-          . Reads across everything — the CLI, CI and the API. Counted within a minute or so.
+          . Reads across everything: the CLI, CI and the API. Counted within a minute or so.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -614,7 +614,7 @@ function ChoosePlan({
         variant: 'success',
         title:
           answer.effective === 'now'
-            ? 'Plan change requested — it shows here once the payment is confirmed'
+            ? 'Plan change requested. It shows here once the payment is confirmed.'
             : 'Plan change scheduled for the end of this billing period',
       });
       setPreview(null);

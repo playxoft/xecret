@@ -60,7 +60,7 @@ export class RecoveryCodeError extends Error {
   constructor(readonly reason: 'format' | 'checksum') {
     super(
       reason === 'checksum'
-        ? 'That code has a typo — check it against your Emergency Kit'
+        ? 'That code has a typo: check it against your Emergency Kit'
         : 'That is not a valid code',
     );
     this.name = 'RecoveryCodeError';

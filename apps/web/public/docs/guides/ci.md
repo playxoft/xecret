@@ -1,7 +1,7 @@
 ---
 title: Secrets in CI/CD
 navTitle: Secrets in CI
-description: Service tokens end to end — GitHub Actions, GitLab CI, CircleCI and generic runners — with scoping, rotation and the one anti-pattern to avoid.
+description: Service tokens end to end (GitHub Actions, GitLab CI, CircleCI and generic runners) with scoping, rotation and the one anti-pattern to avoid.
 keywords: [github actions secrets, gitlab ci variables, circleci environment, service token, ci secret management, xecret token]
 updated: 2026-08-16
 ---
@@ -13,7 +13,7 @@ Every CI recipe follows the same three-line story:
    by default, and shown exactly once.
 2. **Expose it to the job** as the environment variable `XECRET_TOKEN`.
 3. **Run your build through `xecret run`.** Secrets are injected into the child
-   process's environment — never written to disk, never echoed to the log.
+   process's environment, never written to disk, never echoed to the log.
 
 There is nothing else to configure. The token knows its own scope, so no
 `.xecret.yaml`, no organisation flag and no login step are needed in CI.
@@ -24,16 +24,16 @@ In the dashboard: *Tokens → New service token*.
 
 | Field | What to choose |
 |---|---|
-| Name | What the token is for — `ci-build`, `deploy-staging`. It appears in the audit log against every action the token takes. |
+| Name | What the token is for (`ci-build`, `deploy-staging`). It appears in the audit log against every action the token takes. |
 | Project + environment | Exactly the one the job needs. This is the pin; it cannot be widened later. |
 | Access level | `read` unless the job writes secrets. Most do not. |
 | Expiry | Set one. A credential with no expiry is a credential you will forget you issued. |
 | IP allowlist | If your runners have stable egress addresses, use it. |
 
 The token value is displayed once. Copy it straight into the CI provider's
-secret store and close the dialog — it cannot be retrieved again, only replaced.
+secret store and close the dialog: it cannot be retrieved again, only replaced.
 
-> **Note** — A service token can never delete a secret, and `read` tokens
+> **Note**: A service token can never delete a secret, and `read` tokens
 > cannot write. CI rotates a value by writing a new version; destroying history
 > is a human's decision. See [tokens](../api/tokens.md).
 
@@ -59,7 +59,7 @@ jobs:
       # builds: with: { version: v1.2.3 }
       - uses: playxoft/xecret@v1
 
-      # Secrets reach `npm run build`'s environment only — never the
+      # Secrets reach `npm run build`'s environment only, never the
       # workspace, the logs, or any later step.
       - run: xecret run -- npm run build
         env:
@@ -86,8 +86,8 @@ expression cannot reach production.
 
 ## GitLab CI
 
-Add `XECRET_TOKEN` under *Settings → CI/CD → Variables*. Mark it **Masked** —
-it is one line of high-entropy base64url, so masking works — and **Protected**
+Add `XECRET_TOKEN` under *Settings → CI/CD → Variables*. Mark it **Masked**
+(it is one line of high-entropy base64url, so masking works) and **Protected**
 if your plan offers it.
 
 ```yaml
@@ -98,7 +98,7 @@ build:
     - xecret run -- npm run build
 ```
 
-For a job that needs only the CLI itself — for example writing an env file for
+For a job that needs only the CLI itself, for example writing an env file for
 a later stage that cannot be changed:
 
 ```yaml
@@ -165,7 +165,7 @@ Under `XECRET_TOKEN` the CLI behaves differently in three ways, all
 deliberate:
 
 - **No offline cache** is written or read. A runner is disposable, so a cache
-  would rarely hit — while reliably leaving an encrypted blob of production
+  would rarely hit, while reliably leaving an encrypted blob of production
   configuration on a machine somebody else's job runs next.
 - **`login`, `logout` and `init` are refused.** None of them mean anything for
   a credential the machine did not create.
@@ -198,6 +198,6 @@ If you must, write it somewhere ephemeral and delete it in the same script.
 
 ## Next
 
-- [Tokens](../api/tokens.md) — what each credential can do.
-- [Docker](docker.md) — containers and BuildKit secret mounts.
-- [Teams, roles and access](teams.md) — who can mint a token.
+- [Tokens](../api/tokens.md): what each credential can do.
+- [Docker](docker.md): containers and BuildKit secret mounts.
+- [Teams, roles and access](teams.md): who can mint a token.

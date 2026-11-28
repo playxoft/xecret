@@ -378,7 +378,7 @@ function ImportBody({
                 {filename === null ? null : (
                   <>
                     {' '}
-                    — currently <span className="text-fg font-mono">{filename}</span>
+                    (currently <span className="text-fg font-mono">{filename}</span>)
                   </>
                 )}
               </p>
@@ -619,7 +619,7 @@ function PlanTable({ items }: { items: readonly ImportPlanItem[] }) {
             <TableRow key={`${item.sourceKey}-${item.name}`}>
               <TableCell className="font-mono text-sm break-all">{item.sourceKey}</TableCell>
               <TableCell className="font-mono text-sm break-all">
-                {item.name === '' ? <span className="text-fg-subtle">—</span> : item.name}
+                {item.name === '' ? <span className="text-fg-subtle">No name</span> : item.name}
               </TableCell>
               <TableCell>
                 <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>

@@ -289,7 +289,7 @@ function RecoverDialog({
 export function describeRecoverFailure(cause: unknown, method: Method): string {
   if (cause instanceof DecryptionError) {
     return method === 'passphrase'
-      ? 'That passphrase did not open the vault you reset. Check for a typo — it is case-sensitive.'
+      ? 'That passphrase did not open the vault you reset. Check for a typo. It is case-sensitive.'
       : 'That recovery code did not open the vault you reset.';
   }
   if (cause instanceof RecoveryCodeError) {

@@ -97,7 +97,7 @@ export function TokensScreen({ orgId }: { orgId: string }) {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Tokens"
-        description="Credentials that act without a person present — CI service tokens and your signed-in devices."
+        description="Credentials that act without a person present: CI service tokens and your signed-in devices."
         actions={
           canCreate ? (
             <LockedAction lock={createLock}>
@@ -132,7 +132,7 @@ export function TokensScreen({ orgId }: { orgId: string }) {
               title="No service tokens"
               description={
                 canCreate
-                  ? 'Mint one to give CI read access to a single environment — the value is shown exactly once.'
+                  ? 'Mint one to give CI read access to a single environment. The value is shown exactly once.'
                   : 'None has been minted in this organisation.'
               }
               action={
@@ -327,7 +327,7 @@ export function TokensScreen({ orgId }: { orgId: string }) {
           if (!open) setRevokingService(null);
         }}
         title={`Revoke ${revokingService?.name ?? 'this token'}?`}
-        description="Every pipeline using it fails its next request. This cannot be undone — a replacement means minting a new token."
+        description="Every pipeline using it fails its next request. This cannot be undone. A replacement means minting a new token."
         confirmLabel="Revoke token"
         onConfirm={async () => {
           if (revokingService === null) return;
@@ -353,7 +353,7 @@ export function TokensScreen({ orgId }: { orgId: string }) {
         title={`Sign out ${revokingCli?.name ?? 'this device'}?`}
         description={
           revokingCli?.isCurrent === true
-            ? 'This is the device making this request — its CLI stops working immediately. The browser session is unaffected.'
+            ? 'This is the device making this request. Its CLI stops working immediately. The browser session is unaffected.'
             : 'That machine’s CLI stops working on its next request. Sign in again there to restore it.'
         }
         confirmLabel="Revoke credential"
@@ -425,7 +425,7 @@ function OutsidePolicyBadge({ sentence }: { sentence: string }) {
   return (
     <Badge tone="warning" title={sentence}>
       Outside policy
-      <span className="sr-only"> — {sentence}</span>
+      <span className="sr-only">: {sentence}</span>
     </Badge>
   );
 }
@@ -436,7 +436,7 @@ function outsidePolicySummary(count: number): string {
   return (
     `${pluralize(count, 'active token')} ${one ? 'falls' : 'fall'} outside the organisation’s ` +
     'token policy. The policy is checked when a token is minted, never when it is used, so ' +
-    `${one ? 'it keeps' : 'they keep'} working — replace ${one ? 'it' : 'them'} with a new ` +
+    `${one ? 'it keeps' : 'they keep'} working. Replace ${one ? 'it' : 'them'} with a new ` +
     `${one ? 'token' : 'token each'}, then revoke the old.`
   );
 }

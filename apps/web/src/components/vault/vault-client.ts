@@ -1474,7 +1474,7 @@ export function describeUnlockFailure(cause: unknown): string {
     // when the material on screen is stale. Both are better in the server's
     // words than in ours.
     if (cause.code === 'network_error') {
-      return 'Could not reach xecret. Your vault was not unlocked — check your connection and try again.';
+      return 'Could not reach xecret. Your vault was not unlocked. Check your connection and try again.';
     }
     return cause.message;
   }
@@ -1502,7 +1502,7 @@ export function describeUnlockFailure(cause: unknown): string {
 export function describePinUnlockFailure(cause: unknown): string {
   if (isApiError(cause)) {
     if (cause.code === 'network_error') {
-      return 'Could not reach xecret, so your PIN was not checked. Your vault was not unlocked — check your connection and try again.';
+      return 'Could not reach xecret, so your PIN was not checked. Your vault was not unlocked. Check your connection and try again.';
     }
     return cause.message;
   }

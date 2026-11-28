@@ -169,7 +169,7 @@ function SignInCard() {
           Your password, Google sign-in and multi-factor authentication are handled on
           xecret&rsquo;s secure sign-in page, hosted for us by WorkOS, rather than in this
           dashboard. If your organisation signs in with single sign-on, your credentials are managed
-          by your company&rsquo;s identity provider — change them there, or ask your IT team.
+          by your company&rsquo;s identity provider. Change them there, or ask your IT team.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -294,8 +294,8 @@ function LockCard() {
         <CardTitle>Unlock &amp; auto-lock</CardTitle>
         <CardDescription>
           How this browser opens your vault, and how long it stays open. Locking asks for your
-          master passphrase again without signing anything out — the control for stepping away from
-          a machine, or for a device you cannot reach right now.
+          master passphrase again without signing anything out. It is the control for stepping away
+          from a machine, or for a device you cannot reach right now.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -313,7 +313,7 @@ function LockCard() {
 
         <Field
           label="Auto-lock"
-          hint="Locks your vault after this long without activity, on every device you use — the browser counts the idle time and the server enforces the same allowance. Your passphrase opens it again."
+          hint="Locks your vault after this long without activity, on every device you use. The browser counts the idle time and the server enforces the same allowance. Your passphrase opens it again."
         >
           <Select
             value={String(selected)}
@@ -337,9 +337,9 @@ function LockCard() {
 
         {selected === 720 ? (
           <Alert tone="info" title="“Until this tab closes” has a ceiling">
-            Each tab holds its own copy of your keys, so closing <em>this</em> tab clears them here
-            — other tabs you have open keep theirs until they close too. Eight hours ends every
-            unlock regardless, however busy the session is.
+            Each tab holds its own copy of your keys, so closing <em>this</em> tab clears them here.
+            Other tabs you have open keep theirs until they close too. Eight hours ends every unlock
+            regardless, however busy the session is.
           </Alert>
         ) : null}
 
@@ -385,7 +385,7 @@ function DevicesCard() {
           <CardTitle>Signed-in devices</CardTitle>
           <CardDescription>
             Every session that can currently act as you. Revoking one takes effect on its next
-            request — xecret issues its own sessions precisely so that this works immediately, which
+            request. xecret issues its own sessions precisely so that this works immediately, which
             a provider-issued token cannot.
           </CardDescription>
         </CardHeader>
@@ -445,7 +445,7 @@ function DevicesCard() {
         open={signingOutOthers}
         onOpenChange={setSigningOutOthers}
         title="Sign out every other device?"
-        description="Every other session is revoked immediately. Anyone using one — including you, on another machine — will have to sign in again."
+        description="Every other session is revoked immediately. Anyone using one (including you, on another machine) will have to sign in again."
         confirmLabel="Sign them out"
         onConfirm={signOutOtherDevices}
       >

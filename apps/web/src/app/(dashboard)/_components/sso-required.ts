@@ -40,7 +40,7 @@ export function ssoRequiredRemedy(
     title: 'This organisation requires single sign-on',
     body:
       'You signed in some other way, so this organisation is out of reach until you sign in ' +
-      'through its single sign-on — your company’s identity provider. Your other organisations ' +
+      'through its single sign-on (your company’s identity provider). Your other organisations ' +
       'are not affected.',
     href,
   };

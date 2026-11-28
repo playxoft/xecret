@@ -34,7 +34,7 @@ export function ComplimentaryPlanNotice({
   return (
     <Alert tone="info" title={`Complimentary ${planName(plan)} plan`}>
       <p>
-        From xecret, {grantTerm(grant.endsAt)} — there is nothing to pay.
+        From xecret, {grantTerm(grant.endsAt)}. There is nothing to pay.
         {grant.endsAt !== null
           ? ' When it ends the organisation moves to Free, and nothing is deleted.'
           : ''}{' '}

@@ -24,12 +24,12 @@ export const SCRIPT: readonly Line[] = [
   { kind: 'success', text: 'Signed in as dev@acme.dev (organisation acme)' },
   { kind: 'blank' },
   { kind: 'command', text: 'xecret init' },
-  { kind: 'success', text: 'Wrote .xecret.yaml — project storefront, environment development.' },
+  { kind: 'success', text: 'Wrote .xecret.yaml: project storefront, environment development.' },
   { kind: 'info', text: 'The file holds slugs only, never secrets; commit it.' },
   { kind: 'blank' },
   { kind: 'command', text: 'xecret run -- npm run dev' },
   { kind: 'child', text: '> storefront@0.4.2 dev' },
-  { kind: 'child', text: 'ready — http://localhost:3000' },
+  { kind: 'child', text: 'ready on http://localhost:3000' },
 ];
 
 /**

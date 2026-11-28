@@ -405,23 +405,23 @@ function assertWellFormedSet(body: EncryptionUpgradeBody): void {
 
 const RETRY =
   'version_conflict: this environment changed while it was being upgraded. Nothing was ' +
-  'changed — start the upgrade again to re-encrypt what it holds now.';
+  'changed. Start the upgrade again to re-encrypt what it holds now.';
 
 const REFUSALS: Readonly<Record<EncryptionUpgradeRefusal, string>> = {
   'already-e2ee': 'already_e2ee: this environment is already end-to-end encrypted.',
   stale: RETRY,
   'deleted-changed':
     'version_conflict: a secret in this environment was deleted or restored while it was being ' +
-    'upgraded. Nothing was changed — start the upgrade again.',
+    'upgraded. Nothing was changed. Start the upgrade again.',
   'tokens-changed':
     'version_conflict: the CI tokens of this environment changed while it was being upgraded. ' +
-    'Nothing was changed — start the upgrade again.',
+    'Nothing was changed. Start the upgrade again.',
   inconsistent:
     'upgrade_unsupported: this environment holds rows this upgrade cannot vouch for. Nothing ' +
     'was changed. Contact support.',
   'grant-key':
-    'grant_key_mismatch: the new key was not sealed to your vault’s current public key — a ' +
-    'vault reset in another tab, or a page out of date. Nothing was changed. Reload and try again.',
+    'grant_key_mismatch: the new key was not sealed to your vault’s current public key (a ' +
+    'vault reset in another tab, or a page out of date). Nothing was changed. Reload and try again.',
   notes:
     'notes_mismatch: a note was missing from the upgrade, or one was sent for a secret that has ' +
     'none. Nothing was changed. Reload and try again.',
@@ -447,7 +447,7 @@ function mapUpgradeError(cause: unknown): unknown {
       // written.
       return errors.conflict(
         'version_conflict: this environment was changed by another request while it was being ' +
-          'upgraded. Nothing was changed — start the upgrade again.',
+          'upgraded. Nothing was changed. Start the upgrade again.',
       );
     default:
       return errors.badRequest('The upgrade could not be applied to this environment.');

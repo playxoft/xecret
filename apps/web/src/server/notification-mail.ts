@@ -72,12 +72,12 @@ export function webhookDisabledMail(params: WebhookDisabledMailParams): MailMess
     'been given up. Your secrets are unaffected.',
     '',
     'Once the receiver is working again, switch the webhook back on in your',
-    "organisation's settings — its delivery log shows what each attempt got back:",
+    "organisation's settings. Its delivery log shows what each attempt got back:",
     params.settingsUrl,
     '',
     'You are receiving this because you are an owner or admin of the organisation.',
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
 
   const html = `${SHELL_OPEN}
@@ -97,7 +97,7 @@ export function webhookDisabledMail(params: WebhookDisabledMailParams): MailMess
       <p style="${P}">
         Once the receiver is working again,
         <a href="${escapeHtml(params.settingsUrl)}">switch the webhook back on</a> in your
-        organisation’s settings — its delivery log shows what each attempt got back.
+        organisation’s settings. Its delivery log shows what each attempt got back.
       </p>
       <hr style="border:0;border-top:1px solid #e3e5e8;margin:0 0 24px;" />
       <p style="${SMALL}">
@@ -139,7 +139,7 @@ export function readAlertDigestMail(params: ReadAlertDigestMailParams): MailMess
   const count = params.sightings.length;
   const line = (sighting: ReadAlertSighting) =>
     `${sighting.projectSlug}/${sighting.environmentSlug}` +
-    `${sighting.isProduction ? ' (production)' : ''} — ${sighting.who}, from ${sighting.address}, ` +
+    `${sighting.isProduction ? ' (production)' : ''}: ${sighting.who}, from ${sighting.address}, ` +
     `first seen ${formatWhen(sighting.firstSeenAt)}`;
 
   const settings = [...params.settingsUrls.entries()];
@@ -153,7 +153,7 @@ export function readAlertDigestMail(params: ReadAlertDigestMailParams): MailMess
     '',
     ...params.sightings.map((sighting) => `  - ${line(sighting)}`),
     '',
-    'If you recognise these — a new laptop, a new CI runner — there is nothing to do.',
+    'If you recognise these (a new laptop, a new CI runner), there is nothing to do.',
     'If you do not, revoke the credential that made the read and rotate what it',
     'could reach.',
     '',
@@ -164,7 +164,7 @@ export function readAlertDigestMail(params: ReadAlertDigestMailParams): MailMess
     '',
     'You are receiving this because you are an owner or admin of the organisation.',
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
 
   const html = `${SHELL_OPEN}
@@ -180,7 +180,7 @@ export function readAlertDigestMail(params: ReadAlertDigestMailParams): MailMess
         ${params.sightings.map((sighting) => `<li>${escapeHtml(line(sighting))}</li>`).join('\n        ')}
       </ul>
       <p style="${P}">
-        If you recognise these — a new laptop, a new CI runner — there is nothing to do. If you do
+        If you recognise these (a new laptop, a new CI runner), there is nothing to do. If you do
         not, revoke the credential that made the read and rotate what it could reach.
       </p>
       <p style="${P}">

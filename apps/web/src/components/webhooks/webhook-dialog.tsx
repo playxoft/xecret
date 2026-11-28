@@ -182,8 +182,8 @@ export function WebhookForm({
         <DialogTitle>{editing ? 'Edit endpoint' : 'New webhook endpoint'}</DialogTitle>
         <DialogDescription>
           {editing
-            ? 'Where deliveries go and which events are sent. The signing secret is unchanged — rotate it from the endpoint’s menu.'
-            : 'xecret sends a signed POST to this URL whenever one of the chosen events happens. A delivery names what changed — the secret, the environment, who did it — and never carries a value.'}
+            ? 'Where deliveries go and which events are sent. The signing secret is unchanged. Rotate it from the endpoint’s menu.'
+            : 'xecret sends a signed POST to this URL whenever one of the chosen events happens. A delivery names what changed (the secret, the environment, who did it) and never carries a value.'}
         </DialogDescription>
       </DialogHeader>
 

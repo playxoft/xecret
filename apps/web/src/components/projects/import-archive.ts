@@ -167,7 +167,7 @@ export function describeTarget(state: Extract<TargetState, { status: 'unavailabl
     case 'locked':
       return 'Unlock your vault, then try again.';
     case 'no-key':
-      return 'You don’t hold this environment’s key yet — ask a teammate to share it.';
+      return 'You don’t hold this environment’s key yet. Ask a teammate to share it.';
     case 'nobody-holds':
       return 'Nobody can open this environment’s key any more. Create a new environment and import into it.';
     case 'downgraded':

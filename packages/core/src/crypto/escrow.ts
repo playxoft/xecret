@@ -184,7 +184,7 @@ export async function recoverKeyFromShares(
   // against a key that was never going to be produced.
   const claimed = new Set(decoded.map((d) => d.fingerprint));
   if (claimed.size > 1) {
-    throw new EscrowFormatError('Shares belong to different keys — their fingerprints disagree');
+    throw new EscrowFormatError('Shares belong to different keys: their fingerprints disagree');
   }
 
   const indices = new Set(decoded.map((d) => d.share.index));

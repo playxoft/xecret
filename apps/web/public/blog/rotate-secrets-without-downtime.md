@@ -31,7 +31,7 @@ If reads are recorded per actor, thirty days of history is a consumer list
 somebody else already wrote for you: which service tokens pulled the
 environment, which people revealed the individual value, and when. In xecret
 that is `secret.read` for a bulk pull and `secret.revealed` for a single value,
-both attributed to a named person or a named token — see [the audit
+both attributed to a named person or a named token. See [the audit
 log](/docs/security/audit-log).
 
 **The provider's own key usage view.** Many API providers show a last-used
@@ -39,7 +39,7 @@ timestamp per key, and some show the calling IP. A key with no use in ninety
 days is a different rotation from one serving a thousand requests a minute.
 
 **Your code and infrastructure.** Grep for the variable name across every
-repository, not just the obvious one — then the Terraform state, the Kubernetes
+repository, not just the obvious one, and then the Terraform state, the Kubernetes
 manifests, the CI configuration and the container image definitions.
 
 **People.** Ask. Somebody has it in a `.env` on a laptop, and somebody's cron
@@ -52,34 +52,34 @@ re-reads on every request needs only the new value; one that reads at boot needs
 a restart; one that caches a signed session for thirty days needs a thirty-day
 window.
 
-> **Tip** — Do this inventory once, properly, and keep the file. The second
+> **Tip**: Do this inventory once, properly, and keep the file. The second
 > rotation of the same credential is an afternoon rather than a project, and the
 > emergency rotation at 3am becomes a checklist you already trust.
 
 ## The overlap pattern
 
-Almost every safe rotation is the same five steps. The name varies — dual
-credentials, overlap, make-before-break — but the property is what matters:
+Almost every safe rotation is the same five steps. The name varies (dual
+credentials, overlap, make-before-break), but the property is what matters:
 **at no moment is the only valid credential one that some consumer has not got
 yet.**
 
 ```text
 1. Issue      new credential, alongside the old one
-2. Overlap    both valid — nothing has changed for any consumer
+2. Overlap    both valid: nothing has changed for any consumer
 3. Migrate    move consumers one at a time, verifying each
 4. Verify     prove the old credential has no traffic
 5. Revoke     the old credential, and only then
 ```
 
 Step 2 is where the safety lives. During the overlap your rollback is "keep
-using the old one" — no coordination, no deploy. A big-bang rotation converts a
+using the old one": no coordination, no deploy. A big-bang rotation converts a
 routine change into an outage whose rollback involves typing an old password
 back in from memory.
 
 Step 4 is the one that gets rushed, and it causes most of the outages that do
 happen: somebody revokes because the migration *looked* complete, and the
 consumer nobody knew about fails at 02:00 on its next scheduled run. Do not
-infer that the old credential is unused — prove it, and give the proof enough
+infer that the old credential is unused. Prove it, and give the proof enough
 time to cover your slowest consumer's cycle. A nightly job needs a night.
 
 ## Which credentials support overlap, and what to do when they do not
@@ -95,7 +95,7 @@ time to cover your slowest consumer's cycle. A nightly job needs a night.
 | Asymmetric signing key (JWT `RS256`) | Yes, with `kid` and a JWKS | Publish both public keys, switch signing after propagation, retire after the token lifetime. |
 | TLS certificate | Yes | Ordinary renewal overlap; serve the new chain before the old expires. |
 | SSH key | Yes | Add the new public key, migrate clients, remove the old one. |
-| Encryption key for data at rest | Special case | Not a rotation but a re-encryption — unless you use envelope encryption, where rotating the outer key rewraps a handful of data keys instead of every row. |
+| Encryption key for data at rest | Special case | Not a rotation but a re-encryption, unless you use envelope encryption, where rotating the outer key rewraps a handful of data keys instead of every row. |
 | Cloud account root credential | Yes, technically | Overlap is available; the inventory is the hard part, and it is usually enormous. |
 
 The row worth dwelling on is the database password, because it is the one people
@@ -136,7 +136,7 @@ psql "$ADMIN_URL" -Atc "
 
 Zero rows for the old role, sustained across a full cycle of your slowest
 scheduled job, is the evidence you need before step 5. A connection pooler
-complicates this — the pool holds connections open, so restart the pool, not
+complicates this: the pool holds connections open, so restart the pool, not
 just the application.
 
 Where a second role genuinely is not available, the fallback order is: put a
@@ -153,7 +153,7 @@ provider, delete the old key. Do not delete first and create second because the
 provider's interface puts the buttons in that order.
 
 If consumers read the value at process start, "roll the consumers" means a
-restart, and that restart is the real change — plan it like any deploy, one
+restart, and that restart is the real change. Plan it like any deploy, one
 environment at a time, production last.
 
 ### Rotating a signing key
@@ -167,7 +167,7 @@ token signed today must still verify in twenty-nine days' time, so the old
 signature. The sequence is three states, not two:
 
 1. **Sign with old, verify with old and new.** The new key is published and
-   trusted before anything uses it. Wait for propagation — caches, CDNs, client
+   trusted before anything uses it. Wait for propagation: caches, CDNs, client
    JWKS refresh intervals.
 2. **Sign with new, verify with old and new.** The switch. Everything issued
    from now on carries the new key.
@@ -175,7 +175,7 @@ signature. The sequence is three states, not two:
    old key plus the maximum lifetime of anything it signed.
 
 This only works if every signature says which key made it. That is what a key id
-is for — `kid` in a JWT header, a version prefix in a token you designed
+is for: `kid` in a JWT header, a version prefix in a token you designed
 yourself. Without one, verification has to try every key in turn, which works
 and destroys two things you need: you can no longer tell a rotation in progress
 from an attacker feeding you garbage, and you can never prove the old key is
@@ -187,8 +187,8 @@ The difference between a team that rotates comfortably and one that does not is
 not tooling. It is that the first team has done it before, on a day when nothing
 was wrong.
 
-- Rotate a development credential on a fixed schedule you did not choose — the
-  first Monday of the month — so the procedure gets exercised by whoever is on
+- Rotate a development credential on a fixed schedule you did not choose (the
+  first Monday of the month), so the procedure gets exercised by whoever is on
   rota rather than by whoever wrote it.
 - Rotate staging monthly, using the production runbook verbatim. A runbook that
   does not survive staging will not survive production.
@@ -199,18 +199,18 @@ was wrong.
   gets a rotation approved during an incident.
 
 An emergency rotation is then the same procedure with the overlap compressed to
-minutes — survivable precisely because everything else about it is familiar.
+minutes, survivable precisely because everything else about it is familiar.
 
 ## Where xecret fits
 
 In its own section, so you can skip it. xecret does not rotate credentials at
-your providers — nothing can, since only Stripe can issue a Stripe key. What it
+your providers. Nothing can, since only Stripe can issue a Stripe key. What it
 does is remove the two things that make rotation frightening: there is one place
 the value is edited rather than a dozen files on a dozen laptops, and there is
 an append-only record of every read, so "who is still using this?" has an answer
 before you start rather than after something breaks. Writes are versioned, so
 the previous value stays visible and restorable during the overlap. Values are
-end-to-end encrypted, so we cannot read them — the old one or the new one; the
+end-to-end encrypted, so we cannot read them (the old one or the new one); the
 model is written out plainly in the [trust model](/docs/security/trust-model). The
 [quickstart](/docs/quickstart) takes five minutes, and [what it
 does](/features) is the short version.

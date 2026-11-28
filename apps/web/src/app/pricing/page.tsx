@@ -192,7 +192,7 @@ function pricingTitle(currency: CurrencyId): string {
  * structure.
  */
 const HERO_DESCRIPTION =
-  'Four plans and a self-hosted option, published in full — the limits included. Free is ' +
+  'Four plans and a self-hosted option, published in full, the limits included. Free is ' +
   'genuinely free, every paid plan is per member with a lower yearly rate, service tokens and ' +
   'CI never cost anything, and running the whole server yourself is free forever.';
 
@@ -624,7 +624,7 @@ const PRICED_PLANS: readonly Plan[] = [
       },
       // The one uncapped thing on this tier, and it is uncapped on purpose:
       // the gate to Team is per-environment access control, not headcount.
-      { text: 'Unlimited members — everyone can read every environment' },
+      { text: 'Unlimited members (everyone can read every environment)' },
       { text: `${formatLimit(LIMITS.pro.serviceTokens)} service tokens for CI, all free` },
       { text: `${formatCount(LIMITS.pro.includedFetchesPerMonth)} secret fetches a month` },
       { text: `${LIMITS.pro.auditRetentionDays} days of audit history` },
@@ -685,7 +685,7 @@ const PRICED_PLANS: readonly Plan[] = [
       },
     },
     audience:
-      'For a team with somebody who must not see production — a contractor, a junior, an auditor.',
+      'For a team with somebody who must not see production: a contractor, a junior, an auditor.',
     features: [
       { text: 'Everything in Pro' },
       { text: 'Roles and per-environment access' },
@@ -699,7 +699,7 @@ const PRICED_PLANS: readonly Plan[] = [
       // Came down from Scale when that tier went. Both are security posture a
       // small team with a contractor needs most, which is the argument for them
       // being here rather than behind a contract — see TEAM_FEATURES.
-      { text: 'GitHub OIDC federation — no static CI tokens', notYet: true },
+      { text: 'GitHub OIDC federation, with no static CI tokens', notYet: true },
       { text: 'Scheduled and expiring secrets', notYet: true },
       { text: 'Change approvals and break-glass access', notYet: true },
     ],
@@ -828,7 +828,7 @@ const SELF_HOSTED: Plan = {
   features: [
     { text: 'The whole server, under AGPL-3.0' },
     { text: 'No feature held back, no licence key' },
-    { text: 'Single sign-on included — bring your own identity provider', notYet: true },
+    { text: 'Single sign-on included: bring your own identity provider', notYet: true },
     { text: 'Unlimited organisations, projects, members and environments' },
     { text: 'Audit history for as long as your database keeps it' },
     { text: 'Community support, or an Enterprise contract' },
@@ -911,9 +911,9 @@ const ADDONS = [
     // Terms — tell it is included. The Terms are the document they sign, so
     // the band was the outlier: this is a Team charge and an Enterprise
     // inclusion, which is the mirror of how SCIM works one entry below.
-    from: 'Team only — included with Enterprise',
+    from: 'Team only, included with Enterprise',
     notYet: true,
-    body: 'Connect your SAML 2.0 identity provider — Okta, Microsoft Entra ID, OneLogin, PingFederate and the rest. Each connection is set up together with your identity team and comes with priority support for it. Enterprise plans include SAML connections. OIDC single sign-on will be included from Team at no extra cost — neither is built yet.',
+    body: 'Connect your SAML 2.0 identity provider: Okta, Microsoft Entra ID, OneLogin, PingFederate and the rest. Each connection is set up together with your identity team and comes with priority support for it. Enterprise plans include SAML connections. OIDC single sign-on will be included from Team at no extra cost. Neither is built yet.',
   },
 ] as const;
 
@@ -931,7 +931,7 @@ const INCLUDED = [
   {
     icon: LockIcon,
     title: 'End-to-end encryption',
-    body: 'Every environment gets its own data key the moment it is created, generated on your device and shared only with the people and tokens you choose. We never hold it, on any plan — and we say plainly what that does and does not protect you from.',
+    body: 'Every environment gets its own data key the moment it is created, generated on your device and shared only with the people and tokens you choose. We never hold it, on any plan, and we say plainly what that does and does not protect you from.',
     link: { href: '/docs/security/trust-model', label: 'What xecret can and cannot see' },
   },
   {
@@ -2131,7 +2131,7 @@ export default async function PricingPage() {
               <span className="text-fg font-medium">{NOT_YET}</span> in that column and a dash
               everywhere below it. Self-hosting reads{' '}
               <span className="text-fg font-medium">{NOT_YET}</span> for both, because nothing is
-              held back there and nothing is charged for either — they simply do not exist yet.
+              held back there and nothing is charged for either. They simply do not exist yet.
               Neither is built for anybody, at any price. The chips on the cards and the rows in
               this table say so deliberately: the first contract that needs them is what gets them
               written, and until then you should plan as though they do not exist. Enterprise is a
@@ -2221,7 +2221,7 @@ export default async function PricingPage() {
         // read like the other two now, and the "never billed" claim is kept
         // separate from the "never capped" one, because only the first is true
         // on Free.
-        description={`${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments each, ${LIMITS.free.serviceTokens} CI tokens and the whole CLI, without a card — and a service token is never billed on any plan, whatever it pulls. If you outgrow it, the price is on this page and it will not change under you.`}
+        description={`${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments each, ${LIMITS.free.serviceTokens} CI tokens and the whole CLI, without a card, and a service token is never billed on any plan, whatever it pulls. If you outgrow it, the price is on this page and it will not change under you.`}
       />
     </PublicPage>
   );

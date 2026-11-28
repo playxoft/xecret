@@ -64,7 +64,7 @@ export const metadata: Metadata = {
   // The root layout's title template appends the product name, so the home
   // page opts out of it: "xecret · xecret" is the one place a template is
   // always wrong.
-  title: { absolute: 'xecret — secret management for developers' },
+  title: { absolute: 'xecret: secret management for developers' },
   description: DESCRIPTION,
   keywords: [
     'secret management for developers',
@@ -78,7 +78,7 @@ export const metadata: Metadata = {
     type: 'website',
     url: absoluteUrl('/'),
     siteName: SITE_NAME,
-    title: `${SITE_NAME} — ${TITLE}`,
+    title: `${SITE_NAME}: ${TITLE}`,
     description: DESCRIPTION,
   },
 };
@@ -102,12 +102,12 @@ const FEATURES = [
   {
     Icon: KeyIcon,
     title: 'End-to-end encrypted',
-    body: 'Every environment you create has its own data key, generated on your device and shared only with the people and CI tokens you choose — never with us. Development, staging and production never share a key.',
+    body: 'Every environment you create has its own data key, generated on your device and shared only with the people and CI tokens you choose, never with us. Development, staging and production never share a key.',
   },
   {
     Icon: TerminalIcon,
     title: 'One command, any stack',
-    body: 'xecret run injects the environment and execs your process. Next.js, Node, Vite, Go, Docker, CI — nothing in your code changes.',
+    body: 'xecret run injects the environment and execs your process. Next.js, Node, Vite, Go, Docker, CI: nothing in your code changes.',
   },
   {
     Icon: HistoryIcon,
@@ -196,27 +196,27 @@ const CAN_SEE = [
 ] as const;
 
 const CANNOT_SEE = [
-  'Your secret values and notes — they are encrypted on your device before they are sent',
+  'Your secret values and notes, which are encrypted on your device before they are sent',
   'The keys that open them, which are shared with you, your teammates and your service tokens, never with us',
   'Your master passphrase and recovery codes, which never leave your device',
-  'The .env file you import — it is parsed and encrypted in your browser',
+  'The .env file you import, which is parsed and encrypted in your browser',
 ] as const;
 
 const FAQ: readonly ConditionalFaqItem[] = [
   {
     question: 'Can xecret read my secrets?',
     answer:
-      'No. Secret values and notes are end-to-end encrypted: they are encrypted on your device, in the browser or the CLI, under a key that is shared only with the teammates and service tokens you give access to. We store ciphertext and never hold a key that opens it, so a breach of our database, our own staff, or an order to hand data over cannot produce your values. Secret names, project names and the audit log are not encrypted, and the trust model lists exactly what we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment — and its key settings say so.',
+      'No. Secret values and notes are end-to-end encrypted: they are encrypted on your device, in the browser or the CLI, under a key that is shared only with the teammates and service tokens you give access to. We store ciphertext and never hold a key that opens it, so a breach of our database, our own staff, or an order to hand data over cannot produce your values. Secret names, project names and the audit log are not encrypted, and the trust model lists exactly what we can see. The one exception is an older environment created before end-to-end encryption became the default: it stays on server-side encryption, which we can decrypt, until its values are moved to a new environment, and its key settings say so.',
   },
   {
     question: 'Do I have to change my application code?',
     answer:
-      'No. The CLI resolves the environment, decrypts it on your machine, and injects the variables into the process it starts — your code carries on reading process.env, os.Getenv or whatever it already used. The only file that changes is .xecret.yaml, which holds slugs rather than secrets and is meant to be committed.',
+      'No. The CLI resolves the environment, decrypts it on your machine, and injects the variables into the process it starts. Your code carries on reading process.env, os.Getenv or whatever it already used. The only file that changes is .xecret.yaml, which holds slugs rather than secrets and is meant to be committed.',
   },
   {
     question: 'What happens if xecret is down when I need to deploy?',
     answer:
-      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working even when xecret cannot be reached. For deploys, keep a break-glass copy of your most critical credentials somewhere you control — good practice with any provider.',
+      'The CLI keeps an encrypted offline cache of the environments you have already resolved, so a local run keeps working even when xecret cannot be reached. For deploys, keep a break-glass copy of your most critical credentials somewhere you control (good practice with any provider).',
   },
   {
     question: 'Is it really open source, or is the useful half proprietary?',
@@ -309,7 +309,7 @@ export default async function LandingPage() {
             </h1>
             <p className="text-fg-muted mt-6 max-w-xl text-base leading-8 text-pretty sm:text-[1.125rem]">
               xecret stores your environment variables once, end-to-end encrypted, and injects them
-              into whatever you are running — locally, in CI, in production. No file on disk, no
+              into whatever you are running: locally, in CI, in production. No file on disk, no
               credentials in Slack, no &ldquo;works on my machine&rdquo;.
             </p>
 
@@ -463,7 +463,7 @@ export default async function LandingPage() {
           headingId="install-heading"
           eyebrow="Install"
           title="Thirty seconds to installed and signed in"
-          description="One static binary — no Node, no Python, nothing to compile, nothing to keep running. Pick your platform, run the line, and the credential you get back is held by your operating system rather than by a file in your home directory."
+          description="One static binary: no Node, no Python, nothing to compile, nothing to keep running. Pick your platform, run the line, and the credential you get back is held by your operating system rather than by a file in your home directory."
           align="center"
         />
         <Reveal className="mx-auto mt-10 max-w-3xl">
@@ -500,7 +500,7 @@ export default async function LandingPage() {
             </h2>
             <p className="text-fg-muted mx-auto mt-6 max-w-2xl text-base leading-8 text-pretty sm:text-lg">
               Encryption is the easy half. The half that decides how your next incident goes is
-              knowing exactly who read what, and when — before you need to know it.
+              knowing exactly who read what, and when, before you need to know it.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-sm">
               <Link href="/docs/security/audit-log" className={QUIET_LINK}>
@@ -622,10 +622,10 @@ export default async function LandingPage() {
             written for. */}
         <Reveal className="mx-auto mt-10 max-w-3xl text-center">
           <p className="text-fg-muted text-base leading-8 text-pretty">
-            That means we <span className="text-fg font-medium">cannot</span> read your secrets —
-            not from a database backup, not with our own production access, and not if we are
-            ordered to hand data over. Names are the exception: they stay unencrypted so the
-            dashboard can list and search them, so keep secrets out of the names you give things.
+            That means we <span className="text-fg font-medium">cannot</span> read your secrets: not
+            from a database backup, not with our own production access, and not if we are ordered to
+            hand data over. Names are the exception: they stay unencrypted so the dashboard can list
+            and search them, so keep secrets out of the names you give things.
           </p>
           <div className="mt-7 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-sm">
             <Link href="/docs/security/trust-model" className={QUIET_LINK}>
@@ -671,7 +671,7 @@ export default async function LandingPage() {
             <p className="text-fg-muted mt-2 text-sm leading-6">
               Cloudflare Workers, a Neon or vanilla PostgreSQL database, and your own WorkOS account
               for identity. The self-hosting guide lists every dependency and every step, so you can
-              plan a deployment end to end before you start — with nothing held back from the build
+              plan a deployment end to end before you start, with nothing held back from the build
               you run.
             </p>
           </div>

@@ -177,7 +177,7 @@ export function PromoCodeField({
       >
         <CheckIcon className="text-success-text size-4 shrink-0" />
         <p className="text-fg min-w-0 flex-1 leading-5">
-          <code className="font-mono font-semibold">{applied.code}</code> — {applied.summary}.{' '}
+          <code className="font-mono font-semibold">{applied.code}</code>: {applied.summary}.{' '}
           <span className="text-fg-muted">Applied at checkout.</span>
         </p>
         <Button
@@ -264,7 +264,7 @@ function FreePlanOffer({
     <Alert tone="success" title={offer.summary}>
       <p>
         {plan} applies at once, at no charge, and no card is asked for. If it has an end date, the
-        organisation returns to Free then — nothing is deleted.
+        organisation returns to Free then. Nothing is deleted.
       </p>
       <div className="mt-3">
         <Button variant="primary" size="sm" loading={busy} onClick={() => void onActivate()}>

@@ -25,7 +25,7 @@ and the file is what a working application requires in the next four minutes.
 
 Look at what the alternative asks for at the moment somebody needs the key. A
 vault means a login, a CLI, a permission grant and a concept to learn. A file
-means one line in an editor. Given a deadline, the file wins every time — and
+means one line in an editor. Given a deadline, the file wins every time, and
 it should, because at that moment the file genuinely is the better tool for
 the job in front of them.
 
@@ -61,9 +61,9 @@ possible.
 | A copy that lives… | Covered by `.gitignore`? | Readable by |
 |---|---|---|
 | `.env` in the repository root | Usually, yes | Anyone with that laptop |
-| `.env.backup`, `.env~`, `.env.save` | No — `.env` alone matches none of them | Anyone with that laptop |
+| `.env.backup`, `.env~`, `.env.save` | No: `.env` alone matches none of them | Anyone with that laptop |
 | A Slack message from onboarding | Not a file, so no | Everyone in the workspace, via search, indefinitely |
-| The Docker build context | Irrelevant — `.dockerignore` decides | Anyone who can pull the image |
+| The Docker build context | Irrelevant: `.dockerignore` decides | Anyone who can pull the image |
 | A CI job that echoed the environment | Irrelevant | Anyone who can read a build log |
 | A former colleague's disk image | No | Them |
 
@@ -95,14 +95,14 @@ service-account*.json
 gha-creds-*.json
 ```
 
-Two things about that block. First, `.env` on its own matches nothing else —
+Two things about that block. First, `.env` on its own matches nothing else:
 not `.env.local`, not `.env.production`, not `.env.backup`. If your ignore file
 has one line, it is covering one file. Second, the negations have to come
 after the broad patterns, and they cannot re-admit a file whose parent
 directory is ignored. If you keep secrets under `config/`, ignoring `config/`
 means `!config/example.env` will not work.
 
-> **Warning** — `.gitignore` has no effect on a file git is already tracking.
+> **Warning**: `.gitignore` has no effect on a file git is already tracking.
 > If `.env` was committed before the pattern was added, git keeps happily
 > committing every change to it, silently, forever. The pattern only governs
 > untracked files.
@@ -119,7 +119,7 @@ git ls-files | grep -E '(^|/)\.env($|\.)|\.env$|\.pem$'
 # Is one specific file tracked? Exit code 0 means yes.
 git ls-files --error-unmatch .env
 
-# Env files that were tracked at some point and later deleted —
+# Env files that were tracked at some point and later deleted:
 # still in history, still readable
 git log --all --diff-filter=D --name-only -- '.env*' | sort -u
 ```
@@ -135,12 +135,12 @@ git commit -m "chore: stop tracking env files"
 
 `--cached` is the important flag. It removes the file from the index while
 leaving it on disk, so your colleague who pulls this commit does not lose their
-working configuration — they simply stop sharing it.
+working configuration: they simply stop sharing it.
 
 Be clear with yourself about what that commit achieved. It stops *future*
 commits from carrying the file. Every value that was ever committed is still in
-the repository's history, still fetchable by anyone with a clone, and — this is
-the part people miss — still live at the provider. Removing a key from a file
+the repository's history, still fetchable by anyone with a clone, and (this is
+the part people miss) still live at the provider. Removing a key from a file
 does not revoke it. If anything came back from that `--diff-filter=D` search,
 you have a rotation job on your hands, and we wrote a separate runbook for
 exactly that: [finding a leaked API key in git history](/blog/find-leaked-api-keys-in-git-history).
@@ -174,7 +174,7 @@ Migrating what you already have does not require retyping it. Drag the existing
 shows you a dry-run of what would be created before anything is sent. A pasted
 blob of production credentials never becomes a request body.
 
-> **Tip** — Do the migration one environment at a time and leave the `.env`
+> **Tip**: Do the migration one environment at a time and leave the `.env`
 > file on disk until the new path has survived a full working day. A migration
 > that can be abandoned at 16:00 on a Tuesday is one people will actually
 > start.
@@ -192,9 +192,9 @@ blob of production credentials never becomes a request body.
    a value whose custody you cannot account for. Migrating it moves it; only
    rotation makes the old copies worthless.
 
-Framework-specific notes matter mostly for build-time variables — a
+Framework-specific notes matter mostly for build-time variables (a
 `NEXT_PUBLIC_` value has to exist during `next build`, not during
-`next start` — and that is covered in the
+`next start`), and that is covered in the
 [Next.js guide](/docs/guides/nextjs).
 
 ## What this does and does not fix
@@ -204,8 +204,8 @@ is edited, a record of who read what, and revocation that actually takes effect
 because there is no file on a laptop that keeps working after you revoke.
 
 Moving them into xecret does not hand them to us, either. xecret encrypts them
-on your device before they are sent — the browser does it when you import, the
-CLI when you set one — and our servers store only ciphertext they cannot open.
+on your device before they are sent (the browser does it when you import, the
+CLI when you set one), and our servers store only ciphertext they cannot open.
 We can see secret names and who read what, not values. The whole model, including where
 the guarantee stops, is written out in the
 [trust model](/docs/security/trust-model).
@@ -218,7 +218,7 @@ It also does not stop your own code from leaking. If your application logs
 This is the product pitch, kept in its own section so you can skip it. xecret
 is open-source secret management built around one command: you store
 environment variables once, per environment, and `xecret run` injects them into
-whatever you were going to run anyway — locally, in CI, in production. The
+whatever you were going to run anyway (locally, in CI, in production). The
 server is AGPL-3.0 and self-hosting holds nothing back; the CLI is MIT. The
 [pricing page](/pricing) sets out what
 each plan includes and what, if anything, it costs on the day you read this. If

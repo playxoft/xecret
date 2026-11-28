@@ -16,7 +16,7 @@ export async function GET(): Promise<Response> {
   const documents = await Promise.all(DOC_SLUGS.map((slug) => loadDoc(slug)));
 
   const parts: string[] = [
-    '# xecret — complete documentation',
+    '# xecret: complete documentation',
     '',
     `> ${SITE_TAGLINE}.`,
     '',

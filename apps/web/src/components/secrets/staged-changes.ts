@@ -578,7 +578,7 @@ export function draftNameProblem(
  * Joins a sentence onto the end of another one.
  *
  * The reasons come back capitalised because each is written to stand alone
- * under a field; appended after an em dash, a capital reads as two messages
+ * under a field; appended after a colon, a capital reads as two messages
  * stuck together. Only the first character, and only when the second is not
  * also upper case — `API key not found` keeps its initialism.
  */
@@ -788,7 +788,7 @@ function isRateLimited(cause: unknown): boolean {
 
 /** What a row that was never tried says about itself. */
 const NOT_ATTEMPTED =
-  'Not attempted: the server was refusing writes by the time this row came up. Nothing here is lost — save again in a moment.';
+  'Not attempted: the server was refusing writes by the time this row came up. Nothing here is lost. Save again in a moment.';
 
 export function useStagedChanges(io: SecretIo | null): StagedChanges {
   const [drafts, setDrafts] = useState<readonly Draft[]>([]);
@@ -1366,7 +1366,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           const offscreenMessage =
             offscreen.length === 0
               ? null
-              : `Not written to ${offscreen.join(', ')} — ${
+              : `Not written to ${offscreen.join(', ')}: ${
                   offscreen.length === 1 ? 'it is' : 'they are'
                 } no longer on this page. Those values are still here.`;
 

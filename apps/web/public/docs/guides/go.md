@@ -1,7 +1,7 @@
 ---
 title: xecret with Go
 navTitle: Go
-description: Use xecret in a Go project — go run and go test under injected secrets, reading configuration at startup, and building static binaries in CI.
+description: Use xecret in a Go project: go run and go test under injected secrets, reading configuration at startup, and building static binaries in CI.
 keywords: [go environment variables, os.Getenv, go secrets management, go test env, golang configuration]
 updated: 2026-08-16
 ---
@@ -43,7 +43,7 @@ func Load() (*Config, error) {
 	}
 
 	// Names only. A configuration error must never print the value it
-	// rejected — in this program the rejected value is a credential.
+	// rejected. In this program the rejected value is a credential.
 	for name, value := range map[string]string{
 		"DATABASE_URL":   cfg.DatabaseURL,
 		"SESSION_SECRET": cfg.SessionSecret,
@@ -75,7 +75,7 @@ xecret secrets set PORT --type int
 ## Tests
 
 `go test` runs each package's tests in a separate process, and each inherits the
-environment `xecret run` created — so one wrapper covers the whole run:
+environment `xecret run` created, so one wrapper covers the whole run:
 
 ```bash
 xecret run --environment test -- go test ./...
@@ -124,15 +124,15 @@ business holding a write credential. Full recipes: [secrets in CI](ci.md).
 A compiled Go binary usually runs in a container or under systemd, taking its
 environment from the platform. Two options:
 
-- **The platform supplies the environment** — the usual arrangement. Sync it
+- **The platform supplies the environment**: the usual arrangement. Sync it
   from xecret at deploy time.
-- **The container fetches its own** — `xecret run -- /app/server` as the
+- **The container fetches its own**: `xecret run -- /app/server` as the
   entrypoint, with a service token in the container's environment. Simpler to
   keep in sync, at the cost of the process needing network access to xecret at
   start-up. [Docker](docker.md) covers both.
 
 ## Next
 
-- [Docker](docker.md) — shipping the binary.
-- [Secrets in CI](ci.md) — service tokens end to end.
-- [Node.js](nodejs.md) — the same patterns in another runtime.
+- [Docker](docker.md): shipping the binary.
+- [Secrets in CI](ci.md): service tokens end to end.
+- [Node.js](nodejs.md): the same patterns in another runtime.

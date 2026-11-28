@@ -183,8 +183,8 @@ export function AdminsTab() {
           </TableContainer>
           {onlyOne ? (
             <p className="text-fg-subtle text-sm">
-              The only admin cannot be removed — somebody must always be able to reach this page.
-              Add another first.
+              The only admin cannot be removed, because somebody must always be able to reach this
+              page. Add another first.
             </p>
           ) : null}
         </>
@@ -399,7 +399,7 @@ export function AddAdminForm({
         <DialogTitle>Add an admin</DialogTitle>
         <DialogDescription>
           An admin can give any organisation a free plan, issue and revoke promo codes, and add and
-          remove admins — you included. Every admin is emailed when this list changes.
+          remove admins, you included. Every admin is emailed when this list changes.
         </DialogDescription>
       </DialogHeader>
       <DialogBody className="flex flex-col gap-4">

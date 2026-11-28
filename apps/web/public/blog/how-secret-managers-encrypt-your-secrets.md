@@ -15,7 +15,7 @@ is encrypted. The interesting question is who holds the key, and every product
 answers that in one of three ways.
 
 This article explains all three, explains envelope encryption properly, and ends
-with the questions worth putting to any vendor — including us, since we say
+with the questions worth putting to any vendor, including us, since we say
 plainly below which of the three xecret is.
 
 ## Three models, and only three
@@ -40,12 +40,12 @@ password.
 
 ### (b) End-to-end, or zero-knowledge
 
-The key is derived on the client — from your password, or a key file — and never
+The key is derived on the client (from your password, or a key file) and never
 leaves it. The server receives ciphertext and metadata and can do nothing with
 either. Sharing is a key exchange: the data key gets re-wrapped under each
 recipient's public key by a client that already holds it.
 
-Answer to the test: **no** — assuming the client is the client you think it is.
+Answer to the test: **no**, assuming the client is the client you think it is.
 That caveat is not rhetorical. A zero-knowledge product delivered as a web
 application ships new code to your browser on every load, and whoever controls
 that code is the party you were trying not to trust. Native clients with
@@ -53,7 +53,7 @@ reproducible builds narrow the gap; nothing closes it.
 
 ### (c) Bring your own key
 
-You supply the root key — usually one in your own cloud KMS account — and the
+You supply the root key (usually one in your own cloud KMS account) and the
 provider calls your account to wrap and unwrap. Marketed as the best of both,
 sometimes truthfully.
 
@@ -72,7 +72,7 @@ understanding, because it explains what a key rotation costs.
 
 The naive design encrypts every secret directly under one key, and fails on two
 things. **Rotation**: retiring that key means re-encrypting every value you have
-ever stored, as one migration, while the system serves traffic — so nobody
+ever stored, as one migration, while the system serves traffic, so nobody
 rotates. **Exposure**: the key must be reachable by every code path that reads a
 value, so it is in memory in many places, each of them a way to lose it.
 
@@ -91,7 +91,7 @@ Secret value   in the database, as ciphertext
 A read walks down that chain and back:
 
 ```ts
-// A sketch of the read path — the shape, not anybody's source.
+// A sketch of the read path: the shape, not anybody's source.
 const wrapped = await db.dataKeyFor(environmentId); // ciphertext, from the database
 const dataKey = await rootKey.unwrap(wrapped); // the only use of the root key
 const plaintext = await aesGcm.decrypt(dataKey, row.ciphertext, {
@@ -101,8 +101,8 @@ const plaintext = await aesGcm.decrypt(dataKey, row.ciphertext, {
 });
 ```
 
-Now count the work in a root key rotation: one re-wrap per data key — the number
-of environments — rather than one re-encryption per stored value. A hundred
+Now count the work in a root key rotation: one re-wrap per data key (the number
+of environments) rather than one re-encryption per stored value. A hundred
 environments and forty thousand secret versions means touching a hundred small
 blobs. That is a maintenance task rather than a migration project, and a cheap
 rotation is one that actually happens.
@@ -124,7 +124,7 @@ happen on their devices.
 ## What an audit log adds that encryption does not
 
 Encryption answers one question: what does an attacker get from a stolen
-database? It says nothing about a legitimate credential used illegitimately — a
+database? It says nothing about a legitimate credential used illegitimately: a
 stolen CLI token, a leaked CI token, somebody reading values they have no
 business reading. In each case the value is decrypted correctly, because it was
 asked for correctly.
@@ -135,7 +135,7 @@ The control for that is a log the writer cannot edit:
   credentials can delete a row, so can an attacker holding them.
 - **One row per read**, so a row always means somebody obtained a value. In
   model (b) the server never sees the decryption, so it records the moment it
-  handed ciphertext to somebody holding the key — which comes to the same thing.
+  handed ciphertext to somebody holding the key, which comes to the same thing.
 - **Denials recorded too.** Successes alone cannot show an attack in progress,
   which usually looks like refusals just before one.
 - **Precise attribution.** A CI write recorded under the name of whoever minted
@@ -159,14 +159,14 @@ you gain makes capabilities teams use daily much harder to build.
 | A root key leak yields | Everything | Nothing; the key is not there | Everything it can reach |
 | Adding a team member | A server-side grant | A key re-wrap per member, needing their public key | A server-side grant |
 | Browser `.env` import | Straightforward | Client-only, and the client is the browser | Straightforward |
-| A read-only CI token | Straightforward | Harder — the runner needs a key, so the token must carry one | Straightforward |
+| A read-only CI token | Straightforward | Harder: the runner needs a key, so the token must carry one | Straightforward |
 | You forget your password | Recoverable | Data loss, absent a recovery code | Recoverable |
 | Server-side validation or search | Possible | Impossible on values | Possible |
 | Who you must trust | The provider and their infrastructure | The client build and its update channel | The provider, plus your key custody |
 
 The CI row decides the market. A build runner is unattended by definition, so
-something must hand it a key. The careless answer is an exception for CI — the
-server decrypts for the runner — and the exception is where the guarantee stops
+something must hand it a key. The careless answer is an exception for CI (the
+server decrypts for the runner), and the exception is where the guarantee stops
 applying. The careful one gives each CI token a key pair of its own, scoped to
 one environment, so the runner decrypts and the server still cannot. The key
 then lives in CI, [the softest target you own](/blog/secrets-in-ci-pipelines),
@@ -178,7 +178,7 @@ a threat model rather than from which security page sounded better.
 ## xecret is model (b), and here is how
 
 **xecret cannot read your secrets.** Secret values and notes are encrypted on
-your device — in the browser, or by the CLI — before they are sent. The design
+your device (in the browser, or by the CLI) before they are sent. The design
 is the envelope above with its top moved to the client:
 
 ```text
@@ -200,7 +200,7 @@ there. Adding a colleague means a teammate's browser seals the environment's key
 to their public key. A CI service token carries its own private key inside the
 token string, so the runner decrypts and our servers only ever hand it
 ciphertext. And forgetting your passphrase is survivable with one of five
-recovery codes or a passkey — but not without them, because a way for us to
+recovery codes or a passkey, but not without them, because a way for us to
 recover your data would be a way for us to read it.
 
 What we can still see is the metadata: secret names, project and environment
@@ -208,7 +208,7 @@ names, members, and an audit log of every read and every denial, in a table the
 application's own credentials cannot alter. Names stay in the clear so listing
 and search can happen on the server.
 
-> **Important** — Model (b)'s caveat applies to us too. The dashboard is
+> **Important**: Model (b)'s caveat applies to us too. The dashboard is
 > JavaScript we serve, and a server willing to send a poisoned page to one
 > person could capture what they decrypt in it. The CLI is the client you can
 > verify: Go, MIT-licensed, signed releases, buildable from source. That, and
@@ -222,7 +222,7 @@ matters as much as the answers themselves.
 
 1. **Who holds the root key, and where does it live?** "Our KMS" and "your KMS"
    are different products.
-2. **Where does decryption happen — on a machine you operate, or on mine?**
+2. **Where does decryption happen: on a machine you operate, or on mine?**
 3. **Can one of your employees produce plaintext, and is that logged where I can
    see it?**
 4. **What is written when a value is decrypted, and how long is it kept?**
@@ -242,9 +242,9 @@ your answer. A security model that exists only in a sales call is not one.
 
 Its own section, so you can skip it. xecret is open-source secret management
 that replaces the `.env` file: values stored once per environment, injected by
-`xecret run`, with an append-only audit log of every read. It is model (b) —
-end-to-end encrypted, with keys held on your devices, so we cannot decrypt —
-and its limits are in our own documentation rather than buried in an FAQ.
+`xecret run`, with an append-only audit log of every read. It is model (b):
+end-to-end encrypted, with keys held on your devices, so we cannot decrypt.
+Its limits are in our own documentation rather than buried in an FAQ.
 AGPL-3.0 server, MIT CLI, byte-level crypto spec and threat model in the
 repository. If the questions above
 lead you elsewhere, that is a good outcome; the

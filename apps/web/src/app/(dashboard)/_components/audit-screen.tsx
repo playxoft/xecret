@@ -331,7 +331,7 @@ export function AuditScreen({ orgId }: { orgId: string }) {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Audit log"
-        description="Every mutation, every decryption, and every denial — with who, when, from where, and the outcome."
+        description="Every mutation, every decryption, and every denial, with who, when, from where, and the outcome."
       />
 
       {forbidden ? (
@@ -384,7 +384,7 @@ export function AuditScreen({ orgId }: { orgId: string }) {
 
           {window !== null ? (
             <p role="status" className="text-fg-subtle text-sm">
-              Showing {formatAbsoluteTime(window.from)} — {formatAbsoluteTime(window.to)}. Queries
+              Showing {formatAbsoluteTime(window.from)} to {formatAbsoluteTime(window.to)}. Queries
               cover at most 90 days at a time.
             </p>
           ) : null}
@@ -432,7 +432,9 @@ export function AuditScreen({ orgId }: { orgId: string }) {
                           </time>
                         </TableCell>
                         <TableCell>
-                          <p className="text-fg truncate text-sm">{event.actorLabel ?? '—'}</p>
+                          <p className="text-fg truncate text-sm">
+                            {event.actorLabel ?? 'Unknown'}
+                          </p>
                           {event.ipAddress !== null ? (
                             <p className="text-fg-subtle font-mono text-sm">{event.ipAddress}</p>
                           ) : null}
@@ -470,7 +472,7 @@ export function AuditScreen({ orgId }: { orgId: string }) {
                     // a screen away from the gap it is about.
                     <>
                       <p role="status" className="text-danger-text text-sm">
-                        Couldn’t load more — {errorMessage(pageProblem)}
+                        Couldn’t load more: {errorMessage(pageProblem)}
                       </p>
                       <Button variant="secondary" onClick={loadMore}>
                         Retry
@@ -777,7 +779,7 @@ export function describeEvent(event: AuditEvent): string {
     const why = CONFIRMATION_WORDS[m['confirmation']];
     if (why !== undefined) {
       parts.push(
-        event.action === 'auth.sign_in_declined' ? `declined — ${why}` : `confirmed — ${why}`,
+        event.action === 'auth.sign_in_declined' ? `declined: ${why}` : `confirmed: ${why}`,
       );
     }
   }

@@ -105,7 +105,7 @@ describe('RolesCard', () => {
     expect(button).toContain('aria-disabled="true"');
     expect(button).not.toMatch(/\sdisabled=""/);
     expect(button).toContain('unavailable while 2 members hold it');
-    expect(button).toContain('move its members to another role, or to none, first');
+    expect(button).toContain('Move its members to another role, or to none, first');
   });
 
   it('gives way to a sentence at the role ceiling, instead of a New role that would fail', () => {

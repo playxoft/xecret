@@ -475,7 +475,7 @@ export const errors = {
       'conflict',
       'Single sign-on can only be changed from a deployment in the WorkOS environment this ' +
         'database records (workos_home), and this deployment uses a different WorkOS ' +
-        'environment — so nothing was changed. On a self-hosted deployment, an operator records ' +
+        'environment, so nothing was changed. On a self-hosted deployment, an operator records ' +
         'its own WORKOS_CLIENT_ID there once, as the database owner: ' +
         "UPDATE workos_home SET client_id = '<WORKOS_CLIENT_ID>' (the “WorkOS environment” " +
         'step in docs/self-hosting.md). Otherwise, make this change from the deployment that ' +
@@ -515,7 +515,7 @@ export const errors = {
   billingAlreadySubscribed: (): ApiError =>
     new ApiError(
       'conflict',
-      'This organisation already has a subscription. Change its plan instead — starting a second ' +
+      'This organisation already has a subscription. Change its plan instead. Starting a second ' +
         'one would charge twice. Nothing was charged.',
       { logDetail: 'checkout with a live subscription' },
     ),
@@ -549,7 +549,7 @@ export const errors = {
     new ApiError(
       'conflict',
       'A payment for this organisation went through and its plan is still being applied. Give ' +
-        'it a minute and reload — starting another checkout now would charge twice. Nothing was ' +
+        'it a minute and reload. Starting another checkout now would charge twice. Nothing was ' +
         'charged.',
       { logDetail: 'linked subscription not yet active' },
     ),
@@ -582,8 +582,8 @@ export const errors = {
   billingRequestInFlight: (): ApiError =>
     new ApiError(
       'conflict',
-      'That request is already being handled. Wait a moment and reload the billing page — ' +
-        'nothing will be charged twice.',
+      'That request is already being handled. Wait a moment and reload the billing page. ' +
+        'Nothing will be charged twice.',
       { logDetail: 'idempotency key in flight' },
     ),
 
@@ -616,10 +616,10 @@ export const errors = {
       'unavailable',
       what === 'checkout'
         ? 'Our payment provider did not answer in time, so this checkout may or may not have ' +
-            'been created. A checkout charges only once it is completed — reload the billing ' +
+            'been created. A checkout charges only once it is completed. Reload the billing ' +
             'page in a minute and choose the plan again.'
         : 'Our payment provider did not answer in time, so this plan change may have gone ' +
-            'through — and, for a move up, been charged. Reload the billing page in a few ' +
+            'through (and, for a move up, been charged). Reload the billing page in a few ' +
             'minutes before asking again: a change that went through shows there.',
       { logDetail },
     ),
@@ -739,7 +739,7 @@ export const errors = {
     new ApiError(
       'conflict',
       'This organisation pays through Dodo. To give it a free plan anyway, choose to take it off ' +
-        'its Dodo subscription — which keeps billing at Dodo until you cancel it there.',
+        'its Dodo subscription, which keeps billing at Dodo until you cancel it there.',
     ),
 
   /** A promo code that is already taken — revoked ones included, for ever. */

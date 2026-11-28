@@ -86,7 +86,7 @@ function AdminTabs() {
       <PageHeader
         title="Admin"
         badge={<Badge tone="warning">xecret staff only</Badge>}
-        description="The service at a glance, every organisation and account, free plans, promo codes, and who the admins are. Of what customers keep here you see counts only — never what a project, environment or secret is called. Every change to an organisation made here goes in the affected organisation’s audit log as xecret support, with the reason you give, where its owners can read it; looking leaves no trace there. Your own address is not shown to them."
+        description="The service at a glance, every organisation and account, free plans, promo codes, and who the admins are. Of what customers keep here you see counts only, never what a project, environment or secret is called. Every change to an organisation made here goes in the affected organisation’s audit log as xecret support, with the reason you give, where its owners can read it; looking leaves no trace there. Your own address is not shown to them."
       />
 
       <Tabs value={tab} onValueChange={choose}>

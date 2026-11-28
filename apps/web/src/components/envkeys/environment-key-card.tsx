@@ -70,7 +70,7 @@ export function EnvironmentKeyCard({
         <CardTitle>Encryption key</CardTitle>
         <CardDescription>
           The key this environment&apos;s values are encrypted under. It exists only in the browsers
-          of the people who hold a grant on it — never on the server.
+          of the people who hold a grant on it, never on the server.
         </CardDescription>
       </CardHeader>
 
@@ -98,7 +98,7 @@ export function EnvironmentKeyCard({
               <div>
                 <dt className="text-fg-subtle text-sm">Key version</dt>
                 <dd className="text-fg font-mono text-sm">
-                  {keys.state.keys.activeEdk?.version ?? '—'}
+                  {keys.state.keys.activeEdk?.version ?? 'None'}
                 </dd>
               </div>
               <div>

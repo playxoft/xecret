@@ -75,7 +75,7 @@ const BYTE_UNITS = ['B', 'KB', 'MB'] as const;
  * and practically confusing.
  */
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
   let value = bytes;
   let unit = 0;
   while (value >= 1024 && unit < BYTE_UNITS.length - 1) {

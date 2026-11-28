@@ -49,7 +49,7 @@ export type VaultSetupStep = (typeof VAULT_SETUP_STEPS)[number];
  * was not told.
  */
 export const CONSENT_STATEMENT =
-  'If I lose my passphrase and my recovery codes, my secrets are unrecoverable — no one can help, including xecret.';
+  'If I lose my passphrase and my recovery codes, my secrets are unrecoverable: no one can help, including xecret.';
 
 /** Everything the gates below read. Held by the ceremony component as state. */
 export interface VaultSetupState {

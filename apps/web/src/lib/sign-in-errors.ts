@@ -89,7 +89,7 @@ export const SIGN_IN_FORM_MESSAGES = {
     'That email and password don’t match. Try again, or reset your password if you’ve forgotten it.',
   'wrong-code': 'That code isn’t right, or it has expired. Check the email, or send a new code.',
   'weak-password':
-    'That password is too easy to guess. Choose a longer one — a few unrelated words work well.',
+    'That password is too easy to guess. Choose a longer one. A few unrelated words work well.',
   'reset-link-invalid':
     'That reset link has expired or has already been used. Ask for a new one below.',
 } as const;

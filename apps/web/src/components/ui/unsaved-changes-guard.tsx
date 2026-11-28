@@ -298,8 +298,8 @@ export function UnsavedChangesGuard({
       title="You have unsaved changes"
       description={
         writing
-          ? `${description} Some of them are being written right now — leaving does not stop the rest, and you will not see how it ended.`
-          : `${description} Leaving this page now throws them away — nothing has been written yet.`
+          ? `${description} Some of them are being written right now. Leaving does not stop the rest, and you will not see how it ended.`
+          : `${description} Leaving this page now throws them away. Nothing has been written yet.`
       }
       confirmLabel="Leave and lose them"
       cancelLabel="Stay on this page"

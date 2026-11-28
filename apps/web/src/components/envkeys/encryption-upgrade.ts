@@ -225,7 +225,7 @@ const UPGRADE_REFUSALS: Record<
     'nothing was changed. Reload the page and try again.',
   'verification-failed': (names) =>
     `Re-encrypting ${names.length > 0 ? names.join(', ') : 'this environment'} did not check out ` +
-    'in this browser — a value would not have opened again. Nothing was sent and nothing was ' +
+    'in this browser: a value would not have opened again. Nothing was sent and nothing was ' +
     'changed. Reload and try again; if it happens twice, contact support.',
   'upgraded-elsewhere': () =>
     'This environment was upgraded to end-to-end encryption by another request while this one ' +

@@ -59,7 +59,7 @@ trap 'rm -rf "$workdir"' EXIT
 
 say "downloading $PROJECT $version for $os/$arch…"
 curl -fsSL -o "$workdir/$archive" "$base/$archive" \
-  || fail "download failed — does $version have a $os/$arch build?"
+  || fail "download failed. Does $version have a $os/$arch build?"
 curl -fsSL -o "$workdir/checksums.txt" "$base/checksums.txt" \
   || fail "checksums.txt is missing from the release"
 
@@ -75,7 +75,7 @@ say "verifying checksum…"
   else
     actual=$(shasum -a 256 "$archive" | awk '{print $1}')
   fi
-  [ "$expected" = "$actual" ] || fail "checksum mismatch — refusing to install"
+  [ "$expected" = "$actual" ] || fail "checksum mismatch, refusing to install"
 )
 
 tar -xzf "$workdir/$archive" -C "$workdir" "$PROJECT"
@@ -95,7 +95,7 @@ say "installed $install_dir/$PROJECT"
 
 case ":$PATH:" in
   *":$install_dir:"*) ;;
-  *) say "note: $install_dir is not on your PATH — add it to your shell profile" ;;
+  *) say "note: $install_dir is not on your PATH. Add it to your shell profile" ;;
 esac
 
 "$install_dir/$PROJECT" version >&2 || true

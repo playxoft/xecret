@@ -205,7 +205,7 @@ export function EncryptionUpgradePanel({
     >
       <p>
         It was created before end-to-end encryption, so its values are encrypted under a key
-        xecret&apos;s servers can unwrap — we could read them.{' '}
+        xecret&apos;s servers can unwrap: we could read them.{' '}
         {canManage
           ? 'Upgrade it in place: its values, notes and history are re-encrypted in this browser under a new key the server never sees, and it keeps its name, its access and its settings.'
           : 'An owner or an admin of this environment can upgrade it to end-to-end encryption in place.'}
@@ -236,7 +236,7 @@ export function EncryptionUpgradePanel({
             <span className="text-fg-subtle text-sm">{blockedReason}</span>
           ) : automatic === 'failed' ? (
             <span className="text-fg-subtle text-sm">
-              The automatic upgrade did not finish. Nothing changed — upgrade it from here.
+              The automatic upgrade did not finish. Nothing changed. Upgrade it from here.
             </span>
           ) : automatic === 'unconfirmed' ? (
             <span className="text-fg-subtle text-sm">
@@ -275,7 +275,7 @@ function blockerSentence(
   if (reasons.includes('not-permitted') || reasons.includes('not-a-person')) {
     return 'Upgrading it takes an admin of this environment.';
   }
-  if (reasons.includes('no-vault')) return 'Set up your vault first — the new key is sealed to it.';
+  if (reasons.includes('no-vault')) return 'Set up your vault first. The new key is sealed to it.';
   if (reasons.includes('token-revoke')) {
     return `It has ${pluralize(details?.keylessTokens.length ?? 0, 'CI token')} that the upgrade revokes, and only an owner or an admin can revoke tokens.`;
   }
@@ -396,9 +396,9 @@ function EncryptionUpgradeDialog({
         <DialogBody className="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
           <ul className="text-fg flex list-disc flex-col gap-1.5 pl-5 text-sm">
             <li>
-              {pluralize(details.liveSecretCount, 'secret')} —{' '}
+              {pluralize(details.liveSecretCount, 'secret')} (
               {pluralize(details.versionCount, 'version')} of history and{' '}
-              {pluralize(details.noteCount, 'note')} — re-encrypted and checked in this browser.
+              {pluralize(details.noteCount, 'note')}), re-encrypted and checked in this browser.
               Names, access, policies and settings stay as they are.
             </li>
             <li>

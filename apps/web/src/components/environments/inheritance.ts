@@ -148,7 +148,7 @@ export function parentOptions(
         return { ...base, unavailable: 'Not end-to-end encrypted' };
       }
       if (below.has(environment.slug)) {
-        return { ...base, unavailable: 'Inherits from this environment — that would be a loop' };
+        return { ...base, unavailable: 'Inherits from this environment, so that would be a loop' };
       }
 
       // `self` would sit one below the candidate, and the deepest environment

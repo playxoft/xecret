@@ -104,7 +104,7 @@ export function PendingSharesBanner({
       <p>
         {pendingCount === 1 ? 'Somebody has' : 'People have'} been given access to this environment
         but {pendingCount === 1 ? 'has' : 'have'} no copy of its key yet. You hold it, so you can
-        hand it over — nothing is decrypted on the server, so somebody who holds the key has to.
+        hand it over. Nothing is decrypted on the server, so somebody who holds the key has to.
       </p>
       {problem !== null ? <p className="text-danger-text mt-2">{problem}</p> : null}
       <div className="mt-2">

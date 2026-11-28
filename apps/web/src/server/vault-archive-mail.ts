@@ -61,7 +61,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
     'not. Save the attachment somewhere private, then delete this email.',
     '',
     "The attachment opens only with the old vault's master passphrase or one of",
-    'its unused recovery codes. Nobody else can open it — not xecret.',
+    'its unused recovery codes. Nobody else can open it, not even xecret.',
     ...(params.parts > 1
       ? [
           '',
@@ -82,7 +82,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
     '',
     'If you did not ask for this, sign in and secure your account now.',
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -105,7 +105,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
       </div>
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
         The attachment opens only with the old vault’s master passphrase or one of its unused
-        recovery codes. Nobody else can open it — not xecret.
+        recovery codes. Nobody else can open it, not even xecret.
       </p>
       ${
         params.parts > 1
@@ -171,7 +171,7 @@ export function vaultResetNoticeMail(params: ResetNoticeParams): MailMessage {
     '',
     'If you did not ask for this, sign in and secure your account now.',
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
 
   const html = `<!doctype html>

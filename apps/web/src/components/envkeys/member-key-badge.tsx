@@ -19,7 +19,7 @@ import { fingerprint, pinKey, readPins } from './pins';
  * deliberately shared or rotated a key — so reading it out loud tests something.
  *
  * A member with no pin is the ordinary case, not a warning: it means this
- * browser has never sealed anything to them. Rendering a dash rather than a
+ * browser has never sealed anything to them. Rendering quiet text rather than a
  * badge keeps the members table from filling up with yellow on the day this
  * ships.
  */
@@ -57,7 +57,7 @@ export function MemberKeyBadge({ userId }: { userId: string }) {
   if (state === null) {
     return (
       <Tooltip content="You have not shared an environment key with this person from this browser, so there is no key recorded to compare.">
-        <span className="text-fg-subtle text-sm">—</span>
+        <span className="text-fg-subtle text-sm">Not recorded</span>
       </Tooltip>
     );
   }

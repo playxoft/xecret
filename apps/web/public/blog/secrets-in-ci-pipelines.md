@@ -21,7 +21,7 @@ Three properties make a build runner a worse place to keep a secret than a
 laptop, and they are all properties you deliberately chose.
 
 **It holds production credentials by design.** A deploy job cannot deploy
-without them. There is no configuration that removes this — the whole point of
+without them. There is no configuration that removes this: the whole point of
 the job is to act with authority in production, unattended, at three in the
 morning if the schedule says so.
 
@@ -50,8 +50,8 @@ permissions against the *head* repository's code. On GitHub Actions that is
 usually introduced so that a workflow can label or comment on a fork's PR.
 
 The moment a workflow using that trigger checks out
-`github.event.pull_request.head.sha` and runs anything from it — a build, a
-test, a lint step that loads a config file — a stranger's code is executing with
+`github.event.pull_request.head.sha` and runs anything from it (a build, a
+test, a lint step that loads a config file), a stranger's code is executing with
 your secrets in scope. It does not need to print them. It can post them
 somewhere.
 
@@ -83,7 +83,7 @@ The action runs inside your job. It sees your job's environment.
 
 Caching is aggressive by design. If a step writes an env file into the
 workspace and a later step caches a directory that contains it, the plaintext
-is now a tarball on shared storage — restorable by later jobs, and depending on
+is now a tarball on shared storage, restorable by later jobs, and depending on
 your provider's scoping rules, by jobs on other branches.
 
 The same applies to build artefacts, to Docker layers created by `COPY . .`,
@@ -109,7 +109,7 @@ known date. A credential scoped to one project and one environment turns
 "what did the attacker get?" from a research project into a lookup.
 
 Wherever a provider supports it, prefer a token minted per job over a long-lived
-key stored in the CI secret store — OIDC federation with a cloud provider is the
+key stored in the CI secret store. OIDC federation with a cloud provider is the
 common case. Where you must store something, store the narrowest thing that
 works.
 
@@ -125,7 +125,7 @@ does not write secrets back. Give a build job read access to one environment and
 nothing else, and make `write` the exception you can justify per pipeline.
 
 Then check that production is not reachable by a pipeline that has no business
-in production — a staging build with a production token is the same accident as
+in production: a staging build with a production token is the same accident as
 a staging deploy against the production database.
 
 ### Masking is a safety net, never a control
@@ -137,7 +137,7 @@ loses in all the ordinary cases:
 - the value base64-encoded by a tool that logs its own input;
 - the value split across a line boundary by a wrapping log formatter;
 - the value inside a JSON blob with escaped quotes;
-- the value transformed — a password URL-encoded into a connection string;
+- the value transformed (a password URL-encoded into a connection string);
 - the value written to an artefact instead of a log.
 
 Masking catches the accident you already prevented. It does not prevent
@@ -146,10 +146,10 @@ anything.
 ### Pin actions by commit SHA
 
 ```yaml
-# ✗ mutable — the tag can be repointed at any commit, at any time
+# ✗ mutable: the tag can be repointed at any commit, at any time
 - uses: some-org/setup-thing@v3
 
-# ✓ immutable — pin the commit; keep the human-readable version in a comment
+# ✓ immutable: pin the commit; keep the human-readable version in a comment
 - uses: some-org/setup-thing@9f2c1b4e7a3d5c8f0b6e2a1d4c7f9b3e5a8d0c26 # v3.4.1
 ```
 
@@ -188,7 +188,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@<commit-sha> # v4 — pinned, see above
+      - uses: actions/checkout@<commit-sha> # v4 (pinned, see above)
 
       - uses: playxoft/xecret@<commit-sha> # v1
 
@@ -212,10 +212,10 @@ jobs:
 
 The token is deliberately set in `env:` on the step that needs it rather than at
 workflow level. It exists where it is used, and nowhere else in the workflow
-context. Provider-by-provider recipes — GitLab, CircleCI, plain runners,
-containers — are in [secrets in CI](/docs/guides/ci).
+context. Provider-by-provider recipes (GitLab, CircleCI, plain runners,
+containers) are in [secrets in CI](/docs/guides/ci).
 
-> **Warning** — Writing secrets to a file in the workspace undoes all of this.
+> **Warning**: Writing secrets to a file in the workspace undoes all of this.
 > `xecret pull --format env > .env` exists for pipelines that genuinely cannot
 > be changed, warns every time it runs, and puts plaintext somewhere caches and
 > artefacts will find it. Prefer `xecret run`.
@@ -241,7 +241,7 @@ how a leaked token stays live for another day while somebody drafts an email.
 A xecret service token is pinned at creation to one organisation, one project
 and one environment, is read-only unless you say otherwise, can never delete a
 secret, and appears in the [audit log](/docs/security/audit-log) under its own
-name — so "what did it read, and when?" is a filter rather than an
+name, so "what did it read, and when?" is a filter rather than an
 investigation. Revocation takes effect on the next request; the CLI's offline
 cache never softens it, because a rejection is a decision. The scoping rules and
 the leak runbook are in [tokens and credentials](/docs/api/tokens).
@@ -254,7 +254,7 @@ environment, and `xecret run` injects them into whatever your pipeline was going
 to run anyway. In CI that means a service token in your provider's secret store,
 no login step, no config file, no plaintext on the runner's disk, and one audit
 row per read. The token carries its own key, so the values are decrypted on the
-runner — our servers only ever hold ciphertext. The server is AGPL-3.0 if you
+runner. Our servers only ever hold ciphertext. The server is AGPL-3.0 if you
 would rather run it yourself. If you take nothing else from this article, take the
-SHA pins and the second token — both are free, and both are worth having before
+SHA pins and the second token. Both are free, and both are worth having before
 you need them.

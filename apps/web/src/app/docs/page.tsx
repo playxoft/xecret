@@ -46,7 +46,7 @@ const START_HERE = [
   {
     href: '/docs/concepts',
     title: 'Core concepts',
-    body: 'Organisations, projects, environments, secrets and versions — the five words the rest of the documentation assumes.',
+    body: 'Organisations, projects, environments, secrets and versions: the five words the rest of the documentation assumes.',
     Icon: BookIcon,
   },
   {
@@ -117,9 +117,8 @@ export default async function DocsHomePage() {
         </h1>
         <p className="text-fg-muted mt-4 text-base leading-7">
           xecret stores your environment variables once, encrypted per environment, and injects them
-          into whatever you are running — your laptop, your CI job, your container. These pages
-          cover all of it, from the first command to running the whole thing on your own
-          infrastructure.
+          into whatever you are running: your laptop, your CI job, your container. These pages cover
+          all of it, from the first command to running the whole thing on your own infrastructure.
         </p>
         {/* Inline links carry a standing underline, not a hover one. Inside a
             `text-fg-muted` paragraph the only other thing marking them is the
@@ -141,7 +140,7 @@ export default async function DocsHomePage() {
           >
             what xecret is
           </Link>{' '}
-          first — it assumes nothing.
+          first. It assumes nothing.
         </p>
 
         <div className="mt-7 flex flex-wrap gap-3">
@@ -239,7 +238,7 @@ export default async function DocsHomePage() {
         <p className="text-fg-muted mt-3 text-sm leading-7">
           Every page is published twice: as the HTML you are reading, and as the markdown it was
           written in. Append <code className="font-mono">.md</code> to any documentation URL to get
-          the source — <code className="font-mono">/docs/cli/commands.md</code>, for instance. There
+          the source: <code className="font-mono">/docs/cli/commands.md</code>, for instance. There
           is an index at{' '}
           <Link
             href="/llms.txt"

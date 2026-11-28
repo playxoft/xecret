@@ -180,7 +180,7 @@ export function keyProviderFromEnv(env: {
 }): InMemoryKeyProvider {
   if (!env.XECRET_ROOT_KEYS) {
     throw new InvalidRootKeyMaterialError(
-      'XECRET_ROOT_KEYS is not set. Secrets come from Phase.dev — try: phase run -- <command>',
+      'XECRET_ROOT_KEYS is not set. Secrets come from Phase.dev. Try: phase run -- <command>',
     );
   }
 

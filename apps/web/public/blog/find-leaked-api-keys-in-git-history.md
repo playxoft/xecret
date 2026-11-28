@@ -18,7 +18,7 @@ that.
 
 More importantly, none of this has anything to do with whether the credential
 still works. A string in a repository is a copy. The original lives at your
-cloud provider, your payment processor, your database — and it is still
+cloud provider, your payment processor, your database, and it is still
 accepting requests.
 
 ## What a key in history actually means
@@ -40,7 +40,7 @@ authenticated with it. That distinction drives the runbook below.
 
 ## Finding it: three passes, cheapest first
 
-### Pass 1 — what is tracked right now
+### Pass 1: what is tracked right now
 
 Before history, check the present. This takes five seconds and finds the
 majority of real cases:
@@ -49,11 +49,11 @@ majority of real cases:
 # Files that look like credentials and are currently tracked
 git ls-files | grep -E '(^|/)\.env($|\.)|\.pem$|\.p12$|service-account.*\.json$'
 
-# Env files that were tracked once and later deleted — the classic case
+# Env files that were tracked once and later deleted: the classic case
 git log --all --diff-filter=D --name-only -- '.env*' '*.pem' | sort -u
 ```
 
-### Pass 2 — git's own history search
+### Pass 2: git's own history search
 
 `git log -S` is the pickaxe: it finds commits where the *number of occurrences*
 of a string changed, which means it finds the commit that introduced a value
@@ -72,7 +72,7 @@ git rev-list --all | xargs -n 40 git grep -I -n -E 'AKIA[0-9A-Z]{16}' -- | head
 
 That last one is the blunt instrument: it greps the tree of every commit
 reachable from any ref. Slow on a large repository, and blind to unreachable
-blobs — a commit that was rebased away, for instance — but it answers "where
+blobs (a commit that was rebased away, for instance), but it answers "where
 has this string ever lived" more completely than `-S` does.
 
 Search for the shapes credentials have, not for the word `secret`. Provider
@@ -80,14 +80,14 @@ prefixes are the highest-signal thing you have: `sk_live_`, `AKIA`, `ghp_`,
 `xoxb-`, `AIza`, `-----BEGIN` for private keys, and `postgres://` or
 `mongodb+srv://` for connection strings carrying their own password.
 
-### Pass 3 — the scanners
+### Pass 3: the scanners
 
 Two open-source tools do this properly, and they are what most teams reach for:
 
-- **gitleaks** — a Go binary with a large rule set of provider-specific
+- **gitleaks** is a Go binary with a large rule set of provider-specific
   patterns, designed to run over a repository's whole history and also as a
   pre-commit hook.
-- **trufflehog** — scans history similarly, and its distinguishing feature is
+- **trufflehog** scans history similarly, and its distinguishing feature is
   *verification*: for many providers it will call the provider's API with the
   candidate credential to see whether it is still live, which turns a list of
   four hundred maybes into a list of three definites.
@@ -100,7 +100,7 @@ gitleaks detect --source . --redact
 trufflehog git file://. --only-verified
 ```
 
-> **Note** — Both projects have reorganised their subcommands between major
+> **Note**: Both projects have reorganised their subcommands between major
 > versions. Run `gitleaks --help` and `trufflehog --help` on the version you
 > actually installed rather than trusting a command copied from a blog post,
 > including this one.
@@ -143,8 +143,8 @@ Rewriting history is worth doing. It is worth doing fourth.
 This is where teams either take an unnecessary outage or leave a live key in
 the wild for three days. The order depends on one judgement, made deliberately.
 
-**If the provider supports two active credentials** — AWS access keys, Stripe
-restricted keys, most OAuth applications, most database users — there is no
+**If the provider supports two active credentials** (AWS access keys, Stripe
+restricted keys, most OAuth applications, most database users), there is no
 reason to take downtime:
 
 1. Mint the new credential. Do not touch the old one yet.
@@ -159,8 +159,8 @@ reason to take downtime:
    nothing.
 
 **If the provider allows only one active credential, or the blast radius is
-severe** — root or admin cloud credentials, a signing key, a database
-superuser, anything that can create more credentials — invert it. Revoke
+severe** (root or admin cloud credentials, a signing key, a database
+superuser, anything that can create more credentials), invert it. Revoke
 first and take the outage. The rule of thumb is simple: revoke first whenever
 the cost of ten more minutes of an attacker's access exceeds the cost of ten
 minutes of downtime. For a read-only analytics key, rotate gracefully. For
@@ -182,9 +182,9 @@ different morning from a leaked key that created an IAM user.
 
 If the repository was public, check whether your host recorded clones or forks
 in the relevant window. If it was private, its audit log tells you who had
-access — a much smaller and much more answerable question.
+access, a much smaller and much more answerable question.
 
-> **Important** — Write down what you found while you are finding it. Provider
+> **Important**: Write down what you found while you are finding it. Provider
 > audit logs have retention limits, and the window you need is always the one
 > that just expired. Export the relevant range before you close the tab.
 
@@ -199,15 +199,15 @@ trace anywhere. The best you get is your git host's access log, which tells
 you who *could* have read it.
 
 For a credential held in a secret manager, the question has an actual answer.
-Every read in xecret writes an append-only audit record naming the actor —
-a person, a CLI token or a CI service token — the environment, and the time. So step two of the runbook stops being archaeology: you filter the
+Every read in xecret writes an append-only audit record naming the actor
+(a person, a CLI token or a CI service token), the environment, and the time. So step two of the runbook stops being archaeology: you filter the
 log by that secret, and you have the list of everyone who ever retrieved it
 and when. Denials are recorded too, because a system that logs only successes
 cannot show you an attack in progress.
 
 That does not prevent the leak. Somebody who can read a secret can still paste
 it somewhere careless. What changes is that the blast-radius question becomes
-a filter rather than a guess, and revocation becomes real — there is no file
+a filter rather than a guess, and revocation becomes real: there is no file
 on a former colleague's disk that keeps working after you revoke their device.
 
 ## Preventing the next one
@@ -215,7 +215,7 @@ on a former colleague's disk that keeps working after you revoke their device.
 Three things, in increasing order of how much they actually help:
 
 1. **A pre-commit hook**, catching the value before it exists in a commit.
-   Cheap, and it fails open — anyone can pass `--no-verify`.
+   Cheap, and it fails open: anyone can pass `--no-verify`.
 2. **A CI scan on every pull request**, so a bypassed hook is visible to
    somebody other than the person who bypassed it.
 3. **Not having the value in a file at all.** A scanner is a smoke detector:
@@ -230,10 +230,10 @@ migration, we wrote it up separately in
 
 Kept to one paragraph. xecret is open-source secret management: values are
 stored per environment and injected by `xecret run -- your-command`, so there
-is no file to commit and every read is audited — see
+is no file to commit and every read is audited. See
 [the quickstart](/docs/quickstart) and the
 [CLI reference](/docs/cli/commands). Values are end-to-end encrypted on your
-own machine before they are sent, so we cannot read them — the
+own machine before they are sent, so we cannot read them. The
 [trust model](/docs/security/trust-model) says exactly what we can see instead,
 and where the guarantee stops.
 [The pricing page](/pricing) says what each plan includes and

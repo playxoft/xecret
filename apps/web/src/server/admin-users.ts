@@ -143,7 +143,7 @@ async function tellAdmins(
 
   const adminPage = `${publicOrigin(services.env)}/app/admin`;
   const closing =
-    'If you did not expect this, check the Admins tab now — an admin added without the others ' +
+    'If you did not expect this, check the Admins tab now. An admin added without the others ' +
     'knowing is how a taken-over account keeps its access.';
   const text = [
     'Hello,',
@@ -154,7 +154,7 @@ async function tellAdmins(
     '',
     `Admins: ${adminPage}`,
     '',
-    '— xecret',
+    'xecret',
   ].join('\n');
   const html = `<!doctype html>
 <html lang="en">

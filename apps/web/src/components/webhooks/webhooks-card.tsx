@@ -108,7 +108,7 @@ export function WebhooksCard({
         <div className="min-w-0 flex-1">
           <CardTitle>Webhooks</CardTitle>
           <CardDescription>
-            Tell your own systems when a secret changes — a deploy bot, a chat channel, an incident
+            Tell your own systems when a secret changes: a deploy bot, a chat channel, an incident
             tool. Each delivery is a signed POST naming what changed and who changed it, and never
             carries a secret’s value.
           </CardDescription>
@@ -319,7 +319,7 @@ function WebhookList({
           open
           onOpenChange={(open) => (open ? undefined : setRotating(null))}
           title={`Rotate the secret for ${rotating.endpointHost}?`}
-          description="A new signing secret is made and the old one stops signing immediately — there is no overlap. Until the receiver has the new one it rejects every delivery, so have it ready to update."
+          description="A new signing secret is made and the old one stops signing immediately. There is no overlap. Until the receiver has the new one it rejects every delivery, so have it ready to update."
           confirmLabel="Rotate secret"
           confirmVariant="primary"
           onConfirm={async () => {
@@ -475,7 +475,7 @@ function WebhookRow({
               </>
             ) : null}
             , so xecret stopped sending to it. Check the delivery log for why, fix the receiver,
-            then switch it back on — its run of failures starts again from nothing.
+            then switch it back on. Its run of failures starts again from nothing.
           </p>
           {!paused ? (
             <Button

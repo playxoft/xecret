@@ -392,7 +392,7 @@ function ProjectMembersPanel({
       <DialogHeader>
         <DialogTitle>Members of {projectName}</DialogTitle>
         <DialogDescription>
-          Access is granted per environment, never per project — “give them the project” quietly
+          Access is granted per environment, never per project. “Give them the project” quietly
           including production is the accident this model exists to prevent. Roles and membership
           itself are managed on the Members page.
         </DialogDescription>

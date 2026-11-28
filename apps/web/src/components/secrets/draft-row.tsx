@@ -236,7 +236,7 @@ export function DraftRow({
 
     const reason = draft.failedIn?.[slug];
     if (reason === undefined) return null;
-    return `Not written to ${name} — ${lowerFirst(reason)} This value is still here.`;
+    return `Not written to ${name}: ${lowerFirst(reason)} This value is still here.`;
   }
 
   // Offered only when the validator can derive a legal name from an illegal
@@ -383,7 +383,7 @@ export function DraftRow({
                   onPointerEnter={() => setNoteTip(true)}
                   onPointerLeave={() => setNoteTip(false)}
                   disabled={disabled}
-                  aria-label={hasNote ? 'Note on this new secret — show it' : 'Add a note'}
+                  aria-label={hasNote ? 'Show the note on this new secret' : 'Add a note'}
                   aria-expanded={describing}
                   className={cn(
                     'flex size-6 shrink-0 cursor-pointer items-center justify-center rounded transition-colors',

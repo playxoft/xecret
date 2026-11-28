@@ -314,7 +314,7 @@ function CreateProjectForm({
         <DialogTitle>New project</DialogTitle>
         <DialogDescription>
           A project holds one set of secrets per environment. It starts with development, staging
-          and production, each end-to-end encrypted under its own key — generated here, in your
+          and production, each end-to-end encrypted under its own key, generated here, in your
           browser, and sealed to you.
         </DialogDescription>
       </DialogHeader>

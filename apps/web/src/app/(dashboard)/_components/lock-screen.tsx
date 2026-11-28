@@ -78,12 +78,12 @@ export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
       // the browser leads with, and on one that has enrolled a PIN it is six
       // boxes. The sentence has to be true of both, and the half that matters —
       // that it is checked here rather than by us — is true of both.
-      description: `Signed in as ${user.email}. It unlocks right here in your browser — xecret never sees what opens it.`,
+      description: `Signed in as ${user.email}. It unlocks right here in your browser, and xecret never sees what opens it.`,
     },
     passphrase: {
       title: 'Unlock with your master passphrase',
       description:
-        'Your passphrase always works, on every browser. It is turned into your key on this device — xecret never sees it.',
+        'Your passphrase always works, on every browser. It is turned into your key on this device, and xecret never sees it.',
     },
     code: {
       title: 'Unlock with a recovery code',

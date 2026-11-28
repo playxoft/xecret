@@ -250,7 +250,7 @@ function CreateEnvironmentForm({
       <DialogHeader>
         <DialogTitle>New environment</DialogTitle>
         <DialogDescription>
-          Each environment holds its own secrets, end-to-end encrypted under its own data key —
+          Each environment holds its own secrets, end-to-end encrypted under its own data key,
           generated here, in your browser, and sealed to you. Share it with your team afterwards
           from the environment itself.
         </DialogDescription>

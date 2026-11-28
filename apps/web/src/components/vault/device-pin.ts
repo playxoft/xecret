@@ -237,7 +237,7 @@ export function pinProblem(pin: string, confirm?: string): string | null {
 }
 
 /** One sentence, and it says what to do rather than what was wrong. */
-const WEAK_PIN = 'That PIN is too easy to guess — pick something less predictable.';
+const WEAK_PIN = 'That PIN is too easy to guess. Pick something less predictable.';
 
 /**
  * Why a PIN is too obvious to enrol, or `null` when it is not.

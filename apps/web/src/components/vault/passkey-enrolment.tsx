@@ -88,7 +88,7 @@ export function PasskeyEnrolment({
   if (availability === 'unsupported') {
     return (
       <Alert tone="info" title="This browser does not support passkeys">
-        Your passphrase is all you need — a passkey only ever adds a second way in, never a
+        Your passphrase is all you need. A passkey only ever adds a second way in, never a
         replacement. You can enrol one later from another browser.
       </Alert>
     );
@@ -182,7 +182,7 @@ export function PasskeyEnrolment({
       <Field
         label="Name this passkey"
         optional
-        hint="Something you will recognise in the list later — “MacBook Touch ID”, “YubiKey on my keys”."
+        hint="Something you will recognise in the list later: “MacBook Touch ID”, “YubiKey on my keys”."
       >
         <Input
           value={label}
@@ -214,8 +214,8 @@ export function PasskeyEnrolment({
 
       <p className="text-fg-subtle text-sm leading-6">
         A passkey stores a second copy of your key, encrypted so that only your authenticator can
-        open it. Your passphrase keeps working either way — it is never replaced, which is why
-        losing a device can never lose you the vault.
+        open it. Your passphrase keeps working either way. It is never replaced, which is why losing
+        a device can never lose you the vault.
       </p>
     </div>
   );

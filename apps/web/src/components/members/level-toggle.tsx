@@ -138,7 +138,7 @@ export function LevelToggle({
             aria-pressed={lit}
             aria-label={
               beyond
-                ? `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel} — more than you can grant here`
+                ? `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel} (more than you can grant here)`
                 : `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`
             }
             title={beyond ? 'More than you can grant here' : undefined}

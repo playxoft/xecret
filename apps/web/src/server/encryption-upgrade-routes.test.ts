@@ -1545,7 +1545,7 @@ describe('what the upgrade refuses, leaving the environment untouched', () => {
         { name: 'deploy-2', projectSlug: 'api', environmentSlug: 'legacy' },
       );
       expect(answer.status).toBe(409);
-      expect(answer.body.error?.message).toMatch(/create it again/);
+      expect(answer.body.error?.message).toMatch(/Create it again/);
     } finally {
       await t.pg.query(`drop trigger lose_a_race on service_tokens`);
       await t.pg.query(`drop function lose_a_race()`);

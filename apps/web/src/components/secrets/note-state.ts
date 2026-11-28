@@ -11,7 +11,7 @@ import type { NoteState, SecretSummary } from './types';
 export const NOTE_STATE_COPY: Readonly<Record<NoteState, string>> = {
   sealed: 'This note is still encrypted. It opens with this environment’s key.',
   unreadable:
-    'This note was sealed under a key this browser does not hold — usually one rotated away since it was written — so it cannot be read here. A new note replaces it.',
+    'This note was sealed under a key this browser does not hold (usually one rotated away since it was written), so it cannot be read here. A new note replaces it.',
 };
 
 /** The short form, for an accessible name and a placeholder. */
@@ -57,4 +57,4 @@ export function stagedNote(
  * reader.
  */
 export const RETIRED_KEY_NOTE_COPY =
-  'Sealed under an earlier version of this environment’s key, from before its last rotation. Anyone who held that key could have written it — check it says what you expect.';
+  'Sealed under an earlier version of this environment’s key, from before its last rotation. Anyone who held that key could have written it. Check it says what you expect.';

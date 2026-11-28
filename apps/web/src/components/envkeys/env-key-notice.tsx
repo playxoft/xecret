@@ -48,7 +48,7 @@ export function EnvKeyUnavailableState({
         title="Waiting for a teammate to share this environment's keys"
         description={
           <>
-            You have access to this environment — the names above are yours to read. Its values are
+            You have access to this environment. The names above are yours to read. Its values are
             encrypted with a key that exists only in the browsers of the people who already hold it,
             so somebody who holds it has to hand you a copy. They see a prompt to do exactly that;
             it usually takes them one click.
@@ -101,7 +101,7 @@ export function EnvKeyUnavailableState({
         <p>
           Your browser has read this environment as end-to-end encrypted before. The server now says
           it uses server-side encryption instead, which would mean sending every value you save in{' '}
-          <strong>plaintext</strong> — so nothing here will be read or written until that is
+          <strong>plaintext</strong>, so nothing here will be read or written until that is
           resolved.
         </p>
         <p className="mt-2">
@@ -119,9 +119,9 @@ export function EnvKeyUnavailableState({
       <Alert tone="danger" title="This environment has no data key">
         <p>
           It is marked end-to-end encrypted but no key was ever recorded for it, which means its
-          creation was interrupted. Nothing can be written to it, and nothing can repair it — the
-          key existed only in the browser that generated it. Create a new environment and delete
-          this one.
+          creation was interrupted. Nothing can be written to it, and nothing can repair it: the key
+          existed only in the browser that generated it. Create a new environment and delete this
+          one.
         </p>
       </Alert>
     );
@@ -151,7 +151,7 @@ export function NeedsRotationBanner({
   return (
     <Alert tone="warning" title="This environment is waiting for a key rotation">
       <p>
-        Somebody&apos;s access was removed or narrowed, and their grant was deleted — but the data
+        Somebody&apos;s access was removed or narrowed, and their grant was deleted, but the data
         key itself has not changed. The copy they already hold still opens anything written from now
         on. Rotating replaces the key and re-shares it with everyone who is still entitled to it.
       </p>

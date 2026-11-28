@@ -435,7 +435,7 @@ function dodoAmount(discount: NonNullable<AdminPromoCodeCreateBody['discount']>)
     {
       field: 'discount.type',
       message:
-        'Fixed-amount codes are not offered yet — checkout picks the currency from the buyer’s ' +
+        'Fixed-amount codes are not offered yet: checkout picks the currency from the buyer’s ' +
         'country, so a fixed amount could take the wrong amount off. Use a percentage.',
     },
   ]);

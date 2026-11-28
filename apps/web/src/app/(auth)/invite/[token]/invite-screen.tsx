@@ -184,7 +184,7 @@ export function InviteScreen({ token }: { token: string }) {
           <h1 className="text-fg text-lg font-semibold">This invitation link is not valid</h1>
           <p className="text-fg-muted text-sm">
             It may have been revoked, already used, or mistyped. Ask whoever invited you to send a
-            new one — invitations can be re-issued in a click.
+            new one. Invitations can be re-issued in a click.
           </p>
         </CardContent>
       </Card>

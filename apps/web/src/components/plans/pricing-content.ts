@@ -246,11 +246,11 @@ export function seatFloorSentence(): string {
 
   if (withFloor.length === 0) return 'No plan has a seat minimum.';
   if (without.length === 0) {
-    return `Every plan is billed from a minimum — ${floors} — so a smaller group pays the minimum rather than a lower number.`;
+    return `Every plan is billed from a minimum (${floors}), so a smaller group pays the minimum rather than a lower number.`;
   }
 
   return (
-    `Seats are billed from a minimum on some plans — ${floors} — so a smaller group on one of ` +
+    `Seats are billed from a minimum on some plans (${floors}), so a smaller group on one of ` +
     `those pays the minimum rather than a lower number; ${list(without.map((id) => NAMES[id]))} ` +
     `${without.length === 1 ? 'has' : 'have'} no floor.`
   );
@@ -502,7 +502,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
       limitRow(
         'Environments per project',
         'environmentsPerProject',
-        'development, staging, production — and any others you add.',
+        'development, staging, production, and any others you add.',
       ),
       limitRow(
         'Secrets per environment',
@@ -531,7 +531,7 @@ export const PLAN_COMPARISON: readonly MatrixGroup[] = [
       },
       {
         label: 'Included secret fetches a month',
-        hint: 'Reads across everything — the CLI, CI and the API.',
+        hint: 'Reads across everything: the CLI, CI and the API.',
         values: {
           free: formatCount(LIMITS.free.includedFetchesPerMonth),
           pro: formatCount(LIMITS.pro.includedFetchesPerMonth),
@@ -1013,19 +1013,19 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     // walks through seat accounting in detail — invitations, removals, what is
     // and is not a member — so an omission here reads as "there is nothing
     // else to know about seats".
-    answer: `Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately. ${seatFloorSentence()} Nothing stops you running with fewer people than you are billed for.`,
+    answer: `Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing, and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately. ${seatFloorSentence()} Nothing stops you running with fewer people than you are billed for.`,
   },
   {
     id: 'machines',
     question: 'Do machines really cost nothing?',
     answer:
-      'Yes, on every plan including Free, and we will put it in writing. Only humans are billed. The reason is not generosity: a secret read runs on Cloudflare’s edge and makes no external network call, so a service token costs us a fraction of a cent. Billing per identity would also punish the one habit a secret manager exists to encourage — a separate, narrowly scoped token per workload rather than one shared credential in ten places.',
+      'Yes, on every plan including Free, and we will put it in writing. Only humans are billed. The reason is not generosity: a secret read runs on Cloudflare’s edge and makes no external network call, so a service token costs us a fraction of a cent. Billing per identity would also punish the one habit a secret manager exists to encourage: a separate, narrowly scoped token per workload rather than one shared credential in ten places.',
   },
   {
     id: 'pro-or-team',
     question: 'What is the difference between Pro and Team?',
     answer:
-      'Who can read production. On Pro every member sees every environment, which is fine while everyone on the team is trusted with everything. Team adds roles and per-environment grants, so a contractor can hold staging and not production. That is the whole gate, and it is why Pro has no member limit — most teams cross it because somebody joins who should not see prod, not because they hit a ceiling we invented.',
+      'Who can read production. On Pro every member sees every environment, which is fine while everyone on the team is trusted with everything. Team adds roles and per-environment grants, so a contractor can hold staging and not production. That is the whole gate, and it is why Pro has no member limit. Most teams cross it because somebody joins who should not see prod, not because they hit a ceiling we invented.',
   },
   {
     id: 'single-sign-on',
@@ -1077,11 +1077,11 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     id: 'annual-price',
     question: 'Is there an annual price?',
     answer:
-      'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed today.',
+      'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12, charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to": it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed today.',
     whenPaymentsLive: {
       question: 'Is there an annual price?',
       answer:
-        'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both.',
+        'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12, charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to": it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both.',
     },
     // The plans page has one sheet, one toggle and no currency to switch, so
     // the public answer's tour of the sheets and its two controls describes a
@@ -1090,7 +1090,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     inApp: {
       question: 'Is there an annual price?',
       answer:
-        'Yes, and it is what this page opens on. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, against $8 and $19 month to month. The toggle above the plans switches every price here between the two, and monthly stays available on both. The figures here are in US dollars; checkout shows the price in your billing currency before you pay.',
+        'Yes, and it is what this page opens on. Billed yearly, Pro is $5 a member a month and Team is $12, charged as $60 and $144 a member a year, against $8 and $19 month to month. The toggle above the plans switches every price here between the two, and monthly stays available on both. The figures here are in US dollars; checkout shows the price in your billing currency before you pay.',
     },
   },
   {
@@ -1121,7 +1121,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     id: 'self-hosting',
     question: 'Is self-hosting really free and unlimited?',
     answer:
-      'Yes. The server is AGPL-3.0 and the CLI is MIT, so you can run the whole thing on your own infrastructure. No feature is held back for a paid tier and there is no licence key to buy — single sign-on included, once it exists; it is not built for anybody yet. What an Enterprise self-hosting licence buys is a commercial, non-AGPL licence, priority security notification, help with the root-key escrow ceremony and an SLA. None of that is a feature we removed from the code.',
+      'Yes. The server is AGPL-3.0 and the CLI is MIT, so you can run the whole thing on your own infrastructure. No feature is held back for a paid tier and there is no licence key to buy. That includes single sign-on, once it exists; it is not built for anybody yet. What an Enterprise self-hosting licence buys is a commercial, non-AGPL licence, priority security notification, help with the root-key escrow ceremony and an SLA. None of that is a feature we removed from the code.',
   },
   {
     id: 'stopping',
@@ -1133,7 +1133,7 @@ export const PRICING_FAQ: readonly PricingFaqItem[] = [
     id: 'discounts',
     question: 'Do you offer a discount for open source or non-profits?',
     answer:
-      'Yes, and there is no automated flow for it — open an issue on GitHub or email us with a link to the project and we will sort it by hand. Public open-source projects, registered non-profits and student teams are the cases we intend to approve. Because a person reads every request, ask before you pay rather than after.',
+      'Yes, and there is no automated flow for it. Open an issue on GitHub or email us with a link to the project and we will sort it by hand. Public open-source projects, registered non-profits and student teams are the cases we intend to approve. Because a person reads every request, ask before you pay rather than after.',
   },
   {
     id: 'moving-plans',
