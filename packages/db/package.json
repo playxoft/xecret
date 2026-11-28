@@ -20,8 +20,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.13",
-    "@types/node": "^26.6.6",
+    "@electric-sql/pglite": "^0.6.0",
+    "@types/node": "^26.6.10",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
     "typescript": "^6",
