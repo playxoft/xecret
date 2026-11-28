@@ -38,7 +38,7 @@ function render(webhook: Webhook | null): string {
       Dialog,
       { open: true },
       createElement(WebhookForm, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         webhook,
         onOpenChange: () => {},
         onCreated: () => {},

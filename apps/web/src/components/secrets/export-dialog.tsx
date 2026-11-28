@@ -29,7 +29,7 @@ import {
 import type { ExportFormat } from './types';
 
 export interface ExportDialogProps {
-  orgSlug: string;
+  orgId: string;
   /** The project segment of the address the download is fetched from. */
   projectId: string;
   /**
@@ -143,7 +143,7 @@ export function ExportDialog({ open, onOpenChange, ...target }: ExportDialogProp
 }
 
 function ExportBody({
-  orgSlug,
+  orgId,
   projectId,
   projectSlug,
   envSlug,
@@ -165,7 +165,7 @@ function ExportBody({
   const [refusedByBundle, setRefusedByBundle] = useState(false);
 
   const clientSide = io?.mode === 'e2ee';
-  const href = withQuery(apiPath.export(orgSlug, projectId, envSlug), { format });
+  const href = withQuery(apiPath.export(orgId, projectId, envSlug), { format });
   const selected = FORMATS.find((entry) => entry.value === format);
   const disabled = plaintextExport === 'disabled' || refusedByBundle;
   /**

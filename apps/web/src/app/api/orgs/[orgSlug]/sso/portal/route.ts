@@ -91,7 +91,7 @@ export const POST = authenticatedRoute<Params>(
         // The single sign-on section of the organisation's settings, which has
         // an address of its own. Links minted before it did return to
         // `…/settings#single-sign-on`, and the settings frame forwards those.
-        returnUrl: `${publicOrigin(services.env)}/app/${encodeURIComponent(organization.slug)}/settings/single-sign-on`,
+        returnUrl: `${publicOrigin(services.env)}/app/${encodeURIComponent(organization.id)}/settings/single-sign-on`,
       });
     } catch (cause) {
       record(orgAudit.error('org.sso.portal_link_created', resource, ssoFailureReason(cause)));

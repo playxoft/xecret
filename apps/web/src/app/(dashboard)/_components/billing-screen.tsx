@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 
@@ -25,9 +25,18 @@ import type { PromoCodePreviewPayload } from '@/server/schemas/admin';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { PeriodToggle, PlanOption, Reassurance } from './plan-chooser';
 import { ErrorState, FormSkeleton } from './resource-states';
-import { Segmented } from './segmented';
 import { canAdminister, useOrganization } from './session';
+import {
+  CHANGE_PITCH,
+  CHANGE_REASSURANCE,
+  CHECKOUT_REASSURANCE,
+  PAID_OFFERS,
+  PLAN_PITCH,
+  trialNote,
+  TRIALING_CHANGE_NOTE,
+} from './upgrade-plans';
 
 /**
  * The billing screen (P12): the plan, the seats, the renewal, this period's
@@ -52,6 +61,15 @@ import { canAdminister, useOrganization } from './session';
  * with the checkout, where Dodo takes the amount off. A plan given that way —
  * or by an admin — is a complimentary plan, and the screen says so, and until
  * when, instead of "managed by support".
+ *
+ * ── The plan chooser ──
+ * Subscribing and changing plan share one form (`ChoosePlan`): the plans
+ * page's chooser, drawn with its pieces (`plan-chooser.tsx`), so the two
+ * read as one thing. Pro and Team side by side as two radio cards with their
+ * figures, the period toggle over them, and one button under them that names
+ * what it does ("Upgrade to Team", "Review the switch to Team, billed
+ * yearly"), with the facts about paying beside it. What the form sends, and
+ * under which key, is unchanged by how it is drawn.
  */
 
 type Billing = BillingStatusPayload;
@@ -90,11 +108,11 @@ const CONFIRMATION_POLL_MS = 3_000;
 const CONFIRMATION_POLLS = 20;
 
 export function BillingScreen({
-  orgSlug,
+  orgId,
   returnedFromCheckout,
   initialChoice = {},
 }: {
-  orgSlug: string;
+  orgId: string;
   returnedFromCheckout: boolean;
   /**
    * The plan and period the plans page's "Switch to …" was pressed for, so the
@@ -103,9 +121,9 @@ export function BillingScreen({
    */
   initialChoice?: { plan?: Plan; interval?: Interval };
 }) {
-  const membership = useOrganization(orgSlug);
+  const membership = useOrganization(orgId);
   const isOwner = canAdminister(membership, 'billing.manage');
-  const resource = useApiResource<{ billing: Billing }>(isOwner ? apiPath.billing(orgSlug) : null);
+  const resource = useApiResource<{ billing: Billing }>(isOwner ? apiPath.billing(orgId) : null);
   const billing = resource.data?.billing ?? null;
 
   // Back from checkout and still on Free: the webhook has not landed yet. Ask
@@ -144,7 +162,7 @@ export function BillingScreen({
         <ErrorState subject="billing" error={resource.error} onRetry={resource.reload} />
       ) : billing ? (
         <BillingDetails
-          orgSlug={orgSlug}
+          orgId={orgId}
           billing={billing}
           waitingForPayment={waitingForPayment}
           initialChoice={initialChoice}
@@ -156,13 +174,13 @@ export function BillingScreen({
 }
 
 function BillingDetails({
-  orgSlug,
+  orgId,
   billing,
   waitingForPayment,
   initialChoice,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   billing: Billing;
   waitingForPayment: boolean;
   initialChoice: { plan?: Plan; interval?: Interval };
@@ -180,7 +198,7 @@ function BillingDetails({
   const appliedPromo = billing.actions.promoCode ? promo : null;
   const promoField: ReactNode = billing.actions.promoCode ? (
     <PromoCodeField
-      orgSlug={orgSlug}
+      orgId={orgId}
       applied={appliedPromo}
       onApplied={setPromo}
       discounts={billing.actions.checkout}
@@ -216,7 +234,7 @@ function BillingDetails({
           )}
           {billing.actions.portal ? (
             <div className="mt-3">
-              <PortalButton orgSlug={orgSlug} label="Update the card" />
+              <PortalButton orgId={orgId} label="Update the card" />
             </div>
           ) : null}
         </Alert>
@@ -262,7 +280,7 @@ function BillingDetails({
           </ul>
           <p className="mt-2">
             A secret fetch is never refused over a limit.{' '}
-            <Link href={appPath.orgPlans(orgSlug)}>Compare plans</Link>.
+            <Link href={appPath.orgPlans(orgId)}>Compare plans</Link>.
           </p>
         </Alert>
       ) : null}
@@ -280,7 +298,7 @@ function BillingDetails({
         )
       ) : choosing ? (
         <ChoosePlan
-          orgSlug={orgSlug}
+          orgId={orgId}
           billing={billing}
           initialChoice={initialChoice}
           promo={appliedPromo}
@@ -305,7 +323,7 @@ function BillingDetails({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <PortalButton orgSlug={orgSlug} label="Manage billing" />
+            <PortalButton orgId={orgId} label="Manage billing" />
           </CardContent>
         </Card>
       ) : null}
@@ -459,7 +477,7 @@ function Usage({ billing }: { billing: Billing }) {
   );
 }
 
-function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
+function PortalButton({ orgId, label }: { orgId: string; label: string }) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
@@ -467,7 +485,7 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
     setOpening(true);
     setError(null);
     try {
-      const { link } = await api.post<{ link: string }>(apiPath.billingPortal(orgSlug));
+      const { link } = await api.post<{ link: string }>(apiPath.billingPortal(orgId));
       window.location.assign(link);
     } catch (cause) {
       setError(cause);
@@ -488,14 +506,14 @@ function PortalButton({ orgSlug, label }: { orgSlug: string; label: string }) {
 }
 
 function ChoosePlan({
-  orgSlug,
+  orgId,
   billing,
   initialChoice,
   promo,
   promoField,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   billing: Billing;
   initialChoice: { plan?: Plan; interval?: Interval };
   /** The discount code applied above, carried into the checkout for a plan it covers. */
@@ -557,7 +575,7 @@ function ChoosePlan({
     setError(null);
     try {
       const { url } = await api.post<{ url: string }>(
-        apiPath.billingCheckout(orgSlug),
+        apiPath.billingCheckout(orgId),
         { plan, interval, ...(promoCode === null ? {} : { promoCode }) },
         { idempotencyKey: key },
       );
@@ -573,7 +591,7 @@ function ChoosePlan({
     setError(null);
     try {
       const answer = await api.get<{ preview: NonNullable<typeof preview> }>(
-        withQuery(apiPath.billingChange(orgSlug), { plan, interval }),
+        withQuery(apiPath.billingChange(orgId), { plan, interval }),
       );
       setPreview(answer.preview);
     } catch (cause) {
@@ -588,7 +606,7 @@ function ChoosePlan({
     setError(null);
     try {
       const answer = await api.post<{ effective: 'now' | 'renewal' }>(
-        apiPath.billingChange(orgSlug),
+        apiPath.billingChange(orgId),
         { plan, interval },
         { idempotencyKey: decisionKey },
       );
@@ -609,37 +627,55 @@ function ChoosePlan({
     }
   }
 
+  // The radios' shared name, unique to this form.
+  const group = useId();
+  const pitch = subscribed ? CHANGE_PITCH : PLAN_PITCH;
+  // What the button moves to, in the words it was chosen by: the plan and its
+  // period, or the period alone where the plan stays the same.
+  const target =
+    billing.plan === plan ? `${interval} billing` : `${PLAN_NAME[plan]}, billed ${interval}`;
+  // A checkout that can start a trial says so, as a condition (`trialNote`).
+  const trial = subscribed ? null : trialNote(plan);
+  // The subscription's own currency, where it is not the one the figures are in.
+  const otherCurrency =
+    subscribed && billing.currency !== null && billing.currency.toUpperCase() !== 'USD'
+      ? billing.currency
+      : null;
+
   return (
-    <Card>
+    // A container, so the two plans sit side by side when the card has the
+    // room for them, whatever the viewport.
+    <Card className="@container">
       <CardHeader>
-        <CardTitle>{subscribed ? 'Change plan' : 'Choose a plan'}</CardTitle>
-        <CardDescription>
-          Per member, with a lower yearly rate. Service tokens and CI never take a seat. Prices in
-          every currency are on the <Link href="/pricing">pricing page</Link>; checkout shows yours
-          before you pay. Enterprise is <Link href="/contact">arranged with us</Link>.
+        <CardTitle className="text-balance">{pitch.heading}</CardTitle>
+        <CardDescription className="leading-6">
+          {pitch.subhead} Service tokens and CI never take a seat.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-wrap gap-3">
-          <Segmented
-            label="Plan"
-            options={[
-              { value: 'pro', label: 'Pro' },
-              { value: 'team', label: 'Team' },
-            ]}
-            value={plan}
-            onChange={choose(setPlan)}
-          />
-          <Segmented
-            label="Billing period"
-            options={[
-              { value: 'monthly', label: 'Monthly' },
-              { value: 'yearly', label: 'Yearly' },
-            ]}
-            value={interval}
-            onChange={choose(setBillingInterval)}
-          />
-        </div>
+        <PeriodToggle
+          value={interval}
+          onChange={choose(setBillingInterval)}
+          className="self-start"
+        />
+
+        <fieldset className="min-w-0">
+          <legend className="sr-only">Plan</legend>
+          <div className="grid gap-3 @xl:grid-cols-2">
+            {PAID_OFFERS.map((offer) => (
+              <PlanOption
+                key={offer.id}
+                offer={offer}
+                group={group}
+                period={interval}
+                selected={plan === offer.id}
+                current={subscribed && billing.plan === offer.id}
+                payments={{ taken: billing.enabled, overageRate: billing.usage.overageRate }}
+                onSelect={choose(setPlan)}
+              />
+            ))}
+          </div>
+        </fieldset>
 
         {/* The billing floor and nothing else. These used to sell Team on roles
             and per-environment access, and Pro by its absence ("every member
@@ -655,6 +691,11 @@ function ChoosePlan({
         ) : (
           <p className="text-fg-subtle text-sm">Pro has no seat minimum.</p>
         )}
+
+        {trial !== null ? <p className="text-fg-muted text-sm leading-6">{trial}</p> : null}
+        {subscribed && billing.status === 'trialing' ? (
+          <p className="text-fg-muted text-sm leading-6">{TRIALING_CHANGE_NOTE}</p>
+        ) : null}
 
         {!subscribed && promoField !== null ? promoField : null}
         {!subscribed && promo !== null && promoCode === null ? (
@@ -691,26 +732,57 @@ function ChoosePlan({
           </Alert>
         ) : null}
 
-        <div>
-          {!subscribed ? (
-            <Button variant="primary" loading={busy} onClick={() => void subscribe()}>
-              Continue to checkout
-            </Button>
-          ) : preview ? (
-            <Button variant="primary" loading={busy} onClick={() => void confirmChange()}>
-              Confirm the change
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              loading={busy}
-              disabled={same}
-              onClick={() => void previewChange()}
-            >
-              {same ? 'This is your current plan' : 'Review the change'}
-            </Button>
-          )}
+        {/* One button, saying what it does, with the facts about paying (or
+            about changing plan) beside it rather than a scroll away. */}
+        <div className="flex flex-col gap-4 @2xl:flex-row @2xl:items-start @2xl:gap-6">
+          <div className="shrink-0">
+            {!subscribed ? (
+              <Button variant="primary" loading={busy} onClick={() => void subscribe()}>
+                Upgrade to {PLAN_NAME[plan]}
+              </Button>
+            ) : preview ? (
+              <Button variant="primary" loading={busy} onClick={() => void confirmChange()}>
+                Confirm the switch to {target}
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                loading={busy}
+                disabled={same}
+                onClick={() => void previewChange()}
+              >
+                {same ? 'This is your current plan' : `Review the switch to ${target}`}
+              </Button>
+            )}
+          </div>
+          <Reassurance
+            items={subscribed ? CHANGE_REASSURANCE : CHECKOUT_REASSURANCE}
+            label={subscribed ? 'About changing plan' : 'About paying'}
+            className="min-w-0 flex-1"
+          />
         </div>
+
+        {/* "In every currency" is not said: the pricing page shows the one
+            sheet for the visitor's country (`currencyMenuShown`). */}
+        <p className="text-fg-subtle text-sm leading-6">
+          Prices in US dollars.
+          {otherCurrency !== null ? ` This subscription is billed in ${otherCurrency}.` : ''} Every
+          limit of every plan is compared on the{' '}
+          <Link
+            href="/pricing#compare"
+            className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
+          >
+            pricing page
+          </Link>
+          , and Enterprise is{' '}
+          <Link
+            href="/contact"
+            className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
+          >
+            arranged with us
+          </Link>
+          .
+        </p>
       </CardContent>
     </Card>
   );

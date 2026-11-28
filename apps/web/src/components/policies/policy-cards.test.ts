@@ -83,7 +83,7 @@ function render(role: OrgRole): string {
     createElement(
       Toaster,
       null,
-      createElement(PolicyCards, { orgSlug: 'acme', organization: organization(role) }),
+      createElement(PolicyCards, { orgId: 'acme', organization: organization(role) }),
     ),
   );
 }

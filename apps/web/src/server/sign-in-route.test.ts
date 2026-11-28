@@ -34,6 +34,7 @@ import {
   createCliToken,
   createInvitation,
   createSession,
+  organizationSlugFor,
   removeMember,
 } from '@xecret/db/repositories';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
@@ -709,6 +710,40 @@ describe('starting a sign-in', () => {
       expect(response.headers.getSetCookie()).toContain(
         `${SSO_CONTINUE_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
       );
+    }
+  });
+
+  /**
+   * What "Sign in with single sign-on" asks for now: the organisation's id, the
+   * part after `/app/` in its dashboard's address. Pasted, so capitals and
+   * spaces are forgiven as they are for a slug. An id that names nothing, or an
+   * organisation without single sign-on, is the same `sso-not-found` a slug gets.
+   */
+  it('deep-links an organisation’s SSO by its id as it does by its slug', async () => {
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId });
+
+    const link = await deepLink(orgId);
+    const deep = await startSignIn(link.query, link.headers);
+    expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
+
+    const pasted = await login(
+      new Request(
+        `${ORIGIN}/api/auth/login?org=${encodeURIComponent(` ${orgId.toUpperCase()} `)}`,
+        {
+          headers: FROM_THIS_SITE,
+        },
+      ),
+    );
+    expect(pasted.headers.get('location')).toBe(`/sign-in?org=${orgId}`);
+
+    for (const missing of [randomUUID(), await seedOrg()]) {
+      const none = await deepLink(missing);
+      const response = await login(
+        new Request(`${ORIGIN}/api/auth/login${none.query}`, { headers: none.headers }),
+      );
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe('/sign-in?error=sso-not-found');
     }
   });
 
@@ -1658,6 +1693,38 @@ describe('the linking pass, as the callback reports it', () => {
     expect(audit.find((e) => e.action === 'auth.signup')?.metadata.signInMethod).toBe('password');
   });
 
+  /**
+   * The slug is the server's, derived from the id (`organizationSlugFor`), so
+   * nothing about the person's address or name reaches it, and two people
+   * called the same thing get two organisations of the same name.
+   */
+  it('names the personal organisation after the person, and derives its slug from its id', async () => {
+    const first = workosUser({ email: `${unique('same')}@example.com` });
+    const second = workosUser({ email: first.email.replace('@', '+other@') });
+    await signIn(first, { authenticationMethod: 'Password' });
+
+    const [row] = await userRows('workos_user_id', first.id as string);
+    const [membership] = await membershipsOf(row!.id);
+    const org = await t.pg.query<{ id: string; name: string; slug: string }>(
+      `select id, name, slug::text from organizations where id = $1`,
+      [membership!.org_id],
+    );
+    const { id, slug } = org.rows[0]!;
+    expect(slug).toBe(organizationSlugFor(id));
+    expect(slug).not.toContain(first.email.slice(0, first.email.indexOf('@')));
+
+    await signIn(second, { authenticationMethod: 'Password' });
+    const [otherRow] = await userRows('workos_user_id', second.id as string);
+    const [otherMembership] = await membershipsOf(otherRow!.id);
+    expect(otherMembership!.org_id).not.toBe(id);
+    // Both named after "Pat": a name is a label, and two of them may match.
+    const names = await t.pg.query<{ name: string }>(
+      `select name from organizations where id = any($1::uuid[])`,
+      [[id, otherMembership!.org_id]],
+    );
+    expect(new Set(names.rows.map((entry) => entry.name)).size).toBe(1);
+  });
+
   it('signs a returning WorkOS user in to the same account: auth.login', async () => {
     const who = workosUser();
     await signIn(who);
@@ -2193,7 +2260,7 @@ describe('a sign-in that came back through an organisation the flow did not ask 
         email: who.email,
         signInMethod: 'sso',
         ssoWorkosOrgId: org.workosOrgId,
-        organization: { name: 'Your Company', slug: org.slug },
+        organization: { name: 'Your Company', id: org.orgId },
         reason: 'organization',
       });
       expect(audit.map((e) => e.action)).not.toContain('auth.login');
@@ -2427,7 +2494,7 @@ describe('a sign-in that came back through an organisation the flow did not ask 
     expect(sessionCookieIssued(result)).toBe(false);
     expect(await parkedValue(result.parked!)).toMatchObject({
       reason: 'not-member',
-      organization: { slug: org.slug },
+      organization: { id: org.orgId },
     });
   });
 
@@ -2515,7 +2582,7 @@ describe('a sign-in that came back through an organisation the flow did not ask 
 
     expect(view).toMatchObject({
       sso: true,
-      organization: { name: 'Your Company', slug: org.slug },
+      organization: { name: 'Your Company', id: org.orgId },
       reason: 'organization',
     });
     expect(

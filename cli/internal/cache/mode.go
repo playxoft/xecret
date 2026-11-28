@@ -70,8 +70,47 @@ var ErrPlaintextRefused = errors.New("this environment is end-to-end encrypted a
 // Every failure reads as "no pin": an unreadable or corrupt file means this
 // machine has no record, which is the true statement and permits the answer
 // rather than blocking every command behind a file nobody can explain.
+//
+// ── Carried pins ──
+//
+// The answer is the strictest of the pin under the scope's own key and the
+// pins under each of its legacy slugs. A build that keyed on the slug recorded
+// every pin there, and an upgrade that looked only under the id would meet
+// each of those environments as first contact: an `e2ee` pin silently gone,
+// and a `server` answer believed on the next command. Strictest, so a carried
+// pin can only ever add a refusal. A slug-keyed `server` pin never weakens an
+// `e2ee` one under the id.
 func PinnedMode(scope Scope) string {
-	return readModes()[modeKey(scope)]
+	return pinnedIn(readModes(), scope)
+}
+
+func pinnedIn(modes map[string]string, scope Scope) string {
+	pinned := modes[modeKey(scope)]
+	for _, alias := range scope.legacy() {
+		pinned = stricter(pinned, modes[modeKey(alias)])
+	}
+	return pinned
+}
+
+// stricter is whichever of two recorded modes refuses more: `e2ee` over
+// `server` over none. Anything else in the file is no record at all.
+func stricter(a, b string) string {
+	rank := func(mode string) int {
+		switch mode {
+		case "e2ee":
+			return 2
+		case "server":
+			return 1
+		}
+		return 0
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	if rank(a) == 0 {
+		return ""
+	}
+	return a
 }
 
 // PinMode records the mode a successful request reported.
@@ -80,18 +119,31 @@ func PinnedMode(scope Scope) string {
 // replaced here, because the only way it could be is the transition
 // [CheckMode] exists to refuse — and a function that could quietly erase the pin
 // that would have stopped it is a hole in the same shape as the one this closes.
+//
+// What is recorded is the stricter of the mode and the pin carried from a
+// legacy slug, under the scope's own key and under each legacy key alike.
+// Under the id, so the carried pin stops depending on this machine still
+// knowing the slug. Under the slugs, so a build that keys on them, run after a
+// downgrade, still meets every pin this one learned.
 func PinMode(scope Scope, mode string) error {
 	if mode != "server" && mode != "e2ee" {
 		return fmt.Errorf("unknown encryption mode %q", mode)
 	}
 
 	modes := readModes()
-	key := modeKey(scope)
-	if current := modes[key]; current == mode || current == "e2ee" {
+	target := stricter(mode, pinnedIn(modes, scope))
+
+	changed := false
+	for _, key := range append([]Scope{scope}, scope.legacy()...) {
+		digest := modeKey(key)
+		if current := modes[digest]; stricter(current, target) != current {
+			modes[digest] = target
+			changed = true
+		}
+	}
+	if !changed {
 		return nil
 	}
-
-	modes[key] = mode
 	return writeModes(modes)
 }
 
@@ -121,13 +173,20 @@ func CheckMode(scope Scope, mode string) error {
 
 // modeKey identifies a scope without naming it.
 //
-// The same digest the cache files use, for the same reason: slugs never appear
-// in a directory listing. Deliberately *not* keyed on any id the server chose —
-// a deployment willing to lie about the mode would file its lie under a fresh id
-// and miss the pin entirely, so the key is what this process asked for.
+// The same digest the cache files use, for the same reason: identifiers never
+// appear in a directory listing. Deliberately *not* keyed on any id the server
+// chose in the response being judged (an environment's id, say): a deployment
+// willing to lie about the mode would file its lie under a fresh id and miss
+// the pin entirely, so the key is what this process asked for. The
+// organisation's id qualifies: it comes from the credential or the
+// `.xecret.yaml`, not from the answer being judged. The one case where it is
+// learned afresh, a directory naming another organisation by its legacy slug,
+// carries that slug in LegacyOrgs, and [PinMode] records every pin under it as
+// well, so an answer that swapped the id would still meet the pin.
 func modeKey(scope Scope) string {
 	unpinned := scope
 	unpinned.Encrypted = false
+	unpinned.LegacyOrgs = nil
 	digest := sha256.Sum256([]byte(aad(unpinned)))
 	return hex.EncodeToString(digest[:12])
 }

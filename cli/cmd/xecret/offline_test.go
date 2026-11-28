@@ -199,7 +199,7 @@ func (h *offlineHarness) encryptedScope() cache.Scope {
 }
 
 func (h *offlineHarness) fetch(policy cachePolicy) (map[string]string, error) {
-	return fetchSecrets(h.app, h.client, h.credentials, h.resolved, h.scopeKey, policy)
+	return fetchSecrets(h.app, h.client, h.credentials, h.resolved, policy)
 }
 
 // C4. `--offline` used to make a live `GET /api/auth/vault` for the wrapped
@@ -287,7 +287,7 @@ func TestSuccessfulE2eeReadDeletesTheStalePlaintextCache(t *testing.T) {
 		t.Fatalf("the seeded plaintext copy did not round-trip: %v", err)
 	}
 
-	if _, err := openBundle(context.Background(), h.app, h.client, h.credentials, h.scopeKey, &api.Pulled{
+	if _, err := openBundle(context.Background(), h.app, h.client, h.credentials, h.resolved, h.scopeKey, &api.Pulled{
 		Bundle: mustBundle(t, fixture.bundle),
 		Raw:    fixture.bundle,
 	}, cachePolicy{maxAge: cache.DefaultMaxAge}); err != nil {
@@ -327,7 +327,7 @@ func TestAFailedDecryptStillRefreshesTheCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := openBundle(context.Background(), h.app, h.client, h.credentials, h.scopeKey,
+	if _, err := openBundle(context.Background(), h.app, h.client, h.credentials, h.resolved, h.scopeKey,
 		&api.Pulled{Bundle: bundle, Raw: raw}, cachePolicy{maxAge: cache.DefaultMaxAge}); err == nil {
 		t.Fatal("expected the rotated-away row to fail the pull")
 	}

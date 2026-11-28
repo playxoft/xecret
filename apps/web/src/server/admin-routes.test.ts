@@ -1011,9 +1011,30 @@ describe('searching organisations', () => {
     ]);
   });
 
-  it('never finds a deleted organisation, by slug or by address', async () => {
+  /**
+   * The id is what the admin pages show and what follows `/app/` in an
+   * organisation's address, so it is what an admin has to hand. Pasted, so
+   * capitals and surrounding spaces are forgiven.
+   */
+  it('finds one organisation by its id, however it was pasted', async () => {
+    const { orgId } = await seedOrg(SUBSCRIBED);
+    await seedOrg();
+
+    for (const pasted of [orgId, ` ${orgId.toUpperCase()} `]) {
+      const answer = await search(pasted);
+      expect(answer.status).toBe(200);
+      expect(answer.body['organizations']).toEqual([
+        expect.objectContaining({ id: orgId, plan: 'team' }),
+      ]);
+    }
+    // An id that names nothing finds nothing, and is never read as a slug.
+    expect((await search(crypto.randomUUID())).body['organizations']).toEqual([]);
+  });
+
+  it('never finds a deleted organisation, by id, by slug or by address', async () => {
     const { orgId, slug, owner } = await seedOrg();
     await t.pg.query(`update organizations set deleted_at = now() where id = $1`, [orgId]);
+    expect((await search(orgId)).body['organizations']).toEqual([]);
     expect((await search(slug)).body['organizations']).toEqual([]);
     expect((await search(owner.email)).body['organizations']).toEqual([]);
   });

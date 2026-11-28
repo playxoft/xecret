@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/ids"
 	"github.com/playxoft/xecret/cli/internal/output"
 )
 
@@ -25,17 +27,20 @@ import (
 
 const projectsUsage = `Usage:
   xecret projects [list]   [--json]
-  xecret projects delete   <SLUG> [--yes]
+  xecret projects delete   <PROJECT-ID> [--yes]
 
-There is no 'create' here. A project arrives with its default environments —
-development, staging and production — each end-to-end encrypted under a key
+A project is named by its Project ID, e.g. payments-api: chosen when the
+project is created, unique within the organisation, and never changed.
+
+There is no 'create' here. A project arrives with its default environments
+(development, staging and production), each end-to-end encrypted under a key
 generated in the creator's browser and sealed to them, and no client outside a
 browser implements that sealing. Create projects in the dashboard.
 `
 
 const environmentsUsage = `Usage:
-  xecret environments [list]   [--json] [--project SLUG]
-  xecret environments delete   <SLUG> [--yes] [--project SLUG]
+  xecret environments [list]   [--json] [--project PROJECT-ID]
+  xecret environments delete   <SLUG> [--yes] [--project PROJECT-ID]
 
 There is no 'create' here either, for the reason 'xecret projects help' gives:
 an environment is inseparable from its encryption key, and that key is generated
@@ -44,11 +49,18 @@ in a browser and sealed to its creator. Create environments in the dashboard.
 
 const orgsUsage = `Usage:
   xecret orgs [list]  [--json]
-  xecret orgs use     <SLUG>
+  xecret orgs use     <ORGANISATION-ID | NAME>
 
 Your credential works in every organisation you are a member of; 'use' chooses
 which one the other commands address, and is stored beside the token. It makes
-no network change and revokes nothing — switching back is another 'use'.
+no network change and revokes nothing: switching back is another 'use'.
+
+An organisation is named by its id, which 'xecret orgs' lists. Its name works
+too, ignoring case, when no other organisation you belong to has the same one.
+
+A .xecret.yaml never chooses the organisation: it names a project inside the
+one chosen here. In a directory whose file names another organisation,
+commands are refused until you choose that one here, on purpose.
 `
 
 func cmdProjects(args []string) error {
@@ -141,7 +153,7 @@ func projectsList(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	projects, err := client.Projects(ctx, credentials.OrgSlug)
+	projects, err := client.Projects(ctx, credentials.OrgRef())
 	if err != nil {
 		return err
 	}
@@ -159,7 +171,7 @@ func projectsList(args []string) error {
 	for i, project := range projects {
 		rows[i] = []string{project.Slug, project.Name, fmt.Sprint(project.EnvironmentCount)}
 	}
-	a.printer.Table([]string{"slug", "name", "environments"}, rows)
+	a.printer.Table([]string{"project id", "name", "environments"}, rows)
 	return nil
 }
 
@@ -170,7 +182,7 @@ func projectsDelete(args []string) error {
 	if err != nil {
 		return err
 	}
-	slug, err := oneArgument(positional, "a project slug")
+	slug, err := oneArgument(positional, "a Project ID")
 	if err != nil {
 		return err
 	}
@@ -189,7 +201,7 @@ func projectsDelete(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := client.DeleteProject(ctx, credentials.OrgSlug, slug, slug); err != nil {
+	if err := client.DeleteProject(ctx, credentials.OrgRef(), slug, slug); err != nil {
 		return err
 	}
 	a.printer.Successf("Deleted project %s. The delete is soft — an operator can still recover it.", slug)
@@ -199,7 +211,7 @@ func projectsDelete(args []string) error {
 func environmentsList(args []string) error {
 	flags := flag.NewFlagSet("environments list", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	projectFlag := flags.String("project", "", "project slug (default: .xecret.yaml)")
+	projectFlag := flags.String("project", "", projectFlagHelp)
 	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
@@ -244,7 +256,7 @@ func environmentsList(args []string) error {
 func environmentsDelete(args []string) error {
 	flags := flag.NewFlagSet("environments delete", flag.ContinueOnError)
 	yes := flags.Bool("yes", false, "skip the confirmation prompt")
-	projectFlag := flags.String("project", "", "project slug (default: .xecret.yaml)")
+	projectFlag := flags.String("project", "", projectFlagHelp)
 	positional, err := parseFlags(flags, args)
 	if err != nil {
 		return err
@@ -303,20 +315,40 @@ func orgsList(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	if a.printer.JSON {
-		return a.printer.WriteJSON(organizations)
+	// The listing is the server's own word on the credential's organisation,
+	// so a credential from before organisation ids learns its id here too.
+	if adoptOrganization(credentials, organizations) {
+		if err := cred.Save(a.store, *credentials); err != nil {
+			a.printer.Warnf("could not record this organisation's id for next time: %v", err)
+		}
 	}
 
+	// An organisation is listed by its id and its name. The slug the server
+	// still sends is not passed on: nothing should be built on it any more.
+	type listedOrganization struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Role    string `json:"role"`
+		Current bool   `json:"current"`
+	}
+	listed := make([]listedOrganization, len(organizations))
 	rows := make([][]string, len(organizations))
 	for i, organization := range organizations {
+		isCurrent := credentials.IsOrg(organization.ID, organization.Slug)
+		listed[i] = listedOrganization{
+			ID: organization.ID, Name: organization.Name, Role: organization.Role, Current: isCurrent,
+		}
 		current := ""
-		if organization.Slug == credentials.OrgSlug {
+		if isCurrent {
 			current = "current"
 		}
-		rows[i] = []string{organization.Slug, organization.Name, organization.Role, current}
+		rows[i] = []string{organization.Name, organization.ID, organization.Role, current}
 	}
-	a.printer.Table([]string{"slug", "name", "role", ""}, rows)
+
+	if a.printer.JSON {
+		return a.printer.WriteJSON(listed)
+	}
+	a.printer.Table([]string{"name", "id", "role", ""}, rows)
 	return nil
 }
 
@@ -324,16 +356,16 @@ func orgsList(args []string) error {
 //
 // Purely local: a CLI token authenticates as its user, and the server settles
 // membership per request against whichever organisation the path names — so
-// this rewrites one field beside the token and nothing else. It is checked
-// against the server's own list first, because "you are not a member" is a
-// better answer now than a 404 on the next command.
+// this rewrites the fields beside the token that name it, and nothing else. It
+// is checked against the server's own list first, because "you are not a
+// member" is a better answer now than a 404 on the next command.
 func orgsUse(args []string) error {
 	flags := flag.NewFlagSet("orgs use", flag.ContinueOnError)
 	positional, err := parseFlags(flags, args)
 	if err != nil {
 		return err
 	}
-	slug, err := oneArgument(positional, "an organisation slug")
+	ref, err := oneArgument(positional, "an organisation's id or name; 'xecret orgs' lists them")
 	if err != nil {
 		return err
 	}
@@ -347,8 +379,9 @@ func orgsUse(args []string) error {
 	if err != nil {
 		return err
 	}
-	if credentials.OrgSlug == slug {
-		a.printer.Infof("Already using %s.", slug)
+	if id, ok := ids.Canonical(ref); ((ok && id == credentials.OrgID) || ref == credentials.OrgSlug) &&
+		credentials.OrgLabel() != "" {
+		a.printer.Infof("Already using %s.", credentials.OrgLabel())
 		return nil
 	}
 
@@ -359,20 +392,82 @@ func orgsUse(args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, organization := range organizations {
-		if organization.Slug != slug {
-			continue
+	organization, err := chooseOrganization(organizations, ref)
+	if err != nil {
+		return err
+	}
+
+	if credentials.IsOrg(organization.ID, organization.Slug) {
+		if adoptOrganization(credentials, organizations) {
+			if err := cred.Save(a.store, *credentials); err != nil {
+				a.printer.Warnf("could not record this organisation's id for next time: %v", err)
+			}
 		}
-		updated := *credentials
-		updated.OrgSlug = organization.Slug
-		if err := cred.Save(a.store, updated); err != nil {
-			return err
-		}
-		a.printer.Successf("Now using %s (%s).", a.printer.Bold(organization.Slug), organization.Role)
-		a.printer.Infof("A .xecret.yaml naming a project from another organisation will stop resolving.")
+		a.printer.Infof("Already using %s.", organization.Name)
 		return nil
 	}
-	return fmt.Errorf("you are not a member of %q — 'xecret orgs' lists the ones you are in", slug)
+	updated := *credentials
+	updated.OrgID = organization.ID
+	updated.OrgName = organization.Name
+	// The slug is kept beside the id, unseen: an older binary run after a
+	// downgrade addresses the organisation by nothing else, and this one finds
+	// what such a build filed offline through it.
+	updated.OrgSlug = organization.Slug
+	if err := cred.Save(a.store, updated); err != nil {
+		return err
+	}
+	a.printer.Successf("Now using %s (%s).", a.printer.Bold(organization.Name), organization.Role)
+	a.printer.Infof("A .xecret.yaml that names its organisation keeps using it; an older one with no " +
+		"organisation now resolves in this one.")
+	return nil
+}
+
+// chooseOrganization picks the membership `orgs use` was pointed at.
+//
+// In order: the id, exactly; then a legacy slug, exactly, which is what every
+// script written before ids passes and is accepted without being advertised;
+// then the name, ignoring case, when exactly one membership has it. Names are
+// free text and not unique, so a name two organisations share is not guessed
+// between: the refusal lists each with its id, which is the unambiguous thing
+// to pass instead. The slug is tried before the name so that an old script's
+// argument can never be captured by another organisation that happens to be
+// called the same thing.
+func chooseOrganization(organizations []api.Organization, ref string) (api.Organization, error) {
+	if id, ok := ids.Canonical(ref); ok {
+		for _, organization := range organizations {
+			if organization.ID == id {
+				return organization, nil
+			}
+		}
+	}
+	for _, organization := range organizations {
+		if cred.SameSlug(organization.Slug, ref) {
+			return organization, nil
+		}
+	}
+
+	var named []api.Organization
+	for _, organization := range organizations {
+		if strings.EqualFold(organization.Name, ref) {
+			named = append(named, organization)
+		}
+	}
+	switch len(named) {
+	case 1:
+		return named[0], nil
+	case 0:
+		return api.Organization{}, fmt.Errorf(
+			"you are not a member of an organisation with the id or name %q; 'xecret orgs' lists the ones you are in",
+			ref)
+	}
+
+	var choices strings.Builder
+	for _, organization := range named {
+		fmt.Fprintf(&choices, "\n  %s  %s (%s)", organization.ID, organization.Name, organization.Role)
+	}
+	return api.Organization{}, fmt.Errorf(
+		"%d of your organisations are called %q; run 'xecret orgs use' with the id of the one you mean:%s",
+		len(named), ref, choices.String())
 }
 
 // cmdMembers lists who is in the organisation. Read-only on purpose:
@@ -394,7 +489,7 @@ func cmdMembers(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	members, seats, err := client.Members(ctx, credentials.OrgSlug)
+	members, seats, err := client.Members(ctx, credentials.OrgRef())
 	if err != nil {
 		return err
 	}

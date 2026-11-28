@@ -227,7 +227,7 @@ CREATE TYPE member_status AS ENUM ('active', 'suspended');
 CREATE TABLE organizations (
   id            uuid PRIMARY KEY,
   name          text        NOT NULL,
-  slug          citext      NOT NULL UNIQUE,
+  slug          citext      NOT NULL UNIQUE,     -- legacy: derived from id, shown to nobody
   seat_limit    integer     NOT NULL DEFAULT 3 CHECK (seat_limit >= 0),  -- 0033; Free's seats (was 5)
   workos_org_id text        UNIQUE,                  -- 0018; set lazily, on enabling SSO
   workos_client_id text,                             -- 0022; the WorkOS environment of the link
@@ -277,6 +277,13 @@ CREATE INDEX org_members_org_idx  ON org_members (org_id)  WHERE status = 'activ
 
 `org_members` is the table every authorization query passes through. `org_members_user_idx`
 is the single most performance-critical index in the schema.
+
+An organisation is identified by its `id`: the dashboard's addresses, the API's
+`/api/orgs/{orgId}/…` paths, mailed links and `.xecret.yaml` all carry it. `name` is free text
+and not unique. `slug` stays `NOT NULL UNIQUE` only because older clients still address an
+organisation by it (`resolveOrg` takes either, told apart by shape); nobody chooses it any more.
+For a new organisation it is `organizationSlugFor(id)`, the id in base 36 padded to 25
+characters: never shaped like a UUID, never a reserved word, and shown to nobody.
 
 `workos_org_id` maps an organisation to its WorkOS Organization. It is created **lazily**,
 only when an organisation enables SSO — almost every organisation is a personal one
@@ -386,6 +393,7 @@ CREATE TABLE projects (
 );
 CREATE UNIQUE INDEX projects_org_slug_idx ON projects (org_id, slug)
   WHERE deleted_at IS NULL;
+-- projects.slug is what people see as the Project ID: set at creation, never updated.
 
 CREATE TABLE environments (
   id            uuid PRIMARY KEY,

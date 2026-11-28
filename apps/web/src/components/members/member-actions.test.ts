@@ -31,7 +31,7 @@ function render(canRemove: boolean): string {
       Toaster,
       null,
       createElement(MemberRowActions, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         member,
         assignableRoles: ['developer', 'viewer'],
         canRemove,

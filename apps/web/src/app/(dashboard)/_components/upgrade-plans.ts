@@ -53,8 +53,19 @@ import { appPath, withQuery } from '../_lib/paths';
  * a `requireFeature` behind them. The shared table follows the same rule for
  * its ticks — a gated row reads them from `PLANS` and names its flag, and the
  * test reads the server for the gate behind each — and marks every announced,
- * unbuilt capability "Coming soon" in every column that names it. Nor is a
- * trial offered: the pricing page offers none, so this page does not either.
+ * unbuilt capability "Coming soon" in every column that names it.
+ *
+ * ── The free trial, said only as a condition ──
+ * Team's checkout can start a fourteen-day trial (`TRIAL_PLANS` in
+ * `server/billing/config.ts`), and the terms' billing clause says how it works:
+ * one per organisation and one per account. Until 2026-11-28 this page said
+ * nothing about it, because the pricing page says nothing about it either. The
+ * owner has since asked (2026-11-28) for the chooser to name it beside the
+ * button that starts it, so `trialNote` does, beside Team's checkout and
+ * nowhere else. Nothing the client can read says whether this organisation and
+ * this account are still eligible, so the sentence is a condition rather than a
+ * promise, and the button says what it does either way ("Upgrade to Team").
+ * The pricing page still names no trial; adding one there is a separate call.
  *
  * ── Per-environment access: a discrepancy, and an open decision ──
  * `PLANS` gives `perEnvironmentGrants` to Team, and the public site sells
@@ -186,6 +197,23 @@ export function yearlySaving(plan: PaidPlanId): number {
  */
 export const YEARLY_SAVING_UP_TO = Math.max(yearlySaving('pro'), yearlySaving('team'));
 
+/**
+ * The sentence a plan's figure carries about the other period, or `null`
+ * where there is no saving to name.
+ *
+ * On yearly it is the saving against monthly; on monthly it is what switching
+ * to yearly would save. Both are `yearlySaving`, worked out from the two rates
+ * the card prints, so the figure is never larger than the arithmetic a reader
+ * can do from the page. Free has no price to save on, and a plan whose two
+ * rates were ever the same would say nothing rather than "Save 0%".
+ */
+export function savingLine(plan: OfferPlanId, period: BillingPeriod): string | null {
+  if (plan === 'free') return null;
+  const saving = yearlySaving(plan);
+  if (saving <= 0) return null;
+  return period === 'yearly' ? `Save ${saving}% on monthly` : `Save ${saving}% with yearly billing`;
+}
+
 /* ── Limits, as sentences ──────────────────────────────────────────────────── */
 
 // The limits are the shared module's `LIMITS` — `PLANS`' own, per plan — so
@@ -216,7 +244,18 @@ export interface PlanOffer {
   readonly name: string;
   /** One line answering "is this me?" before the list is read. */
   readonly audience: string;
-  /** Ticked bullets. The fetch allowance is not among them — see `includedFetches`. */
+  /**
+   * The line over the list on a plan that builds on the one below it,
+   * "Everything in Pro, plus", or `null` on the first rung. It is what lets
+   * the list name only what changes.
+   */
+  readonly lead: string | null;
+  /**
+   * Ticked bullets: the few differences a team decides on (members, projects
+   * and environments, audit history, and the gated capabilities), and not
+   * every row. The rest is the comparison table's, which has every row. The
+   * fetch allowance is not among them; see `includedFetches`.
+   */
   readonly features: readonly string[];
   /**
    * Secret fetches included a month. Its own field, because the line it renders
@@ -230,16 +269,23 @@ export interface PlanOffer {
   readonly recommended: boolean;
 }
 
+/** "5 projects, 3 environments each": the room a plan gives, as one bullet. */
+function room(plan: OfferPlanId): string {
+  return `${many(LIMITS[plan].projects, 'project', 'projects')}, ${many(LIMITS[plan].environmentsPerProject, 'environment', 'environments')} each`;
+}
+
 export const PLAN_OFFERS: readonly PlanOffer[] = [
   {
     id: 'free',
     name: PLANS.free.name,
     audience: 'For one developer who has had enough of moving .env files around.',
+    lead: null,
     features: [
-      `${FREE_ORGANIZATIONS} free organisations per account, ${many(LIMITS.free.projects, 'project', 'projects')} in each`,
-      `${many(LIMITS.free.environmentsPerProject, 'environment', 'environments')} per project`,
       many(LIMITS.free.seats, 'member', 'members'),
-      `${many(LIMITS.free.serviceTokens, 'service token', 'service tokens')} for CI`,
+      room('free'),
+      // The one thing on this card that is the account's rather than the
+      // organisation's: past it, a Free organisation waits for a paid plan.
+      `${FREE_ORGANIZATIONS} free organisations per account`,
       `${formatRetention(LIMITS.free.auditRetentionDays)} of audit history`,
     ],
     includedFetches: LIMITS.free.includedFetchesPerMonth,
@@ -252,13 +298,12 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
     // Not the pricing page's line, which describes Pro by a team that "does not
     // yet need to keep anyone out of production" — the unenforced gate above.
     audience: 'For a small team that has outgrown the free limits.',
+    lead: `Everything in ${PLANS.free.name}, plus`,
     features: [
-      many(LIMITS.pro.projects, 'project', 'projects'),
-      `${many(LIMITS.pro.environmentsPerProject, 'environment', 'environments')} per project, ${many(LIMITS.pro.secretsPerEnvironment, 'secret', 'secrets')} in each`,
       // Just the count. It said "everyone can read every environment", which
       // is the unenforced per-environment gate stated from the other side.
       LIMITS.pro.seats === null ? 'Unlimited members' : many(LIMITS.pro.seats, 'member', 'members'),
-      `${many(LIMITS.pro.serviceTokens, 'service token', 'service tokens')} for CI, all free`,
+      room('pro'),
       `${formatRetention(LIMITS.pro.auditRetentionDays)} of audit history`,
       'Secret referencing, overrides, promotion and point-in-time restore',
     ],
@@ -273,10 +318,9 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
     // what Team adds that the server enforces is room and policy.
     audience:
       'For a team that needs room to grow, and a say in how its secrets are named and exported.',
+    lead: `Everything in ${PLANS.pro.name}, plus`,
     features: [
-      'Everything in Pro',
-      `${many(LIMITS.team.projects, 'project', 'projects')}, ${many(LIMITS.team.secretsPerEnvironment, 'secret', 'secrets')} per environment`,
-      `${many(LIMITS.team.serviceTokens, 'service token', 'service tokens')} for CI`,
+      room('team'),
       `${formatRetention(LIMITS.team.auditRetentionDays)} of audit history`,
       'A secret policy for names and values',
       'Plaintext export switched off per environment',
@@ -286,6 +330,19 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
     recommended: true,
   },
 ];
+
+/** The two plans a checkout or a plan change can be for, in ladder order. */
+export const PAID_OFFERS: readonly (PlanOffer & { readonly id: PaidPlanId })[] = PLAN_OFFERS.filter(
+  (offer): offer is PlanOffer & { readonly id: PaidPlanId } => offer.id !== 'free',
+);
+
+/**
+ * The words on the recommended plan's chip. Team is recommended because it is
+ * the plan built for a team, which is what an organisation buying seats is;
+ * the chip says that and no more. There is no sales data behind any plan, so
+ * nothing here may call one the most popular.
+ */
+export const RECOMMENDED_LABEL = 'Recommended for teams';
 
 /** The Enterprise row's condition on the (unpublished) price. */
 export const ENTERPRISE_CAVEAT = priceCaveat(MINIMUM_SEATS.enterprise);
@@ -306,6 +363,145 @@ export function pastTheAllowance(
   if (plan === 'free') return 'Fetches past it keep working, and are not billed.';
   return `Fetches past it keep working, and are billed at ${payments.overageRate}.`;
 }
+
+/* ── The free trial ────────────────────────────────────────────────────────── */
+
+/**
+ * How long Team's free trial runs, in days.
+ *
+ * The trial lives on the Dodo product rather than in this codebase, and
+ * `server/billing/config.ts` (`TRIAL_PLANS`), `startCheckout` and the billing
+ * runbook (docs/operations/billing.md §2) all give its length as fourteen
+ * days. Restated here, with the plans that have one, because a client
+ * component may import only types from the server's modules;
+ * `upgrade-plans.test.ts` holds the list to the server's.
+ */
+export const TRIAL_DAYS = 14;
+
+/** `TRIAL_PLANS` in `server/billing/config.ts`, as the client may know it: Team's alone. */
+export const TRIAL_PLANS: ReadonlySet<PaidPlanId> = new Set<PaidPlanId>(['team']);
+
+/**
+ * The sentence beside a checkout that can start a free trial, or `null` for a
+ * plan whose checkout cannot.
+ *
+ * A condition, because nothing this client can read says whether this one
+ * will. A trial is had once per organisation and once per account
+ * (`trialAlreadyUsed`, and the terms' billing clause); the billing read has no
+ * field for it, and `trialEndsAt` is cleared when a subscription ends, so an
+ * organisation back on Free after a trial looks like one that never had one.
+ * So the button says what it does in every case, "Upgrade to Team", and this
+ * says when a trial comes with it. The reminder is the terms' promise too,
+ * kept by the hourly job's `trial_ending_3d` and `trial_ending_1d` emails to
+ * the owners.
+ */
+export function trialNote(plan: PaidPlanId): string | null {
+  if (!TRIAL_PLANS.has(plan)) return null;
+  return (
+    `Starts with a ${TRIAL_DAYS}-day free trial if neither this organisation nor your account ` +
+    'has had one. Owners are emailed 3 days and 1 day before it ends.'
+  );
+}
+
+/* ── What the chooser leads with ───────────────────────────────────────────── */
+
+/**
+ * The heading and the line under it, on the plans page and on the billing
+ * screen alike: what an organisation gets, before what it costs or how it is
+ * bought.
+ *
+ * Every word is one the product keeps. A paid plan does raise the limits on
+ * members, environments and fetches (`PLANS`: three members, three
+ * environments a project and 20,000 fetches a month on Free, and more of each
+ * on every plan above it), and the encryption is the same on every plan (the
+ * pricing page's "What every plan includes").
+ */
+export const PLAN_PITCH = {
+  heading: 'Room for your whole team, and every build it ships',
+  subhead:
+    'Paid plans raise the limits on members, environments and secret fetches, and every plan keeps your secrets end-to-end encrypted.',
+} as const;
+
+/**
+ * The same, for an organisation with a subscription: it is moving between
+ * plans rather than buying one, and what it needs first is when a move takes
+ * effect. The terms' billing clause, in its own order: up at once with the
+ * unused part credited, down at the end of the period already paid for.
+ */
+export const CHANGE_PITCH = {
+  heading: 'Move to the plan that fits your team now',
+  subhead:
+    'Moving up takes effect at once, with the unused part of this period credited. Moving down takes effect when the period you have paid for ends.',
+} as const;
+
+/* ── What is said beside the button ────────────────────────────────────────── */
+
+export type ReassuranceId = 'provider' | 'currency' | 'cancel' | 'confirm' | 'kept';
+
+/** One fact beside a purchase, with the icon the chooser draws for it. */
+export interface ReassuranceItem {
+  readonly id: ReassuranceId;
+  readonly text: string;
+}
+
+/**
+ * What is true of every checkout, said beside the button that starts one.
+ *
+ * Each line restates something the code or the terms already say, and
+ * `upgrade-plans.test.ts` reads both for it:
+ *
+ *  - the checkout route: "We never see the card", and the terms: Dodo Payments
+ *    is the merchant of record;
+ *  - the terms: "the checkout shows the price in your currency before you
+ *    pay", and prices exclude the tax that Dodo adds where it is due;
+ *  - the terms: cancelling stops the next renewal and the organisation returns
+ *    to Free at the end of the period paid for. Cancelling is the customer
+ *    portal's, as the billing screen's portal card says.
+ *
+ * Nothing about refunds, which the terms limit, and nothing about a card at
+ * the start of a trial, which is a setting on the Dodo product this code
+ * cannot see.
+ */
+export const CHECKOUT_REASSURANCE: readonly ReassuranceItem[] = [
+  {
+    id: 'provider',
+    text: 'Paid through Dodo Payments, our merchant of record. We never see your card.',
+  },
+  {
+    id: 'currency',
+    text: 'Checkout shows the price in your billing currency before you pay, and Dodo adds tax where it is due.',
+  },
+  {
+    id: 'cancel',
+    text: 'Cancel at any time from the customer portal. The plan runs to the end of the period you paid for, then moves to Free.',
+  },
+];
+
+/**
+ * What is true of every plan change, beside the button that asks for one: the
+ * billing screen's preview comes before the confirm, and says whether the
+ * change lands now or at the renewal; and a lower plan deletes nothing (the
+ * terms: projects, environments, secrets and tokens "stay readable and
+ * editable").
+ */
+export const CHANGE_REASSURANCE: readonly ReassuranceItem[] = [
+  {
+    id: 'confirm',
+    text: 'Nothing changes until you confirm, and the review says when the change takes effect.',
+  },
+  {
+    id: 'kept',
+    text: 'Moving down deletes nothing: projects, environments, secrets and tokens stay readable and editable.',
+  },
+];
+
+/**
+ * The line for an organisation in a trial that is choosing a plan: moving up
+ * ends the trial and is charged at once, as the terms say any move up during a
+ * trial is.
+ */
+export const TRIALING_CHANGE_NOTE =
+  'You are on a free trial. Moving up now ends the trial, and the new plan is charged at once.';
 
 /* ── What each plan unlocks ────────────────────────────────────────────────── */
 

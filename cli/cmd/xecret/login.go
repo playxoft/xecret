@@ -145,12 +145,8 @@ func cmdLogin(args []string) error {
 	// The token is live from here. Everything below can fail without costing the
 	// login — it costs the ability to decrypt, which is reported and recoverable
 	// by running the command again, whereas discarding a minted token is not.
-	if err := cred.Save(a.store, cred.Credentials{
-		APIURL:  base,
-		Token:   result.Token,
-		OrgSlug: result.Organization.Slug,
-		Email:   result.User.Email,
-	}); err != nil {
+	credentials := loginCredentials(ctx, base, result)
+	if err := cred.Save(a.store, credentials); err != nil {
 		return err
 	}
 
@@ -163,11 +159,11 @@ func cmdLogin(args []string) error {
 	}
 	cancelRevoke()
 
-	a.printer.Successf(
-		"Signed in as %s (organisation %s)",
-		a.printer.Bold(result.User.Email),
-		result.Organization.Slug,
-	)
+	if organization := credentials.OrgLabel(); organization != "" {
+		a.printer.Successf("Signed in as %s (organisation %s)", a.printer.Bold(result.User.Email), organization)
+	} else {
+		a.printer.Successf("Signed in as %s", a.printer.Bold(result.User.Email))
+	}
 
 	if err := a.acceptHandoff(ctx, base, result.Token, challenge, callback.Handoff, handoff); err != nil {
 		a.printer.Warnf("%v", err)
@@ -178,6 +174,32 @@ func cmdLogin(args []string) error {
 
 	a.printer.Infof("This device appears as %q in the dashboard and can be revoked there.", device)
 	return nil
+}
+
+// loginCredentials is the credential a token exchange establishes, naming the
+// organisation by its id, with its name for output and its slug kept as the
+// hidden alias an older binary still addresses it by after a downgrade.
+//
+// A server from before organisation ids answers with the slug and name alone.
+// The id is then read from GET /api/auth/me, matched by that slug, as the
+// hand-off below would have done anyway. Best effort: a credential that leaves
+// here without it addresses the API by the slug, which the server accepts, and
+// the first command that needs the id fills it in.
+func loginCredentials(ctx context.Context, base string, result *api.LoginResult) cred.Credentials {
+	credentials := cred.Credentials{
+		APIURL:  base,
+		Token:   result.Token,
+		OrgID:   result.Organization.ID,
+		OrgName: result.Organization.Name,
+		OrgSlug: result.Organization.Slug,
+		Email:   result.User.Email,
+	}
+	if credentials.OrgID == "" {
+		if me, err := api.New(base, result.Token, userAgent()).FetchMe(ctx); err == nil {
+			adoptIdentity(&credentials, me)
+		}
+	}
+	return credentials
 }
 
 // replacedRevokeTimeout bounds the revocation of a replaced credential. It runs
@@ -244,8 +266,9 @@ func (a *app) acceptHandoff(
 	}
 	defer e2ee.ZeroizeKey(userKey)
 
-	// The ids are fetched rather than assumed: orgId binds every secret's AAD and
-	// userId binds the private-key wrap, and a slug is neither of them.
+	// The ids are fetched rather than assumed: userId binds the private-key wrap,
+	// and orgId, which an older server's token response does not carry, binds
+	// every secret's AAD.
 	client := api.New(base, token, userAgent())
 	me, err := client.FetchMe(ctx)
 	if err != nil {
@@ -256,12 +279,7 @@ func (a *app) acceptHandoff(
 	if err != nil {
 		return err
 	}
-	credentials.UserID = me.User.ID
-	for _, organization := range me.Organizations {
-		if organization.Slug == credentials.OrgSlug {
-			credentials.OrgID = organization.ID
-		}
-	}
+	adoptIdentity(credentials, me)
 	if credentials.UserID == "" || credentials.OrgID == "" {
 		return errors.New("this deployment did not identify the account; upgrade the server")
 	}
@@ -372,18 +390,21 @@ func cmdWhoami(args []string) error {
 		// introspected pin is the whole of its identity, so that is the answer.
 		pin := a.tokenScope
 		if a.printer.JSON {
+			// `organization` is an identifier, as it always was: a script builds
+			// paths from it. The name, which anybody can share, is beside it.
 			return a.printer.WriteJSON(map[string]any{
-				"credential":   "serviceToken",
-				"token":        pin.Token.Name,
-				"accessLevel":  pin.Token.AccessLevel,
-				"organization": pin.Organization.Slug,
-				"project":      pin.Project.Slug,
-				"environment":  pin.Environment.Slug,
-				"apiUrl":       credentials.APIURL,
+				"credential":       "serviceToken",
+				"token":            pin.Token.Name,
+				"accessLevel":      pin.Token.AccessLevel,
+				"organization":     pin.Organization.ID,
+				"organizationName": pin.Organization.Name,
+				"project":          pin.Project.Slug,
+				"environment":      pin.Environment.Slug,
+				"apiUrl":           credentials.APIURL,
 			})
 		}
 		fmt.Fprintf(a.printer.Out, "Credential     service token %q (%s)\n", pin.Token.Name, pin.Token.AccessLevel)
-		fmt.Fprintf(a.printer.Out, "Organisation   %s\n", pin.Organization.Slug)
+		fmt.Fprintf(a.printer.Out, "Organisation   %s\n", organisationLine(pin.Organization.Name, pin.Organization.ID))
 		fmt.Fprintf(a.printer.Out, "Project        %s\n", pin.Project.Slug)
 		fmt.Fprintf(a.printer.Out, "Environment    %s\n", pin.Environment.Slug)
 		fmt.Fprintf(a.printer.Out, "Server         %s\n", credentials.APIURL)
@@ -393,10 +414,13 @@ func cmdWhoami(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	me, err := client.FetchMe(ctx)
+	me, err := a.fetchMe(ctx, client)
 	if err != nil {
 		return err
 	}
+	// The server's answer names the organisation as it is now, and fills in the
+	// id of one a credential from before organisation ids knew only by slug.
+	a.recordIdentity(credentials, me)
 
 	device := ""
 	if me.Credential.Name != nil {
@@ -404,21 +428,40 @@ func cmdWhoami(args []string) error {
 	}
 
 	if a.printer.JSON {
+		// `organization` is the id, an identifier as it always was, so
+		// `/api/orgs/$(xecret whoami --json | jq -r .organization)` still works.
 		return a.printer.WriteJSON(map[string]any{
-			"email":        me.User.Email,
-			"organization": credentials.OrgSlug,
-			"device":       device,
-			"apiUrl":       credentials.APIURL,
+			"email":            me.User.Email,
+			"organization":     credentials.OrgID,
+			"organizationName": credentials.OrgName,
+			"device":           device,
+			"apiUrl":           credentials.APIURL,
 		})
 	}
 
 	fmt.Fprintf(a.printer.Out, "Signed in as   %s\n", me.User.Email)
-	fmt.Fprintf(a.printer.Out, "Organisation   %s\n", credentials.OrgSlug)
+	fmt.Fprintf(a.printer.Out, "Organisation   %s\n", organisationLine(credentials.OrgName, credentials.OrgID))
 	if device != "" {
 		fmt.Fprintf(a.printer.Out, "This device    %s\n", device)
 	}
 	fmt.Fprintf(a.printer.Out, "Server         %s\n", credentials.APIURL)
 	return nil
+}
+
+// organisationLine is how `whoami` and `doctor` name an organisation: by its
+// name, with its id beside it, because a name is not unique and the id is what
+// `xecret orgs use` and `.xecret.yaml` take. Either alone when that is all that
+// is known, and never the slug.
+func organisationLine(name, id string) string {
+	switch {
+	case name != "" && id != "":
+		return fmt.Sprintf("%s (%s)", name, id)
+	case name != "":
+		return name
+	case id != "":
+		return id
+	}
+	return "unknown"
 }
 
 // unlockWithPassphrase is the headless half of `xecret login`.

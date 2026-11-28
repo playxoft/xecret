@@ -3,7 +3,7 @@ title: The audit log
 navTitle: Audit log
 description: Every event xecret records, what each one means, how to filter the log, and how to use it during an incident when a credential has leaked.
 keywords: [secret audit log, who read secret, security audit trail, incident response, compliance logging]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Every mutation, every read, and **every denial** is recorded. A system that
@@ -221,7 +221,7 @@ outcome rather than on this single action is usually what you want.
 
 ## Reading it
 
-*Audit* in the dashboard, or `GET /api/orgs/{orgSlug}/audit`.
+*Audit* in the dashboard, or `GET /api/orgs/{orgId}/audit`.
 
 Filters: actor, action, project (and environment within it), outcome, and a
 date range. Results are paginated with an opaque cursor.
@@ -231,7 +231,7 @@ actually scanned — a view showing less than it was asked for must say so rathe
 than quietly returning a shorter answer.
 
 ```bash
-curl "https://xecret.playxoft.com/api/orgs/acme/audit?action=secret.revealed&from=2026-08-01" \
+curl "https://xecret.playxoft.com/api/orgs/0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f/audit?action=secret.revealed&from=2026-08-01" \
   -H "Authorization: Bearer $XCT_TOKEN"
 ```
 

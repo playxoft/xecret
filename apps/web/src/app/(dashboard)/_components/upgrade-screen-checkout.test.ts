@@ -171,7 +171,7 @@ function render(): string {
   pressed.buttons = [];
   return renderToStaticMarkup(
     createElement(UpgradeScreen, {
-      orgSlug: 'acme',
+      orgId: 'acme',
       returnedFromCheckout: false,
       payments: { taken: true, overageRate: '$0.01 per 1,000 secret fetches' },
     }),
@@ -301,7 +301,7 @@ describe('a discount code on the plans page', () => {
 
     served.billing = { ...FREE, actions: { ...FREE.actions, promoCode: true } };
     render();
-    expect(field.props?.orgSlug).toBe('acme');
+    expect(field.props?.orgId).toBe('acme');
   });
 
   it('goes with a checkout for a plan it covers, and not with one for another', async () => {

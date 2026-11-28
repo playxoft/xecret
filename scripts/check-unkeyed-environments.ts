@@ -91,7 +91,6 @@ import { projects } from '../packages/db/src/schema/resources.ts';
 
 interface UnkeyedRow {
   org_id: string;
-  org_slug: string;
   project_id: string;
   project_slug: string;
   project_name: string;
@@ -145,7 +144,6 @@ async function main(): Promise<void> {
     const rows = (await db.execute(sql`
       SELECT
         o.id   AS org_id,
-        o.slug AS org_slug,
         p.id   AS project_id,
         p.slug AS project_slug,
         p.name AS project_name,
@@ -168,9 +166,9 @@ async function main(): Promise<void> {
         LIMIT 1
       ) k ON true
       WHERE p.deleted_at IS NULL
-      GROUP BY o.id, o.slug, p.id, p.slug, p.name
+      GROUP BY o.id, p.id, p.slug, p.name
       HAVING count(e.id) FILTER (WHERE e.encryption_mode = 'e2ee' AND k.environment_id IS NULL) > 0
-      ORDER BY o.slug, p.slug
+      ORDER BY o.id, p.slug
     `)) as unknown as UnkeyedRow[];
 
     if (rows.length === 0) {
@@ -194,7 +192,7 @@ async function main(): Promise<void> {
         Number(row.unkeyed_environments) === Number(row.live_environments)
           ? 'all keyless'
           : `${row.unkeyed_environments} of ${row.live_environments} keyless`;
-      console.warn(`  ${row.org_slug}/${row.project_slug}  "${row.project_name}"  — ${shape}`);
+      console.warn(`  ${row.org_id}/${row.project_slug}  "${row.project_name}"  (${shape})`);
     }
 
     console.warn('');
@@ -217,7 +215,7 @@ async function main(): Promise<void> {
           'impossible. Refusing to delete anything. Investigate before re-running:',
       );
       for (const row of holdingSecrets) {
-        console.error(`    ${row.org_slug}/${row.project_slug} — ${row.live_secrets} secret(s)`);
+        console.error(`    ${row.org_id}/${row.project_slug}: ${row.live_secrets} secret(s)`);
       }
       // `exitCode` rather than `process.exit`, here and below: the latter walks
       // out past the `finally` and leaves the connection to be closed by the

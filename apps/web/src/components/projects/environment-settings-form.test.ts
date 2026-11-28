@@ -37,7 +37,7 @@ function render(canManage: boolean): string {
       Toaster,
       null,
       createElement(EnvironmentSettingsForm, {
-        orgSlug: 'acme',
+        orgId: 'acme',
         projectId: 'payments-api',
         environment: STAGING,
         canManage,
@@ -98,7 +98,7 @@ describe('the environment’s deletion', () => {
         Toaster,
         null,
         createElement(DeleteEnvironmentCard, {
-          orgSlug: 'acme',
+          orgId: 'acme',
           projectId: 'payments-api',
           environment: STAGING,
         }),

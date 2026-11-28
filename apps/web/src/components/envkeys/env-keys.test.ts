@@ -39,6 +39,7 @@ import type { EnvKeyMaterial } from './env-key-store';
 import {
   admitEncryptionMode,
   carryModePinsForward,
+  carryOrganizationModePinsForward,
   checkPin,
   fingerprint,
   modeIsAllowed,
@@ -53,6 +54,7 @@ import {
   substitutedRecipients,
   writePins,
 } from './pins';
+import type { ModePinAliases } from './pins';
 import { buildRotationGrants, planRotation, rotateEnvironment, shareTargets } from './rotation';
 import { clientSecretIo, renderExport } from './secret-io';
 import { decryptValue, encryptValue } from './secret-crypto';
@@ -179,7 +181,7 @@ function listing(
   nextCursor: string | null = null,
   cursor?: string,
 ) {
-  const base = '/api/orgs/acme/projects/api/environments/production/secrets?limit=200';
+  const base = `/api/orgs/${ORG_ID}/projects/api/environments/production/secrets?limit=200`;
   const path = cursor === undefined ? base : `${base}&cursor=${cursor}`;
   responses.set(`GET ${path}`, { data, nextCursor });
 }
@@ -486,7 +488,7 @@ describe('the invite fragment flow', () => {
       fragmentSeed: typed.seed,
       invitationId: INVITATION_ID,
       grants: [served],
-      orgSlug: 'acme',
+      orgId: 'acme',
     });
 
     expect(outcome).toEqual({ opened: 1, failed: [] });
@@ -547,7 +549,7 @@ describe('the invite fragment flow', () => {
           ehkSealed: grant.ehkSealed,
         },
       ],
-      orgSlug: 'acme',
+      orgId: 'acme',
     });
 
     expect(outcome.opened).toBe(0);
@@ -624,7 +626,7 @@ describe('trust-on-first-use pinning', () => {
    * the transition that is refused is exactly one, and the other three are not.
    */
   describe('the encryption-mode pin', () => {
-    const key = modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' });
+    const key = modePinKey({ orgId: ORG_ID, projectId: PROJECT_ID, envSlug: 'production' });
 
     it('permits first contact and every direction except the downgrade', () => {
       const storage = memoryStorage();
@@ -664,7 +666,7 @@ describe('trust-on-first-use pinning', () => {
       const storage = memoryStorage();
       recordModePin(key, 'e2ee', storage);
 
-      const sibling = modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'staging' });
+      const sibling = modePinKey({ orgId: ORG_ID, projectId: PROJECT_ID, envSlug: 'staging' });
       expect(modeIsAllowed(readModePins(storage), sibling, 'server').allowed).toBe(true);
     });
 
@@ -677,47 +679,93 @@ describe('trust-on-first-use pinning', () => {
       expect(modeIsAllowed(readModePins(storage), key, 'server').allowed).toBe(true);
     });
 
-    it('is filed under the address the URL holds: the project by id', () => {
-      expect(key).toBe(`mode:acme/${PROJECT_ID}/production`);
+    it('is filed under the address the URL holds: the organisation and the project by id', () => {
+      expect(key).toBe(`mode:${ORG_ID}/${PROJECT_ID}/production`);
     });
   });
 
   /**
-   * Pins filed before project addresses named the id were filed under the slug.
-   * A browser that has seen an environment encrypted must stay pinned through
-   * the change of address, or the change itself is the moment a downgrade
-   * would be believed.
+   * Pins filed before project addresses named the id were filed under the
+   * project's slug, and before organisation addresses did, under the
+   * organisation's too. A browser that has seen an environment encrypted must
+   * stay pinned through every change of address, or the change itself is the
+   * moment a downgrade would be believed.
    */
-  describe('carrying slug-filed mode pins to the id', () => {
-    const legacy = (env: string) => `mode:acme/api/${env}`;
+  describe('carrying mode pins filed under an older address', () => {
+    // Before either moved to an id; then after the project did, before the
+    // organisation did.
+    const bothSlugs = (env: string) => `mode:acme/api/${env}`;
+    const orgSlug = (env: string) => `mode:acme/${PROJECT_ID}/${env}`;
     const current = (env: string) =>
-      modePinKey({ orgSlug: 'acme', projectId: PROJECT_ID, envSlug: env });
+      modePinKey({ orgId: ORG_ID, projectId: PROJECT_ID, envSlug: env });
+    const target = { orgId: ORG_ID, projectId: PROJECT_ID };
+    const aliases = { orgSlugs: ['acme'], projectSlugs: ['api'] };
 
     it('copies every environment of the project, so the downgrade is still refused', () => {
       const storage = memoryStorage();
-      recordModePin(legacy('production'), 'e2ee', storage);
-      recordModePin(legacy('staging'), 'server', storage);
+      recordModePin(bothSlugs('production'), 'e2ee', storage);
+      recordModePin(bothSlugs('staging'), 'server', storage);
 
-      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward(target, aliases, storage);
 
       const pins = readModePins(storage);
       expect(pins[current('production')]?.mode).toBe('e2ee');
       expect(pins[current('staging')]?.mode).toBe('server');
       expect(modeIsAllowed(pins, current('production'), 'server').allowed).toBe(false);
       // Kept, not moved: nothing is ever removed from the book.
-      expect(pins[legacy('production')]?.mode).toBe('e2ee');
+      expect(pins[bothSlugs('production')]?.mode).toBe('e2ee');
+    });
+
+    it('carries a pin filed under the organisation slug and the project id', () => {
+      const storage = memoryStorage();
+      recordModePin(orgSlug('production'), 'e2ee', storage);
+
+      carryModePinsForward(target, aliases, storage);
+
+      expect(modeIsAllowed(readModePins(storage), current('production'), 'server').allowed).toBe(
+        false,
+      );
+    });
+
+    /**
+     * The half that needs nothing from the server: a project id names one
+     * project in one organisation, so a pin filed under it is this project's
+     * whatever the organisation was called then. A server that lies about the
+     * organisation's slug, or a cold load that knows none, still finds it.
+     */
+    it('carries a pin filed under the project id even when no organisation slug is known', () => {
+      const storage = memoryStorage();
+      recordModePin(orgSlug('production'), 'e2ee', storage);
+
+      carryModePinsForward(target, { orgSlugs: ['a-slug-the-server-made-up'] }, storage);
+      carryModePinsForward(target, {}, storage);
+
+      expect(modeIsAllowed(readModePins(storage), current('production'), 'server').allowed).toBe(
+        false,
+      );
+    });
+
+    it('carries a pin filed under the organisation id and the project slug', () => {
+      // What an old organisation address leaves behind once it has been moved
+      // to the id, before the project's own address has.
+      const storage = memoryStorage();
+      recordModePin(`mode:${ORG_ID}/api/production`, 'e2ee', storage);
+
+      carryModePinsForward(target, { projectSlugs: ['api'] }, storage);
+
+      expect(readModePins(storage)[current('production')]?.mode).toBe('e2ee');
     });
 
     it('only ever makes the book stricter', () => {
       const storage = memoryStorage();
-      // Already pinned under the id: an `e2ee` there is never overwritten by an
+      // Already pinned under the ids: an `e2ee` there is never overwritten by an
       // older `server`, and a `server` there is lifted by an older `e2ee`.
       recordModePin(current('production'), 'e2ee', storage);
-      recordModePin(legacy('production'), 'server', storage);
+      recordModePin(bothSlugs('production'), 'server', storage);
       recordModePin(current('staging'), 'server', storage);
-      recordModePin(legacy('staging'), 'e2ee', storage);
+      recordModePin(bothSlugs('staging'), 'e2ee', storage);
 
-      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward(target, aliases, storage);
 
       const pins = readModePins(storage);
       expect(pins[current('production')]?.mode).toBe('e2ee');
@@ -729,10 +777,11 @@ describe('trust-on-first-use pinning', () => {
       recordModePin('mode:acme/api-v2/production', 'e2ee', storage);
       recordModePin('mode:zebra/api/production', 'e2ee', storage);
 
-      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward(target, aliases, storage);
 
       // `api-v2` shares the prefix `api` without the separator; `zebra` is
-      // another tenant's book entirely.
+      // another tenant's book entirely, and a project slug is unique only
+      // within its organisation.
       expect(readModePins(storage)[current('production')]).toBeUndefined();
     });
 
@@ -741,82 +790,171 @@ describe('trust-on-first-use pinning', () => {
       recordModePin(current('production'), 'e2ee', storage);
       const before = storage.getItem('xecret.pins.mode.v1');
 
-      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
-      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward(target, aliases, storage);
+      carryModePinsForward(target, aliases, storage);
 
       expect(storage.getItem('xecret.pins.mode.v1')).toBe(before);
     });
 
-    it('matches the slug in any case, as the citext column that resolved it did', () => {
-      // `/app/acme/API/production`, typed by hand, reached the same project and
+    it('matches the slugs in any case, as the citext columns that resolved them did', () => {
+      // `/app/Acme/API/production`, typed by hand, reached the same project and
       // filed its pin under the spelling in the URL.
       const storage = memoryStorage();
-      recordModePin('mode:acme/API/production', 'e2ee', storage);
+      recordModePin('mode:Acme/API/production', 'e2ee', storage);
 
-      carryModePinsForward('acme', PROJECT_ID, ['api'], storage);
+      carryModePinsForward(target, aliases, storage);
 
       expect(modeIsAllowed(readModePins(storage), current('production'), 'server').allowed).toBe(
         false,
       );
     });
 
-    it('takes the strictest of every slug it is given', () => {
+    it('takes the strictest of every spelling it is given', () => {
       const storage = memoryStorage();
       recordModePin('mode:acme/API/production', 'server', storage);
-      recordModePin(legacy('production'), 'e2ee', storage);
+      recordModePin(bothSlugs('production'), 'e2ee', storage);
 
-      carryModePinsForward('acme', PROJECT_ID, ['API', 'api', 'some-other-slug'], storage);
+      carryModePinsForward(
+        target,
+        { orgSlugs: ['acme'], projectSlugs: ['API', 'api', 'some-other-slug'] },
+        storage,
+      );
 
       expect(readModePins(storage)[current('production')]?.mode).toBe('e2ee');
     });
   });
 
   /**
+   * An old organisation address, `/app/acme/…`, is replaced with the id before
+   * anything knows which project comes next, so everything this browser filed
+   * under the organisation's slug moves to its id at once, keeping the rest of
+   * each address.
+   */
+  describe('carrying an organisation’s mode pins to its id', () => {
+    it('moves every project and environment, by id or by slug, and refuses the downgrade after', () => {
+      const storage = memoryStorage();
+      recordModePin(`mode:acme/${PROJECT_ID}/production`, 'e2ee', storage);
+      recordModePin('mode:acme/api/staging', 'e2ee', storage);
+      recordModePin('mode:acme/web/development', 'server', storage);
+
+      carryOrganizationModePinsForward(ORG_ID, ['acme'], storage);
+
+      const pins = readModePins(storage);
+      expect(pins[`mode:${ORG_ID}/${PROJECT_ID}/production`]?.mode).toBe('e2ee');
+      expect(pins[`mode:${ORG_ID}/api/staging`]?.mode).toBe('e2ee');
+      expect(pins[`mode:${ORG_ID}/web/development`]?.mode).toBe('server');
+      expect(modeIsAllowed(pins, `mode:${ORG_ID}/${PROJECT_ID}/production`, 'server').allowed).toBe(
+        false,
+      );
+      // And the project's own carry finishes the move from its slug.
+      carryModePinsForward(
+        { orgId: ORG_ID, projectId: PROJECT_ID },
+        { projectSlugs: ['api'] },
+        storage,
+      );
+      expect(
+        modeIsAllowed(
+          readModePins(storage),
+          modePinKey({ orgId: ORG_ID, projectId: PROJECT_ID, envSlug: 'staging' }),
+          'server',
+        ).allowed,
+      ).toBe(false);
+    });
+
+    it('matches the slug in any case, never weakens, and leaves other organisations alone', () => {
+      const storage = memoryStorage();
+      recordModePin('mode:ACME/api/production', 'e2ee', storage);
+      recordModePin(`mode:${ORG_ID}/api/staging`, 'e2ee', storage);
+      recordModePin('mode:acme/api/staging', 'server', storage);
+      recordModePin('mode:zebra/api/production', 'e2ee', storage);
+
+      carryOrganizationModePinsForward(ORG_ID, ['acme'], storage);
+
+      const pins = readModePins(storage);
+      expect(pins[`mode:${ORG_ID}/api/production`]?.mode).toBe('e2ee');
+      expect(pins[`mode:${ORG_ID}/api/staging`]?.mode).toBe('e2ee');
+      expect(Object.keys(pins).filter((key) => key.includes('zebra'))).toEqual([
+        'mode:zebra/api/production',
+      ]);
+    });
+
+    it('writes nothing for an organisation with nothing filed under its slug', () => {
+      const storage = memoryStorage();
+      recordModePin('mode:zebra/api/production', 'e2ee', storage);
+      const before = storage.getItem('xecret.pins.mode.v1');
+
+      carryOrganizationModePinsForward(ORG_ID, ['acme', ''], storage);
+      carryOrganizationModePinsForward(ORG_ID, [], storage);
+
+      expect(storage.getItem('xecret.pins.mode.v1')).toBe(before);
+    });
+  });
+
+  /**
    * Every reader of the book goes through `admitEncryptionMode`, which carries
-   * a project's slug-filed pins to its id *before* it judges a `server` answer —
-   * so nothing depends on the shell's trail having landed first, which a
-   * server that wanted the downgrade could simply hold back.
+   * an environment's pins from older addresses to its ids *before* it judges a
+   * `server` answer — so nothing depends on the shell's trail having landed
+   * first, which a server that wanted the downgrade could simply hold back.
    */
   describe('admitting an encryption mode', () => {
-    const target = { orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'production' };
+    const target = { orgId: ORG_ID, projectId: PROJECT_ID, envSlug: 'production' };
     const key = modePinKey(target);
 
-    it('refuses a server answer for an environment pinned under its old slug, with no trail at all', async () => {
+    it('refuses a server answer for an environment pinned under both old slugs, with no trail at all', async () => {
       const storage = memoryStorage();
       recordModePin('mode:acme/api/production', 'e2ee', storage);
 
-      // The slug arrives late — the trail held back, the project read slow —
-      // and the decision waits for it rather than racing it.
-      const slugs = vi.fn(
-        () => new Promise<readonly string[]>((resolve) => setTimeout(() => resolve(['api']), 5)),
+      // The slugs arrive late — the trail held back, the reads slow — and the
+      // decision waits for them rather than racing them.
+      const aliases = vi.fn(
+        () =>
+          new Promise<ModePinAliases>((resolve) =>
+            setTimeout(() => resolve({ orgSlugs: ['acme'], projectSlugs: ['api'] }), 5),
+          ),
       );
-      expect(await admitEncryptionMode(target, 'server', slugs, storage)).toBe(false);
-      expect(slugs).toHaveBeenCalledOnce();
+      expect(await admitEncryptionMode(target, 'server', aliases, storage)).toBe(false);
+      expect(aliases).toHaveBeenCalledOnce();
 
-      // Nothing was recorded under the id that would let a later answer through.
+      // Nothing was recorded under the ids that would let a later answer through.
       expect(readModePins(storage)[key]?.mode).toBe('e2ee');
-      expect(await admitEncryptionMode(target, 'server', async () => [], storage)).toBe(false);
+      expect(await admitEncryptionMode(target, 'server', async () => ({}), storage)).toBe(false);
     });
 
-    it('admits and pins a server answer when no slug-filed pin says otherwise', async () => {
+    it('refuses one pinned under the organisation slug alone, whatever the server says it was', async () => {
+      const storage = memoryStorage();
+      recordModePin(`mode:acme/${PROJECT_ID}/production`, 'e2ee', storage);
+
+      expect(
+        await admitEncryptionMode(target, 'server', async () => ({ orgSlugs: ['lies'] }), storage),
+      ).toBe(false);
+    });
+
+    it('admits and pins a server answer when no older pin says otherwise', async () => {
       const storage = memoryStorage();
 
-      expect(await admitEncryptionMode(target, 'server', async () => ['api'], storage)).toBe(true);
+      expect(
+        await admitEncryptionMode(
+          target,
+          'server',
+          async () => ({ orgSlugs: ['acme'], projectSlugs: ['api'] }),
+          storage,
+        ),
+      ).toBe(true);
       expect(readModePins(storage)[key]?.mode).toBe('server');
     });
 
-    it('asks for the slug only when it could matter', async () => {
+    it('asks for the aliases only when they could matter', async () => {
       const storage = memoryStorage();
-      const slugs = vi.fn(async () => ['api']);
+      const aliases = vi.fn(async () => ({ orgSlugs: ['acme'], projectSlugs: ['api'] }));
 
       // An `e2ee` answer is pinned as it stands — already the strictest entry.
-      expect(await admitEncryptionMode(target, 'e2ee', slugs, storage)).toBe(true);
+      expect(await admitEncryptionMode(target, 'e2ee', aliases, storage)).toBe(true);
       // And an address with a pin of its own has its answer already.
-      expect(await admitEncryptionMode(target, 'server', slugs, storage)).toBe(false);
-      expect(slugs).not.toHaveBeenCalled();
+      expect(await admitEncryptionMode(target, 'server', aliases, storage)).toBe(false);
+      expect(aliases).not.toHaveBeenCalled();
     });
 
-    it('fails, rather than believes server, when the slug cannot be learnt', async () => {
+    it('fails, rather than believes server, when the aliases cannot be learnt', async () => {
       const storage = memoryStorage();
       recordModePin('mode:acme/api/production', 'e2ee', storage);
 
@@ -824,10 +962,10 @@ describe('trust-on-first-use pinning', () => {
         admitEncryptionMode(
           target,
           'server',
-          () => Promise.reject(new Error('project held back')),
+          () => Promise.reject(new Error('organisation held back')),
           storage,
         ),
-      ).rejects.toThrow('project held back');
+      ).rejects.toThrow('organisation held back');
       expect(readModePins(storage)[key]).toBeUndefined();
     });
   });
@@ -849,7 +987,6 @@ describe('trust-on-first-use pinning', () => {
 
 describe('the client secret IO', () => {
   const context = {
-    orgSlug: 'acme',
     orgId: ORG_ID,
     projectId: 'api',
     envSlug: 'production',
@@ -965,7 +1102,7 @@ describe('the client secret IO', () => {
     });
 
     responses.set(
-      'GET /api/orgs/acme/projects/api/environments/production/secrets/API_KEY/versions/2',
+      `GET /api/orgs/${ORG_ID}/projects/api/environments/production/secrets/API_KEY/versions/2`,
       {
         secret: { id: secretId, ciphertext: oldCiphertext, envDataKeyId: EDK_ID, version: 2 },
       },
@@ -993,8 +1130,8 @@ describe('the client secret IO', () => {
 
   it('refuses a ciphertext sealed under a key that has been rotated away', async () => {
     const io = clientSecretIo(context, material);
-    responses.set('/api/orgs/acme/projects/api/environments/production/secrets/API_KEY', {});
-    responses.set('GET /api/orgs/acme/projects/api/environments/production/secrets/API_KEY', {
+    responses.set(`/api/orgs/${ORG_ID}/projects/api/environments/production/secrets/API_KEY`, {});
+    responses.set(`GET /api/orgs/${ORG_ID}/projects/api/environments/production/secrets/API_KEY`, {
       secret: {
         id: uuidv7(),
         ciphertext: 'xk2.gcm.AAAA',
@@ -1014,7 +1151,6 @@ describe('the client secret IO', () => {
 
 describe('import and export, client-side', () => {
   const context = {
-    orgSlug: 'acme',
     orgId: ORG_ID,
     projectId: 'api',
     envSlug: 'production',
@@ -1046,7 +1182,7 @@ describe('import and export, client-side', () => {
   it('parses locally, encrypts each entry, and posts a body the server accepts', async () => {
     const io = clientSecretIo(context, material);
 
-    responses.set('POST /api/orgs/acme/projects/api/environments/production/import', {
+    responses.set(`POST /api/orgs/${ORG_ID}/projects/api/environments/production/import`, {
       dryRun: false,
       counts: { create: 2, overwrite: 0, unchanged: 0 },
       items: [
@@ -1093,7 +1229,7 @@ describe('import and export, client-side', () => {
     const io = clientSecretIo(context, material);
     const secretId = uuidv7();
 
-    responses.set('POST /api/orgs/acme/projects/api/environments/production/import', {
+    responses.set(`POST /api/orgs/${ORG_ID}/projects/api/environments/production/import`, {
       dryRun: false,
       counts: { create: 0, overwrite: 1, unchanged: 0 },
       items: [{ name: 'DATABASE_URL', status: 'updated' }],
@@ -1161,7 +1297,7 @@ describe('import and export, client-side', () => {
     // dashboard reads only an environment's own values — so it asks for those
     // and nothing beyond. Reveal-all, comparison and export all go through this.
     responses.set(
-      'GET /api/orgs/acme/projects/api/environments/production/pull?bundle=2&layers=none',
+      `GET /api/orgs/${ORG_ID}/projects/api/environments/production/pull?bundle=2&layers=none`,
       {
         encryptionMode: 'e2ee',
         keys: keyStateWith(null),
@@ -1183,7 +1319,6 @@ describe('import and export, client-side', () => {
 
 describe('the in-flight crypto guard', () => {
   const context = {
-    orgSlug: 'acme',
     orgId: ORG_ID,
     projectId: 'api',
     envSlug: 'production',
@@ -1229,14 +1364,14 @@ describe('the in-flight crypto guard', () => {
     // The lock lands *inside* the operation: `runImport` has already taken its
     // lease and is awaiting the listing when the idle timer fires.
     responses.set(
-      'GET /api/orgs/acme/projects/api/environments/production/secrets?limit=200',
+      `GET /api/orgs/${ORG_ID}/projects/api/environments/production/secrets?limit=200`,
       () => {
         releaseEnvKeys();
         return { data: [], nextCursor: null };
       },
     );
 
-    responses.set('POST /api/orgs/acme/projects/api/environments/production/import', {
+    responses.set(`POST /api/orgs/${ORG_ID}/projects/api/environments/production/import`, {
       dryRun: false,
       counts: { create: 2, overwrite: 0, unchanged: 0 },
       items: [],
@@ -1276,7 +1411,7 @@ describe('the in-flight crypto guard', () => {
 
     const io = clientSecretIo(context, material);
     responses.set(
-      'GET /api/orgs/acme/projects/api/environments/production/secrets?limit=200',
+      `GET /api/orgs/${ORG_ID}/projects/api/environments/production/secrets?limit=200`,
       () => {
         releaseEnvKeys();
         // The store forgets immediately — a locked session must be able to reach
@@ -1287,7 +1422,7 @@ describe('the in-flight crypto guard', () => {
       },
     );
 
-    responses.set('POST /api/orgs/acme/projects/api/environments/production/import', {
+    responses.set(`POST /api/orgs/${ORG_ID}/projects/api/environments/production/import`, {
       dryRun: false,
       counts: { create: 1, overwrite: 0, unchanged: 0 },
       items: [],
@@ -1347,7 +1482,7 @@ describe('the in-flight crypto guard', () => {
     releaseEnvKeys();
 
     const outcome = await rotateEnvironment({
-      target: { orgSlug: 'acme', projectId: 'api', envSlug: 'production' },
+      target: { orgId: 'acme', projectId: 'api', envSlug: 'production' },
       vault,
       material,
       plan: planRotation({
@@ -1373,7 +1508,7 @@ describe('the in-flight crypto guard', () => {
 });
 
 describe('sealing against a key that moved', () => {
-  const target = { orgSlug: 'acme', projectId: 'api', envSlug: 'production' };
+  const target = { orgId: 'acme', projectId: 'api', envSlug: 'production' };
 
   it('re-reads, re-seals against the active key, and retries once', async () => {
     // ── The stale snapshot this closes ──

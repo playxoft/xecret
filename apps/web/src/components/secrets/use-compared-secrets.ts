@@ -161,7 +161,6 @@ export interface ComparedSecrets {
 }
 
 export function useComparedSecrets(
-  orgSlug: string,
   orgId: string,
   projectId: string,
   environments: readonly EnvironmentTarget[],
@@ -203,10 +202,10 @@ export function useComparedSecrets(
       // names and another moment's key.
       Promise.all([
         api.get<SecretListResponse>(
-          withQuery(apiPath.secrets(orgSlug, projectId, slug), { limit: PAGE_SIZE }),
+          withQuery(apiPath.secrets(orgId, projectId, slug), { limit: PAGE_SIZE }),
           { signal: controller.signal },
         ),
-        comparedIo({ orgSlug, orgId, projectId, envSlug: slug }, controller.signal),
+        comparedIo({ orgId, projectId, envSlug: slug }, controller.signal),
       ])
         .then(async ([response, io]) => {
           // Before the decryptions, not only after them: a comparison dropped
@@ -267,7 +266,7 @@ export function useComparedSecrets(
     }
 
     return () => controller.abort();
-  }, [orgSlug, orgId, projectId, key, attempt]);
+  }, [orgId, projectId, key, attempt]);
 
   /**
    * The pull in flight per environment, so a second "Reveal all" cannot start a
@@ -386,7 +385,7 @@ export function useComparedSecrets(
  * names are still readable and are most of what a comparison is for.
  */
 async function comparedIo(
-  context: { orgSlug: string; orgId: string; projectId: string; envSlug: string },
+  context: { orgId: string; projectId: string; envSlug: string },
   signal: AbortSignal,
 ): Promise<SecretIo | null> {
   try {

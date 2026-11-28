@@ -86,7 +86,7 @@ function render(org: SessionOrganization): string {
       createElement(
         Toaster,
         null,
-        createElement(WebhooksCard, { orgSlug: 'acme', organization: org }),
+        createElement(WebhooksCard, { orgId: 'acme', organization: org }),
       ),
     ),
   );

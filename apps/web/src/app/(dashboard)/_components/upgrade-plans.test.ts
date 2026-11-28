@@ -11,19 +11,31 @@ import {
   seatFloorCaveat,
 } from '@/components/plans/pricing-content';
 import type { MatrixRow, PricingFaqId } from '@/components/plans/pricing-content';
+import { TRIAL_PLANS as SERVER_TRIAL_PLANS } from '@/server/billing/config';
 import {
   billingChoiceFromQuery,
   billingTerm,
+  CHANGE_PITCH,
+  CHANGE_REASSURANCE,
+  CHECKOUT_REASSURANCE,
   COMPARISON_COLUMNS,
   comparisonFor,
   ENTERPRISE_CAVEAT,
   ENTERPRISE_PRICE,
   FREE_PRICE,
   nextCeiling,
+  PAID_OFFERS,
   pastTheAllowance,
   PLAN_OFFERS,
+  PLAN_PITCH,
   PURCHASE_FAQ,
+  RECOMMENDED_LABEL,
+  savingLine,
   switchPlanHref,
+  TRIAL_DAYS,
+  TRIAL_PLANS,
+  trialNote,
+  TRIALING_CHANGE_NOTE,
   USD_PRICES,
   YEARLY_SAVING_UP_TO,
   yearlySaving,
@@ -247,29 +259,62 @@ describe('every claim is one the product keeps', () => {
       team: PLANS.team.limits,
     };
 
-    expect(offer('free').features).toContain(
-      `${free.environmentsPerProject} environments per project`,
-    );
     expect(offer('free').features).toContain(`${free.seats} members`);
-    expect(offer('free').features).toContain(`${free.serviceTokens} service tokens for CI`);
+    expect(offer('free').features).toContain(
+      `${free.projects} projects, ${free.environmentsPerProject} environments each`,
+    );
     expect(offer('free').features).toContain(`${free.auditRetentionDays} days of audit history`);
 
     expect(offer('free').features).toContain(
-      `${FREE_ORGANIZATIONS_PER_ACCOUNT} free organisations per account, ${free.projects} projects in each`,
+      `${FREE_ORGANIZATIONS_PER_ACCOUNT} free organisations per account`,
+    );
+    expect(offer('pro').features).toContain(
+      `${pro.projects} projects, ${pro.environmentsPerProject} environments each`,
     );
     // A plan covers the organisation it is bought for: no organisation count.
-    expect(offer('pro').features).toContain(`${pro.projects} projects`);
-    expect(offer('team').features.join(' ')).toContain(`${team.projects} projects`);
     for (const id of ['pro', 'team'] as const) {
       expect(offer(id).features.join(' ')).not.toMatch(/organisations?/);
     }
     expect(offer('pro').features).toContain(`${pro.auditRetentionDays} days of audit history`);
-    expect(offer('team').features).toContain(`${team.serviceTokens} service tokens for CI`);
+    expect(offer('team').features).toContain(
+      `${team.projects} projects, ${team.environmentsPerProject} environments each`,
+    );
     expect(offer('team').features).toContain(`${team.auditRetentionDays} days of audit history`);
 
     for (const id of ['free', 'pro', 'team'] as const) {
       expect(offer(id).includedFetches).toBe(PLANS[id].limits.includedFetchesPerMonth);
     }
+  });
+
+  /**
+   * The cards name only what decides a plan: members, room (projects and
+   * environments), audit history, the fetch allowance, and the capabilities a
+   * route gates. Every other row is the comparison table's. A plan that builds
+   * on the one below says so, and the claim is checked against the engine:
+   * every limit at least the lower plan's, and every flag the lower plan has.
+   */
+  it('lists only what changes, on a plan that really has everything below it', () => {
+    expect(PLAN_OFFERS.map((o) => [o.id, o.lead])).toEqual([
+      ['free', null],
+      ['pro', 'Everything in Free, plus'],
+      ['team', 'Everything in Pro, plus'],
+    ]);
+    for (const [below, above] of [
+      ['free', 'pro'],
+      ['pro', 'team'],
+    ] as const) {
+      for (const [key, limit] of Object.entries(PLANS[above].limits)) {
+        const lower = PLANS[below].limits[key as keyof typeof PLANS.free.limits];
+        if (lower === null) expect(limit, `${above} ${key}`).toBeNull();
+        else if (limit !== null) expect(limit, `${above} ${key}`).toBeGreaterThanOrEqual(lower);
+      }
+      for (const [flag, on] of Object.entries(PLANS[below].features)) {
+        if (on) expect(PLANS[above].features[flag as keyof PlanFeatures], flag).toBe(true);
+      }
+    }
+    // A short list: the table below the cards has every row.
+    for (const card of PLAN_OFFERS) expect(card.features.length, card.id).toBeLessThanOrEqual(4);
+    expect(PAID_OFFERS.map((o) => o.id)).toEqual(['pro', 'team']);
   });
 
   it('calls Pro unlimited on members while the engine leaves it uncapped — and nothing more', () => {
@@ -469,11 +514,163 @@ describe('every claim is one the product keeps', () => {
     // This page's cards stop at Team, so they have no reason to name them.
     expect(COPY).not.toMatch(/custom roles/i);
   });
+});
 
-  it('mentions a trial if and only if the pricing page does', () => {
-    const ours = [COPY, ...PURCHASE_FAQ.map((item) => item.answer)].join('\n');
-    const theirs = [PRICING, ...PRICING_FAQ.map((item) => item.answer)].join('\n');
-    expect(/\btrial\b/i.test(ours)).toBe(/\btrial\b/i.test(theirs));
+/** A source file, with its line breaks and indentation folded into single spaces. */
+function prose(...path: string[]): string {
+  return readFileSync(join(SRC, ...path), 'utf8').replace(/\s+/g, ' ');
+}
+
+const TERMS = prose('app', 'terms', 'page.tsx');
+
+describe('the free trial', () => {
+  it('is offered for the plans whose checkout the server lets start one, and no others', () => {
+    expect([...TRIAL_PLANS].sort()).toEqual([...SERVER_TRIAL_PLANS].sort());
+    for (const plan of PAID) {
+      expect(trialNote(plan) !== null, plan).toBe(SERVER_TRIAL_PLANS.has(plan));
+    }
+  });
+
+  it('is as long as the server says Team’s is', () => {
+    // The length lives on the Dodo product; the server's own notes are where
+    // the codebase states it.
+    expect(TRIAL_DAYS).toBe(14);
+    expect(prose('server', 'billing', 'config.ts')).toContain("Team's fourteen days");
+    expect(prose('server', 'billing', 'service.ts')).toContain('fourteen-day trial');
+    expect(trialNote('team')).toContain(`${TRIAL_DAYS}-day free trial`);
+  });
+
+  it('is a condition, once per organisation and per account, as the terms say', () => {
+    expect(TERMS).toContain(
+      'Each organisation, and each person’s account, has one free trial: a later subscription, for that organisation or by that person for any organisation, starts with a paid period.',
+    );
+    expect(trialNote('team')).toContain(
+      'if neither this organisation nor your account has had one',
+    );
+  });
+
+  it('promises the reminders the terms promise, and nothing about a card', () => {
+    expect(TERMS).toContain(
+      'A trial that runs to its end is charged only after the owners have been emailed three days and one day before it',
+    );
+    expect(trialNote('team')).toContain('Owners are emailed 3 days and 1 day before it ends.');
+    // Whether a card is taken to start one is a setting on the Dodo product.
+    expect(trialNote('team')).not.toMatch(/card/i);
+  });
+
+  it('says what moving up during a trial does, in the terms’ words', () => {
+    expect(TERMS).toContain(
+      'moving to a higher plan, or from monthly to yearly, during a trial ends the trial there and is charged at once',
+    );
+    expect(TRIALING_CHANGE_NOTE).toMatch(/Moving up now ends the trial.*charged at once/);
+  });
+
+  it('is never on a card or in an answer, only beside the checkout that starts it', () => {
+    const shared = [COPY, ...PURCHASE_FAQ.map((item) => item.answer)].join('\n');
+    expect(shared).not.toMatch(/\btrial\b/i);
+  });
+});
+
+describe('what is said beside the button', () => {
+  const CHECKOUT_ROUTE = prose(
+    'app',
+    'api',
+    'orgs',
+    '[orgSlug]',
+    'billing',
+    'checkout',
+    'route.ts',
+  );
+
+  function said(id: string): string {
+    const item = [...CHECKOUT_REASSURANCE, ...CHANGE_REASSURANCE].find((r) => r.id === id);
+    if (item === undefined) throw new Error(`nothing is said for ${id}`);
+    return item.text;
+  }
+
+  it('names who takes the payment, and that we never see the card', () => {
+    expect(CHECKOUT_ROUTE).toContain('We never see the card.');
+    expect(TERMS).toContain('Dodo is the merchant of record');
+    expect(said('provider')).toBe(
+      'Paid through Dodo Payments, our merchant of record. We never see your card.',
+    );
+  });
+
+  it('says the price is shown in the billing currency, with tax added where due', () => {
+    expect(TERMS).toContain('the checkout shows the price in your currency before you pay');
+    expect(TERMS).toContain(
+      'Prices exclude VAT and sales tax, which Dodo Payments adds where they are due.',
+    );
+    expect(said('currency')).toContain(
+      'Checkout shows the price in your billing currency before you pay',
+    );
+  });
+
+  it('says how cancelling works, as the terms do, and promises no refund', () => {
+    expect(TERMS).toContain(
+      'Cancelling stops the next renewal, and the organisation returns to Free at the end of the period you have paid for.',
+    );
+    expect(said('cancel')).toContain(
+      'The plan runs to the end of the period you paid for, then moves to Free.',
+    );
+    for (const item of [...CHECKOUT_REASSURANCE, ...CHANGE_REASSURANCE]) {
+      expect(item.text, item.id).not.toMatch(/refund|money back|guarantee/i);
+    }
+  });
+
+  it('says what a change does, as the terms do', () => {
+    expect(TERMS).toContain(
+      'Moving to a higher plan, or from monthly to yearly, takes effect at once: the unused part of the current period is credited',
+    );
+    expect(TERMS).toContain(
+      'Moving to a lower plan takes effect at the end of the period already paid for.',
+    );
+    expect(CHANGE_PITCH.subhead).toBe(
+      'Moving up takes effect at once, with the unused part of this period credited. Moving down takes effect when the period you have paid for ends.',
+    );
+    expect(TERMS).toContain('they stay readable and editable');
+    expect(said('kept')).toContain('stay readable and editable');
+  });
+});
+
+describe('what the chooser leads with', () => {
+  it('says what a paid plan raises, and every paid plan does raise it', () => {
+    expect(PLAN_PITCH.subhead).toContain(
+      'raise the limits on members, environments and secret fetches',
+    );
+    for (const plan of PAID) {
+      const limits = PLANS[plan].limits;
+      expect(limits.seats === null || limits.seats > (PLANS.free.limits.seats ?? 0), plan).toBe(
+        true,
+      );
+      expect(limits.environmentsPerProject ?? Infinity).toBeGreaterThan(
+        PLANS.free.limits.environmentsPerProject ?? Infinity,
+      );
+      expect(limits.includedFetchesPerMonth).toBeGreaterThan(
+        PLANS.free.limits.includedFetchesPerMonth,
+      );
+    }
+  });
+
+  it('recommends Team for what it is built for, and claims no popularity', () => {
+    expect(RECOMMENDED_LABEL).toBe('Recommended for teams');
+    expect(RECOMMENDED_LABEL).not.toMatch(/popular|best|favourite|most/i);
+  });
+});
+
+describe('the saving beside a figure', () => {
+  it('is each plan’s own, from the two rates the card prints', () => {
+    expect(savingLine('pro', 'yearly')).toBe(`Save ${yearlySaving('pro')}% on monthly`);
+    expect(savingLine('team', 'yearly')).toBe(`Save ${yearlySaving('team')}% on monthly`);
+    expect(savingLine('pro', 'monthly')).toBe(`Save ${yearlySaving('pro')}% with yearly billing`);
+    expect(savingLine('team', 'monthly')).toBe(`Save ${yearlySaving('team')}% with yearly billing`);
+    // Pro's 37.5 and Team's 36.8, floored: never more than the arithmetic.
+    expect([yearlySaving('pro'), yearlySaving('team')]).toEqual([37, 36]);
+  });
+
+  it('is not said on Free, which has nothing to save on', () => {
+    expect(savingLine('free', 'yearly')).toBeNull();
+    expect(savingLine('free', 'monthly')).toBeNull();
   });
 });
 

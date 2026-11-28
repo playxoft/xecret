@@ -53,7 +53,7 @@ import type { InviteKeyGrant } from './types';
  * fragment is cleared from the address bar as soon as it has been read.
  */
 export interface InviteKeyStepProps {
-  orgSlug: string;
+  orgId: string;
   invitationId: string;
   grants: readonly InviteKeyGrant[];
   /**
@@ -84,7 +84,7 @@ type Phase =
   { kind: 'entering' } | { kind: 'working' } | { kind: 'done'; opened: number; failed: number };
 
 export function InviteKeyStep({
-  orgSlug,
+  orgId,
   invitationId,
   grants,
   vaultGate,
@@ -151,7 +151,7 @@ export function InviteKeyStep({
         fragmentSeed: seed,
         invitationId,
         grants,
-        orgSlug,
+        orgId,
       });
 
       if (outcome.opened === 0) {

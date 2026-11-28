@@ -61,9 +61,11 @@ const REVEAL_DURATION_MS = 180_000;
 const MASK = '•'.repeat(18);
 
 export interface OverridesCardProps {
-  orgSlug: string;
-  /** From the session. An AAD component of every override, so nothing opens without it. */
-  orgId: string | null;
+  /**
+   * The organisation, as the address names it. Also an AAD component of every
+   * override: the id this browser addressed, never one a response supplied.
+   */
+  orgId: string;
   projectId: string;
   envSlug: string;
   /** From the environment's key state. `null` while it is still being read. */
@@ -179,7 +181,6 @@ export function setOverrideGate({
  * the set dialog asks for the vault before it offers a field to type into.
  */
 export function OverridesCard({
-  orgSlug,
   orgId,
   projectId,
   envSlug,
@@ -191,10 +192,10 @@ export function OverridesCard({
   const vault = useVaultKeys();
   const { toast } = useToast();
   const e2ee = encryptionMode === 'e2ee';
-  const target: OverrideTarget = { orgSlug, projectId, envSlug };
+  const target: OverrideTarget = { orgId, projectId, envSlug };
 
   const list = useApiResource<OverrideListResponse>(
-    e2ee ? apiPath.overrides(orgSlug, projectId, envSlug) : null,
+    e2ee ? apiPath.overrides(orgId, projectId, envSlug) : null,
   );
 
   const [removing, setRemoving] = useState<StoredOverride | null>(null);
@@ -211,7 +212,7 @@ export function OverridesCard({
       ? null
       : featureLockFrom('personalOverrides', { enabled: canSet, upgradeTo }));
   /** Every AAD component this browser needs, present and unlocked. */
-  const ready = vault !== null && orgId !== null && environmentId !== null;
+  const ready = vault !== null && environmentId !== null;
   const overrides = list.data?.overrides ?? [];
   const shown = overridesCardShown({ encryptionMode, data: list.data, error: list.error });
 
@@ -259,7 +260,7 @@ export function OverridesCard({
                 Unlock your vault to reveal or set an override. The list below needs no key: it
                 holds names and dates, never values.
               </p>
-            ) : orgId === null || environmentId === null ? (
+            ) : environmentId === null ? (
               <p className="text-fg-subtle text-sm">Reading this environment’s key state…</p>
             ) : null}
 
@@ -354,7 +355,7 @@ export function OverridesCard({
                 data: list.data,
                 error: list.error,
                 vaultUnlocked: vault !== null,
-                keyStateRead: orgId !== null && environmentId !== null,
+                keyStateRead: environmentId !== null,
               })}
               initialName={setting}
               envSlug={envSlug}

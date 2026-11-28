@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
@@ -92,7 +92,7 @@ const production = (archive: OpenedArchive) =>
 const ready = (environmentId: string): TargetState => ({
   status: 'ready',
   environmentId,
-  io: serverSecretIo({ orgSlug: 'acme', orgId: 'o', projectId: 'api', envSlug: 'x' }),
+  io: serverSecretIo({ orgId: 'o', projectId: 'api', envSlug: 'x' }),
 });
 
 describe('the default mapping', () => {
@@ -171,7 +171,6 @@ describe('importing into an end-to-end-encrypted environment', () => {
     holdEnvKey(material);
     const io = clientSecretIo(
       {
-        orgSlug: 'acme',
         orgId: '0192f0a1-0000-7000-8000-0000000000e3',
         projectId: 'api',
         envSlug: 'production',
@@ -218,7 +217,6 @@ describe('importing into an end-to-end-encrypted environment', () => {
   it('goes through the ordinary server import for a server-mode environment', async () => {
     posted.length = 0;
     const io = serverSecretIo({
-      orgSlug: 'acme',
       orgId: 'o',
       projectId: 'api',
       envSlug: 'legacy',
@@ -235,7 +233,6 @@ describe('importing into an end-to-end-encrypted environment', () => {
 
 describe('a target environment', () => {
   const context = {
-    orgSlug: 'acme',
     orgId: 'o',
     projectId: '0192f0a1-0000-7000-8000-0000000000e9',
     projectSlug: 'api',
@@ -271,6 +268,12 @@ describe('a target environment', () => {
     });
     return store;
   }
+
+  // The organisation, which a `server` answer with no pin of its own reads for
+  // its legacy slug before the answer is judged.
+  beforeEach(() => {
+    answers.set('/api/orgs/o', { organization: { id: 'o', slug: 'acme' } });
+  });
 
   afterEach(() => {
     answers.clear();
@@ -309,6 +312,32 @@ describe('a target environment', () => {
 
     answers.set('/keys', keysAnswer('server'));
     expect(await ioForEnvironment(context)).toMatchObject({ reason: 'downgraded' });
+  });
+
+  it('is refused as a downgrade on a pin filed under the organisation’s slug, before its id', async () => {
+    const store = withStorage();
+    store.set(
+      'xecret.pins.mode.v1',
+      JSON.stringify({
+        [`mode:acme/${context.projectId}/production`]: {
+          mode: 'e2ee',
+          firstSeen: '2026-01-01T00:00:00Z',
+        },
+      }),
+    );
+
+    answers.set('/keys', keysAnswer('server'));
+    expect(await ioForEnvironment(context)).toMatchObject({ reason: 'downgraded' });
+  });
+
+  it('fails, never believes server, when the organisation cannot be read', async () => {
+    withStorage();
+    answers.set('/api/orgs/o', new Error('held back'));
+    answers.set('/keys', keysAnswer('server'));
+    expect(await ioForEnvironment(context)).toMatchObject({
+      status: 'unavailable',
+      reason: 'failed',
+    });
   });
 
   it('says a locked vault is the problem when it is', async () => {
@@ -375,7 +404,6 @@ describe('the dialog', () => {
       createElement(ImportArchiveDialog, {
         open: true,
         onOpenChange: () => {},
-        orgSlug: 'acme',
         orgId: 'o',
         projectId: 'api',
         projectSlug: 'api',
@@ -395,7 +423,6 @@ describe('the dialog', () => {
       createElement(ImportArchiveDialog, {
         open: true,
         onOpenChange: () => {},
-        orgSlug: 'acme',
         orgId: 'o',
         projectId: 'api',
         projectSlug: 'api',

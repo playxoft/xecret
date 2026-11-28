@@ -68,14 +68,14 @@ import type { EffectiveProject, Member, MemberAccessResponse } from './types';
  */
 
 export function MemberAccessPanel({
-  orgSlug,
+  orgId,
   member,
   mayEdit,
   grantable,
   onCollapse,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   member: Member;
   /** Whether the viewer may change grants; the server re-checks every change. */
   mayEdit: boolean;
@@ -89,7 +89,7 @@ export function MemberAccessPanel({
   /** Grants changed on the server; the member list's project reach is stale. */
   onChanged: () => void;
 }) {
-  const access = useApiResource<MemberAccessResponse>(apiPath.memberAccess(orgSlug, member.id));
+  const access = useApiResource<MemberAccessResponse>(apiPath.memberAccess(orgId, member.id));
   const { toast } = useToast();
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
@@ -150,7 +150,7 @@ export function MemberAccessPanel({
       // applied cells harmlessly.
       for (const [cell, level] of staged) {
         const [projectSlug, environmentSlug] = cell.split('/') as [string, string];
-        await api.put(apiPath.memberGrants(orgSlug, member.id), {
+        await api.put(apiPath.memberGrants(orgId, member.id), {
           projectSlug,
           environmentSlug,
           accessLevel: level,
@@ -191,7 +191,7 @@ export function MemberAccessPanel({
     setSaving(true);
     setError(null);
     try {
-      await api.put(apiPath.memberGrants(orgSlug, member.id), {
+      await api.put(apiPath.memberGrants(orgId, member.id), {
         projectSlug: project.slug,
         environmentSlug: null,
         accessLevel: 'none',
@@ -200,7 +200,7 @@ export function MemberAccessPanel({
         (grant) => grant.projectSlug === project.slug && grant.environmentSlug !== null,
       );
       for (const grant of environmentGrants) {
-        await api.delete(apiPath.memberGrants(orgSlug, member.id), {
+        await api.delete(apiPath.memberGrants(orgId, member.id), {
           projectSlug: grant.projectSlug,
           environmentSlug: grant.environmentSlug,
         });

@@ -1,18 +1,16 @@
 import { and, asc, count, desc, eq, exists, gt, isNull, ne, or, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import {
   AWAITING_ORGANIZATIONS_PER_ACCOUNT,
   FREE_ORGANIZATIONS_PER_ACCOUNT,
 } from '@xecret/core/entitlements';
-import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
-import { uuidv7 } from '@xecret/core/ids';
+import { isUuid, uuidv7 } from '@xecret/core/ids';
 import {
   ORGANIZATION_NAME_MAX_LENGTH,
   ORGANIZATION_SLUG_MAX_LENGTH,
-  isReservedSlug,
-  slugify,
   truncateName,
 } from '@xecret/core/validation';
 import { sessions, users } from '../schema/identity';
@@ -61,18 +59,6 @@ const SLUG_UNIQUE_CONSTRAINT = 'organizations_slug_unique';
 
 const WORKOS_ORG_ID_UNIQUE_CONSTRAINT = 'organizations_workos_org_id_unique';
 
-/**
- * How many `-2`, `-3`, … suffixes to try before falling back to randomness.
- *
- * Eight indexed lookups is a cheap price for a readable slug; beyond that the
- * name is contested enough that a random suffix is both faster and no less
- * meaningful than `acme-14`.
- */
-const SLUG_ATTEMPT_LIMIT = 8;
-
-/** Used when an email address yields nothing sluggable at all. */
-const FALLBACK_SLUG_BASE = 'org';
-
 const FALLBACK_ORGANIZATION_NAME = 'My Organisation';
 
 /**
@@ -80,9 +66,10 @@ const FALLBACK_ORGANIZATION_NAME = 'My Organisation';
  *
  * ── Why a join and not a second lookup ──
  * Entitlements are the third authorization gate, so they are needed on every
- * tenant-scoped request. `resolveOrg` already reads the organisation by slug;
- * adding a second query to answer a billing question would put a round trip on
- * the path of every secret fetch, for a value that changes about once a month.
+ * tenant-scoped request. `resolveOrg` already reads the organisation, by its
+ * id or by a legacy slug; adding a second query to answer a billing question
+ * would put a round trip on the path of every secret fetch, for a value that
+ * changes about once a month.
  *
  * A `LEFT JOIN` rather than an inner one: migration 0016 backfilled every
  * organisation and provisioning inserts alongside, so the row is always there —
@@ -100,26 +87,80 @@ export interface OrganizationWithEntitlements {
  * that the projection carries no provider identifier, without a database.
  */
 export function organizationBySlugWithEntitlementsQuery(exec: Executor, slug: string) {
+  return organizationWithEntitlementsQuery(exec, eq(organizations.slug, slug));
+}
+
+/**
+ * The same row, found by the organisation's id: what every address the
+ * dashboard builds names it by.
+ *
+ * @internal Exported beside the slug query so a test can assert that both
+ * carry the same join and the same `deleted_at` filter.
+ */
+export function organizationByIdWithEntitlementsQuery(exec: Executor, orgId: string) {
+  return organizationWithEntitlementsQuery(exec, eq(organizations.id, orgId));
+}
+
+/**
+ * One query, two keys. Written once so that the id and the slug can never
+ * disagree about what a live organisation is, or about which columns ride
+ * along with it.
+ */
+function organizationWithEntitlementsQuery(exec: Executor, key: SQL) {
   return exec
     .select({ organization: organizations, entitlements: entitlementColumns })
     .from(organizations)
     .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
-    .where(and(eq(organizations.slug, slug), isNull(organizations.deletedAt)))
+    .where(and(key, isNull(organizations.deletedAt)))
     .limit(1);
 }
 
+/**
+ * An organisation by its legacy slug.
+ *
+ * Kept for the addresses that still carry one: a CLI installed before
+ * organisations were named by id, an old bookmark, an integration written
+ * against the API. Nothing new is addressed this way, and nothing shows a
+ * person the slug any more; see `organizationSlugFor`.
+ */
 export async function findOrganizationBySlugWithEntitlements(
   exec: Executor,
   slug: string,
 ): Promise<OrganizationWithEntitlements | null> {
   const [row] = await organizationBySlugWithEntitlementsQuery(exec, slug);
-  if (!row) return null;
-  // Stored on the organisation (migration 0037, `free-allowance.ts`), and only
-  // ever set on a Free one; `resolveEntitlements` asks the plan again anyway.
+  return row ? withAwaitingPaidPlan(row) : null;
+}
+
+/**
+ * An organisation by its id, with its entitlements: what `resolveOrg` reads
+ * for every address the dashboard and a current CLI build.
+ *
+ * `null` for a value that is not a canonical UUID, without asking the
+ * database: `organizations.id` is a `uuid` column, and PostgreSQL answers a
+ * malformed one with an error rather than with no row, which would turn a
+ * mistyped address into a 500.
+ */
+export async function findOrganizationByIdWithEntitlements(
+  exec: Executor,
+  orgId: string,
+): Promise<OrganizationWithEntitlements | null> {
+  if (!isUuid(orgId)) return null;
+  const [row] = await organizationByIdWithEntitlementsQuery(exec, orgId);
+  return row ? withAwaitingPaidPlan(row) : null;
+}
+
+/**
+ * The row either lookup found, with the organisation's stored awaiting state
+ * carried on its entitlements, so the id and the legacy slug answer alike.
+ *
+ * Stored on the organisation (migration 0037, `free-allowance.ts`), and only
+ * ever set on a Free one; `resolveEntitlements` asks the plan again anyway. A
+ * missing subscription row reads as Free everywhere, and so it does here: one
+ * that is waiting is still waiting, so the answer carries the flag on the Free
+ * row the migration would have written.
+ */
+function withAwaitingPaidPlan(row: OrganizationWithEntitlements): OrganizationWithEntitlements {
   const awaitingPaidPlan = row.organization.awaitingPaidPlanSince !== null;
-  // A missing subscription row reads as Free everywhere, and so it does here:
-  // one that is waiting is still waiting, so the answer carries the flag on
-  // the Free row the migration would have written.
   if (row.entitlements === null) {
     return {
       organization: row.organization,
@@ -550,7 +591,7 @@ export interface HeldOrganizations {
  *    organisation does not spend this account's allowance. Ten colleagues
  *    handing somebody an owner seat must not stop them starting their own.
  *  - **an active membership**, so that a place can always be given back. The
- *    only way to release one is `DELETE /api/orgs/{slug}`, which resolves
+ *    only way to release one is `DELETE /api/orgs/{org}`, which resolves
  *    through `resolveOrg` and answers 404 without a membership — so counting
  *    `created_by` alone meant an organisation you were removed from stood
  *    against your ceiling for ever, with no request you could make to clear it.
@@ -567,10 +608,8 @@ export interface HeldOrganizations {
  * member cannot delete the organisation either, so a suspension frees the place
  * rather than freezing it.
  *
- * Soft-deleted organisations are excluded, so deleting one frees a place. Note
- * what that does *not* give back: `organizations_slug_unique` is a total
- * constraint, so the slug stays claimed for ever. The limit bounds the standing
- * cost; only the rate limiter bounds the churn.
+ * Soft-deleted organisations are excluded, so deleting one frees a place. The
+ * limit bounds the standing cost; only the rate limiter bounds the churn.
  *
  * ── Why a bounded row scan rather than `count(*)` ──
  * The caller is asking "is this account at its limit", which `LIMIT n` answers
@@ -619,56 +658,36 @@ export function organizationsHeldByQuery(exec: Executor, userId: string, limit: 
 }
 
 /**
- * Finds a free slug close to what the caller asked for.
+ * The slug an organisation is created with: its own id, written in base 36 and
+ * padded to `ORGANIZATION_SLUG_MAX_LENGTH`.
  *
- * Soft-deleted organisations still hold their slug — `organizations_slug_unique`
- * is a total constraint, not a partial index — so this deliberately does not
- * filter on `deleted_at`. A slug that reads as free but fails on insert would be
- * worse than one that is honestly taken.
+ * ── Why an organisation still has a slug at all ──
+ * It is no longer anybody's identifier. Every address the dashboard builds,
+ * every link the server mails and every path a current CLI calls names an
+ * organisation by its id, and nothing shows a person the slug. The column
+ * stays, `NOT NULL` and unique, because older clients still address
+ * organisations by it (`resolveOrg` takes either), and dropping it is a
+ * migration of its own for another day.
  *
- * The suffix search is bounded. Looping until something is free is how a
- * contested name turns a sign-up into an unbounded number of queries, so after
- * `SLUG_ATTEMPT_LIMIT` tries this switches to a random suffix and stops.
+ * ── Why this spelling ──
+ * Derived rather than chosen, so creating an organisation asks for a name and
+ * nothing else, and the name may be anything: two organisations called "Acme"
+ * are two organisations. Derived from the id rather than from the name,
+ * because the id is unique already and a bijection of it is unique by
+ * construction: no lookup, no suffix search, no race between two people who
+ * typed the same name, and nothing a stranger can learn by trying one.
+ *
+ * Base 36 because a 128-bit id is at most 25 base-36 digits, which is exactly
+ * the organisation slug ceiling, so the result is a valid organisation slug:
+ * lowercase letters and digits, no hyphens, never shaped like a UUID, and far
+ * too long to collide with a reserved word. The padding makes every such slug
+ * the same length, which says plainly that a person never picked it.
  */
-export async function generateUniqueOrgSlug(exec: Executor, desiredSlug: string): Promise<string> {
-  const base = slugify(desiredSlug) || FALLBACK_SLUG_BASE;
-
-  for (let attempt = 0; attempt < SLUG_ATTEMPT_LIMIT; attempt += 1) {
-    const candidate = orgSlugCandidate(base, attempt);
-    if (isReservedSlug(candidate)) continue;
-    if (!(await isSlugTaken(exec, candidate))) return candidate;
-  }
-
-  const candidate = withSlugSuffix(base, randomSlugSuffix());
-  if (await isSlugTaken(exec, candidate)) {
-    throw new RepositoryError('conflict', 'Could not derive a free organisation slug.');
-  }
-
-  return candidate;
-}
-
-/**
- * Whether an organisation slug is free to claim.
- *
- * Answers the question the create form asks while somebody types. Two properties
- * matter, and both are about agreeing with the insert that follows:
- *
- *  - **Soft-deleted organisations still hold their slug.** The unique constraint
- *    is total, not partial, so this does not filter `deleted_at` — for the same
- *    reason `generateUniqueOrgSlug` does not. A form that says "available" and
- *    then 409s is worse than one that says "taken".
- *  - **Reserved slugs are unavailable**, not merely invalid later. They would
- *    shadow an application route for every tenant, so the honest answer to "can
- *    I have this one?" is no.
- *
- * It is a snapshot, never a reservation: the slug can be claimed by somebody
- * else between this answer and the insert. That race is settled by the unique
- * index, which is the only thing that can settle it — this check exists to make
- * the common case legible, not to make the rare one impossible.
- */
-export async function isOrgSlugAvailable(exec: Executor, slug: string): Promise<boolean> {
-  if (isReservedSlug(slug)) return false;
-  return !(await isSlugTaken(exec, slug));
+export function organizationSlugFor(orgId: string): string {
+  if (!isUuid(orgId)) throw new TypeError('An organisation slug is derived from a canonical UUID.');
+  return BigInt(`0x${orgId.replaceAll('-', '')}`)
+    .toString(36)
+    .padStart(ORGANIZATION_SLUG_MAX_LENGTH, '0');
 }
 
 export interface ProvisionOrganizationParams {
@@ -684,27 +703,12 @@ export interface ProvisionOrganizationParams {
    * get either none or one nobody can satisfy.
    */
   freeAllowance: boolean;
-  /** Overrides the name derived from the user's profile. */
+  /**
+   * Overrides the name derived from the user's profile. Any text the name
+   * schema admits; names are not unique, and nothing treats them as if they
+   * were. There is no slug to pass: see `organizationSlugFor`.
+   */
   name?: string | undefined;
-  /**
-   * The exact slug to claim — the one the user chose and can see.
-   *
-   * Takes precedence over `slugSeed`, and **fails rather than adapts**: if it is
-   * taken, this throws `conflict` instead of quietly handing back `acme-2`. That
-   * difference is the whole point. A slug is permanent, so a caller who typed
-   * one and got a different one back would be holding an identifier they never
-   * agreed to, in every URL, forever.
-   */
-  slug?: string | undefined;
-  /**
-   * What the slug is derived from, before uniquifying. Ignored when `slug` is
-   * given.
-   *
-   * This is the path that *is* allowed to adapt, because nobody is watching: it
-   * serves the organisation created at first sign-in, which has nothing to go on
-   * but the address that just signed in and no form in which to object.
-   */
-  slugSeed?: string | undefined;
 }
 
 export interface ProvisionedOrganization {
@@ -747,7 +751,8 @@ export interface ProvisionedOrganization {
  * membership anywhere gets one here, which is what makes the product usable
  * within a minute of signing up. The second is `POST /api/orgs`, where somebody
  * who already has an account starts a second organisation. The work is
- * identical; only the name and the slug seed differ.
+ * identical; only the name differs. Neither path chooses a slug: one is
+ * derived from the new id (`organizationSlugFor`).
  *
  * All of it in one transaction. A user who ends up with an organisation but no
  * Org Master Key is permanently broken — they cannot store a secret, and nothing
@@ -790,10 +795,9 @@ export async function provisionOrganization(
   const { user, envelope } = params;
 
   return exec.transaction(async (tx) => {
-    // First, before the slug lookup and long before any key material: nothing
-    // below is worth doing for a request that is about to be refused, and the
-    // lock has to be held across the count *and* the insert for the count to
-    // mean anything.
+    // First, and long before any key material: nothing below is worth doing
+    // for a request that is about to be refused, and the lock has to be held
+    // across the count *and* the insert for the count to mean anything.
     await lockAccount(tx, user.id);
 
     // Under the lock, so two creations (or a creation and a lapse) cannot both
@@ -816,34 +820,25 @@ export async function provisionOrganization(
 
     const now = new Date();
     const orgId = uuidv7();
-    // An explicit slug is used as given; only a derived one is uniquified. The
-    // insert below is what actually settles a race for either, via the unique
-    // index — no amount of checking first can, and pretending otherwise is how
-    // two organisations end up believing they own `acme`.
-    const slug =
-      params.slug ??
-      (await generateUniqueOrgSlug(tx, params.slugSeed ?? personalOrgSlugSeed(user.email)));
-
-    if (isReservedSlug(slug)) {
-      throw new RepositoryError('conflict', 'That slug is reserved.');
-    }
 
     const [organization] = await tx
       .insert(organizations)
       .values({
         id: orgId,
         name: params.name?.trim() || defaultOrganizationName(user),
-        slug,
+        // Unique because the id is: see `organizationSlugFor`. No lookup first,
+        // so there is no window between a check and this insert to lose.
+        slug: organizationSlugFor(orgId),
         createdBy: user.id,
         awaitingPaidPlanSince: awaitingPaidPlan ? now : null,
         createdAt: now,
         updatedAt: now,
       })
       .returning()
-      // The unique index is the arbiter. Mapped to `conflict` so the route can
-      // answer 409 and put the message on the slug field, rather than letting an
-      // unmapped driver error become a 500 for a race the user can resolve by
-      // picking another name.
+      // Unreachable short of a slug somebody chose before slugs were derived
+      // that happens to spell a fresh id in base 36. Mapped to `conflict` all
+      // the same, so a failure nobody can explain is at least a 409 that a
+      // second attempt (with a new id) gets past, rather than a 500.
       .catch(rethrowSlugCollision);
     // A single-row `INSERT … RETURNING` either returns its row or throws, so this
     // and the checks below are unreachable. They exist because
@@ -890,42 +885,29 @@ export async function provisionOrganization(
 
 export interface OrganizationPatch {
   name?: string | undefined;
-  slug?: string | undefined;
 }
 
 /**
- * Renames an organisation. Name and slug only — everything else about an
- * organisation has its own path with its own authorization check.
+ * Renames an organisation. The name only: everything else about an
+ * organisation has its own path with its own authorization check, and the slug
+ * is not anybody's to change (see `organizationSlugFor`).
  */
 export async function updateOrganization(
   exec: Executor,
   orgId: string,
   patch: OrganizationPatch,
 ): Promise<Organization> {
-  if (patch.name === undefined && patch.slug === undefined) {
+  if (patch.name === undefined) {
     const current = await findOrganizationById(exec, orgId);
     if (!current) throw new RepositoryError('notFound', 'Organisation not found.');
     return current;
   }
 
-  // The route validates with `slugSchema`, which already rejects these. Checking
-  // again costs a set lookup and means a reserved slug cannot reach the database
-  // through some future caller that forgot to validate — it would shadow an
-  // application route for every tenant, not just this one.
-  if (patch.slug !== undefined && isReservedSlug(patch.slug)) {
-    throw new RepositoryError('conflict', 'That slug is reserved.');
-  }
-
   const [row] = await exec
     .update(organizations)
-    .set({
-      ...(patch.name === undefined ? {} : { name: patch.name }),
-      ...(patch.slug === undefined ? {} : { slug: patch.slug }),
-      updatedAt: new Date(),
-    })
+    .set({ name: patch.name, updatedAt: new Date() })
     .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
-    .returning()
-    .catch(rethrowSlugCollision);
+    .returning();
 
   if (!row) throw new RepositoryError('notFound', 'Organisation not found.');
   return row;
@@ -955,58 +937,19 @@ export async function softDeleteOrganization(exec: Executor, orgId: string): Pro
 }
 
 /**
- * The slug seed for a personal organisation, taken from an email address.
+ * What a personal organisation is named after when the account has no display
+ * name: the local part of its email address.
  *
  * The local part is the closest thing to a name available at first login. A
  * `+tag` is dropped because it is a routing detail of the address rather than
- * part of who the person is, and nobody wants `acme-signup-2024` in every URL.
+ * part of who the person is.
  */
-export function personalOrgSlugSeed(email: string): string {
+export function personalOrganizationNameSeed(email: string): string {
   const at = email.indexOf('@');
   const localPart = at === -1 ? email : email.slice(0, at);
   const tag = localPart.indexOf('+');
 
   return tag === -1 ? localPart : localPart.slice(0, tag);
-}
-
-/**
- * The candidate slug for a given attempt: attempt 0 is the bare slug, and later
- * attempts append `-2`, `-3`, … Pure, so the suffixing is testable without a
- * database.
- *
- * Every branch is bounded by `ORGANIZATION_SLUG_MAX_LENGTH`, including attempt
- * 0. The seed reaching here is a display name or an email local part, neither of
- * which is under that limit by construction — and a sign-up that quietly minted
- * a 40-character slug would create an organisation whose own settings page
- * reports its slug as invalid.
- */
-export function orgSlugCandidate(base: string, attempt: number): string {
-  if (attempt === 0) return trimTrailingHyphens(base.slice(0, ORGANIZATION_SLUG_MAX_LENGTH));
-  return withSlugSuffix(base, String(attempt + 1));
-}
-
-/**
- * Appends a suffix, trimming the base so the result still fits.
- *
- * Truncating the base rather than the suffix keeps the result unique — a
- * truncated suffix would collide with the very slug it was meant to distinguish.
- */
-function withSlugSuffix(base: string, suffix: string): string {
-  const room = ORGANIZATION_SLUG_MAX_LENGTH - suffix.length - 1;
-  return `${trimTrailingHyphens(base.slice(0, room))}-${suffix}`;
-}
-
-/**
- * A slice can land on a hyphen, and `SLUG_PATTERN` forbids both a trailing one
- * and the double hyphen that a suffix would then create.
- */
-function trimTrailingHyphens(value: string): string {
-  return value.replace(/-+$/, '');
-}
-
-/** Six lowercase base-36 characters, from a CSPRNG: ~1.7 × 10⁷ possibilities. */
-function randomSlugSuffix(): string {
-  return Array.from(randomBytes(3), (byte) => byte.toString(36).padStart(2, '0')).join('');
 }
 
 /**
@@ -1055,16 +998,6 @@ export function accountLockQuery(exec: Executor, userId: string) {
     .for('update');
 }
 
-async function isSlugTaken(exec: Executor, slug: string): Promise<boolean> {
-  const [row] = await exec
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.slug, slug))
-    .limit(1);
-
-  return row !== undefined;
-}
-
 /**
  * The organisation is named after the person, because at first login that is the
  * only meaningful name available. Renaming it is one field in settings.
@@ -1077,17 +1010,20 @@ async function isSlugTaken(exec: Executor, slug: string): Promise<boolean> {
  */
 function defaultOrganizationName(user: Pick<User, 'email' | 'displayName'>): string {
   const source =
-    user.displayName?.trim() || personalOrgSlugSeed(user.email) || FALLBACK_ORGANIZATION_NAME;
+    user.displayName?.trim() ||
+    personalOrganizationNameSeed(user.email) ||
+    FALLBACK_ORGANIZATION_NAME;
   return truncateName(source, ORGANIZATION_NAME_MAX_LENGTH) || FALLBACK_ORGANIZATION_NAME;
 }
 
 /**
- * Two organisations renamed to the same slug at the same moment is a conflict
- * the caller can act on, not the 500 an unmapped driver error would produce.
+ * A slug collision on insert, as a conflict the caller can retry rather than
+ * the 500 an unmapped driver error would produce. See `provisionOrganization`
+ * for why it does not happen.
  */
 function rethrowSlugCollision(error: unknown): never {
   if (isUniqueViolation(error, SLUG_UNIQUE_CONSTRAINT)) {
-    throw new RepositoryError('conflict', 'That slug is already taken.');
+    throw new RepositoryError('conflict', 'The organisation could not be created. Try again.');
   }
   throw error;
 }

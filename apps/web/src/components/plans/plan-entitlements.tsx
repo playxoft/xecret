@@ -75,17 +75,20 @@ export function PlanViewProvider({ value, children }: { value: PlanView; childre
 
 /** Reads the organisation's entitlements and shares them. Mounted by the dashboard shell. */
 export function PlanEntitlementsProvider({
-  orgSlug,
+  orgId,
   owner,
   children,
 }: {
-  /** `null` where the shell describes no organisation, which reads nothing. */
-  orgSlug: string | null;
+  /**
+   * The id of the organisation the shell describes, or `null` where it
+   * describes none, which reads nothing.
+   */
+  orgId: string | null;
   owner: boolean;
   children: ReactNode;
 }) {
   const resource = useApiResource<EntitlementsResponse>(
-    orgSlug === null ? null : apiPath.entitlements(orgSlug),
+    orgId === null ? null : apiPath.entitlements(orgId),
   );
   const reload = resource.reload;
   const refresh = useCallback(() => {
@@ -102,7 +105,7 @@ export function PlanEntitlementsProvider({
   }, [entitlements]);
 
   useEffect(() => {
-    if (orgSlug === null) return;
+    if (orgId === null) return;
     const onFocus = () => {
       const now = Date.now();
       if (!rechecksOnFocus(readAt.current, now, document.visibilityState === 'hidden')) return;
@@ -115,17 +118,17 @@ export function PlanEntitlementsProvider({
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
     };
-  }, [orgSlug, reload]);
+  }, [orgId, reload]);
 
   const value = useMemo<PlanView>(
     () => ({
       entitlements,
       owner,
-      plansHref: orgSlug === null ? '/pricing' : appPath.orgPlans(orgSlug),
+      plansHref: orgId === null ? '/pricing' : appPath.orgPlans(orgId),
       refresh,
       recheck,
     }),
-    [entitlements, owner, orgSlug, refresh, recheck],
+    [entitlements, owner, orgId, refresh, recheck],
   );
 
   return <PlanViewProvider value={value}>{children}</PlanViewProvider>;

@@ -4,6 +4,7 @@ import Link from 'next/link';
 
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
+import { nameIsShared, sharedOrgNames, shortOrgId } from '@/lib/organization-label';
 import {
   ariaKeyShortcuts,
   CheckIcon,
@@ -19,7 +20,8 @@ import {
 } from '@/components/ui';
 
 export interface ShellOrganization {
-  slug: string;
+  /** What the switcher tells organisations apart by: names are not unique. */
+  id: string;
   name: string;
   /** The viewer's role here. Shown so it is obvious before, not after, an action is denied. */
   role: string;
@@ -41,7 +43,7 @@ export interface ShellOrganization {
 
 export interface OrgSwitcherProps {
   organizations: readonly ShellOrganization[];
-  currentSlug: string;
+  currentOrgId: string;
   /**
    * Adds "New organisation" at the foot of the menu.
    *
@@ -62,9 +64,17 @@ export interface OrgSwitcherProps {
  * is the same question continued. Separating them would put two organisation
  * controls within 40px of each other in a 240px column.
  */
-export function OrgSwitcher({ organizations, currentSlug, onCreate, className }: OrgSwitcherProps) {
-  const current = organizations.find((org) => org.slug === currentSlug) ?? organizations[0];
+export function OrgSwitcher({
+  organizations,
+  currentOrgId,
+  onCreate,
+  className,
+}: OrgSwitcherProps) {
+  const current = organizations.find((org) => org.id === currentOrgId) ?? organizations[0];
   if (!current) return null;
+  // Names are not unique; where two match, the end of each id tells them apart.
+  const shared = sharedOrgNames(organizations);
+  const currentShared = nameIsShared(current.name, shared);
 
   return (
     <DropdownMenu>
@@ -73,7 +83,7 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
           'border-line hover:bg-surface-hover data-[state=open]:bg-surface-hover flex w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors',
           className,
         )}
-        aria-label={`Organisation: ${current.name}. Switch organisation`}
+        aria-label={`Organisation: ${current.name}${currentShared ? `, ID ending ${shortOrgId(current.id)}` : ''}. Switch organisation`}
         // The cap below is decorative; this is the half assistive technology
         // reads. `G` opens the centred switcher — `AppShell` owns the key, and
         // this is the only place it is advertised, because this is where
@@ -89,6 +99,14 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
         <span className="x-sidebar-wide min-w-0 flex-1">
           <span className="text-fg block truncate text-sm font-medium">{current.name}</span>
           <span className="text-fg-subtle block truncate text-sm">
+            {currentShared ? (
+              <>
+                <span className="font-mono" title={current.id}>
+                  …{shortOrgId(current.id)}
+                </span>{' '}
+                ·{' '}
+              </>
+            ) : null}
             <span className="capitalize">{current.role}</span>
             {current.customRole ? <> · {current.customRole}</> : null}
           </span>
@@ -100,10 +118,18 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
       <DropdownMenuContent align="start" className="w-64">
         <DropdownMenuLabel>Organisations</DropdownMenuLabel>
         {organizations.map((org) => (
-          <DropdownMenuItem key={org.slug} asChild>
+          <DropdownMenuItem key={org.id} asChild>
             <Link href={org.href} className="justify-between">
-              <span className="min-w-0 truncate">{org.name}</span>
-              {org.slug === current.slug ? (
+              <span className="min-w-0 truncate">
+                {org.name}
+                {nameIsShared(org.name, shared) ? (
+                  <span className="text-fg-subtle font-mono text-sm" title={org.id}>
+                    {' '}
+                    …{shortOrgId(org.id)}
+                  </span>
+                ) : null}
+              </span>
+              {org.id === current.id ? (
                 <CheckIcon className="text-accent-text size-4 shrink-0" />
               ) : (
                 <span className="text-fg-subtle max-w-[45%] shrink-0 truncate text-sm">

@@ -111,7 +111,6 @@ interface Target {
 export interface ImportArchiveDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  orgSlug: string;
   orgId: string;
   projectId: string;
   /** The project's slug, which a mode pin from before ids may be filed under. */
@@ -128,7 +127,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   // value in it anew, so each is held to the value rules before it is
   // encrypted — and refused, saying why, while the policy is loading or when it
   // cannot be read (review round 1, M5).
-  const policies = useOrgPolicies(props.orgSlug);
+  const policies = useOrgPolicies(props.orgId);
   const secretPolicy = secretPolicyFrom(policies);
   const [step, setStep] = useState<Step>({ kind: 'file' });
   const [failure, setFailure] = useState<string | null>(null);
@@ -245,7 +244,6 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
         slug: environment.slug,
         name: environment.name,
         state: await ioForEnvironment({
-          orgSlug: props.orgSlug,
           orgId: props.orgId,
           projectId: props.projectId,
           projectSlug: props.projectSlug,
@@ -281,7 +279,6 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
         // Asked again rather than reused from the survey: a key rotated or a
         // grant revoked since then must be the import's answer too.
         const io = await ioForEnvironment({
-          orgSlug: props.orgSlug,
           orgId: props.orgId,
           projectId: props.projectId,
           projectSlug: props.projectSlug,

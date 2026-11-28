@@ -38,7 +38,7 @@ const PROJECT_ID = '018f3f6a-0000-7000-8000-0000000000c1';
 const USER_ID = '018f3f6a-0000-7000-8000-0000000000d1';
 const OTHER_USER_ID = '018f3f6a-0000-7000-8000-0000000000d2';
 
-const TARGET = { orgSlug: 'acme', projectId: PROJECT_ID, envSlug: 'dev' };
+const TARGET = { orgId: 'acme', projectId: PROJECT_ID, envSlug: 'dev' };
 const BASE = `/api/orgs/acme/projects/${PROJECT_ID}/environments/dev/overrides`;
 
 const calls: { method: string; path: string; body: unknown }[] = [];

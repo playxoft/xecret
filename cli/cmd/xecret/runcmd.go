@@ -71,14 +71,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	scopeKey := cache.Scope{
-		Host:        credentials.APIURL,
-		Org:         resolved.Org,
-		Project:     resolved.Project,
-		Environment: resolved.Environment,
-	}
-
-	secrets, err := fetchSecrets(a, client, credentials, resolved, scopeKey, policy)
+	secrets, err := fetchSecrets(a, client, credentials, resolved, policy)
 	if err != nil {
 		return err
 	}
@@ -118,19 +111,25 @@ type cachePolicy struct {
 // environment caches its ciphertext under a different name from a server-mode
 // one, so that the two can never be read as each other. `--offline` therefore
 // tries both, most-secure first.
+//
+// The cache key is worked out from what this machine holds on the two paths
+// that have no network, and only after the pull has answered on the one that
+// does. Anything about the organisation that only the server can say (the id
+// of an organisation named by its slug, or the slug its older pins were filed
+// under) is asked for then, when the API has just shown it is reachable, and
+// never ahead of a pull that may be about to fail over to the cache.
 func fetchSecrets(
 	a *app,
 	client *api.Client,
 	credentials *cred.Credentials,
 	resolved scope,
-	scopeKey cache.Scope,
 	policy cachePolicy,
 ) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	if policy.offline {
-		return readAnyCache(a, credentials, scopeKey, policy, errors.New("--offline was passed"))
+		return readAnyCache(a, credentials, resolved, policy, errors.New("--offline was passed"))
 	}
 
 	pulled, err := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, "json")
@@ -138,16 +137,18 @@ func fetchSecrets(
 		// Only unavailability falls back; see the header comment.
 		if !policy.noCache && api.IsNetworkError(err) {
 			a.printer.Warnf("could not reach the API: %v", err)
-			return readAnyCache(a, credentials, scopeKey, policy, err)
+			return readAnyCache(a, credentials, resolved, policy, err)
 		}
 		return nil, err
 	}
 
+	scopeKey := a.cacheScope(ctx, client, credentials, resolved)
+
 	if pulled.Bundle != nil {
-		if err := a.checkMode(credentials, resolved, "e2ee"); err != nil {
+		if err := a.checkMode(ctx, client, credentials, resolved, "e2ee"); err != nil {
 			return nil, err
 		}
-		secrets, err := openBundle(ctx, a, client, credentials, scopeKey, pulled, policy)
+		secrets, err := openBundle(ctx, a, client, credentials, resolved, scopeKey, pulled, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +167,7 @@ func fetchSecrets(
 	// really is in that mode; for one this machine has read as end-to-end
 	// encrypted it is a downgrade, and it is refused here rather than obeyed —
 	// see `cache/mode.go`.
-	if err := a.checkMode(credentials, resolved, "server"); err != nil {
+	if err := a.checkMode(ctx, client, credentials, resolved, "server"); err != nil {
 		return nil, err
 	}
 
@@ -205,6 +206,7 @@ func openBundle(
 	a *app,
 	client *api.Client,
 	credentials *cred.Credentials,
+	resolved scope,
 	scopeKey cache.Scope,
 	pulled *api.Pulled,
 	policy cachePolicy,
@@ -220,12 +222,13 @@ func openBundle(
 		// successful e2ee read is the proof that it is obsolete, and leaving it
 		// on disk leaves values from before the migration where an older binary
 		// — or anybody who can read the directory — will still find them.
+		// Forget also removes the one a slug-keyed build filed.
 		if forgetErr := cache.Forget(scopeKey); forgetErr != nil {
 			a.printer.Warnf("could not remove the pre-migration offline copy: %v", forgetErr)
 		}
 	}
 
-	principal, err := a.principal(ctx, client, credentials)
+	principal, err := a.principal(ctx, client, credentials, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -246,14 +249,17 @@ func openBundle(
 // Nothing here touches the network. That is not incidental: this is the path
 // `--offline` takes and the path a network failure lands on, so a request made
 // from inside it would be a request made in exactly the two situations where
-// there is nobody to answer it.
+// there is nobody to answer it. The cache key is therefore built from what this
+// machine holds alone, and still carries the legacy slug a slug-keyed build
+// filed the copy and the pin under, so both are found.
 func readAnyCache(
 	a *app,
 	credentials *cred.Credentials,
-	scopeKey cache.Scope,
+	resolved scope,
 	policy cachePolicy,
 	cause error,
 ) (map[string]string, error) {
+	scopeKey := a.cacheScope(context.Background(), nil, credentials, resolved)
 	encryptedScope := scopeKey
 	encryptedScope.Encrypted = true
 
@@ -262,7 +268,7 @@ func readAnyCache(
 		if ageErr := a.checkCacheAge(entry, policy); ageErr != nil {
 			return nil, ageErr
 		}
-		return openCachedBundle(a, credentials, entry)
+		return openCachedBundle(a, credentials, resolved, entry)
 	}
 	if !errors.Is(err, cache.ErrMiss) {
 		return nil, err
@@ -314,6 +320,7 @@ func (a *app) checkCacheAge(entry *cache.Entry, policy cachePolicy) error {
 func openCachedBundle(
 	a *app,
 	credentials *cred.Credentials,
+	resolved scope,
 	entry *cache.Entry,
 ) (map[string]string, error) {
 	var bundle api.EnvironmentBundle
@@ -321,7 +328,7 @@ func openCachedBundle(
 		return nil, errors.New("the offline copy is corrupt — run 'xecret cache clear'")
 	}
 
-	principal, err := a.offlinePrincipal(credentials)
+	principal, err := a.offlinePrincipal(credentials, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +412,7 @@ func (a *app) applyPersonalOverrides(
 		return secrets, nil
 	}
 
-	principal, err := a.principal(ctx, client, credentials)
+	principal, err := a.principal(ctx, client, credentials, resolved)
 	if err != nil {
 		return nil, err
 	}

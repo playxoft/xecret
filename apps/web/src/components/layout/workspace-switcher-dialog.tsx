@@ -6,6 +6,12 @@ import { useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import {
+  nameIsShared,
+  organizationMatches,
+  sharedOrgNames,
+  shortOrgId,
+} from '@/lib/organization-label';
+import {
   CheckIcon,
   Dialog,
   DialogContent,
@@ -50,7 +56,7 @@ import type { ShellOrganization } from './org-switcher';
 
 export interface WorkspaceSwitcherDialogProps {
   organizations: readonly ShellOrganization[];
-  currentSlug: string;
+  currentOrgId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Opens the create-organisation dialog. Absent hides the row. */
@@ -59,7 +65,7 @@ export interface WorkspaceSwitcherDialogProps {
 
 export function WorkspaceSwitcherDialog({
   organizations,
-  currentSlug,
+  currentOrgId,
   open,
   onOpenChange,
   onCreate,
@@ -71,7 +77,7 @@ export function WorkspaceSwitcherDialog({
             without an effect having to clear it a render later. */}
         <WorkspaceList
           organizations={organizations}
-          currentSlug={currentSlug}
+          currentOrgId={currentOrgId}
           onOpenChange={onOpenChange}
           {...(onCreate === undefined ? {} : { onCreate })}
         />
@@ -82,12 +88,12 @@ export function WorkspaceSwitcherDialog({
 
 function WorkspaceList({
   organizations,
-  currentSlug,
+  currentOrgId,
   onOpenChange,
   onCreate,
 }: {
   organizations: readonly ShellOrganization[];
-  currentSlug: string;
+  currentOrgId: string;
   onOpenChange: (open: boolean) => void;
   onCreate?: () => void;
 }) {
@@ -96,13 +102,9 @@ function WorkspaceList({
   // position in the filtered list, and rebuilt as the filter narrows.
   const rows = useRef<(HTMLAnchorElement | null)[]>([]);
 
-  const needle = query.trim().toLowerCase();
-  const matches = organizations.filter(
-    (organization) =>
-      needle.length === 0 ||
-      organization.name.toLowerCase().includes(needle) ||
-      organization.slug.toLowerCase().includes(needle),
-  );
+  const matches = organizations.filter((organization) => organizationMatches(organization, query));
+  // Names are not unique; where two match, the end of each id tells them apart.
+  const shared = sharedOrgNames(organizations);
 
   function focusRow(index: number) {
     const bounded = Math.max(0, Math.min(index, matches.length - 1));
@@ -142,7 +144,7 @@ function WorkspaceList({
         ) : (
           <ul className="flex flex-col">
             {matches.map((organization, index) => (
-              <li key={organization.slug}>
+              <li key={organization.id}>
                 <Link
                   href={organization.href}
                   ref={(node) => {
@@ -171,7 +173,7 @@ function WorkspaceList({
                   }}
                   className={cn(
                     'hover:bg-surface-hover flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors',
-                    organization.slug === currentSlug && 'bg-surface-hover',
+                    organization.id === currentOrgId && 'bg-surface-hover',
                   )}
                 >
                   <span
@@ -185,11 +187,19 @@ function WorkspaceList({
                       {organization.name}
                     </span>
                     <span className="text-fg-subtle block truncate text-sm">
+                      {nameIsShared(organization.name, shared) ? (
+                        <>
+                          <span className="font-mono" title={organization.id}>
+                            ID …{shortOrgId(organization.id)}
+                          </span>{' '}
+                          ·{' '}
+                        </>
+                      ) : null}
                       <span className="capitalize">{organization.role}</span>
                       {organization.customRole ? <> · {organization.customRole}</> : null}
                     </span>
                   </span>
-                  {organization.slug === currentSlug ? (
+                  {organization.id === currentOrgId ? (
                     <CheckIcon className="text-accent-text size-4 shrink-0" />
                   ) : null}
                 </Link>

@@ -3,7 +3,7 @@ title: Webhooks on secret change
 navTitle: Webhooks
 description: Get a signed HTTPS call when a secret is created, changed, rotated or deleted, or an environment is promoted or restored. Payloads carry names, never values.
 keywords: [secret change webhook, standard webhooks, webhook signature verification, secret rotation notification, devops automation]
-updated: 2026-10-21
+updated: 2026-11-28
 ---
 
 A webhook calls an HTTPS endpoint of yours when something changes in your
@@ -52,6 +52,11 @@ secrets in `data.secrets`, with `data.counts` saying how many:
 An event about one secret carries `data.secret`; an event about several carries
 `data.secrets` instead — never both — so handle both shapes. The list holds at
 most 1,000 entries, which is also the most one batch can change.
+
+Match an organisation on `organization.id`. Its `slug` stays in the payload for
+receivers written against it, but it is a legacy field: an organisation is
+identified by its id, and a new one's slug is derived from that id. A project's
+`slug` is its Project ID, which never changes.
 
 ## The payload never contains a value
 

@@ -185,7 +185,7 @@ async function main(): Promise<void> {
       step(
         'organisation bootstrapped',
         account.membership.role === 'owner',
-        `org "${account.organization.slug}", ${account.membership.role} membership, master key`,
+        `org ${account.organization.id}, ${account.membership.role} membership, master key`,
       );
 
       const orgId = account.organization.id;

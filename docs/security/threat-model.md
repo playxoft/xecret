@@ -140,15 +140,16 @@ The defence, as it now stands:
   second step of what the person had just done (`/forgot-password?org=…` reaches it one
   redirect later, query intact).
 - **`?org=` is honoured only with the warning page's token** (round 2). A request for an
-  organisation's single sign-on with no valid `continue` token — however same-origin it looks
-  — is answered with a 303 to `/sign-in?org=<slug>`, the page that presents the slug as an
-  unproven claim, and a random `HttpOnly`, `__Host-` binding cookie. That page's "Continue"
-  link carries an HMAC (its own HKDF label of the cookie secret) over the slug, the moment and
-  that binding; the login route requires the token to verify against the binding the browser
-  presents, for that slug, under five minutes old, *and* a same-origin navigation to a
-  document. Bound to the binding, a token works only in the browser that was shown the page —
-  one an attacker mints by loading the page themselves names the attacker's binding — and the
-  binding is cleared once followed. Fetch metadata says where a request came from; the token
+  organisation's single sign-on with no valid `continue` token, however same-origin it looks,
+  is answered with a 303 to `/sign-in?org=<id>`, the page that presents the organisation as an
+  unproven claim, and a random `HttpOnly`, `__Host-` binding cookie. The organisation is named
+  by its id, or by a legacy slug in a link made before ids; either is only a claim. That page's
+  "Continue" link carries an HMAC (its own HKDF label of the cookie secret) over the `org=`
+  value, the moment and that binding; the login route requires the token to verify against the
+  binding the browser presents, for that value, under five minutes old, *and* a same-origin
+  navigation to a document. Bound to the binding, a token works only in the browser that was
+  shown the page (one an attacker mints by loading the page themselves names the attacker's
+  binding), and the binding is cleared once followed. Fetch metadata says where a request came from; the token
   says a person chose it.
 - **Sign-out ends the AuthKit session too** (round 2). Each session records the AuthKit
   session it came from (the access token's `sid`, `sessions.workos_session_id`), and
@@ -162,7 +163,7 @@ The defence, as it now stands:
 What this leaves: a person who reads "an organisation calling itself *Your Company*" beside
 an account they do not recognise and continues anyway; a person who follows a link to
 `/sign-in?org=attacker-co` and clicks "Continue with single sign-on" on a page that says the
-slug proves nothing. Both pages are written for those moments. The last-account cookie spares
+link proves nothing on its own. Both pages are written for those moments. The last-account cookie spares
 only the reused-session question, and only for the account it names: a person who once
 confirmed a planted sign-in carries that account's cookie, but a planted session through an
 organisation is still asked about every time (reasons a and b do not consult it). Whether

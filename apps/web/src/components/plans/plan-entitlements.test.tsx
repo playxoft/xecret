@@ -30,7 +30,7 @@ describe('PlanEntitlementsProvider', () => {
   it('reads the organisation’s entitlements once, at the one endpoint', () => {
     resource.paths = [];
     const html = renderToStaticMarkup(
-      <PlanEntitlementsProvider orgSlug="acme" owner>
+      <PlanEntitlementsProvider orgId="acme" owner>
         <Probe />
       </PlanEntitlementsProvider>,
     );
@@ -41,7 +41,7 @@ describe('PlanEntitlementsProvider', () => {
   it('reads nothing where the shell describes no organisation', () => {
     resource.paths = [];
     renderToStaticMarkup(
-      <PlanEntitlementsProvider orgSlug={null} owner={false}>
+      <PlanEntitlementsProvider orgId={null} owner={false}>
         <Probe />
       </PlanEntitlementsProvider>,
     );

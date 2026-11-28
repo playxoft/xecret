@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui';
 import { apiPath, canonicalProjectAddress } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
+import { useOrganization } from './session';
 
 /**
  * A project page reached by its slug: an address from before projects were
@@ -32,21 +33,30 @@ import { ErrorState } from './resource-states';
  * same "not found" the project's own screen would give, from the same request.
  */
 export function LegacyProjectAddress({
-  orgSlug,
+  orgId,
   projectSlug,
 }: {
-  orgSlug: string;
+  orgId: string;
   projectSlug: string;
 }) {
   const router = useRouter();
-  const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectSlug));
+  const project = useApiResource<ProjectResponse>(apiPath.project(orgId, projectSlug));
   const found = project.data?.project ?? null;
+  // The organisation's legacy slug, which pins filed before either address
+  // moved to an id are filed under too. From the session, which already holds it.
+  const orgSlug = useOrganization(orgId)?.slug ?? null;
 
   useEffect(() => {
     if (found === null) return;
-    const next = leaveLegacyAddress({ location: window.location, orgSlug, projectSlug, found });
+    const next = leaveLegacyAddress({
+      location: window.location,
+      orgId,
+      orgSlugs: orgSlug === null ? [] : [orgSlug],
+      projectSlug,
+      found,
+    });
     if (next !== null) router.replace(next);
-  }, [found, orgSlug, projectSlug, router]);
+  }, [found, orgId, orgSlug, projectSlug, router]);
 
   if (project.error !== null) {
     return <ErrorState subject="this project" error={project.error} onRetry={project.reload} />;
@@ -95,10 +105,17 @@ export function legacyProjectRedirect(
  * pin. The server's own slug follows: a second source can only add strictness,
  * and it covers a slug typed here in another case. The id is the one the
  * address is replaced with, which is the one the page will read under.
+ *
+ * The organisation is the id in this URL, which is the one the page reads
+ * under too. Its legacy slugs are passed so a pin filed before either address
+ * moved to an id (`mode:acme/payments-api/…`) is carried in the same pass.
  */
 export function leaveLegacyAddress(params: {
   location: { pathname: string; search: string; hash: string };
-  orgSlug: string;
+  /** The organisation's id, as this browser's URL holds it. */
+  orgId: string;
+  /** The organisation's legacy slugs, for pins filed under them. */
+  orgSlugs?: readonly string[];
   /** The slug as this browser's URL holds it. */
   projectSlug: string;
   /** What the server answered for it. */
@@ -109,9 +126,8 @@ export function leaveLegacyAddress(params: {
   if (next === null) return null;
 
   carryModePinsForward(
-    params.orgSlug,
-    params.found.id,
-    [params.projectSlug, params.found.slug],
+    { orgId: params.orgId, projectId: params.found.id },
+    { orgSlugs: params.orgSlugs ?? [], projectSlugs: [params.projectSlug, params.found.slug] },
     params.storage,
   );
   return next;

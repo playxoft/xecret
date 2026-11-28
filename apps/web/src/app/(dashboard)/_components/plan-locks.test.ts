@@ -28,13 +28,16 @@ vi.mock('./session', async (importOriginal) => ({
   useSession: () => ({
     refreshTrail: () => {},
     createOrganization: () => {},
-    organizations: [viewer.organization, { ...viewer.organization, slug: 'zebra', name: 'Zebra' }],
+    organizations: [
+      viewer.organization,
+      { ...viewer.organization, id: 'org-2', slug: 'zebra', name: 'Zebra' },
+    ],
   }),
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: () => {}, replace: () => {} }),
-  usePathname: () => '/app/acme',
+  usePathname: () => '/app/org-1',
 }));
 
 /** What each API path answers, by a substring of the path. */
@@ -116,7 +119,7 @@ describe('Projects: the project ceiling', () => {
 
   it('locks New project at the ceiling, counted by the organisation rather than the page', () => {
     const html = render(
-      createElement(ProjectsScreen, { orgSlug: 'acme' }),
+      createElement(ProjectsScreen, { orgId: 'org-1' }),
       entitlementsFor('free', usage({ projects: 5 })),
     );
     expect(locked(html, 'New project')).toBe(true);
@@ -125,7 +128,7 @@ describe('Projects: the project ceiling', () => {
 
   it('leaves it a plain button below the ceiling', () => {
     const html = render(
-      createElement(ProjectsScreen, { orgSlug: 'acme' }),
+      createElement(ProjectsScreen, { orgId: 'org-1' }),
       entitlementsFor('free', usage({ projects: 4 })),
     );
     expect(html).toContain('New project');
@@ -134,7 +137,7 @@ describe('Projects: the project ceiling', () => {
 
   it('never shows the server’s long refusal sentence', () => {
     const html = render(
-      createElement(ProjectsScreen, { orgSlug: 'acme' }),
+      createElement(ProjectsScreen, { orgId: 'org-1' }),
       entitlementsFor('free', usage({ projects: 5 })),
     );
     expect(html).not.toContain('This organisation is on the Free plan, which allows 5 projects.');
@@ -157,7 +160,7 @@ describe('A project: the environment ceiling', () => {
   it('locks New environment once the project holds as many as the plan allows', () => {
     answers.current = [['/projects/', { project: PROJECT, environments: environments(3) }]];
     const html = render(
-      createElement(ProjectScreen, { orgSlug: 'acme', projectId: PROJECT.id }),
+      createElement(ProjectScreen, { orgId: 'org-1', projectId: PROJECT.id }),
       entitlementsFor('free'),
     );
     expect(locked(html, 'New environment')).toBe(true);
@@ -167,7 +170,7 @@ describe('A project: the environment ceiling', () => {
   it('leaves it a plain button below the ceiling', () => {
     answers.current = [['/projects/', { project: PROJECT, environments: environments(2) }]];
     const html = render(
-      createElement(ProjectScreen, { orgSlug: 'acme', projectId: PROJECT.id }),
+      createElement(ProjectScreen, { orgId: 'org-1', projectId: PROJECT.id }),
       entitlementsFor('free'),
     );
     expect(html).toContain('New environment');
@@ -188,7 +191,7 @@ describe('Tokens: the service-token ceiling', () => {
 
   it('locks New service token at the ceiling, and tells an admin to ask an owner', () => {
     const html = render(
-      createElement(TokensScreen, { orgSlug: 'acme' }),
+      createElement(TokensScreen, { orgId: 'org-1' }),
       entitlementsFor('free', usage({ serviceTokens: 10 })),
       'admin',
     );
@@ -198,7 +201,7 @@ describe('Tokens: the service-token ceiling', () => {
 
   it('leaves it a plain button below the ceiling', () => {
     const html = render(
-      createElement(TokensScreen, { orgSlug: 'acme' }),
+      createElement(TokensScreen, { orgId: 'org-1' }),
       entitlementsFor('free', usage({ serviceTokens: 9 })),
       'admin',
     );
@@ -238,14 +241,14 @@ describe('Members: the seat ceiling', () => {
 
   it('locks Invite once members and open invitations fill every seat', () => {
     members({ used: 2, pendingInvitations: 1, limit: 3 });
-    const html = render(createElement(MembersScreen, { orgSlug: 'acme' }), entitlementsFor('free'));
+    const html = render(createElement(MembersScreen, { orgId: 'org-1' }), entitlementsFor('free'));
     expect(locked(html, 'Invite')).toBe(true);
     expect(html).toContain('Your Free plan allows 3 members. Upgrade to Pro to add more.');
   });
 
   it('leaves it a plain button while a seat is free', () => {
     members({ used: 2, pendingInvitations: 0, limit: 3 });
-    const html = render(createElement(MembersScreen, { orgSlug: 'acme' }), entitlementsFor('free'));
+    const html = render(createElement(MembersScreen, { orgId: 'org-1' }), entitlementsFor('free'));
     expect(html).toContain('Invite');
     expect(locked(html, 'Invite')).toBe(false);
   });
@@ -255,7 +258,7 @@ describe('Members: the seat ceiling', () => {
     const pro = entitlementsFor('pro', {
       limits: { ...entitlementsFor('pro').limits, seats: null },
     });
-    const html = render(createElement(MembersScreen, { orgSlug: 'acme' }), pro);
+    const html = render(createElement(MembersScreen, { orgId: 'org-1' }), pro);
     expect(locked(html, 'Invite')).toBe(false);
   });
 });
@@ -269,7 +272,7 @@ describe('An organisation awaiting a paid plan', () => {
       ],
     ];
     const html = render(
-      createElement(ProjectsScreen, { orgSlug: 'acme' }),
+      createElement(ProjectsScreen, { orgId: 'org-1' }),
       entitlementsFor('free', { awaitingPaidPlan: true, controlPlaneActive: false }),
     );
     expect(locked(html, 'New project')).toBe(true);

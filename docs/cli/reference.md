@@ -25,10 +25,22 @@ triple, resolved in this order:
 3. Under `XECRET_TOKEN`: the token's own pinned scope
 4. Otherwise: an error telling you to run `xecret init`
 
-The organisation always comes from the credential — a login is pinned to one
-org, a service token to one org, project *and* environment. Naming a scope
-outside a service token's pin is refused by the server, never merely by the
-client.
+That order settles the project and the environment; the organisation is never
+chosen by a file. Under `XECRET_TOKEN` it is always the token's own (a service
+token is pinned to one organisation, project *and* environment), and a
+`.xecret.yaml` naming another organisation only earns a warning. Logged in, it
+is the one the stored credential addresses (the organisation approved at
+`login`, or the one `orgs use` chose since). A `--project` flag, and a file
+with no `organization` line, resolve there. A `.xecret.yaml` whose
+`organization` is a different one is refused before anything is read or
+written (`checkFileOrganization`): the refusal names both organisations and the
+`xecret orgs use` that would switch on purpose. The file is committed to a
+repository, and must not be able to move a member of two organisations' commands
+from one to the other. The comparison is by id, exactly, or by legacy slug
+without regard to case; a credential from before organisation ids asks
+`/api/auth/me` once to confirm a file's id, and refuses when it cannot. Naming
+a scope outside a service token's pin is refused by the server, never merely by
+the client.
 
 ## Environment variables
 
@@ -93,33 +105,64 @@ xecret whoami [--json]
 ```
 Asks the server, so a revoked credential reads as signed out rather than as
 its stale identity. Under `XECRET_TOKEN`, answers with the token's pinned
-scope instead of a person.
+scope instead of a person. The organisation is printed by its name with its id
+beside it (`Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)`), never by its slug; `--json`
+carries `organization` (the id, an identifier as it always was) and
+`organizationName`.
 
 ```
 xecret orgs [list] [--json]
-xecret orgs use SLUG
+xecret orgs use ORG-ID
 ```
+The listing gives each organisation's name, id, role and whether it is the
+current one (`--json`: `id`, `name`, `role`, `current`); the slug the server
+still sends is not passed on. `use` takes the id. An exact name works too,
+ignoring case, when only one membership has it; names are free text, so when
+two share one the command lists both ids and asks for one. A legacy slug is
+quietly accepted, and tried before the name so that an old script's argument
+cannot be captured by another organisation with the same name.
+
 A CLI token authenticates as its *user*, and the server settles membership per
-request against whichever organisation the path names — so `use` is a local
-change to one field beside the token, checked against the server's own list
-first so "you are not a member" arrives now rather than as a 404 on the next
-command. Refused under `XECRET_TOKEN`, which is pinned server-side.
+request against whichever organisation the path names, so `use` is a local
+change to the fields beside the token that name the organisation, checked
+against the server's own list first so "you are not a member" arrives now
+rather than as a 404 on the next command. Refused under `XECRET_TOKEN`, which
+is pinned server-side.
+
+`login` stores the organisation's id. A credential from before organisations
+were named by id holds only a slug; it keeps working, and learns the id the
+first time the server's answer carries it.
 
 ### Project setup
 
 ```
-xecret init [--project SLUG] [--environment SLUG] [--force]
+xecret init [--project PROJECT-ID] [--environment SLUG] [--force]
 ```
-Interactive picker that writes `.xecret.yaml` — two slugs, never secrets, safe
-to commit. Refused under `XECRET_TOKEN` (a CI job needs no config file; the
-token's pin already answers).
+Interactive picker that writes `.xecret.yaml`: three identifiers, never secrets,
+safe to commit.
+
+```yaml
+organization: 0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f
+project: payments-api
+environment: production
+```
+
+`organization` is the id of the organisation the credential addresses, which
+pins the project to it (see *Scope resolution*); `project` is the Project ID
+and `environment` the environment's slug. Older files with only `project` and
+`environment`, or an `organization` holding a legacy slug, still work. Refused
+under `XECRET_TOKEN` (a CI job needs no config file; the token's pin already
+answers).
 
 ```
 xecret projects [list] [--json]
-xecret projects delete SLUG [--yes]
-xecret environments [list] [--project SLUG] [--json]
-xecret environments delete SLUG [--yes] [--project SLUG]
+xecret projects delete PROJECT-ID [--yes]
+xecret environments [list] [--project PROJECT-ID] [--json]
+xecret environments delete SLUG [--yes] [--project PROJECT-ID]
 ```
+
+- A project is named by its **Project ID** (`payments-api`): its slug in the
+  API, chosen when the project is created and never changed after.
 
 - The bare form is still the listing, so no existing invocation changes
   meaning: a first argument that begins with `-` is a flag on `list`.

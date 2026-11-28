@@ -47,7 +47,6 @@ function render(held: number, entitlements: OrgEntitlements): string {
           Toaster,
           null,
           createElement(SecretTable, {
-            orgSlug: 'acme',
             orgId: 'org-1',
             projectId: 'api',
             envSlug: 'development',

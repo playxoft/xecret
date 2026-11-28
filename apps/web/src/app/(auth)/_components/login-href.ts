@@ -92,7 +92,7 @@ export function loginHref({
   // is a sign-in, never a sign-up — so it is not sent alongside one either.
   if (reauth) query.set('reauth', '1');
   else if (signUp) query.set('hint', 'sign-up');
-  else if (org !== null && isOrgSlug(org)) {
+  else if (org !== null && isOrgReference(org)) {
     query.set('org', org);
     if (continueToken !== null && continueToken !== '') query.set('continue', continueToken);
   } else if (provider === 'google') query.set('provider', 'google');
@@ -101,18 +101,20 @@ export function loginHref({
 }
 
 /**
- * An organisation slug as the sign-in page may name it — the shape the login
- * route accepts — or `null` for anything else, which the page then ignores.
+ * An organisation as the sign-in page may name it, by its id or by a legacy
+ * slug — the shapes the login route accepts — or `null` for anything else,
+ * which the page then ignores.
  *
  * The parameter is in a URL anybody can write, and it is printed on the page,
  * so it is held to the slug pattern before it is shown: lower-case letters,
- * digits and single hyphens, nothing that could read as a sentence.
+ * digits and single hyphens, nothing that could read as a sentence. A
+ * canonical id is exactly that shape too, so one rule holds both.
  */
 export function ssoOrgParam(value: string | null): string | null {
-  return value !== null && isOrgSlug(value) ? value : null;
+  return value !== null && isOrgReference(value) ? value : null;
 }
 
-function isOrgSlug(value: string): boolean {
+function isOrgReference(value: string): boolean {
   return value.length <= SLUG_MAX_LENGTH && SLUG_PATTERN.test(value);
 }
 

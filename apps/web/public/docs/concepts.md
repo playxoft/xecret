@@ -3,7 +3,7 @@ title: Core concepts
 navTitle: Core concepts
 description: Organisations, projects, environments, secrets, versions and tokens — the vocabulary every other page assumes, defined once.
 keywords: [xecret concepts, organisation project environment, secret versions, access levels, service token, glossary]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Six words carry the whole product. Learn them here and every other page reads
@@ -12,18 +12,20 @@ easily.
 ## The hierarchy
 
 ```text
-Organisation            acme                 — a company or a person; billing and members live here
-└── Project             checkout-api         — one application
-    └── Environment     production           — one stage of that application
-        └── Secret      STRIPE_SECRET_KEY    — one name, and a history of values
-            └── Version v4                   — one value, immutable once written
+Organisation            Acme                  a company or a person; billing and members live here
+└── Project             checkout-api          one application
+    └── Environment     production            one stage of that application
+        └── Secret      STRIPE_SECRET_KEY     one name, and a history of values
+            └── Version v4                    one value, immutable once written
 ```
 
-Everything is addressed by **slug** — the lower-case, hyphenated name you see
-in URLs — never by a numeric id. That is a security property rather than a
-style choice: a slug only means something inside its parent, so the path
-`/acme/checkout-api/production/STRIPE_SECRET_KEY` carries the whole ownership
-chain and every lookup has to walk it.
+Each level has an identifier of its own. An organisation is identified by its
+**Organisation ID** (`0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f`), a project by its
+**Project ID** (`checkout-api`), an environment by its slug (`production`) and a
+secret by its name. Below the organisation, each one only means something
+inside its parent. That is a security property rather than a style choice: the
+path `/{orgId}/checkout-api/production/STRIPE_SECRET_KEY` carries the whole
+ownership chain, and every lookup has to walk it.
 
 ### Organisation
 
@@ -31,13 +33,27 @@ A workspace. It owns projects, members, billing and audit history. You get a
 personal one on sign-up, and can create more (a company, a client) or be
 invited to somebody else's.
 
-Slugs are 25 characters at most and drawn from `a–z`, `0–9` and hyphens.
-A handful of words — `api`, `app`, `admin`, `settings`, `members` and similar —
-are reserved because they would collide with application routes.
+Its name is up to 25 characters of any text, an owner or admin can change it at
+any time, and it need not be unique: two organisations can both be called Acme.
+What identifies one is its **Organisation ID**, assigned when it is created and
+never changed. It is the part after `/app/` in the dashboard's address, the
+organisation's settings General page shows it, and `xecret orgs` lists each of
+yours with its ID. Dashboard links and bookmarks from before, which named the
+organisation by a short slug, still work: they redirect to the same page under
+its ID.
 
 ### Project
 
 One application. If it has its own repository, it is probably its own project.
+
+Its **Project ID** (`checkout-api`) is what the CLI and CI name it by:
+`xecret pull --project checkout-api`. It is filled in from the name when you
+create the project, and you can edit it then; after that it never changes,
+because `.xecret.yaml` and the CI configuration of everything that consumes the
+project are written with it. A Project ID is unique within its organisation, up
+to 63 characters of `a–z`, `0–9` and single hyphens, and a handful of words
+(`settings`, `members`, `tokens`, `audit` and similar) are reserved because they
+would collide with dashboard pages.
 
 ### Environment
 

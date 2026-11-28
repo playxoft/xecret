@@ -21,9 +21,10 @@ import {
  * The organisations the caller can act in.
  *
  * This is what the dashboard's organisation switcher reads and what the CLI uses
- * to resolve `--org`. Every other route in this tree takes an `{orgSlug}` and
- * resolves it through `tenancy.ts`; this one has no slug to resolve, because it
- * is the route that tells the client which slugs exist for them.
+ * to resolve `--org`. Every other route in this tree takes an organisation in
+ * its `{orgSlug}` segment (its id, or an older client's slug) and resolves it
+ * through `tenancy.ts`; this one has nothing to resolve, because it is the
+ * route that tells the client which organisations exist for them.
  *
  * That is also why there is no `authorize()` call here, and why that is not a
  * hole. `authorize` decides whether an actor may act on a *named* resource, and
@@ -76,12 +77,11 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  *
  * ── Why there is a bound as well as a rate limit ──
  * A rate limit bounds the cost per minute, and this endpoint's cost is not only
- * per minute: a slug is claimed out of a global namespace permanently, deleted
- * or not, and every organisation mints an Org Master Key. No plan limits how
- * many organisations an account holds (each paid one is billed on its own), so
- * the bound is the free tier's: an account's open Free organisations work up
- * to two, one created past them waits for a paid plan, and an account may hold
- * one that waits at a time. Creating past the free allowance is allowed, so
+ * per minute: every organisation mints an Org Master Key, and a deleted one is
+ * kept for thirty days. No plan limits how many organisations an account
+ * holds (each paid one is billed on its own), so the bound is the free tier's:
+ * an account's open Free organisations work up to two, one created past them
+ * waits for a paid plan, and an account may hold one that waits at a time. Creating past the free allowance is allowed, so
  * somebody can start an organisation and then buy it a plan; creating one that
  * would wait while another already waits is refused, with
  * `organizationAwaitingLimitReached`. None of it applies where this deployment
@@ -91,6 +91,16 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * account, so two concurrent requests cannot both read "none waiting". The
  * answer says whether the new one is waiting (`awaitingPaidPlan`), which is
  * what sends the dashboard to its plans page.
+ *
+ * ── A name, and nothing else ──
+ * The body names the organisation and that is all it needs to. Any text the
+ * name schema admits, and not unique: two organisations called "Acme" are two
+ * organisations, told apart by their ids. The slug the row still carries is
+ * derived from the new id (`organizationSlugFor`) and shown to nobody, so a
+ * `slug` a client sends is accepted and ignored rather than refused: a tab
+ * still running the form from before is creating an organisation, not making a
+ * mistake. The free allowance and the derived slug are settled in the same
+ * transaction as the organisation itself.
  *
  * ── What it provisions, and what it deliberately does not ──
  * `provisionOrganization` mints the organisation, the caller's owner membership
@@ -112,9 +122,7 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   }
 
   // Before the body is read and long before the transaction: provisioning an
-  // organisation derives an Org Master Key and claims a slug out of a namespace
-  // every tenant shares, and the slug is not given back by deleting the
-  // organisation afterwards.
+  // organisation derives an Org Master Key, which is the expensive part.
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([principal.user.id]));
 
   const body = await parseJsonBody(request, organizationCreateSchema);
@@ -126,23 +134,12 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     // way to pay would be locked for good.
     freeAllowance: billingConfigured(services.env),
     name: body.name,
-    // Two different contracts, and the difference matters:
-    //
-    //  - `slug` is what the caller chose and has seen. It is used exactly, and a
-    //    collision is a 409 they resolve by choosing again. Adapting it would
-    //    hand them a permanent identifier they never agreed to.
-    //  - `slugSeed` is the fallback for a caller who expressed no preference —
-    //    an API client sending only a name. There it is derived and suffixed,
-    //    because there is nobody to ask and a refusal would be worse.
-    ...(body.slug === undefined ? { slugSeed: body.name } : { slug: body.slug }),
   }).catch(async (cause: unknown) => {
-    // Lost the race, or the availability check was stale. Reported against the
-    // slug field so the form marks the input the user can actually change,
-    // rather than as a sentence at the foot of a form with two fields.
+    // A derived slug that collided, which `provisionOrganization` explains is
+    // all but impossible. A conflict rather than a field error: there is no
+    // field the caller could change, and trying again mints a new id.
     if (cause instanceof RepositoryError && cause.code === 'conflict') {
-      throw errors.validation([
-        { field: 'slug', message: 'That slug is already taken. Choose a different one.' },
-      ]);
+      throw errors.conflict('The organisation could not be created. Try again.');
     }
 
     // One organisation already waiting for a paid plan: pay for it or delete
@@ -193,7 +190,7 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
  *
  * ── Why the anchor has to be a membership ──
  * `createAuditBuilder` stamps the actor's email address, IP and user agent onto
- * every record, and `GET /api/orgs/{orgSlug}/audit` shows an organisation's
+ * every record, and `GET /api/orgs/{org}/audit` shows an organisation's
  * records to its members. This used to be filed against the most recent
  * organisation the account had *created*, which — once the account had been
  * removed from it — was an organisation of strangers, handed a current email,

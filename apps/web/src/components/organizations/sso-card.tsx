@@ -109,15 +109,15 @@ type Policy = 'ssoRequired' | 'jitJoinEnabled';
  * they are fixed by different people.
  */
 export function SingleSignOnCard({
-  orgSlug,
+  orgId,
   organization,
 }: {
-  orgSlug: string;
+  orgId: string;
   organization: SessionOrganization | null;
 }) {
   const mayRead = canAdminister(organization, 'org.update');
   const mayManage = canAdminister(organization, 'sso.manage');
-  const status = useApiResource<SsoStatusResponse>(mayRead ? apiPath.sso(orgSlug) : null);
+  const status = useApiResource<SsoStatusResponse>(mayRead ? apiPath.sso(orgId) : null);
 
   return (
     // The anchor the setup portal sends people back to when they are done.
@@ -159,7 +159,7 @@ export function SingleSignOnCard({
           </div>
         ) : (
           <SsoSettings
-            orgSlug={orgSlug}
+            orgId={orgId}
             sso={status.data.sso}
             mayManage={mayManage}
             onChanged={() => void status.reload()}
@@ -175,12 +175,12 @@ export function SingleSignOnCard({
  * server holds rather than from a default corrected a render later.
  */
 function SsoSettings({
-  orgSlug,
+  orgId,
   sso,
   mayManage,
   onChanged,
 }: {
-  orgSlug: string;
+  orgId: string;
   sso: SsoStatus;
   mayManage: boolean;
   onChanged: () => void;
@@ -202,7 +202,7 @@ function SsoSettings({
     setEnabling(true);
     setError(null);
     try {
-      await api.post(apiPath.sso(orgSlug));
+      await api.post(apiPath.sso(orgId));
       toast({ variant: 'success', title: 'Single sign-on is on' });
       onChanged();
     } catch (cause) {
@@ -224,7 +224,7 @@ function SsoSettings({
     setError(null);
     setBlockedLink(null);
     try {
-      const { link } = await api.post<{ link: string }>(apiPath.ssoPortal(orgSlug));
+      const { link } = await api.post<{ link: string }>(apiPath.ssoPortal(orgId));
       if (tab) tab.location.href = link;
       // A browser that refused even that: this page does not navigate itself
       // to the link — that would leave a credential-grade URL in this tab's
@@ -243,7 +243,7 @@ function SsoSettings({
     setSaving(policy);
     setError(null);
     try {
-      const answer = await api.patch<SsoPatchResponse>(apiPath.sso(orgSlug), { [policy]: value });
+      const answer = await api.patch<SsoPatchResponse>(apiPath.sso(orgId), { [policy]: value });
       const description =
         policy === 'ssoRequired' && value && answer.nonSsoAccess !== null
           ? nonSsoAccessSentence(answer.nonSsoAccess)
@@ -270,7 +270,7 @@ function SsoSettings({
             only within ten minutes of signing in again.
           </p>
           <Button variant="secondary" size="sm" className="mt-2" asChild>
-            <a href={loginHref({ reauth: true, next: appPath.orgSingleSignOn(orgSlug) })}>
+            <a href={loginHref({ reauth: true, next: appPath.orgSingleSignOn(orgId) })}>
               Sign in again
             </a>
           </Button>

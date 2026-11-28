@@ -84,8 +84,8 @@ type SortDirection = 'asc' | 'desc';
 
 const ALL_PROJECTS = 'all';
 
-export function MembersScreen({ orgSlug }: { orgSlug: string }) {
-  const organization = useOrganization(orgSlug);
+export function MembersScreen({ orgId }: { orgId: string }) {
+  const organization = useOrganization(orgId);
   const canManage = canAdminister(organization, 'member.update');
   const canRemove = canAdminister(organization, 'member.remove');
   const assignableRoles = organization?.authority.assignableRoles ?? [];
@@ -95,7 +95,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   const seesInvitations = canAdminister(organization, 'member.invite');
   const canInvite = seesInvitations && assignableRoles.length > 0;
 
-  const members = useApiResource<MemberListResponse>(apiPath.members(orgSlug));
+  const members = useApiResource<MemberListResponse>(apiPath.members(orgId));
   // Invitations are fetched only for people who could see them; asking and
   // rendering the 403 would turn a permission into an error state. The project
   // list feeds the project filter, which exists only for the same people —
@@ -103,15 +103,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   // roles and the grantable levels likewise, for the row controls that use
   // them.
   const invitations = useApiResource<InvitationListResponse>(
-    seesInvitations ? apiPath.invitations(orgSlug) : null,
+    seesInvitations ? apiPath.invitations(orgId) : null,
   );
-  const projects = useApiResource<ProjectListResponse>(
-    canManage ? apiPath.projects(orgSlug) : null,
-  );
+  const projects = useApiResource<ProjectListResponse>(canManage ? apiPath.projects(orgId) : null);
   const customRoles = useApiResource<CustomRoleListResponse>(
-    canManage ? apiPath.roles(orgSlug) : null,
+    canManage ? apiPath.roles(orgId) : null,
   );
-  const grantable = useGrantable(canManage || canInvite ? orgSlug : null);
+  const grantable = useGrantable(canManage || canInvite ? orgId : null);
   const customRoleChoices =
     customRoles.data === null
       ? null
@@ -314,7 +312,11 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
               }
             />
           ) : (
-            <TableContainer aria-label={`Members of ${orgSlug}`}>
+            <TableContainer
+              // The organisation's name, never its id: a screen reader would
+              // read thirty-six characters of hex aloud.
+              aria-label={organization === null ? 'Members' : `Members of ${organization.name}`}
+            >
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -461,7 +463,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                           <TableCell onClick={(event) => event.stopPropagation()}>
                             {canManage ? (
                               <MemberRowActions
-                                orgSlug={orgSlug}
+                                orgId={orgId}
                                 member={member}
                                 assignableRoles={assignableRoles}
                                 canRemove={canRemove}
@@ -480,7 +482,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                                 // every level in the panel, so a changed member
                                 // is a new panel — re-read, not a stale matrix.
                                 key={`${member.id}:${member.role}:${member.status}:${member.customRole?.id ?? ''}`}
-                                orgSlug={orgSlug}
+                                orgId={orgId}
                                 member={member}
                                 mayEdit={
                                   canManage &&
@@ -507,7 +509,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
               have merely been asked are the footnote. */}
           {seesInvitations && invitations.data !== null ? (
             <InvitationsSection
-              orgSlug={orgSlug}
+              orgId={orgId}
               invitations={invitations.data.data}
               onChanged={reloadAll}
               onReinvite={() => setInviting(true)}
@@ -518,7 +520,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
 
       {canInvite ? (
         <InviteDialog
-          orgSlug={orgSlug}
+          orgId={orgId}
           assignableRoles={assignableRoles}
           grantable={grantable}
           open={inviting}

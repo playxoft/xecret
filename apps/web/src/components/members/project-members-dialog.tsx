@@ -66,7 +66,7 @@ import type { ProjectMember, ProjectMemberListResponse } from './types';
  */
 
 export interface ProjectMembersDialogProps {
-  orgSlug: string;
+  orgId: string;
   projectSlug: string;
   projectName: string;
   /**
@@ -79,7 +79,7 @@ export interface ProjectMembersDialogProps {
 }
 
 export function ProjectMembersDialog({
-  orgSlug,
+  orgId,
   projectSlug,
   projectName,
   assignableRoles,
@@ -132,7 +132,7 @@ export function ProjectMembersDialog({
               content — so each opening re-reads the grants and starts with an
               empty staging area, with no effect to clear them a render later. */}
           <ProjectMembersPanel
-            orgSlug={orgSlug}
+            orgId={orgId}
             projectSlug={projectSlug}
             projectName={projectName}
             assignableRoles={assignableRoles}
@@ -166,7 +166,7 @@ interface SaveFailure {
 }
 
 function ProjectMembersPanel({
-  orgSlug,
+  orgId,
   projectSlug,
   projectName,
   assignableRoles,
@@ -174,7 +174,7 @@ function ProjectMembersPanel({
   onSavingChange,
   onDirtyChange,
 }: {
-  orgSlug: string;
+  orgId: string;
   projectSlug: string;
   projectName: string;
   assignableRoles: readonly OrgRole[];
@@ -183,11 +183,11 @@ function ProjectMembersPanel({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const access = useApiResource<ProjectMemberListResponse>(
-    apiPath.projectMembers(orgSlug, projectSlug),
+    apiPath.projectMembers(orgId, projectSlug),
   );
   // What the viewer could grant on each of this project's environments — the
   // same for every member row, since it measures the viewer, not them.
-  const grantable = useGrantable(orgSlug);
+  const grantable = useGrantable(orgId);
   const { toast } = useToast();
   const [failure, setFailure] = useState<SaveFailure | null>(null);
   const [saving, setSaving] = useState(false);
@@ -280,7 +280,7 @@ function ProjectMembersPanel({
     for (const [cell, level] of staged) {
       const [memberId, environmentSlug] = cell.split('/') as [string, string];
       try {
-        await api.put(apiPath.memberGrants(orgSlug, memberId), {
+        await api.put(apiPath.memberGrants(orgId, memberId), {
           projectSlug,
           environmentSlug,
           accessLevel: level,
@@ -336,7 +336,7 @@ function ProjectMembersPanel({
     // than that "a change" did not save.
     let scope = `${memberLabel(member)} in ${projectName}`;
     try {
-      await api.put(apiPath.memberGrants(orgSlug, member.id), {
+      await api.put(apiPath.memberGrants(orgId, member.id), {
         projectSlug,
         environmentSlug: null,
         accessLevel: 'none',
@@ -349,7 +349,7 @@ function ProjectMembersPanel({
       // endpoint, so the extra calls cost a round trip and nothing else.
       for (const environment of environments) {
         scope = `${memberLabel(member)} in ${environment.name}`;
-        await api.delete(apiPath.memberGrants(orgSlug, member.id), {
+        await api.delete(apiPath.memberGrants(orgId, member.id), {
           projectSlug,
           environmentSlug: environment.slug,
         });

@@ -46,7 +46,7 @@ const { Dialog, Toaster } = await import('@/components/ui');
 const { OverridesCard, overridesCardShown, setOverrideGate, SetOverrideStep } =
   await import('./overrides-card');
 
-const PATH = '/api/orgs/acme/projects/api/environments/development/overrides';
+const PATH = '/api/orgs/org-1/projects/api/environments/development/overrides';
 
 function list(over: Partial<OverrideListResponse> = {}): OverrideListResponse {
   return { overrides: [], canSet: true, upgradeTo: null, ...over };
@@ -65,7 +65,6 @@ function renderCard(encryptionMode: string | null = 'e2ee'): string {
       Toaster,
       null,
       createElement(OverridesCard, {
-        orgSlug: 'acme',
         orgId: 'org-1',
         projectId: 'api',
         envSlug: 'development',

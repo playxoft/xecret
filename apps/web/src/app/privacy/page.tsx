@@ -492,8 +492,8 @@ const SECTIONS: readonly LegalSection[] = [
         Besides the cookies, this site keeps the entries below in your browser&rsquo;s own storage.
         They are written and read by the site&rsquo;s code in your browser, and the entries
         themselves are never uploaded to us. Several of them hold identifiers our server also has
-        &mdash; your account&rsquo;s, members&rsquo; and service tokens&rsquo; identifiers, and
-        organisation, project and environment slugs &mdash; and one of those identifiers, the device
+        (your account&rsquo;s, members&rsquo; and service tokens&rsquo; identifiers, organisation
+        and project identifiers, and environment slugs), and one of those identifiers, the device
         identifier in <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code>, is sent
         to us whenever you set up, use or turn off a device PIN, because naming this browser to our
         server is what it is for.
@@ -528,11 +528,12 @@ const SECTIONS: readonly LegalSection[] = [
           browser would notice and warn you instead of encrypting to it.
         </>,
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.pins.mode.v1</code> — for each
-          environment this browser has worked with, filed under its organisation, project and
-          environment slugs: whether it was end-to-end encrypted, and when that was first seen. If
-          our server later claimed that such an environment was no longer end-to-end encrypted, this
-          browser would refuse to send it secret values in plain text.
+          <code className="text-fg font-mono text-[0.9em]">xecret.pins.mode.v1</code>: for each
+          environment this browser has worked with, filed under its organisation&rsquo;s and
+          project&rsquo;s identifiers and its own slug, whether it was end-to-end encrypted, and
+          when that was first seen. If our server later claimed that such an environment was no
+          longer end-to-end encrypted, this browser would refuse to send it secret values in plain
+          text.
         </>,
         <>
           <code className="text-fg font-mono text-[0.9em]">xecret.pin.v1</code> — present only if
@@ -554,8 +555,9 @@ const SECTIONS: readonly LegalSection[] = [
       </>,
       [
         <>
-          <code className="text-fg font-mono text-[0.9em]">xecret.last-org</code> — the slug of the
-          organisation this tab was last working in, so that your account pages keep pointing at it.
+          <code className="text-fg font-mono text-[0.9em]">xecret.last-org</code>: the identifier of
+          the organisation this tab was last working in, so that your account pages keep pointing at
+          it.
         </>,
         <>
           <code className="text-fg font-mono text-[0.9em]">xecret.uk.session.v1</code> — while your

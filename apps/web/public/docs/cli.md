@@ -3,7 +3,7 @@ title: The xecret CLI
 navTitle: Overview
 description: What the command-line tool does, the two rules it never breaks, how output is split between stdout and stderr, and where to find each command.
 keywords: [xecret cli, command line secret manager, xecret run, cli conventions, exit codes]
-updated: 2026-08-16
+updated: 2026-11-28
 ---
 
 The `xecret` binary is how secrets reach your programs. One command does the
@@ -53,10 +53,13 @@ environment)* triple. It is resolved in this order:
 3. Under `XECRET_TOKEN`: the service token's own pinned scope
 4. Otherwise: an error telling you to run `xecret init`
 
-The organisation always comes from the credential — a login is pinned to one
-organisation, a service token to one organisation, project *and* environment.
-Naming a scope outside a service token's pin is refused by the **server**, not
-merely by the client.
+The organisation is never chosen by a file. A service token always uses its
+own, since it is pinned to one organisation, project *and* environment. Logged
+in, it is the one your login addresses: the organisation you approved the
+device for, or the one `xecret orgs use` chose since. A `.xecret.yaml` naming
+a different organisation is refused before anything is read or written. Naming
+a scope outside a service token's pin is refused by the **server**, not merely
+by the client.
 
 The full rules, plus the `.xecret.yaml` format and every environment variable:
 [configuration and scope](cli/configuration.md).

@@ -45,7 +45,7 @@ xecret secrets get NAME --version 3 --plain
 xecret secrets restore NAME --version 3  # re-append an old value; history intact
 xecret secrets annotate NAME --note "…"  # metadata; appends no version
 
-xecret orgs / orgs use SLUG              # which organisation commands address
+xecret orgs / orgs use ORG-ID            # which organisation commands address
 xecret projects delete checkout-api      # soft delete; there is no 'create'
 xecret environments delete pr-412        # same — environments are made in the dashboard
 xecret audit --action secret.revealed --since 7d
@@ -72,6 +72,41 @@ Some things are deliberately *not* here:
   grants and encrypts secrets; it implements no sealing, so there is nothing it
   could send. There are no `create` subcommands to run — listing and deleting
   work here, and creation lives in the dashboard.
+
+## Organisations, projects and `.xecret.yaml`
+
+An organisation is named by its id. `xecret orgs` lists yours by name and id,
+and `xecret orgs use <id>` chooses which one commands address. An exact name
+works too (case does not matter) when no other organisation you belong to has
+the same one; names are free text, so when two do, the command lists both ids
+and asks for one. A project is named by its **Project ID**, the short
+identifier chosen when it was created, e.g. `--project payments-api`, and an
+environment by its slug, e.g. `--environment production`.
+
+`xecret init` writes `.xecret.yaml`, which holds those three identifiers and
+nothing else:
+
+```yaml
+organization: 0192f0a1-0000-7000-8000-00000000a001
+project: payments-api
+environment: production
+```
+
+The file never chooses the organisation. It names a project inside the one
+`xecret orgs use` chose (or `xecret login` approved), and when its
+`organization` is a different one, every command in that directory is refused
+before anything is read or written, with a message naming both organisations
+and the `xecret orgs use` that would switch on purpose. A file is committed to
+a repository, and a repository in one organisation must not be able to point
+your commands at another organisation you also belong to. A `--project` flag
+names a project in the chosen organisation, the one `xecret projects` lists. A
+file with no `organization` line, which is every file written before `init`
+recorded one, resolves in the chosen organisation exactly as it always did.
+Under `XECRET_TOKEN` the organisation is always the token's own.
+
+Logins, files, offline copies and encryption-mode pins made before organisations
+were named by id keep working: they are found through the organisation's old
+slug, which the CLI still stores but no longer prints.
 
 ## How authentication works
 
@@ -118,8 +153,8 @@ From the repository root: `npm run cli:build`, `npm run cli:test`.
    one named `0600` file), and warn on stderr.
 2. **Credentials live in the OS keychain**, never in a dotfile a user might
    commit or sync to cloud storage. The file fallback is `0600` and warns
-   visibly. `.xecret.yaml` holds a project and environment slug — never
-   secrets — and is safe to commit.
+   visibly. `.xecret.yaml` holds identifiers (the organisation's id, the
+   Project ID and the environment) and never secrets, so it is safe to commit.
 
 ## Layout
 

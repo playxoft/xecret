@@ -28,13 +28,13 @@ export interface SsoRequiredRemedy {
 /** The remedy for an `sso_required` answer, or `null` for any other error. */
 export function ssoRequiredRemedy(
   error: unknown,
-  orgSlug: string | null | undefined,
+  orgId: string | null | undefined,
   pathname: string | null | undefined,
 ): SsoRequiredRemedy | null {
   if (!isApiError(error) || error.code !== 'sso_required') return null;
   const href =
-    typeof orgSlug === 'string' && orgSlug !== ''
-      ? loginHref({ org: orgSlug, next: safeRedirectPath(pathname, POST_SIGN_IN_PATH) })
+    typeof orgId === 'string' && orgId !== ''
+      ? loginHref({ org: orgId, next: safeRedirectPath(pathname, POST_SIGN_IN_PATH) })
       : null;
   return {
     title: 'This organisation requires single sign-on',

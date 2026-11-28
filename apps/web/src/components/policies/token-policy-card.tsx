@@ -61,14 +61,14 @@ import type { FeatureStatus, OrgPoliciesResponse } from './types';
  * whatever cannot be turned back on.
  */
 export function TokenPolicyCard({
-  orgSlug,
+  orgId,
   policies,
   error,
   onRetry,
   canManage,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   /** `null` while loading, and on failure. */
   policies: OrgPoliciesResponse | null;
   error: unknown;
@@ -106,7 +106,7 @@ export function TokenPolicyCard({
           // from the server's answer rather than keeping what was typed.
           <TokenPolicyForm
             key={JSON.stringify(policies.tokens)}
-            orgSlug={orgSlug}
+            orgId={orgId}
             stored={policies.tokens}
             feature={policies.features.tokenIpAllowlist}
             canManage={canManage}
@@ -119,13 +119,13 @@ export function TokenPolicyCard({
 }
 
 function TokenPolicyForm({
-  orgSlug,
+  orgId,
   stored,
   feature,
   canManage,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   stored: TokenPolicy;
   feature: FeatureStatus;
   canManage: boolean;
@@ -178,7 +178,7 @@ function TokenPolicyForm({
     setSaving(true);
     setError(null);
     try {
-      await api.patch<OrgPoliciesResponse>(apiPath.policies(orgSlug), { tokens: result.policy });
+      await api.patch<OrgPoliciesResponse>(apiPath.policies(orgId), { tokens: result.policy });
       toast({
         variant: 'success',
         title: 'Token policy saved',

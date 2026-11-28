@@ -47,7 +47,6 @@ import type { BadgeTone } from '@/components/ui';
 import { useVaultKeys } from '@/components/vault';
 
 export interface RestorePointDialogProps {
-  orgSlug: string;
   orgId: string;
   projectId: string;
   envSlug: string;
@@ -139,7 +138,6 @@ interface Previewed {
 }
 
 function RestoreBody({
-  orgSlug,
   orgId,
   projectId,
   envSlug,
@@ -152,7 +150,7 @@ function RestoreBody({
 }: Omit<RestorePointDialogProps, 'open'> & { onBusyChange: (busy: boolean) => void }) {
   const { toast } = useToast();
   const vault = useVaultKeys();
-  const target = { orgSlug, projectId, envSlug };
+  const target = { orgId, projectId, envSlug };
 
   const [instant, setInstant] = useState(anHourAgo);
   /**

@@ -480,7 +480,7 @@ provider id and no mode is a test row — but check each in the Dodo test dashbo
 ```sql
 BEGIN;
 -- What will change: review before running the rest.
-SELECT o.slug, s.plan, s.status, s.dodo_subscription_id, s.dodo_mode
+SELECT o.id, o.name, s.plan, s.status, s.dodo_subscription_id, s.dodo_mode
   FROM org_subscriptions s JOIN organizations o ON o.id = s.org_id
  WHERE s.dodo_mode = 'test_mode'
     OR (s.dodo_mode IS NULL

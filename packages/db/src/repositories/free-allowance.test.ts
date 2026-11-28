@@ -11,7 +11,11 @@ import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite'
 import type { TestDatabase } from '../testing/pglite';
 import { writeSubscriptionState } from './billing';
 import { freeOrganizationAllowance } from './free-allowance';
-import { findOrganizationBySlugWithEntitlements, provisionOrganization } from './organizations';
+import {
+  findOrganizationByIdWithEntitlements,
+  findOrganizationBySlugWithEntitlements,
+  provisionOrganization,
+} from './organizations';
 import { applyPlanGrant, endPlanGrant } from './plan-grants';
 import { QuotaExceededError } from './shared';
 import { entitlementsFromRow } from './subscriptions';
@@ -28,7 +32,8 @@ import { entitlementsFromRow } from './subscriptions';
  *  - A membership change never moves it, so leaving cannot step round it.
  *
  * Read the way the request path reads it, through
- * `findOrganizationBySlugWithEntitlements` and `entitlementsFromRow`.
+ * `findOrganizationByIdWithEntitlements` and `entitlementsFromRow`, and checked
+ * to read the same through the legacy slug an older client still sends.
  */
 
 let t: TestDatabase;
@@ -68,23 +73,28 @@ async function seedAccount(): Promise<Account> {
 
 /** Creates an organisation the way the product does. */
 async function create(account: Account, freeAllowance = true): Promise<Made> {
-  const slug = `allow-${randomUUID().slice(0, 8)}`;
   const made = await provisionOrganization(t.db, {
     user: account,
     envelope,
-    slug,
-    name: slug,
+    name: `Allow ${randomUUID().slice(0, 8)}`,
     freeAllowance,
   });
-  return { slug, id: made.organization.id, awaiting: made.awaitingPaidPlan };
+  return {
+    slug: made.organization.slug,
+    id: made.organization.id,
+    awaiting: made.awaitingPaidPlan,
+  };
 }
 
 /** Whether `org` is waiting for a paid plan, as `resolveOrg` reads it. */
 async function awaiting(org: Made): Promise<boolean> {
-  const found = await findOrganizationBySlugWithEntitlements(t.db, org.slug);
-  if (found === null) throw new Error(`no organisation ${org.slug}`);
+  const found = await findOrganizationByIdWithEntitlements(t.db, org.id);
+  if (found === null) throw new Error(`no organisation ${org.id}`);
   const entitlements = entitlementsFromRow(found.entitlements);
   expect(entitlements.controlPlaneActive).toBe(!entitlements.awaitingPaidPlan);
+  // The legacy slug finds the same row, and so the same answer.
+  const bySlug = await findOrganizationBySlugWithEntitlements(t.db, org.slug);
+  expect(entitlementsFromRow(bySlug?.entitlements ?? null)).toEqual(entitlements);
   return entitlements.awaitingPaidPlan;
 }
 

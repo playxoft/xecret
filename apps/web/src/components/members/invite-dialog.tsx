@@ -57,7 +57,7 @@ interface ProjectAccessOption {
 }
 
 export interface InviteDialogProps {
-  orgSlug: string;
+  orgId: string;
   /**
    * The roles the caller may invite at, from their session authority
    * (`roleWithinAuthority`, custom role included) — which bounds which roles
@@ -108,7 +108,7 @@ export interface InviteDialogProps {
  * that sends them together.
  */
 export function InviteDialog({
-  orgSlug,
+  orgId,
   assignableRoles,
   grantable,
   open,
@@ -121,7 +121,7 @@ export function InviteDialog({
     <Dialog open={open} onOpenChange={(next) => (submitting ? undefined : onOpenChange(next))}>
       <DialogContent>
         <InviteFlow
-          orgSlug={orgSlug}
+          orgId={orgId}
           assignableRoles={assignableRoles}
           grantable={grantable}
           onOpenChange={onOpenChange}
@@ -134,14 +134,14 @@ export function InviteDialog({
 }
 
 function InviteFlow({
-  orgSlug,
+  orgId,
   assignableRoles,
   grantable,
   onOpenChange,
   onSubmittingChange,
   onInvited,
 }: {
-  orgSlug: string;
+  orgId: string;
   assignableRoles: readonly OrgRole[];
   grantable: GrantableLevel;
   onOpenChange: (open: boolean) => void;
@@ -204,13 +204,13 @@ function InviteFlow({
     (async () => {
       try {
         const list = await api.get<{ projects: { id: string; name: string; slug: string }[] }>(
-          apiPath.projects(orgSlug),
+          apiPath.projects(orgId),
         );
         const options = await Promise.all(
           list.projects.map(async (project) => {
             const detail = await api.get<{
               environments: { name: string; slug: string; isProduction: boolean }[];
-            }>(apiPath.environments(orgSlug, project.slug));
+            }>(apiPath.environments(orgId, project.slug));
             return { ...project, environments: detail.environments };
           }),
         );
@@ -226,7 +226,7 @@ function InviteFlow({
     return () => {
       cancelled = true;
     };
-  }, [orgSlug]);
+  }, [orgId]);
 
   const envKey = (projectSlug: string, environmentSlug: string) =>
     `${projectSlug}/${environmentSlug}`;
@@ -319,7 +319,7 @@ function InviteFlow({
     const minted = generateInviteFragment();
 
     try {
-      const response = await api.post<InviteResponse>(apiPath.members(orgSlug), {
+      const response = await api.post<InviteResponse>(apiPath.members(orgId), {
         email: trimmed,
         role,
         grants,
@@ -332,7 +332,7 @@ function InviteFlow({
       // filed under the wrong environment looks exactly like a working grant
       // until somebody tries to use it.
       const failures = await sealInviteGrants({
-        orgSlug,
+        orgId,
         vault,
         invitationId: response.invitation.id,
         fragmentSeed: minted.seed,
@@ -655,7 +655,7 @@ interface GrantTarget {
  * way: they can still invite, and every environment simply waits.
  */
 async function sealInviteGrants(params: {
-  orgSlug: string;
+  orgId: string;
   vault: Parameters<typeof sealInviteGrant>[0]['vault'] | null;
   invitationId: string;
   fragmentSeed: Bytes;
@@ -666,7 +666,7 @@ async function sealInviteGrants(params: {
 
   for (const target of params.targets) {
     const ref = {
-      orgSlug: params.orgSlug,
+      orgId: params.orgId,
       projectId: target.projectId,
       envSlug: target.envSlug,
     };

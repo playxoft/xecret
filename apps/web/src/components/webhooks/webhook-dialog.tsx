@@ -35,7 +35,7 @@ import {
 import type { WebhookFormErrors, WebhookFormField, WebhookFormValues } from './webhook-form';
 
 export interface WebhookDialogProps {
-  orgSlug: string;
+  orgId: string;
   /** The endpoint being edited, or `null` to add one. */
   webhook: Webhook | null;
   open: boolean;
@@ -79,7 +79,7 @@ export function WebhookDialog({ open, onOpenChange, ...props }: WebhookDialogPro
  * the form from the endpoint as it now is.
  */
 export function WebhookForm({
-  orgSlug,
+  orgId,
   webhook: given,
   onOpenChange,
   onCreated,
@@ -139,10 +139,7 @@ export function WebhookForm({
     setServerErrors({});
     try {
       if (webhook === null) {
-        const created = await api.post<WebhookCreated>(
-          apiPath.webhooks(orgSlug),
-          createBody(values),
-        );
+        const created = await api.post<WebhookCreated>(apiPath.webhooks(orgId), createBody(values));
         onCreated(created);
       } else {
         const patch = patchBody(webhook, values);
@@ -150,7 +147,7 @@ export function WebhookForm({
         // changed nothing would still be audited as an edit.
         if (patch !== null) {
           const answer = await api.patch<WebhookResponse>(
-            apiPath.webhook(orgSlug, webhook.id),
+            apiPath.webhook(orgId, webhook.id),
             patch,
           );
           onSaved(answer.webhook);

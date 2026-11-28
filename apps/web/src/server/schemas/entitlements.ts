@@ -9,7 +9,7 @@ import type {
 } from '@xecret/core/entitlements';
 
 /**
- * `GET /api/orgs/{orgSlug}/entitlements`: what the organisation's plan allows,
+ * `GET /api/orgs/{orgId}/entitlements`: what the organisation's plan allows,
  * and how much of each organisation-wide ceiling it has used, for the
  * dashboard's locks.
  *

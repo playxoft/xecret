@@ -54,6 +54,7 @@ export {
   createEnvironmentKeys,
   decodeRecipientKey,
   fetchEnvironmentKeys,
+  fetchModePinAliases,
   fetchRecipients,
   grantsPath,
   invitePublicKey,
@@ -84,6 +85,7 @@ export { PendingSharesBanner } from './pending-shares';
 export {
   admitEncryptionMode,
   carryModePinsForward,
+  carryOrganizationModePinsForward,
   checkPin,
   fingerprint,
   modeIsAllowed,
@@ -101,6 +103,7 @@ export {
 export type {
   EncryptionMode,
   ModePin,
+  ModePinAliases,
   ModePinStore,
   Pin,
   PinCheck,

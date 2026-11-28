@@ -1,4 +1,5 @@
 import { resolvePlanId } from '@xecret/core/entitlements';
+import { isUuid } from '@xecret/core/ids';
 import {
   appendAuditEvents,
   applyPlanGrant,
@@ -125,17 +126,33 @@ export async function organizationPayloads(
   return orgs.map((org) => toOrganizationPayload(org, figuresOf(figures, org.id)));
 }
 
-/** An address finds the organisations its person is in; anything else is a slug. */
+/**
+ * An address finds the organisations its person is in; an id finds that one
+ * organisation, which is what the admin pages show and what follows `/app/`
+ * in its dashboard's address; anything else is read as a legacy slug, the
+ * name an organisation still answers to from before organisations were named
+ * by id. An id is told from a slug by shape, as `resolveOrg` tells them, and
+ * pasted ids are forgiven their capitals and surrounding spaces.
+ */
 export async function searchOrganizations(
   services: ServiceContext,
   query: string,
 ): Promise<AdminOrganizationPayload[]> {
   const found = await findOrganizationsForAdmin(
     services.db,
-    query.includes('@') ? { email: query } : { slug: query.toLowerCase() },
+    organizationSearch(query),
     SEARCH_LIMIT,
   );
   return organizationPayloads(services, found);
+}
+
+/** What an admin's search term asks for. Exported for the tests. */
+export function organizationSearch(
+  query: string,
+): { email: string } | { id: string } | { slug: string } {
+  if (query.includes('@')) return { email: query };
+  const folded = query.trim().toLowerCase();
+  return isUuid(folded) ? { id: folded } : { slug: folded };
 }
 
 async function organizationPayload(

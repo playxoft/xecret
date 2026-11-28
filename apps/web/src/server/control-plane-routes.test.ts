@@ -217,7 +217,12 @@ function expectNotAwaiting(answer: { body: Body }): void {
   expect(answer.body.error?.plan?.resource).not.toBe('awaitingPaidPlan');
 }
 
-const path = (org: Org, rest = '') => `/api/orgs/${org.slug}${rest}`;
+/**
+ * An organisation's API path, by its id: what the dashboard and a current CLI
+ * send. The environment paths (`f.envPath`) still name it by its legacy slug,
+ * so both spellings pass the gate here.
+ */
+const path = (org: Org, rest = '') => `/api/orgs/${org.orgId}${rest}`;
 
 function expectAwaiting(answer: { status: number; body: Body }): void {
   expect(answer.status).toBe(403);
@@ -235,12 +240,12 @@ describe('an organisation awaiting a paid plan refuses every write', () => {
     // An empty body: the open organisation answers it as invalid input, the
     // waiting one never reaches the parse.
     const refused = await f.call<Body>(projectsRoute.POST, 'POST', path(waiting, '/projects'), {
-      orgSlug: waiting.slug,
+      orgSlug: waiting.orgId,
     });
     expectAwaiting(refused);
 
     const allowed = await f.call<Body>(projectsRoute.POST, 'POST', path(open, '/projects'), {
-      orgSlug: open.slug,
+      orgSlug: open.orgId,
     });
     expect(allowed.body.error?.code).not.toBe('plan_limit');
   });
@@ -255,7 +260,18 @@ describe('an organisation awaiting a paid plan refuses every write', () => {
     caller = f.sessionOf(waiting.owner);
 
     expectAwaiting(
-      await f.call<Body>(handler, method, path(waiting, rest), { orgSlug: waiting.slug }, body),
+      await f.call<Body>(handler, method, path(waiting, rest), { orgSlug: waiting.orgId }, body),
+    );
+  });
+
+  it('refuses the same write addressed by its legacy slug', async () => {
+    const { waiting } = await threeFree();
+    caller = f.sessionOf(waiting.owner);
+
+    expectAwaiting(
+      await f.call<Body>(projectsRoute.POST, 'POST', `/api/orgs/${waiting.slug}/projects`, {
+        orgSlug: waiting.slug,
+      }),
     );
   });
 
@@ -265,7 +281,7 @@ describe('an organisation awaiting a paid plan refuses every write', () => {
     await f.setPlan(waiting.orgId, 'pro');
 
     const answer = await f.call<Body>(projectsRoute.POST, 'POST', path(waiting, '/projects'), {
-      orgSlug: waiting.slug,
+      orgSlug: waiting.orgId,
     });
     expect(answer.body.error?.code).not.toBe('plan_limit');
   });
@@ -277,12 +293,12 @@ describe('an organisation awaiting a paid plan keeps what stays open', () => {
     caller = f.sessionOf(waiting.owner);
 
     expect(
-      (await f.call<Body>(orgRoute.GET, 'GET', path(waiting), { orgSlug: waiting.slug })).status,
+      (await f.call<Body>(orgRoute.GET, 'GET', path(waiting), { orgSlug: waiting.orgId })).status,
     ).toBe(200);
     expect(
       (
         await f.call<Body>(projectsRoute.GET, 'GET', path(waiting, '/projects'), {
-          orgSlug: waiting.slug,
+          orgSlug: waiting.orgId,
         })
       ).status,
     ).toBe(200);
@@ -313,7 +329,7 @@ describe('an organisation awaiting a paid plan keeps what stays open', () => {
       tokenRoute.DELETE,
       'DELETE',
       path(waiting, `/tokens/service/${token.tokenId}`),
-      { orgSlug: waiting.slug, kind: 'service', tokenId: token.tokenId },
+      { orgSlug: waiting.orgId, kind: 'service', tokenId: token.tokenId },
     );
     expect(answer.status).toBe(204);
   });
@@ -328,7 +344,7 @@ describe('an organisation awaiting a paid plan keeps what stays open', () => {
       memberRoute.DELETE,
       'DELETE',
       path(waiting, `/members/${memberId}`),
-      { orgSlug: waiting.slug, memberId },
+      { orgSlug: waiting.orgId, memberId },
     );
     expect(removed.status).toBe(204);
 
@@ -338,7 +354,7 @@ describe('an organisation awaiting a paid plan keeps what stays open', () => {
       invitationRoute.DELETE,
       'DELETE',
       path(waiting, `/invitations/${invitationId}`),
-      { orgSlug: waiting.slug, invitationId },
+      { orgSlug: waiting.orgId, invitationId },
     );
     expect(withdrawn.body.error?.plan?.resource).not.toBe('awaitingPaidPlan');
   });
@@ -351,7 +367,7 @@ describe('an organisation awaiting a paid plan keeps what stays open', () => {
       promoCodeRoute.POST,
       'POST',
       path(waiting, '/billing/promo-code'),
-      { orgSlug: waiting.slug },
+      { orgSlug: waiting.orgId },
       { code: 'NOT-A-REAL-CODE' },
     );
     // Whatever the code says of itself, it is not the closed control plane.
@@ -366,8 +382,8 @@ describe('an organisation awaiting a paid plan keeps what stays open', () => {
       orgRoute.DELETE,
       'DELETE',
       path(waiting),
-      { orgSlug: waiting.slug },
-      { confirm: waiting.slug },
+      { orgSlug: waiting.orgId },
+      { confirm: 'Acme' },
     );
     expect(answer.status).toBe(204);
   });
@@ -384,7 +400,7 @@ describe('taking access away is never refused', () => {
         memberRoute.PATCH,
         'PATCH',
         path(waiting, `/members/${memberId}`),
-        { orgSlug: waiting.slug, memberId },
+        { orgSlug: waiting.orgId, memberId },
         body,
       );
 
@@ -403,7 +419,7 @@ describe('taking access away is never refused', () => {
     const developer = await f.seedMember(waiting, 'developer');
     const memberId = await memberIdOf(waiting, developer.id);
     caller = f.sessionOf(waiting.owner);
-    const params = { orgSlug: waiting.slug, memberId };
+    const params = { orgSlug: waiting.orgId, memberId };
     const at = path(waiting, `/members/${memberId}/grants`);
 
     expectNotAwaiting(
@@ -426,14 +442,14 @@ describe('taking access away is never refused', () => {
       projectRoute.DELETE,
       'DELETE',
       path(waiting, '/projects/api'),
-      { orgSlug: waiting.slug, projectSlug: 'api' },
+      { orgSlug: waiting.orgId, projectSlug: 'api' },
     );
     expect(project.status).toBe(204);
 
     const roleId = crypto.randomUUID();
     expectNotAwaiting(
       await f.call<Body>(roleRoute.DELETE, 'DELETE', path(waiting, `/roles/${roleId}`), {
-        orgSlug: waiting.slug,
+        orgSlug: waiting.orgId,
         roleId,
       }),
     );
@@ -473,7 +489,7 @@ describe('taking access away is never refused', () => {
         webhookRoute.PATCH,
         'PATCH',
         path(waiting, `/webhooks/${webhookId}`),
-        { orgSlug: waiting.slug, webhookId },
+        { orgSlug: waiting.orgId, webhookId },
         body,
       );
 
@@ -507,7 +523,7 @@ describe('a deployment that takes no payments', () => {
       caller = f.sessionOf(waiting.owner);
 
       const answer = await f.call<Body>(projectsRoute.POST, 'POST', path(waiting, '/projects'), {
-        orgSlug: waiting.slug,
+        orgSlug: waiting.orgId,
       });
       expect(answer.body.error?.code).not.toBe('plan_limit');
 
@@ -515,7 +531,7 @@ describe('a deployment that takes no payments', () => {
         entitlementsRoute.GET,
         'GET',
         path(waiting, '/entitlements'),
-        { orgSlug: waiting.slug },
+        { orgSlug: waiting.orgId },
       );
       expect(read.body.entitlements?.awaitingPaidPlan).toBe(false);
       expect(read.body.entitlements?.controlPlaneActive).toBe(true);
@@ -526,10 +542,10 @@ describe('a deployment that takes no payments', () => {
   });
 });
 
-describe('GET /api/orgs/{orgSlug}/entitlements', () => {
+describe('GET /api/orgs/{orgId}/entitlements', () => {
   function read(org: Org) {
     return f.call<Body>(entitlementsRoute.GET, 'GET', path(org, '/entitlements'), {
-      orgSlug: org.slug,
+      orgSlug: org.orgId,
     });
   }
 
@@ -586,7 +602,7 @@ describe('GET /api/orgs/{orgSlug}/entitlements', () => {
     expect((await read(org)).status).toBe(403);
   });
 
-  it('answers a stranger as it answers a slug that does not exist', async () => {
+  it('answers a stranger as it answers an organisation that does not exist', async () => {
     const org = await f.seedOrg('free');
     caller = f.sessionOf(await f.seedUser());
 

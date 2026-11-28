@@ -38,7 +38,7 @@ import { ImportArchiveDialog } from './import-archive-dialog';
 import type { Environment, Project } from './types';
 
 export interface ProjectActionsProps {
-  orgSlug: string;
+  orgId: string;
   project: Project;
   environments: readonly Environment[];
   /**
@@ -164,7 +164,7 @@ export function projectMenuItems(
  * server-side by `can()`, and a browser that renders the menu anyway gets a 403.
  */
 export function ProjectActions({
-  orgSlug,
+  orgId,
   project,
   environments,
   organization,
@@ -201,14 +201,14 @@ export function ProjectActions({
     // whenever it is required — rather than always — keeps the client's rule and
     // the server's rule the same rule.
     await api.delete(
-      apiPath.project(orgSlug, project.slug),
+      apiPath.project(orgId, project.slug),
       holdsProduction ? { confirm: project.slug } : undefined,
     );
 
     toast({ variant: 'success', title: `Deleted ${project.name}` });
     // A place under the plan's project ceiling is free again.
     refreshPlan();
-    router.push(appPath.org(orgSlug));
+    router.push(appPath.org(orgId));
   }
 
   return (
@@ -235,7 +235,7 @@ export function ProjectActions({
                 live thing" rather than "this is dangerous". */}
             {canInvite ? (
               <DropdownMenuItem asChild>
-                <Link href={appPath.members(orgSlug)} className="text-accent-text">
+                <Link href={appPath.members(orgId)} className="text-accent-text">
                   <PlusIcon className="size-4" />
                   Invite a member
                 </Link>
@@ -278,7 +278,7 @@ export function ProjectActions({
       ) : null}
 
       <ProjectMembersDialog
-        orgSlug={orgSlug}
+        orgId={orgId}
         projectSlug={project.slug}
         projectName={project.name}
         assignableRoles={organization.authority.assignableRoles}
@@ -296,8 +296,7 @@ export function ProjectActions({
         <ImportArchiveDialog
           open={importing}
           onOpenChange={setImporting}
-          orgSlug={orgSlug}
-          orgId={organization.id}
+          orgId={orgId}
           projectId={project.id}
           projectSlug={project.slug}
           environments={environments}
@@ -306,7 +305,7 @@ export function ProjectActions({
       ) : null}
 
       <RenameProjectDialog
-        orgSlug={orgSlug}
+        orgId={orgId}
         project={project}
         open={renaming}
         onOpenChange={setRenaming}
@@ -314,7 +313,7 @@ export function ProjectActions({
       />
 
       <EditDescriptionDialog
-        orgSlug={orgSlug}
+        orgId={orgId}
         project={project}
         open={editingDescription}
         onOpenChange={setEditingDescription}
@@ -325,8 +324,9 @@ export function ProjectActions({
         Deleting a project hides every environment and every secret beneath it at
         once, and the applications reading those secrets keep working until their
         next deploy — so the mistake is discovered late, by somebody else, during
-        an outage. When production is involved the confirmation demands the slug,
-        which is the one step that cannot be completed by muscle memory.
+        an outage. When production is involved the confirmation demands the slug
+        (shown as the Project ID), which is the one step that cannot be completed
+        by muscle memory.
 
         Two elements rather than a spread of conditional props: `strength` and
         `confirmPhrase` are a discriminated pair, and merging them in only
@@ -372,13 +372,13 @@ function SoftDeleteNote() {
 }
 
 function RenameProjectDialog({
-  orgSlug,
+  orgId,
   project,
   open,
   onOpenChange,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   project: Project;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -391,7 +391,7 @@ function RenameProjectDialog({
             — so the fields are seeded from the current project on every open,
             with no effect re-seeding them a render later. */}
         <RenameProjectForm
-          orgSlug={orgSlug}
+          orgId={orgId}
           project={project}
           onOpenChange={onOpenChange}
           onSaved={onSaved}
@@ -402,7 +402,7 @@ function RenameProjectDialog({
 }
 
 export interface ProjectFormProps {
-  orgSlug: string;
+  orgId: string;
   project: Project;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
@@ -450,7 +450,7 @@ export function projectPatch(
  * Exported for its test, which renders it inside a bare `Dialog` root: the
  * dialog's own content goes through a portal, which static markup never draws.
  */
-export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: ProjectFormProps) {
+export function RenameProjectForm({ orgId, project, onOpenChange, onSaved }: ProjectFormProps) {
   const { toast } = useToast();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? '');
@@ -475,7 +475,7 @@ export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: P
     setError(null);
 
     try {
-      await api.patch(apiPath.project(orgSlug, project.slug), patch);
+      await api.patch(apiPath.project(orgId, project.slug), patch);
       toast({ variant: 'success', title: 'Project updated' });
       onOpenChange(false);
       onSaved();
@@ -497,13 +497,24 @@ export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: P
       <DialogHeader>
         <DialogTitle>Rename project</DialogTitle>
         <DialogDescription>
-          The slug stays <code className="text-fg font-mono">{project.slug}</code>. It appears in
-          URLs, in <code className="font-mono">.xecret.yaml</code> and in CI configuration, so it
-          cannot be changed.
+          The name and description are what people see. The Project ID stays as it is.
         </DialogDescription>
       </DialogHeader>
 
       <DialogBody className="flex flex-col gap-4">
+        <Field
+          label="Project ID"
+          hint={
+            <>
+              Set when the project was created, and it cannot be changed. The CLI,{' '}
+              <code className="font-mono">.xecret.yaml</code> and CI configuration use it, for
+              example <code className="font-mono">xecret pull --project {project.slug}</code>.
+            </>
+          }
+        >
+          <Input value={project.slug} readOnly className="font-mono select-all" />
+        </Field>
+
         <Field label="Name" error={fieldErrors['name']}>
           <Input
             value={name}
@@ -542,13 +553,13 @@ export function RenameProjectForm({ orgSlug, project, onOpenChange, onSaved }: P
 }
 
 function EditDescriptionDialog({
-  orgSlug,
+  orgId,
   project,
   open,
   onOpenChange,
   onSaved,
 }: {
-  orgSlug: string;
+  orgId: string;
   project: Project;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -559,7 +570,7 @@ function EditDescriptionDialog({
       <DialogContent>
         {/* One component down, for the reason the rename dialog gives. */}
         <EditDescriptionForm
-          orgSlug={orgSlug}
+          orgId={orgId}
           project={project}
           onOpenChange={onOpenChange}
           onSaved={onSaved}
@@ -585,7 +596,7 @@ function EditDescriptionDialog({
  *
  * Exported for its test; see `RenameProjectForm`.
  */
-export function EditDescriptionForm({ orgSlug, project, onOpenChange, onSaved }: ProjectFormProps) {
+export function EditDescriptionForm({ orgId, project, onOpenChange, onSaved }: ProjectFormProps) {
   const { toast } = useToast();
   const [description, setDescription] = useState(project.description ?? '');
   const [submitting, setSubmitting] = useState(false);
@@ -604,7 +615,7 @@ export function EditDescriptionForm({ orgSlug, project, onOpenChange, onSaved }:
     setError(null);
 
     try {
-      await api.patch(apiPath.project(orgSlug, project.slug), { description: next });
+      await api.patch(apiPath.project(orgId, project.slug), { description: next });
       toast({
         variant: 'success',
         title: next === null ? 'Description removed' : 'Description saved',

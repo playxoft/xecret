@@ -69,7 +69,7 @@ export function checkoutPromoCode(
 }
 
 export interface PromoCodeFieldProps {
-  orgSlug: string;
+  orgId: string;
   /** The discount the screen will carry into checkout, or `null`. */
   applied: PromoCodePreviewPayload | null;
   /** Hands a checked discount code up to the screen — or `null`, to remove it. */
@@ -90,7 +90,7 @@ export interface PromoCodeFieldProps {
 }
 
 export function PromoCodeField({
-  orgSlug,
+  orgId,
   applied,
   onApplied,
   onRedeemed,
@@ -126,7 +126,7 @@ export function PromoCodeField({
     setOffer(null);
     try {
       const { promo } = await api.post<{ promo: PromoCodePreviewPayload }>(
-        apiPath.billingPromoCode(orgSlug),
+        apiPath.billingPromoCode(orgId),
         { code },
       );
       if (promo.kind === 'grant') {
@@ -152,7 +152,7 @@ export function PromoCodeField({
     setError(null);
     try {
       const { billing } = await api.post<{ billing: BillingStatusPayload }>(
-        apiPath.billingPromoCodeRedeem(orgSlug),
+        apiPath.billingPromoCodeRedeem(orgId),
         { code: offer.code },
       );
       const redeemed = offer;

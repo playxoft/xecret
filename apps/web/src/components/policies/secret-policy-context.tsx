@@ -17,8 +17,8 @@ import type { OrgPoliciesResponse } from './types';
  * writes secrets reads them once, at the top, rather than per row: a table of
  * sixty rows asking sixty times would be sixty requests for one answer.
  */
-export function useOrgPolicies(orgSlug: string): ApiResource<OrgPoliciesResponse> {
-  return useApiResource<OrgPoliciesResponse>(apiPath.policies(orgSlug));
+export function useOrgPolicies(orgId: string): ApiResource<OrgPoliciesResponse> {
+  return useApiResource<OrgPoliciesResponse>(apiPath.policies(orgId));
 }
 
 /**

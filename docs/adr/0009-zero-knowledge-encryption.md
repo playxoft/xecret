@@ -343,7 +343,8 @@ not warned about, and with no override offered in the same screen that would hav
 the downgrade, because "continue and send your credentials in plaintext" is a button that
 exists to be clicked under deadline pressure. The `server` → `e2ee` direction pins forward and
 is never refused: it takes capability away from the server, and it is the migration this ADR
-schedules. The dashboard files its pins by slug path in local storage; the CLI files them
+schedules. The dashboard files its pins in local storage by address (the organisation's id,
+the project's id and the environment's slug, as its URL holds them); the CLI files them
 beside the offline cache, and a service token that carries a key half is its own pin, in a
 string the server cannot edit after the fact — which is the only one an ephemeral CI runner
 gets. **Residual risk: a first-contact downgrade is undetectable**, exactly as a first-contact

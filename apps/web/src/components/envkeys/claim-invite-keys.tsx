@@ -32,7 +32,7 @@ import type { InviteKeyGrant } from './types';
  * of the same state, and the one that needs nobody else goes first.
  */
 export interface ClaimInviteKeysProps {
-  orgSlug: string;
+  orgId: string;
   /** Only invitations carrying a grant for this environment are offered. */
   environmentId: string;
   /** Re-reads the environment's keys, after a successful claim. */
@@ -42,14 +42,14 @@ export interface ClaimInviteKeysProps {
 interface ClaimableResponse {
   invitations: {
     invitationId: string;
-    organization: { slug: string; name: string };
+    organization: { id: string; name: string };
     grants: readonly InviteKeyGrant[];
   }[];
 }
 
 type Offer = { invitationId: string; grants: readonly InviteKeyGrant[] };
 
-export function ClaimInviteKeys({ orgSlug, environmentId, onClaimed }: ClaimInviteKeysProps) {
+export function ClaimInviteKeys({ orgId, environmentId, onClaimed }: ClaimInviteKeysProps) {
   const [offer, setOffer] = useState<Offer | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -67,7 +67,7 @@ export function ClaimInviteKeys({ orgSlug, environmentId, onClaimed }: ClaimInvi
         // invitation covering four environments is claimed one at a time, so the
         // three already done must not keep offering themselves here.
         for (const invitation of response.invitations) {
-          if (invitation.organization.slug !== orgSlug) continue;
+          if (invitation.organization.id !== orgId) continue;
           const grants = invitation.grants.filter((grant) => grant.environmentId === environmentId);
           if (grants.length === 0) continue;
           setOffer({ invitationId: invitation.invitationId, grants });
@@ -82,7 +82,7 @@ export function ClaimInviteKeys({ orgSlug, environmentId, onClaimed }: ClaimInvi
     })();
 
     return () => controller.abort();
-  }, [orgSlug, environmentId]);
+  }, [orgId, environmentId]);
 
   if (offer === null) return null;
 
@@ -97,7 +97,7 @@ export function ClaimInviteKeys({ orgSlug, environmentId, onClaimed }: ClaimInvi
   return (
     <div className="border-line w-full max-w-lg rounded-lg border p-4 text-left">
       <InviteKeyStep
-        orgSlug={orgSlug}
+        orgId={orgId}
         invitationId={offer.invitationId}
         grants={offer.grants}
         onDone={() => {

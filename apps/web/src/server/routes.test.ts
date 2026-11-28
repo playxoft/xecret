@@ -124,39 +124,25 @@ describe('organisation creation schema', () => {
   });
 
   /**
-   * The dashboard always sends one, having shown it to the user and checked it.
-   * An organisation slug is permanent, so the identifier somebody is stuck with
-   * must be one they saw and agreed to — not one the server picked because a
-   * stranger they cannot see already held the obvious name.
+   * Any text: the name is a label, not an identifier. Names that a slug could
+   * never have been made from, and names that are reserved words, are names.
    */
-  it('accepts the slug the user chose', () => {
-    expect(parseWith(organizationCreateSchema, { name: 'Acme', slug: 'acme-eu' })).toEqual({
-      name: 'Acme',
-      slug: 'acme-eu',
-    });
-  });
-
-  /** Absent, the server derives and uniquifies — for API callers and sign-up. */
-  it('accepts a name alone, because the slug is derived when it is absent', () => {
-    expect(parseWith(organizationCreateSchema, { name: 'Acme' })).toEqual({ name: 'Acme' });
-  });
-
-  it('applies the same slug rules the rest of the product does', () => {
-    for (const slug of ['Acme', 'acme corp', 'acme_corp', '-acme', 'acme-', 'acme--corp', '']) {
-      const fields = failingFields(organizationCreateSchema, { name: 'Acme', slug });
-      expect(fields.length, slug).toBeGreaterThan(0);
-      expect(new Set(fields), slug).toEqual(new Set(['slug']));
+  it('accepts any name, including ones no slug could be made from', () => {
+    for (const name of ['Settings', 'admin', '株式会社', '!!!', 'Acme & Co.', 'api']) {
+      expect(parseWith(organizationCreateSchema, { name }).name, name).toBe(name);
     }
   });
 
-  // Reserved slugs would shadow an application route for every tenant, not just
-  // the one that claimed it. `availability` is among them precisely because the
-  // endpoint this form calls lives at `/api/orgs/availability`.
-  it('refuses a reserved slug, including the availability endpoint own name', () => {
-    for (const slug of ['settings', 'api', 'availability', 'members']) {
-      expect(failingFields(organizationCreateSchema, { name: 'Acme', slug }), slug).toEqual([
-        'slug',
-      ]);
+  /**
+   * An organisation's slug is the server's, derived from its id. A tab still
+   * running the old form sends one; that is a working request, not a mistake,
+   * so it is accepted and then never read, whatever it holds.
+   */
+  it('accepts and ignores a slug, however it is spelled', () => {
+    for (const slug of ['acme-eu', 'settings', 'Not A Slug', '', 42]) {
+      expect(parseWith(organizationCreateSchema, { name: 'Acme', slug }).name, String(slug)).toBe(
+        'Acme',
+      );
     }
   });
 
@@ -371,6 +357,18 @@ describe('slug immutability', () => {
       expect(failure.code).toBe('bad_request');
       expect(failure.message).toContain('.xecret.yaml');
     }
+  });
+
+  // A project's slug is shown to people as its Project ID, so the refusal
+  // calls it what the screen they came from calls it.
+  it("names a project's slug as its Project ID", () => {
+    expect(() => assertSlugImmutable({ slug: 'renamed' }, 'project')).toThrowError(/Project ID/);
+  });
+
+  it('never describes an organisation slug as something a person relies on', () => {
+    expect(() => assertSlugImmutable({ slug: 'renamed' }, 'organisation')).toThrowError(
+      /addressed by their id/,
+    );
   });
 
   // The presence of the field is the attempt. A null or an empty string is not a

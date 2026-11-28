@@ -3,7 +3,7 @@ title: Quickstart
 navTitle: Quickstart
 description: From sign-up to running your app with injected secrets in about five minutes, including your first CI job.
 keywords: [xecret quickstart, get started, xecret run, install xecret cli, import env file]
-updated: 2026-11-22
+updated: 2026-11-28
 ---
 
 Five steps, about five minutes. Everything here also works against a
@@ -18,7 +18,9 @@ Sign up with Google or with an email address and password. On your first
 sign-in xecret creates your **personal organisation** — a workspace with just
 you in it. Set up your vault, then create your first **project**: one project per
 application, and it starts with three **environments** — `development`,
-`staging` and `production`.
+`staging` and `production`. Its **Project ID** (`my-app` below) is filled in
+from the name and can be edited until you create the project. It is how the CLI
+and CI name the project, so after that it never changes.
 
 Each environment gets its own encryption key at the moment it is created —
 generated in your browser and sealed to you, so the server never holds it. A
@@ -76,11 +78,13 @@ dotfile you might commit or sync.
 `xecret init` writes a file called `.xecret.yaml`:
 
 ```yaml
+organization: 0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f
 project: my-app
 environment: development
 ```
 
-Two slugs and no secrets. **Commit it.** Everyone who clones the repository is
+Three identifiers (your organisation's ID, the Project ID and the environment)
+and no secrets. **Commit it.** Everyone who clones the repository is
 then one command away from a working app.
 
 ## 5. Run your app

@@ -59,8 +59,8 @@ import { canAdminister, useOrganization } from './session';
  *    laptop" is one click that takes effect on the laptop's next request.
  */
 
-export function TokensScreen({ orgSlug }: { orgSlug: string }) {
-  const organization = useOrganization(orgSlug);
+export function TokensScreen({ orgId }: { orgId: string }) {
+  const organization = useOrganization(orgId);
   // Minting and revoking are separate capabilities; a role can hold either
   // without the other. The service tokens are listed for whoever holds one of
   // them — the listing route answers either — and each control asks for its
@@ -70,9 +70,9 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const seesServiceTokens = canCreate || canRevoke;
 
   const serviceTokens = useApiResource<ServiceTokenListResponse>(
-    seesServiceTokens ? apiPath.serviceTokens(orgSlug) : null,
+    seesServiceTokens ? apiPath.serviceTokens(orgId) : null,
   );
-  const cliTokens = useApiResource<CliTokenListResponse>(apiPath.cliTokens(orgSlug));
+  const cliTokens = useApiResource<CliTokenListResponse>(apiPath.cliTokens(orgId));
 
   const { toast } = useToast();
   // The live service tokens the plan's ceiling counts, from the shell's one
@@ -308,7 +308,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
       </section>
 
       <CreateTokenDialog
-        orgSlug={orgSlug}
+        orgId={orgId}
         open={creating}
         onOpenChange={setCreating}
         onCreated={() => {
@@ -333,7 +333,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
           if (revokingService === null) return;
           setError(null);
           try {
-            await api.delete(apiPath.token(orgSlug, 'service', revokingService.id));
+            await api.delete(apiPath.token(orgId, 'service', revokingService.id));
             toast({ variant: 'success', title: `Revoked ${revokingService.name}` });
             setRevokingService(null);
             serviceTokens.reload();
@@ -361,7 +361,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
           if (revokingCli === null) return;
           setError(null);
           try {
-            await api.delete(apiPath.token(orgSlug, 'cli', revokingCli.id));
+            await api.delete(apiPath.token(orgId, 'cli', revokingCli.id));
             toast({ variant: 'success', title: `Revoked ${revokingCli.name}` });
             setRevokingCli(null);
             cliTokens.reload();

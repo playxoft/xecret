@@ -65,8 +65,10 @@ export const metadata: Metadata = {
  *    the person to confirm it is theirs before continuing, because a link from
  *    elsewhere could be somebody else's organisation, wired to an identity
  *    provider that signs the visitor in as *them* (login CSRF; see the login
- *    route). Held to the slug pattern before it is printed, and never looked up
- *    here: whether the slug exists, or has SSO, is not this page's to say.
+ *    route). The organisation's id, or a legacy slug from an older link, held
+ *    to the slug pattern before it is printed, and never looked up here:
+ *    whether it names an organisation, or one with SSO, is not this page's to
+ *    say.
  *
  *    Its "Continue" link is the only thing the login route will start an
  *    organisation's single sign-on for (review round 2): it carries a
@@ -100,11 +102,11 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
 
           <Alert tone="warning" title="Check that this is your organisation">
             <p>
-              This link signs you in with the single sign-on of an organisation whose address on
-              xecret is <code className="font-mono font-medium">{ssoOrg}</code> — chosen by whoever
-              set it up, so it proves nothing on its own. Continue only if you know that is your
-              company’s organisation. If you did not expect this link, sign in the usual way
-              instead.
+              This link signs you in with the single sign-on of the organisation whose ID on xecret
+              is <code className="font-mono font-medium break-all">{ssoOrg}</code>. Anybody can
+              create an organisation and set up single sign-on for it, so the link proves nothing on
+              its own. Continue only if you know this is your company’s organisation. If you did not
+              expect this link, sign in the usual way instead.
             </p>
           </Alert>
 

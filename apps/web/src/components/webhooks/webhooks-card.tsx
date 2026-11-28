@@ -86,14 +86,14 @@ import {
  * `SigningSecretDialog`.
  */
 export function WebhooksCard({
-  orgSlug,
+  orgId,
   organization,
 }: {
-  orgSlug: string;
+  orgId: string;
   organization: SessionOrganization | null;
 }) {
   const mayManage = canAdminister(organization, 'org.update');
-  const list = useApiResource<WebhookListResponse>(mayManage ? apiPath.webhooks(orgSlug) : null);
+  const list = useApiResource<WebhookListResponse>(mayManage ? apiPath.webhooks(orgId) : null);
   const [editing, setEditing] = useState<Webhook | 'new' | null>(null);
 
   const data = list.data;
@@ -147,7 +147,7 @@ export function WebhooksCard({
           </div>
         ) : (
           <WebhookList
-            orgSlug={orgSlug}
+            orgId={orgId}
             data={data}
             onEdit={(webhook) => setEditing(webhook)}
             onChanged={() => {
@@ -168,14 +168,14 @@ export function WebhooksCard({
  * server holds rather than from a default corrected a render later.
  */
 function WebhookList({
-  orgSlug,
+  orgId,
   data,
   onEdit,
   onChanged,
   editing,
   onEditingChange,
 }: {
-  orgSlug: string;
+  orgId: string;
   data: WebhookListResponse;
   onEdit: (webhook: Webhook) => void;
   onChanged: () => void;
@@ -200,7 +200,7 @@ function WebhookList({
     try {
       // `enabled` alone, so switching off stays the one edit a paused plan
       // allows — see `patchBody` on why the shape of a patch matters.
-      await api.patch<WebhookResponse>(apiPath.webhook(orgSlug, webhook.id), { enabled });
+      await api.patch<WebhookResponse>(apiPath.webhook(orgId, webhook.id), { enabled });
       toast({
         variant: 'success',
         title: enabled
@@ -224,7 +224,7 @@ function WebhookList({
     setError(null);
     try {
       const { delivery } = await api.post<WebhookTestResponse>(
-        apiPath.webhookTest(orgSlug, webhook.id),
+        apiPath.webhookTest(orgId, webhook.id),
       );
       setTests((current) => ({ ...current, [webhook.id]: delivery }));
       const succeeded = delivery.status === 'succeeded';
@@ -289,7 +289,7 @@ function WebhookList({
       )}
 
       <WebhookDialog
-        orgSlug={orgSlug}
+        orgId={orgId}
         webhook={editing === 'new' || editing === null ? null : editing}
         open={editing !== null}
         onOpenChange={(open) => (open ? undefined : onEditingChange(null))}
@@ -312,7 +312,7 @@ function WebhookList({
 
       <SigningSecretDialog revealed={revealed} onClose={() => setRevealed(null)} />
 
-      <DeliveriesDialog orgSlug={orgSlug} webhook={logFor} onClose={() => setLogFor(null)} />
+      <DeliveriesDialog orgId={orgId} webhook={logFor} onClose={() => setLogFor(null)} />
 
       {rotating !== null ? (
         <ConfirmDialog
@@ -326,7 +326,7 @@ function WebhookList({
             // A refusal is thrown back to the dialog, which shows it and stays
             // open; nothing is lost, because nothing was made.
             const { secret } = await api.post<WebhookSecretRotated>(
-              apiPath.webhookRotateSecret(orgSlug, rotating.id),
+              apiPath.webhookRotateSecret(orgId, rotating.id),
             );
             setRevealed({ host: rotating.endpointHost, secret, reason: 'rotated' });
             setRotating(null);
@@ -342,7 +342,7 @@ function WebhookList({
           description="It stops receiving deliveries at once, and its delivery log is deleted with it. Anything still queued for it is dropped. The audit log keeps that it existed."
           confirmLabel="Delete endpoint"
           onConfirm={async () => {
-            await api.delete(apiPath.webhook(orgSlug, deleting.id));
+            await api.delete(apiPath.webhook(orgId, deleting.id));
             toast({ variant: 'success', title: `Deleted ${deleting.endpointHost}` });
             setDeleting(null);
             onChanged();

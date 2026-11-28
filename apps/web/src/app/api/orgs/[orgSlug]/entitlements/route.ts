@@ -7,14 +7,15 @@ import { toEntitlementsPayload } from '@/server/schemas/entitlements';
 import { authorize, resolveOrg } from '@/server/tenancy';
 
 /**
- * `GET /api/orgs/{orgSlug}/entitlements`: what the plan allows, and how much of
+ * `GET /api/orgs/{orgId}/entitlements`: what the plan allows, and how much of
  * each organisation-wide ceiling is used, so the dashboard can draw a control
  * the plan does not allow locked before anybody presses it. The payload, and
  * what it never carries, is described in `server/schemas/entitlements.ts`.
  *
  * ── Read once, never polled ──
  * The dashboard shell reads it once per organisation it is showing, and again
- * only after a screen creates or deletes something it counts. Nothing asks on a
+ * after a screen creates or deletes something it counts, when a locked control
+ * is pressed, and on window focus at most once a minute. Nothing asks on a
  * timer: the database is on a plan where a request every few minutes from every
  * open tab would be the largest load the product puts on it. Three counts in
  * two round trips, the same counts the billing screen and the refusals read.
@@ -28,6 +29,7 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * it.
  */
 
+/** The folder keeps its old name: the segment is the id, or a legacy slug (`resolveOrg`). */
 type Params = { orgSlug: string };
 
 export const GET = authenticatedRoute<Params>(async ({ params, principal, services }) => {

@@ -50,8 +50,9 @@ shortcut looks faster.
    `openssl rand -hex 32 | xecret secrets set SESSION_SECRET`.
 5. **Never commit `.env`.** Before anything else in a repository that has one,
    check `.gitignore` covers `.env*`.
-6. **`.xecret.yaml` is safe to commit, and should be.** It contains two slugs
-   and no secrets.
+6. **`.xecret.yaml` is safe to commit, and should be.** It holds three
+   identifiers (the organisation's ID, the Project ID and the environment) and
+   no secrets.
 7. **Ask before touching production.** Production is deny-by-default for a
    reason. A command that needs a production grant is a command that needs a
    human to say yes.
@@ -69,15 +70,22 @@ shortcut looks faster.
 ## Vocabulary
 
 ```text
-Organisation            acme                 — a company or a person; members and billing live here
-└── Project             checkout-api         — one application
-    └── Environment     production           — one stage of that application
-        └── Secret      STRIPE_SECRET_KEY    — one name, and a history of values
-            └── Version v4                   — one value, immutable once written
+Organisation            Acme                  a company or a person; members and billing live here
+└── Project             checkout-api          one application
+    └── Environment     production            one stage of that application
+        └── Secret      STRIPE_SECRET_KEY     one name, and a history of values
+            └── Version v4                    one value, immutable once written
 ```
 
-Everything is addressed by **slug**, never by numeric id. Each environment has
-its own encryption key, created in the same transaction as the environment —
+An organisation is identified by its **Organisation ID**, a UUID such as
+`0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f` (the part after `/app/` in the dashboard's
+address, and what `xecret orgs` lists). Its name is free text and not unique,
+so never pick an organisation by name in a script. A project is identified by
+its **Project ID** (`checkout-api`), chosen when it is created and never
+changed, which is what `--project` takes; an environment by its slug
+(`production`).
+
+Each environment has its own encryption key, created in the same transaction as the environment,
 and for an end-to-end-encrypted environment, which is the default, that key is
 generated in the browser and sealed to its creator. That is why projects and
 environments are created in the dashboard rather than from the CLI: the CLI
@@ -192,6 +200,7 @@ xecret run -- npm run dev
 `.xecret.yaml` is the whole configuration file:
 
 ```yaml
+organization: 0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f
 project: checkout-api
 environment: development
 ```
@@ -202,8 +211,12 @@ for a new teammate with no setup document.
 Scope is resolved in this order, first answer winning: `--project` /
 `--environment` flags → the nearest `.xecret.yaml`, found by walking up from
 the working directory the way `git` finds `.git` → the service token's pin →
-an error telling you to run `xecret init`. The **organisation** is never one of
-these; it always comes from the credential.
+an error telling you to run `xecret init`. The **organisation** is never
+chosen by a file: under `XECRET_TOKEN` it is always the token's own; otherwise
+it is the one the login addresses, which only `xecret orgs use <ORG-ID>`
+changes. A `.xecret.yaml` naming a different organisation is refused before
+anything is read or written. An older file with only `project` and
+`environment` still works.
 
 There is deliberately no `XECRET_ENVIRONMENT` variable. An environment variable
 that silently redirects which secrets a command loads is how a migration gets
@@ -214,7 +227,7 @@ the flag.
 
 ## The commands
 
-Two flags recur on everything that reads secrets: `--project SLUG` and
+Two flags recur on everything that reads secrets: `--project PROJECT-ID` and
 `--environment SLUG`. Most commands accept `--json`.
 
 ### Reading
@@ -225,6 +238,7 @@ xecret secrets get DATABASE_URL     # masked metadata
 xecret secrets versions API_KEY     # history, metadata only, and who wrote each version
 xecret projects                     # what you can see
 xecret environments                 # of the current project
+xecret orgs                         # your organisations: name, ID, role, which is current
 xecret whoami                       # asks the server, not the stored credential
 ```
 
@@ -449,8 +463,10 @@ a debugging session becomes an incident.
 ## The HTTP API
 
 For tooling only — `xecret run` is the supported path. Base path `/api`, JSON
-in and out, `Cache-Control: no-store` on every response, resources addressed by
-slug rather than id so the path itself carries the ownership chain.
+in and out, `Cache-Control: no-store` on every response. Resources are
+addressed through their organisation, so the path itself carries the ownership
+chain: the organisation by its ID (a legacy slug is still accepted), a project
+by its Project ID or its id, an environment by its slug.
 
 ```bash
 curl https://xecret.playxoft.com/api/tokens/self \
@@ -466,13 +482,13 @@ requests carry no ambient credential and must not send it.
 |---|---|
 | Deployment version (no credential) | `GET /api/version`, also `GET /version` |
 | Token introspection | `GET /api/tokens/self` |
-| Masked listing | `GET /api/orgs/{org}/projects/{project}/environments/{env}/secrets` |
+| Masked listing | `GET /api/orgs/{orgId}/projects/{project}/environments/{env}/secrets` |
 | Reveal one value | `GET …/secrets/{name}` |
 | Create · new version · metadata · delete | `POST …/secrets` · `PATCH …/secrets/{name}` · `PUT …/secrets/{name}` · `DELETE …/secrets/{name}` |
 | History · one version · restore | `GET …/secrets/{name}/versions` · `GET …/versions/{version}` · `POST …/secrets/{name}/restore` |
 | Everything at once (what `run` uses) | `GET …/environments/{env}/pull?format=env\|json\|yaml\|shell\|docker` — `format` applies in `server` mode only; an e2ee environment returns a JSON bundle of ciphertexts and ignores it |
 | Import · export | `POST …/environments/{env}/import` · `GET …/environments/{env}/export` — export is refused with `client_side_only` on an e2ee environment |
-| Audit | `GET /api/orgs/{org}/audit` |
+| Audit | `GET /api/orgs/{orgId}/audit` |
 
 Errors come back as
 `{ "error": { "code", "message", "requestId", "fields"? } }`. Codes:

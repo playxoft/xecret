@@ -38,14 +38,14 @@ export interface ErrorStateProps {
  * value — can reach it.
  */
 export function ErrorState({ subject, error, onRetry }: ErrorStateProps) {
-  const params = useParams<{ orgSlug?: string }>();
+  const params = useParams<{ orgId?: string }>();
   const pathname = usePathname();
   const requestId = isApiError(error) ? error.requestId : null;
   const forbidden = isApiError(error) && error.code === 'forbidden';
   const missing = isApiError(error) && error.code === 'not_found';
   // Not a failure at all: the organisation wants its own single sign-on, and
   // the person can give it that in one step (review round 2, L9).
-  const sso = ssoRequiredRemedy(error, params?.orgSlug, pathname);
+  const sso = ssoRequiredRemedy(error, params?.orgId, pathname);
   // Not a failure either: the vault locked, and nothing about this screen is
   // wrong. The refusal has already told the shell (`lib/session-locked.ts`),
   // which swaps the whole dashboard for the lock screen once it has re-read the

@@ -18,6 +18,7 @@ import { withVaultKeys } from '@/components/vault/key-store';
 import type { VaultKeyMaterial } from '@/components/vault/key-store';
 import { holdEnvKey, readEnvKey, withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
+import type { ModePinAliases } from './pins';
 import type {
   EnvironmentKeys,
   EnvironmentKeysResponse,
@@ -56,17 +57,55 @@ import type {
 
 /**
  * Where an environment lives, as the dashboard addresses it: the organisation
- * by slug, the project by id, the environment by slug — the segments of its
+ * by id, the project by id, the environment by slug — the segments of its
  * page's URL, and of the API routes behind it.
+ *
+ * The organisation's id is also the one every secret's AAD names (spec §4.2).
+ * It is the id this browser addressed, never one a response supplied, so a
+ * server cannot have values sealed or opened under another organisation's id
+ * by answering for one.
  */
 export interface EnvironmentRef {
-  orgSlug: string;
+  orgId: string;
   projectId: string;
   envSlug: string;
 }
 
 export function keysPath(target: EnvironmentRef): string {
-  return `${apiPath.environment(target.orgSlug, target.projectId, target.envSlug)}/keys`;
+  return `${apiPath.environment(target.orgId, target.projectId, target.envSlug)}/keys`;
+}
+
+/**
+ * The other spellings an environment's mode pins may have been filed under,
+ * read from the server for `admitEncryptionMode`: the organisation's legacy
+ * slug and the project's slug. `projectSlug`, when the caller already holds
+ * the project's slug (a dialog chosen by it), is passed in and leads.
+ *
+ * A read that fails rejects, and the caller treats that as an error rather
+ * than believing a `server` answer it could not check: a server holding the
+ * project or the organisation back must not be the way round the carry.
+ */
+export async function fetchModePinAliases(
+  target: { orgId: string; projectId: string },
+  known: { projectSlug?: string } = {},
+  options: { signal?: AbortSignal } = {},
+): Promise<ModePinAliases> {
+  const [organization, project] = await Promise.all([
+    api.get<{ organization: { slug: string } }>(apiPath.org(target.orgId), options),
+    known.projectSlug === undefined
+      ? api.get<{ project: { slug: string } }>(
+          apiPath.project(target.orgId, target.projectId),
+          options,
+        )
+      : null,
+  ]);
+  return {
+    orgSlugs: [organization.organization.slug],
+    projectSlugs: [
+      ...(known.projectSlug === undefined ? [] : [known.projectSlug]),
+      ...(project === null ? [] : [project.project.slug]),
+    ],
+  };
 }
 
 export function recipientsPath(target: EnvironmentRef): string {
@@ -474,7 +513,7 @@ export async function reSealInviteGrants(params: {
   fragmentSeed: Bytes;
   invitationId: string;
   grants: readonly InviteKeyGrant[];
-  orgSlug: string;
+  orgId: string;
 }): Promise<{ opened: number; failed: InviteKeyGrant[] }> {
   return withVaultKeys(params.vault, () => reSealAll(params));
 }
@@ -484,7 +523,7 @@ async function reSealAll(params: {
   fragmentSeed: Bytes;
   invitationId: string;
   grants: readonly InviteKeyGrant[];
-  orgSlug: string;
+  orgId: string;
 }): Promise<{ opened: number; failed: InviteKeyGrant[] }> {
   const keypair = await deriveInviteKeyPair(params.fragmentSeed);
   const failed: InviteKeyGrant[] = [];
@@ -522,7 +561,7 @@ async function reSealAll(params: {
 
         await api.post(
           grantsPath({
-            orgSlug: params.orgSlug,
+            orgId: params.orgId,
             projectId: grant.projectId,
             envSlug: grant.environmentSlug,
           }),

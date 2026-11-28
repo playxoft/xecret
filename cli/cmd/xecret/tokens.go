@@ -79,7 +79,7 @@ func tokensList(args []string) error {
 		if a.usingServiceToken() && *kind == "" {
 			a.printer.Infof("Skipping devices — a service token has none.")
 		} else {
-			tokens, listErr := client.CliTokens(ctx, credentials.OrgSlug)
+			tokens, listErr := client.CliTokens(ctx, credentials.OrgRef())
 			if listErr != nil {
 				return listErr
 			}
@@ -97,7 +97,7 @@ func tokensList(args []string) error {
 	}
 
 	if *kind != "cli" {
-		tokens, listErr := client.ServiceTokens(ctx, credentials.OrgSlug)
+		tokens, listErr := client.ServiceTokens(ctx, credentials.OrgRef())
 		if listErr != nil {
 			return listErr
 		}
@@ -156,7 +156,7 @@ func tokensRevoke(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := client.RevokeToken(ctx, credentials.OrgSlug, *kind, tokenID); err != nil {
+	if err := client.RevokeToken(ctx, credentials.OrgRef(), *kind, tokenID); err != nil {
 		return err
 	}
 	// Idempotent server-side: revoking an already-dead token succeeds without
