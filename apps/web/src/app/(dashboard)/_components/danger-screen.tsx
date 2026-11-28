@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 
 import { api, errorMessage, isApiError } from '@/lib/api';
+import { nameIsShared, sharedOrgNames, shortOrgId } from '@/lib/organization-label';
 import {
   Alert,
   Button,
@@ -60,6 +61,9 @@ function DeleteProjectCard() {
     () => organizations.filter((organization) => canAdminister(organization, 'project.delete')),
     [organizations],
   );
+
+  // Names are not unique; where two match, the end of each id tells them apart.
+  const shared = useMemo(() => sharedOrgNames(adminOrgs), [adminOrgs]);
 
   const [orgId, setOrgId] = useState(adminOrgs[0]?.id ?? '');
   const [projectSlug, setProjectSlug] = useState('');
@@ -152,6 +156,12 @@ function DeleteProjectCard() {
                   {adminOrgs.map((organization) => (
                     <SelectItem key={organization.id} value={organization.id}>
                       {organization.name}
+                      {nameIsShared(organization.name, shared) ? (
+                        <span className="text-fg-subtle font-mono" title={organization.id}>
+                          {' '}
+                          (ID …{shortOrgId(organization.id)})
+                        </span>
+                      ) : null}
                     </SelectItem>
                   ))}
                 </SelectContent>

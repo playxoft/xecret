@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { initials } from '@/lib/format';
+import { nameIsShared, sharedOrgNames, shortOrgId } from '@/lib/organization-label';
 import { ArrowRightIcon, Button, PlusIcon } from '@/components/ui';
 import { appPath } from '../_lib/paths';
 import { useSession } from './session';
@@ -31,6 +32,8 @@ export function OrganizationsScreen({ intent = null }: { intent?: 'plans' | null
   // This screen only needs the button.
   const { organizations, createOrganization } = useSession();
   const only = organizations.length === 1 ? organizations[0] : undefined;
+  // Names are not unique; where two match, the end of each id tells them apart.
+  const shared = sharedOrgNames(organizations);
 
   useEffect(() => {
     if (only) router.replace(open(only.id));
@@ -82,6 +85,14 @@ export function OrganizationsScreen({ intent = null }: { intent?: 'plans' | null
                   {organization.name}
                 </span>
                 <span className="text-fg-subtle block truncate text-sm">
+                  {nameIsShared(organization.name, shared) ? (
+                    <>
+                      <span className="font-mono" title={organization.id}>
+                        ID …{shortOrgId(organization.id)}
+                      </span>{' '}
+                      ·{' '}
+                    </>
+                  ) : null}
                   <span className="capitalize">{organization.role}</span>
                   {organization.authority.customRole !== null
                     ? ` · ${organization.authority.customRole.name}`

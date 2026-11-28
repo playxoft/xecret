@@ -25,17 +25,22 @@ triple, resolved in this order:
 3. Under `XECRET_TOKEN`: the token's own pinned scope
 4. Otherwise: an error telling you to run `xecret init`
 
-That order settles the project and the environment; the organisation travels
-with the project. Under `XECRET_TOKEN` it is always the token's own (a service
+That order settles the project and the environment; the organisation is never
+chosen by a file. Under `XECRET_TOKEN` it is always the token's own (a service
 token is pinned to one organisation, project *and* environment), and a
 `.xecret.yaml` naming another organisation only earns a warning. Logged in, it
-is the organisation the `.xecret.yaml` names when the project came from that
-file, so a directory set up for a project keeps reaching it after `orgs use`
-picks another organisation; otherwise it is the one the stored credential
-addresses (the organisation approved at `login`, or the one `orgs use` chose
-since). A `--project` flag, and a file with no `organization` line, resolve
-there. Naming a scope outside a service token's pin is refused by the server,
-never merely by the client.
+is the one the stored credential addresses (the organisation approved at
+`login`, or the one `orgs use` chose since). A `--project` flag, and a file
+with no `organization` line, resolve there. A `.xecret.yaml` whose
+`organization` is a different one is refused before anything is read or
+written (`checkFileOrganization`): the refusal names both organisations and the
+`xecret orgs use` that would switch on purpose. The file is committed to a
+repository, and must not be able to move a member of two organisations' commands
+from one to the other. The comparison is by id, exactly, or by legacy slug
+without regard to case; a credential from before organisation ids asks
+`/api/auth/me` once to confirm a file's id, and refuses when it cannot. Naming
+a scope outside a service token's pin is refused by the server, never merely by
+the client.
 
 ## Environment variables
 
@@ -101,8 +106,9 @@ xecret whoami [--json]
 Asks the server, so a revoked credential reads as signed out rather than as
 its stale identity. Under `XECRET_TOKEN`, answers with the token's pinned
 scope instead of a person. The organisation is printed by its name with its id
-beside it (`Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)`), never by its slug; `--json` carries
-`organization` (the name) and `organizationId`.
+beside it (`Acme Ltd (0192f0a1-7c3e-7d2a-9b1f-2a3b4c5d6e7f)`), never by its slug; `--json`
+carries `organization` (the id, an identifier as it always was) and
+`organizationName`.
 
 ```
 xecret orgs [list] [--json]

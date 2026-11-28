@@ -13,6 +13,7 @@ import (
 	"github.com/playxoft/xecret/cli/internal/config"
 	"github.com/playxoft/xecret/cli/internal/cred"
 	"github.com/playxoft/xecret/cli/internal/e2ee"
+	"github.com/playxoft/xecret/cli/internal/ids"
 	"github.com/playxoft/xecret/cli/internal/keyring"
 	"github.com/playxoft/xecret/cli/internal/output"
 )
@@ -204,29 +205,17 @@ type scope struct {
 	// holds one, and otherwise a legacy slug, which the API accepts too.
 	Org string
 	// OrgID is the organisation's id when it is known without asking, which is
-	// every case but a credential from before organisation ids and a
-	// `.xecret.yaml` naming another organisation by a legacy slug.
-	// [app.orgIdentity] completes those, and is what every end-to-end path
+	// every case but a credential from before organisation ids.
+	// [app.orgIdentity] completes that one, and is what every end-to-end path
 	// reads the AAD's orgId from.
 	OrgID string
 	// OrgSlug is the legacy slug this process holds for the organisation, if
 	// any. Never printed: it is consulted only to find what slug-keyed builds
 	// filed offline.
 	OrgSlug string
-	// orgSource is the `.xecret.yaml` the organisation came from, when it did
-	// not come from the credential. For messages.
-	orgSource string
 
 	Project     string
 	Environment string
-}
-
-// inCredentialOrg reports whether the scope addresses the credential's own
-// organisation, which is what every scope did before `.xecret.yaml` could name
-// one, and what a scope built with no organisation at all still means.
-func (s scope) inCredentialOrg(credentials *cred.Credentials) bool {
-	return s.Org == "" || credentials.NamesOrg(s.Org) ||
-		(s.OrgID != "" && s.OrgID == credentials.OrgID)
 }
 
 // resolveScope combines the credential's organisation with the project and
@@ -239,14 +228,18 @@ func (s scope) inCredentialOrg(credentials *cred.Credentials) bool {
 //
 // ── Which organisation ──
 //
-// The credential's, unless the project came from a `.xecret.yaml` that names
-// one: the organisation travels with the project it was written for. That is
-// what keeps a directory pinned to a project in one organisation working after
-// `xecret orgs use` chose another, rather than quietly reaching a project of
-// the same name there. A `--project` flag names a project in the credential's
-// organisation, the one `xecret projects` lists. A file with no organisation,
-// which is every file written before init recorded one, resolves as it always
-// did.
+// Always the credential's: the one `xecret login` approved, or `xecret orgs
+// use` chose since. A `.xecret.yaml` names a project *inside* that
+// organisation and never moves a command to another one. The file is
+// committed to a repository, and a repository belongs to whoever can push to
+// it: a file that could choose the organisation would let a repository in one
+// organisation point `xecret run`, `import` or `secrets set` at another,
+// reading its secrets into this code or writing into it, for anybody who
+// happens to be a member of both. So when the file's `organization` is not
+// the selected one, the command is refused before anything is read or
+// written (see checkFileOrganization), and switching is left to `xecret orgs
+// use`, which a person runs on purpose. A file with no organisation, which is
+// every file written before init recorded one, resolves as it always did.
 //
 // Under XECRET_TOKEN the token's own organisation is used whatever the file
 // says. The server would refuse a path into any other, and says so; this only
@@ -272,8 +265,10 @@ func (a *app) resolveScope(credentials *cred.Credentials, projectFlag, envFlag s
 	path, fileConfig, findErr := config.Find(cwd)
 	if findErr == nil {
 		if resolved.Project == "" {
+			if err := a.checkFileOrganization(credentials, fileConfig, path); err != nil {
+				return scope{}, err
+			}
 			resolved.Project = fileConfig.Project
-			a.adoptFileOrganization(&resolved, credentials, fileConfig, path)
 		}
 		if resolved.Environment == "" {
 			resolved.Environment = fileConfig.Environment
@@ -298,29 +293,88 @@ func (a *app) resolveScope(credentials *cred.Credentials, projectFlag, envFlag s
 	return resolved, nil
 }
 
-// adoptFileOrganization points a scope at the organisation a `.xecret.yaml`
-// names, for a scope whose project came from that file. See resolveScope.
+// fileOrgLookupTimeout bounds the one request checkFileOrganization may make
+// to put names to a mismatch. It runs on the way to a refusal, or for a
+// credential from before organisation ids, and must not keep anybody waiting.
+const fileOrgLookupTimeout = 5 * time.Second
+
+// checkFileOrganization refuses a `.xecret.yaml` whose organisation is not
+// the one this credential has selected. See resolveScope for why the file
+// never gets to choose.
 //
-// An id is taken as it is, and is the AAD's orgId directly. A legacy slug is
-// accepted the way the API accepts one, and paths address it by that slug;
-// its id is learned when an end-to-end path first needs it.
-func (a *app) adoptFileOrganization(resolved *scope, credentials *cred.Credentials, file *config.Config, path string) {
+// The comparison is by id, exactly, and by legacy slug without regard to case
+// ([cred.Credentials.NamesOrg]). Only when that cannot settle it, because the
+// credential predates organisation ids and holds a slug while the file holds
+// an id, or because the two plainly differ and the refusal should name both,
+// is GET /api/auth/me asked, once and briefly. A credential it identifies is
+// recorded, as every command records one. If it cannot be asked, an id the
+// credential cannot confirm is refused rather than trusted: being refused once
+// costs a rerun when the network is back, and trusting it is the hole this
+// closes.
+func (a *app) checkFileOrganization(credentials *cred.Credentials, file *config.Config, path string) error {
 	if file.Organization == "" || credentials.NamesOrg(file.Organization) {
-		// None named, or the credential's own: the defaults already say so,
-		// and they hold the id even when the file has the slug.
-		return
+		return nil
 	}
 	if a.usingServiceToken() {
 		a.printer.Warnf(
 			"%s names a different organisation from the one XECRET_TOKEN is pinned to; the token's is used.", path)
-		return
+		return nil
 	}
 
-	resolved.Org = file.Organization
-	resolved.OrgID = file.OrganizationID()
-	resolved.OrgSlug = ""
-	if resolved.OrgID == "" {
-		resolved.OrgSlug = file.Organization
+	ctx, cancel := context.WithTimeout(context.Background(), fileOrgLookupTimeout)
+	defer cancel()
+	client := api.New(credentials.APIURL, credentials.Token, userAgent())
+	me, err := a.fetchMe(ctx, client)
+	if err == nil {
+		a.recordIdentity(credentials, me)
+		if credentials.NamesOrg(file.Organization) {
+			return nil
+		}
 	}
-	resolved.orgSource = path
+
+	var named *api.Organization
+	if err == nil {
+		named = findOrganization(me.Organizations, file.Organization)
+	}
+	return fileOrganizationRefusal(path, credentials, named)
+}
+
+// findOrganization is the membership an organisation reference names: by id,
+// exactly once canonical, or by legacy slug without regard to case.
+func findOrganization(organizations []api.Organization, ref string) *api.Organization {
+	id, isID := ids.Canonical(ref)
+	for i := range organizations {
+		organization := &organizations[i]
+		if isID && organization.ID == id {
+			return organization
+		}
+		if !isID && cred.SameSlug(organization.Slug, ref) {
+			return organization
+		}
+	}
+	return nil
+}
+
+// fileOrganizationRefusal says which two organisations disagree, by name with
+// the id beside it because names are not unique, and what to do about it.
+// named is the file's organisation among this account's memberships, or nil
+// when it is not one of them or could not be looked up.
+func fileOrganizationRefusal(path string, credentials *cred.Credentials, named *api.Organization) error {
+	current := "the organisation you are signed in to"
+	if credentials.OrgName != "" || credentials.OrgID != "" {
+		current = organisationLine(credentials.OrgName, credentials.OrgID)
+	}
+
+	if named == nil {
+		return fmt.Errorf(
+			"%s is for an organisation other than the one you are using, %s, and it is not one of "+
+				"yours that this machine could look up. Nothing was read or written. Run 'xecret orgs' to "+
+				"see the organisations you are in, and 'xecret init' to point this directory at a project in "+
+				"the one you are using",
+			path, current)
+	}
+	return fmt.Errorf(
+		"%s is for the organisation %s, but you are using %s. Nothing was read or written. "+
+			"If you meant to work in %s, run 'xecret orgs use %s' first",
+		path, organisationLine(named.Name, named.ID), current, named.Name, named.ID)
 }

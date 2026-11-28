@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { decodePublicKey } from '@xecret/core/crypto/client';
 import { api, errorMessage, isApiError } from '@/lib/api';
+import { shortOrgId } from '@/lib/organization-label';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
 import {
   Alert,
@@ -263,7 +264,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
                   <SelectContent>
                     {organizations.map((org) => (
                       <SelectItem key={org.id} value={org.id}>
-                        {org.name}
+                        <OrganizationLabel name={org.name} id={org.id} />
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -271,7 +272,10 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
               </div>
             ) : organizations.length === 1 ? (
               <p className="text-fg-muted text-sm">
-                Organisation: <span className="text-fg font-medium">{organizations[0]?.name}</span>
+                Organisation:{' '}
+                {organizations[0] ? (
+                  <OrganizationLabel name={organizations[0].name} id={organizations[0].id} />
+                ) : null}
               </p>
             ) : (
               // A device is authorized *for* an organisation, so an account
@@ -353,6 +357,25 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
         )}
       </div>
     </AuthCard>
+  );
+}
+
+/**
+ * An organisation as the consent screen names it: its name, and always the end
+ * of its id beside it. Names are not unique, and approving a device for the
+ * wrong one of two organisations called the same thing hands that machine the
+ * wrong organisation's secrets. Inside the picker's item text, so the closed
+ * picker shows it for the chosen organisation too. The full id is in `title`,
+ * and matches what follows `/app/` in that organisation's dashboard address.
+ */
+export function OrganizationLabel({ name, id }: { name: string; id: string }) {
+  return (
+    <span>
+      <span className="text-fg font-medium">{name}</span>{' '}
+      <span className="text-fg-subtle font-mono text-sm" title={id}>
+        (ID …{shortOrgId(id)})
+      </span>
+    </span>
   );
 }
 

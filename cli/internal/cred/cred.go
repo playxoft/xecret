@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/playxoft/xecret/cli/internal/ids"
 	"github.com/playxoft/xecret/cli/internal/keyring"
 )
 
@@ -74,21 +76,37 @@ func (c *Credentials) OrgRef() string {
 // NamesOrg reports whether ref, an organisation reference as a path or a
 // `.xecret.yaml` holds one, is this credential's organisation: by its id, or by
 // the legacy slug that is its alias.
+//
+// An id is compared in its canonical lowercase spelling and otherwise exactly.
+// A slug is compared without regard to case, as the server compares it: slugs
+// are `citext`, so `Acme` and `acme` name the same organisation there, and
+// must here too.
 func (c *Credentials) NamesOrg(ref string) bool {
 	if ref == "" {
 		return false
 	}
-	return ref == c.OrgID || ref == c.OrgSlug
+	if id, ok := ids.Canonical(ref); ok {
+		return c.OrgID != "" && id == c.OrgID
+	}
+	return SameSlug(ref, c.OrgSlug)
 }
 
 // IsOrg reports whether an organisation the server listed, with this id and
 // slug, is this credential's. The id decides whenever this credential holds
-// one; the slug answers only for a credential that holds nothing else.
+// one; the slug, compared without regard to case, answers only for a
+// credential that holds nothing else.
 func (c *Credentials) IsOrg(id, slug string) bool {
 	if c.OrgID != "" {
 		return id == c.OrgID
 	}
-	return slug != "" && slug == c.OrgSlug
+	return SameSlug(slug, c.OrgSlug)
+}
+
+// SameSlug reports whether two legacy slugs name the same organisation: both
+// present, and equal without regard to case, because the column they come from
+// is `citext`. Never for an id, which is compared exactly.
+func SameSlug(a, b string) bool {
+	return a != "" && b != "" && strings.EqualFold(a, b)
 }
 
 // OrgLabel is the organisation as output names it: by its name, or by its id

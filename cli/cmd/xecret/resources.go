@@ -58,8 +58,9 @@ no network change and revokes nothing: switching back is another 'use'.
 An organisation is named by its id, which 'xecret orgs' lists. Its name works
 too, ignoring case, when no other organisation you belong to has the same one.
 
-A directory whose .xecret.yaml names an organisation keeps using that one,
-whichever is chosen here.
+A .xecret.yaml never chooses the organisation: it names a project inside the
+one chosen here. In a directory whose file names another organisation,
+commands are refused until you choose that one here, on purpose.
 `
 
 func cmdProjects(args []string) error {
@@ -440,7 +441,7 @@ func chooseOrganization(organizations []api.Organization, ref string) (api.Organ
 		}
 	}
 	for _, organization := range organizations {
-		if organization.Slug != "" && organization.Slug == ref {
+		if cred.SameSlug(organization.Slug, ref) {
 			return organization, nil
 		}
 	}

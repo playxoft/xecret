@@ -92,14 +92,17 @@ project: payments-api
 environment: production
 ```
 
-The organisation in the file goes with the project in it: a directory set up
-for a project in one organisation keeps reaching that project after
-`xecret orgs use` picks another, rather than a project with the same Project ID
-somewhere else. A `--project` flag names a project in the organisation
-`orgs use` chose, the one `xecret projects` lists. A file with no
-`organization` line, which is every file written before `init` recorded one,
-resolves in the chosen organisation exactly as it always did. Under
-`XECRET_TOKEN` the organisation is always the token's own.
+The file never chooses the organisation. It names a project inside the one
+`xecret orgs use` chose (or `xecret login` approved), and when its
+`organization` is a different one, every command in that directory is refused
+before anything is read or written, with a message naming both organisations
+and the `xecret orgs use` that would switch on purpose. A file is committed to
+a repository, and a repository in one organisation must not be able to point
+your commands at another organisation you also belong to. A `--project` flag
+names a project in the chosen organisation, the one `xecret projects` lists. A
+file with no `organization` line, which is every file written before `init`
+recorded one, resolves in the chosen organisation exactly as it always did.
+Under `XECRET_TOKEN` the organisation is always the token's own.
 
 Logins, files, offline copies and encryption-mode pins made before organisations
 were named by id keep working: they are found through the organisation's old

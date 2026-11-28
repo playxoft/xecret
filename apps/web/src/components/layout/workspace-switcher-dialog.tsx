@@ -6,6 +6,12 @@ import { useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import {
+  nameIsShared,
+  organizationMatches,
+  sharedOrgNames,
+  shortOrgId,
+} from '@/lib/organization-label';
+import {
   CheckIcon,
   Dialog,
   DialogContent,
@@ -96,10 +102,9 @@ function WorkspaceList({
   // position in the filtered list, and rebuilt as the filter narrows.
   const rows = useRef<(HTMLAnchorElement | null)[]>([]);
 
-  const needle = query.trim().toLowerCase();
-  const matches = organizations.filter(
-    (organization) => needle.length === 0 || organization.name.toLowerCase().includes(needle),
-  );
+  const matches = organizations.filter((organization) => organizationMatches(organization, query));
+  // Names are not unique; where two match, the end of each id tells them apart.
+  const shared = sharedOrgNames(organizations);
 
   function focusRow(index: number) {
     const bounded = Math.max(0, Math.min(index, matches.length - 1));
@@ -182,6 +187,14 @@ function WorkspaceList({
                       {organization.name}
                     </span>
                     <span className="text-fg-subtle block truncate text-sm">
+                      {nameIsShared(organization.name, shared) ? (
+                        <>
+                          <span className="font-mono" title={organization.id}>
+                            ID …{shortOrgId(organization.id)}
+                          </span>{' '}
+                          ·{' '}
+                        </>
+                      ) : null}
                       <span className="capitalize">{organization.role}</span>
                       {organization.customRole ? <> · {organization.customRole}</> : null}
                     </span>

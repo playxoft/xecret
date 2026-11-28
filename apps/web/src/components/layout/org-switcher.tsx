@@ -4,6 +4,7 @@ import Link from 'next/link';
 
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
+import { nameIsShared, sharedOrgNames, shortOrgId } from '@/lib/organization-label';
 import {
   ariaKeyShortcuts,
   CheckIcon,
@@ -71,6 +72,9 @@ export function OrgSwitcher({
 }: OrgSwitcherProps) {
   const current = organizations.find((org) => org.id === currentOrgId) ?? organizations[0];
   if (!current) return null;
+  // Names are not unique; where two match, the end of each id tells them apart.
+  const shared = sharedOrgNames(organizations);
+  const currentShared = nameIsShared(current.name, shared);
 
   return (
     <DropdownMenu>
@@ -79,7 +83,7 @@ export function OrgSwitcher({
           'border-line hover:bg-surface-hover data-[state=open]:bg-surface-hover flex w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors',
           className,
         )}
-        aria-label={`Organisation: ${current.name}. Switch organisation`}
+        aria-label={`Organisation: ${current.name}${currentShared ? `, ID ending ${shortOrgId(current.id)}` : ''}. Switch organisation`}
         // The cap below is decorative; this is the half assistive technology
         // reads. `G` opens the centred switcher — `AppShell` owns the key, and
         // this is the only place it is advertised, because this is where
@@ -95,6 +99,14 @@ export function OrgSwitcher({
         <span className="x-sidebar-wide min-w-0 flex-1">
           <span className="text-fg block truncate text-sm font-medium">{current.name}</span>
           <span className="text-fg-subtle block truncate text-sm">
+            {currentShared ? (
+              <>
+                <span className="font-mono" title={current.id}>
+                  …{shortOrgId(current.id)}
+                </span>{' '}
+                ·{' '}
+              </>
+            ) : null}
             <span className="capitalize">{current.role}</span>
             {current.customRole ? <> · {current.customRole}</> : null}
           </span>
@@ -108,7 +120,15 @@ export function OrgSwitcher({
         {organizations.map((org) => (
           <DropdownMenuItem key={org.id} asChild>
             <Link href={org.href} className="justify-between">
-              <span className="min-w-0 truncate">{org.name}</span>
+              <span className="min-w-0 truncate">
+                {org.name}
+                {nameIsShared(org.name, shared) ? (
+                  <span className="text-fg-subtle font-mono text-sm" title={org.id}>
+                    {' '}
+                    …{shortOrgId(org.id)}
+                  </span>
+                ) : null}
+              </span>
               {org.id === current.id ? (
                 <CheckIcon className="text-accent-text size-4 shrink-0" />
               ) : (

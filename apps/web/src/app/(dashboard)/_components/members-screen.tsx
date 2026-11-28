@@ -293,7 +293,11 @@ export function MembersScreen({ orgId }: { orgId: string }) {
               }
             />
           ) : (
-            <TableContainer aria-label={`Members of ${orgId}`}>
+            <TableContainer
+              // The organisation's name, never its id: a screen reader would
+              // read thirty-six characters of hex aloud.
+              aria-label={organization === null ? 'Members' : `Members of ${organization.name}`}
+            >
               <Table>
                 <TableHeader>
                   <TableRow>

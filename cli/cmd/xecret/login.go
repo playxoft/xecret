@@ -390,15 +390,17 @@ func cmdWhoami(args []string) error {
 		// introspected pin is the whole of its identity, so that is the answer.
 		pin := a.tokenScope
 		if a.printer.JSON {
+			// `organization` is an identifier, as it always was: a script builds
+			// paths from it. The name, which anybody can share, is beside it.
 			return a.printer.WriteJSON(map[string]any{
-				"credential":     "serviceToken",
-				"token":          pin.Token.Name,
-				"accessLevel":    pin.Token.AccessLevel,
-				"organization":   pin.Organization.Name,
-				"organizationId": pin.Organization.ID,
-				"project":        pin.Project.Slug,
-				"environment":    pin.Environment.Slug,
-				"apiUrl":         credentials.APIURL,
+				"credential":       "serviceToken",
+				"token":            pin.Token.Name,
+				"accessLevel":      pin.Token.AccessLevel,
+				"organization":     pin.Organization.ID,
+				"organizationName": pin.Organization.Name,
+				"project":          pin.Project.Slug,
+				"environment":      pin.Environment.Slug,
+				"apiUrl":           credentials.APIURL,
 			})
 		}
 		fmt.Fprintf(a.printer.Out, "Credential     service token %q (%s)\n", pin.Token.Name, pin.Token.AccessLevel)
@@ -426,12 +428,14 @@ func cmdWhoami(args []string) error {
 	}
 
 	if a.printer.JSON {
+		// `organization` is the id, an identifier as it always was, so
+		// `/api/orgs/$(xecret whoami --json | jq -r .organization)` still works.
 		return a.printer.WriteJSON(map[string]any{
-			"email":          me.User.Email,
-			"organization":   credentials.OrgName,
-			"organizationId": credentials.OrgID,
-			"device":         device,
-			"apiUrl":         credentials.APIURL,
+			"email":            me.User.Email,
+			"organization":     credentials.OrgID,
+			"organizationName": credentials.OrgName,
+			"device":           device,
+			"apiUrl":           credentials.APIURL,
 		})
 	}
 

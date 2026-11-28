@@ -211,11 +211,12 @@ for a new teammate with no setup document.
 Scope is resolved in this order, first answer winning: `--project` /
 `--environment` flags → the nearest `.xecret.yaml`, found by walking up from
 the working directory the way `git` finds `.git` → the service token's pin →
-an error telling you to run `xecret init`. The **organisation** travels with the
-project: under `XECRET_TOKEN` it is always the token's own; when the project
-comes from a `.xecret.yaml` that names an organisation, it is that one;
-otherwise it is the one the login addresses, which `xecret orgs use <ORG-ID>`
-changes. An older file with only `project` and `environment` still works.
+an error telling you to run `xecret init`. The **organisation** is never
+chosen by a file: under `XECRET_TOKEN` it is always the token's own; otherwise
+it is the one the login addresses, which only `xecret orgs use <ORG-ID>`
+changes. A `.xecret.yaml` naming a different organisation is refused before
+anything is read or written. An older file with only `project` and
+`environment` still works.
 
 There is deliberately no `XECRET_ENVIRONMENT` variable. An environment variable
 that silently redirects which secrets a command loads is how a migration gets

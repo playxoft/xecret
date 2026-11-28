@@ -131,8 +131,9 @@ func cmdDoctor(args []string) error {
 				say(statusOK, "signedIn", "signed in as %s", loaded.Email)
 			}
 			report["email"] = loaded.Email
-			report["organization"] = loaded.OrgName
-			report["organizationId"] = loaded.OrgID
+			// An identifier, as `whoami --json` gives it; the name beside it.
+			report["organization"] = loaded.OrgID
+			report["organizationName"] = loaded.OrgName
 		}
 	}
 
@@ -201,6 +202,14 @@ func cmdDoctor(args []string) error {
 			report["project"] = file.Project
 			report["environment"] = file.Environment
 			switch id := file.OrganizationID(); {
+			case id != "" && credentials != nil && !serviceToken && !credentials.NamesOrg(id) && credentials.OrgID != "":
+				// Commands here are refused (see checkFileOrganization): a file
+				// never moves a command into another organisation.
+				report["configOrganizationId"] = id
+				say(statusWarn, "config",
+					"%s is for the organisation %s, not the one you are using; commands here are refused "+
+						"until you run 'xecret orgs use %s', or 'xecret init' for a project in yours",
+					path, id, id)
 			case id != "":
 				report["configOrganizationId"] = id
 				say(statusOK, "config", "%s → %s/%s in organisation %s", path, file.Project, file.Environment, id)

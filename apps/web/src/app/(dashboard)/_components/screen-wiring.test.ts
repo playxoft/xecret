@@ -340,3 +340,31 @@ describe('a page with no account to show still has a way out', () => {
     expect(chrome).toMatch(/function ChromeNotice[\s\S]*?<ChromeFrame>/);
   });
 });
+
+// Names are not unique, and approving a CLI device for the wrong one of two
+// organisations called the same thing hands it the wrong secrets. Every
+// organisation on the consent screen carries the end of its id.
+describe('the CLI consent screen', () => {
+  it('labels every organisation in the picker, and the only one, with the end of its id', () => {
+    const screen = source('../../(auth)/cli/authorize/authorize-screen.tsx');
+    expect(screen).toMatch(
+      /<SelectItem key=\{org\.id\} value=\{org\.id\}>\s*<OrganizationLabel name=\{org\.name\} id=\{org\.id\} \/>/,
+    );
+    expect(screen).toMatch(
+      /<OrganizationLabel name=\{organizations\[0\]\.name\} id=\{organizations\[0\]\.id\} \/>/,
+    );
+  });
+});
+
+// A screen reader reads an aria-label aloud, and an organisation's id is
+// thirty-six characters of hex. The members table is named by the
+// organisation's name.
+describe('the members table', () => {
+  it('is labelled with the organisation’s name, never its id', () => {
+    const screen = source('./members-screen.tsx');
+    expect(screen).toMatch(
+      /aria-label=\{organization === null \? 'Members' : `Members of \$\{organization\.name\}`\}/,
+    );
+    expect(screen).not.toMatch(/Members of \$\{orgId\}/);
+  });
+});

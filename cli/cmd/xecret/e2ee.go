@@ -8,7 +8,6 @@ import (
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/cache"
-	"github.com/playxoft/xecret/cli/internal/config"
 	"github.com/playxoft/xecret/cli/internal/cred"
 	"github.com/playxoft/xecret/cli/internal/e2ee"
 	"github.com/playxoft/xecret/cli/internal/envkeys"
@@ -31,11 +30,9 @@ import (
 // login opens its user's private key with the User Key the browser handed over,
 // which costs one request for the vault material.
 //
-// The principal's OrgID is the scope's organisation, not necessarily the
-// credential's: a `.xecret.yaml` can name another one, and every ciphertext in
-// it binds that organisation's id. A principal carrying the credential's id
-// there would fail to open anything, and would seal every write to an AAD no
-// reader in that organisation could verify.
+// The principal's OrgID is the scope's organisation, which is always the
+// credential's: a `.xecret.yaml` naming another one is refused before any
+// scope exists (see checkFileOrganization). Every ciphertext binds that id.
 func (a *app) principal(
 	ctx context.Context,
 	client *api.Client,
@@ -175,13 +172,10 @@ func adoptOrganization(credentials *cred.Credentials, organizations []api.Organi
 // nothing is fetched. Online, at most one GET /api/auth/me is made in an
 // invocation, and only for what cannot be known locally: the id of a
 // credential from before organisation ids, when needID says the caller is
-// about to bind it into an AAD, or anything about an organisation other than
-// the credential's that a `.xecret.yaml` names, including the slug this
-// machine would need to find that organisation's older pins.
+// about to bind it into an AAD.
 //
-// The error concerns the id alone. The slugs are best effort: past what the
-// credential and the file hold, the server is their only source, and a server
-// that wanted to hide one could as easily name a different one.
+// The organisation is always the credential's (see resolveScope), so the
+// slugs are the credential's own: what it stored at login, or learnt since.
 func (a *app) orgIdentity(
 	ctx context.Context,
 	client *api.Client,
@@ -197,56 +191,18 @@ func (a *app) orgIdentity(
 		return organization.ID, []string{organization.Slug}, nil
 	}
 
-	if resolved.inCredentialOrg(credentials) {
-		// A credential from before ids keeps its pins and copies under the slug
-		// until something needs the id; from then on they are found under the
-		// id and carried from the slug, so asking early would buy nothing but a
-		// request.
-		if credentials.OrgID == "" && client != nil && needID {
-			if err := a.backfillIdentity(ctx, client, credentials); err != nil {
-				return "", []string{credentials.OrgSlug}, err
-			}
+	// A credential from before ids keeps its pins and copies under the slug
+	// until something needs the id; from then on they are found under the id
+	// and carried from the slug, so asking early would buy nothing but a
+	// request.
+	if credentials.OrgID == "" && client != nil && needID {
+		if err := a.backfillIdentity(ctx, client, credentials); err != nil {
+			return "", []string{credentials.OrgSlug}, err
 		}
-		// Offline under a credential that predates ids, this is "", and the
-		// key read that follows says what one online command fixes.
-		return credentials.OrgID, []string{credentials.OrgSlug, resolved.OrgSlug}, nil
 	}
-
-	// Another organisation: the one the directory's .xecret.yaml names.
-	id, slugs := resolved.OrgID, []string{resolved.OrgSlug}
-	var lookupErr error
-	if client != nil && (id == "" || resolved.OrgSlug == "") {
-		me, err := a.fetchMe(ctx, client)
-		if err == nil {
-			a.recordIdentity(credentials, me)
-			for _, organization := range me.Organizations {
-				if (id != "" && organization.ID == id) || (id == "" && organization.Slug == resolved.OrgSlug) {
-					id = organization.ID
-					slugs = append(slugs, organization.Slug)
-					break
-				}
-			}
-		}
-		lookupErr = err
-	}
-	if id != "" {
-		return id, slugs, nil
-	}
-
-	source := resolved.orgSource
-	if source == "" {
-		source = config.Filename
-	}
-	switch {
-	case client == nil:
-		return "", slugs, fmt.Errorf(
-			"%s names its organisation by a legacy slug, which cannot be resolved to an id offline; "+
-				"rerun 'xecret init' to pin it by id", source)
-	case lookupErr != nil:
-		return "", slugs, fmt.Errorf("could not resolve the organisation %s names: %w", source, lookupErr)
-	}
-	return "", slugs, fmt.Errorf(
-		"you are not a member of the organisation %s names; 'xecret orgs' lists the ones you are in", source)
+	// Offline under a credential that predates ids, this is "", and the key
+	// read that follows says what one online command fixes.
+	return credentials.OrgID, []string{credentials.OrgSlug, resolved.OrgSlug}, nil
 }
 
 // cacheScope is the identity a mode pin and an offline copy are filed under:

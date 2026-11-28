@@ -100,8 +100,8 @@ Server         https://xecret.playxoft.com
 ```
 
 The organisation is named by its name, with its ID beside it because names are
-not unique. With `--json`, `organization` is the name and `organizationId` the
-ID.
+not unique. With `--json`, `organization` is the ID (an identifier you can
+build an API path from) and `organizationName` the name.
 
 ### `xecret orgs`
 
@@ -131,8 +131,9 @@ IDs and asks for one. `--json` gives `id`, `name`, `role` and `current` for each
 
 `use` is a local change: the organisation's ID, stored beside the token. It
 makes no network call beyond checking that you are actually a member, revokes
-nothing, and switching back is another `use`. A directory whose `.xecret.yaml`
-names an organisation keeps using that one, whichever `use` chose; see
+nothing, and switching back is another `use`. It is the only way a command
+changes organisation: a directory whose `.xecret.yaml` names another one is
+refused until you `use` it; see
 [configuration and scope](configuration.md#scope-resolution). Refused under
 `XECRET_TOKEN`, which is pinned to one organisation server-side.
 
@@ -155,8 +156,9 @@ environment: development
 ```
 
 The organisation is the one your login addresses (see
-[`xecret orgs`](#xecret-orgs)), and the file keeps pointing at it after
-`xecret orgs use` picks another.
+[`xecret orgs`](#xecret-orgs)). After `xecret orgs use` picks another,
+commands in this directory are refused until you switch back, so the file can
+never move them into a different organisation.
 
 | Flag | Effect |
 |---|---|

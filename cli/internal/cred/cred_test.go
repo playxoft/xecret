@@ -147,6 +147,35 @@ func TestOrganisationMatching(t *testing.T) {
 	}
 }
 
+// Slugs are citext on the server, so `Acme` and `acme` are one organisation
+// there and must be one here. Ids are compared exactly, once canonical.
+func TestSlugsMatchWithoutRegardToCaseAndIdsExactly(t *testing.T) {
+	full := &Credentials{OrgID: acmeID, OrgSlug: "acme"}
+	slugOnly := &Credentials{OrgSlug: "Acme"}
+
+	for _, ref := range []string{"acme", "ACME", "Acme"} {
+		if !full.NamesOrg(ref) || !slugOnly.NamesOrg(ref) {
+			t.Errorf("NamesOrg(%q) must match the slug in any case", ref)
+		}
+	}
+	if !full.NamesOrg(strings.ToUpper(acmeID)) {
+		t.Error("an id in another case is still the canonical id")
+	}
+	if slugOnly.NamesOrg(acmeID) {
+		t.Error("a credential that holds no id cannot claim one by its slug")
+	}
+	if full.NamesOrg("acme-corp") || full.NamesOrg("0192f0a1-0000-7000-8000-00000000a002") {
+		t.Error("NamesOrg matched another organisation")
+	}
+
+	if !slugOnly.IsOrg(acmeID, "ACME") || !slugOnly.IsOrg(acmeID, "acme") {
+		t.Error("IsOrg must match the slug in any case for a credential that holds nothing else")
+	}
+	if !SameSlug("Acme", "aCME") || SameSlug("", "") || SameSlug("acme", "") || SameSlug("acme", "acme-2") {
+		t.Error("SameSlug must compare present slugs without regard to case, and nothing else")
+	}
+}
+
 func TestClearIsIdempotent(t *testing.T) {
 	store := memoryStore{}
 	if err := Save(store, Credentials{APIURL: "https://x", Token: "t", OrgSlug: "o", Email: "e"}); err != nil {

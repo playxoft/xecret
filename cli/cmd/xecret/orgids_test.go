@@ -15,7 +15,6 @@ import (
 	"github.com/playxoft/xecret/cli/internal/cache"
 	"github.com/playxoft/xecret/cli/internal/config"
 	"github.com/playxoft/xecret/cli/internal/cred"
-	"github.com/playxoft/xecret/cli/internal/e2ee"
 	"github.com/playxoft/xecret/cli/internal/envkeys"
 	"github.com/playxoft/xecret/cli/internal/keyring"
 	"github.com/playxoft/xecret/cli/internal/output"
@@ -232,7 +231,9 @@ func TestALoginWhoseIdLookupFailsStillWorksBySlug(t *testing.T) {
 
 // ── Output ──────────────────────────────────────────────────────────────────
 
-func TestWhoamiJSONNamesTheOrganisationByNameAndId(t *testing.T) {
+// `organization` stays an identifier, the id, so a script that builds a path
+// from it keeps working; the name, which is free text, is beside it.
+func TestWhoamiJSONNamesTheOrganisationByIdAndName(t *testing.T) {
 	fake := newFakeAPI(t)
 	signedIn(t, cred.Credentials{
 		APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com",
@@ -248,8 +249,11 @@ func TestWhoamiJSONNamesTheOrganisationByNameAndId(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &answer); err != nil {
 		t.Fatalf("not JSON: %v\n%s", err, stdout)
 	}
-	if answer["organization"] != "Acme Corp" || answer["organizationId"] != acmeOrgID {
+	if answer["organization"] != acmeOrgID || answer["organizationName"] != "Acme Corp" {
 		t.Fatalf("whoami --json = %v", answer)
+	}
+	if _, ok := answer["organizationId"]; ok {
+		t.Fatalf("whoami --json carries a second id field: %v", answer)
 	}
 	if strings.Contains(stdout, `"acme"`) {
 		t.Fatalf("whoami --json printed the slug: %s", stdout)
@@ -278,6 +282,15 @@ func TestWhoamiUnderAServiceTokenNamesItsOrganisationByNameAndId(t *testing.T) {
 		}
 		if strings.Contains(stdout, "acme") {
 			t.Errorf("whoami %v printed the slug:\n%s", args, stdout)
+		}
+		if args != nil {
+			var answer map[string]any
+			if err := json.Unmarshal([]byte(stdout), &answer); err != nil {
+				t.Fatalf("not JSON: %v\n%s", err, stdout)
+			}
+			if answer["organization"] != acmeOrgID || answer["organizationName"] != "Acme Corp" {
+				t.Errorf("whoami --json = %v", answer)
+			}
 		}
 	}
 }
@@ -330,9 +343,10 @@ func TestOrgsListsByNameAndIdAndMarksTheCurrentOne(t *testing.T) {
 
 // `orgs use` takes the id; a name when exactly one membership has it,
 // ignoring case; and, quietly, the legacy slug a script written before ids
-// passes. Whichever it was given, it stores the id, the name and the alias.
+// passes, in any case because slugs are citext. Whichever it was given, it
+// stores the id, the name and the alias.
 func TestOrgsUseAcceptsAnIdANameOrALegacySlug(t *testing.T) {
-	for _, ref := range []string{sideOrgID, strings.ToUpper(sideOrgID), "Side Project", "side project", "side"} {
+	for _, ref := range []string{sideOrgID, strings.ToUpper(sideOrgID), "Side Project", "side project", "side", "SIDE"} {
 		t.Run(ref, func(t *testing.T) {
 			fake := newFakeAPI(t)
 			signedIn(t, cred.Credentials{
@@ -412,8 +426,11 @@ func TestDoctorNamesOrganisationsWithoutTheirSlugs(t *testing.T) {
 	if !strings.Contains(stdout, "organisation Acme Corp ("+acmeOrgID+")") {
 		t.Errorf("doctor does not name the signed-in organisation:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "web/dev in organisation "+sideOrgID) {
-		t.Errorf("doctor does not name the directory's organisation:\n%s", stdout)
+	// The directory is for another organisation, which every command here
+	// refuses; doctor says so, and how to choose it on purpose.
+	if !strings.Contains(stdout, "is for the organisation "+sideOrgID+", not the one you are using") ||
+		!strings.Contains(stdout, "xecret orgs use "+sideOrgID) {
+		t.Errorf("doctor does not warn about the directory's organisation:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "acme") {
 		t.Errorf("doctor printed the slug:\n%s", stdout)
@@ -424,7 +441,7 @@ func TestDoctorNamesOrganisationsWithoutTheirSlugs(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("not JSON: %v\n%s", err, stdout)
 	}
-	if report["organization"] != "Acme Corp" || report["organizationId"] != acmeOrgID ||
+	if report["organization"] != acmeOrgID || report["organizationName"] != "Acme Corp" ||
 		report["configOrganizationId"] != sideOrgID {
 		t.Errorf("doctor --json = %v", report)
 	}
@@ -504,27 +521,17 @@ func TestInitUnderASlugOnlyCredentialStillPinsTheId(t *testing.T) {
 
 // ── .xecret.yaml ────────────────────────────────────────────────────────────
 
-// Every shape a .xecret.yaml can have resolves: no organisation (every file
-// written before init recorded one), the credential's own slug, another
-// organisation's slug, and an id.
-func TestEveryShapeOfXecretYamlResolves(t *testing.T) {
+// A .xecret.yaml names a project inside the organisation this credential has
+// selected. Every shape that agrees with it resolves there: no organisation
+// (every file written before init recorded one), the credential's own id, and
+// its legacy slug in any case, because slugs are citext.
+func TestAnXecretYamlForTheSelectedOrganisationResolves(t *testing.T) {
 	credentials := &cred.Credentials{OrgID: acmeOrgID, OrgName: "Acme Corp", OrgSlug: "acme"}
-	cases := []struct {
-		name, organization  string
-		wantOrg, wantOrgID  string
-		wantCredentialsOrgs bool
-	}{
-		{"no organisation", "", acmeOrgID, acmeOrgID, true},
-		{"the credential's own slug", "acme", acmeOrgID, acmeOrgID, true},
-		{"the credential's own id", acmeOrgID, acmeOrgID, acmeOrgID, true},
-		{"another organisation's slug", "side", "side", "", false},
-		{"another organisation's id", sideOrgID, sideOrgID, sideOrgID, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+	for _, organization := range []string{"", acmeOrgID, strings.ToUpper(acmeOrgID), "acme", "ACME", "Acme"} {
+		t.Run("organization="+organization, func(t *testing.T) {
 			file := "project: web\nenvironment: dev\n"
-			if c.organization != "" {
-				file = "organization: " + c.organization + "\n" + file
+			if organization != "" {
+				file = "organization: " + organization + "\n" + file
 			}
 			inDirectory(t, file)
 			t.Setenv("XECRET_TOKEN", "")
@@ -534,20 +541,140 @@ func TestEveryShapeOfXecretYamlResolves(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if resolved.Org != c.wantOrg || resolved.OrgID != c.wantOrgID ||
+			if resolved.Org != acmeOrgID || resolved.OrgID != acmeOrgID ||
 				resolved.Project != "web" || resolved.Environment != "dev" {
 				t.Fatalf("resolved = %+v", resolved)
-			}
-			if resolved.inCredentialOrg(credentials) != c.wantCredentialsOrgs {
-				t.Fatalf("inCredentialOrg = %v", !c.wantCredentialsOrgs)
 			}
 		})
 	}
 }
 
-// The organisation travels with the project it was written for. A --project
-// flag names a project in the credential's organisation, the one 'xecret
-// projects' lists, whatever the file says.
+// The guarantee: a committed file cannot move a command into another
+// organisation. A repository in one organisation that names another's id, or
+// its slug, is refused before anything is read or written, for a member of
+// both, and the refusal names both organisations and how to choose the other
+// on purpose.
+func TestAnXecretYamlForAnotherOrganisationIsRefused(t *testing.T) {
+	for _, organization := range []string{sideOrgID, "side", "SIDE"} {
+		t.Run("organization="+organization, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			signedIn(t, cred.Credentials{
+				APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com",
+				OrgID: acmeOrgID, OrgName: "Acme Corp", OrgSlug: "acme", UserID: worldUserID,
+			})
+			fake.reply(http.MethodGet, "/api/auth/me", http.StatusOK, meReply(acmeMembership, sideMembership))
+			inDirectory(t, "organization: "+organization+"\nproject: web\nenvironment: dev\n")
+
+			a, _ := testApp(t)
+			_, err := a.resolveScope(stored(t), "", "")
+			if err == nil {
+				t.Fatal("a file naming another organisation was obeyed")
+			}
+			message := err.Error()
+			for _, want := range []string{
+				"Side Project (" + sideOrgID + ")",
+				"Acme Corp (" + acmeOrgID + ")",
+				"Nothing was read or written",
+				"xecret orgs use " + sideOrgID,
+			} {
+				if !strings.Contains(message, want) {
+					t.Errorf("the refusal does not say %q:\n%s", want, message)
+				}
+			}
+		})
+	}
+}
+
+// Every command that reads or writes secrets goes through resolveScope, so the
+// refusal holds end to end: `xecret run` in such a directory reaches no
+// organisation's secrets at all.
+func TestRunRefusesADirectoryForAnotherOrganisation(t *testing.T) {
+	fake := newFakeAPI(t)
+	signedIn(t, cred.Credentials{
+		APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com",
+		OrgID: acmeOrgID, OrgName: "Acme Corp", OrgSlug: "acme", UserID: worldUserID,
+	})
+	fake.reply(http.MethodGet, "/api/auth/me", http.StatusOK, meReply(acmeMembership, sideMembership))
+	inDirectory(t, "organization: "+sideOrgID+"\nproject: web\nenvironment: dev\n")
+
+	_, _, err := captured(t, func() error { return cmdRun([]string{"--", "true"}) })
+	if err == nil || !strings.Contains(err.Error(), "xecret orgs use "+sideOrgID) {
+		t.Fatalf("run = %v, want the refusal", err)
+	}
+	for _, path := range []string{"/pull", "/secrets", "/keys"} {
+		if sent := fake.sent(http.MethodGet, path); len(sent) != 0 {
+			t.Fatalf("run reached %s: %+v", path, sent)
+		}
+	}
+}
+
+// An organisation this account is not a member of is refused just the same,
+// without naming it: there is nothing to name, and nothing to switch to.
+func TestAnXecretYamlForAStrangersOrganisationIsRefused(t *testing.T) {
+	fake := newFakeAPI(t)
+	signedIn(t, cred.Credentials{
+		APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com",
+		OrgID: acmeOrgID, OrgName: "Acme Corp", OrgSlug: "acme", UserID: worldUserID,
+	})
+	fake.reply(http.MethodGet, "/api/auth/me", http.StatusOK, meReply(acmeMembership))
+	inDirectory(t, "organization: "+sideOrgID+"\nproject: web\nenvironment: dev\n")
+
+	a, _ := testApp(t)
+	_, err := a.resolveScope(stored(t), "", "")
+	if err == nil || !strings.Contains(err.Error(), "not one of yours") ||
+		!strings.Contains(err.Error(), "Acme Corp") {
+		t.Fatalf("resolveScope = %v", err)
+	}
+}
+
+// A credential from before organisation ids holds only a slug, and cannot tell
+// by itself whether a file's id is its own. It asks the server, records the id
+// it hears, and resolves; when the id is somebody else's, it refuses.
+func TestASlugOnlyCredentialConfirmsAFilesIdBeforeUsingIt(t *testing.T) {
+	fake := newFakeAPI(t)
+	signedIn(t, cred.Credentials{
+		APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com", OrgSlug: "acme",
+	})
+	fake.reply(http.MethodGet, "/api/auth/me", http.StatusOK, meReply(acmeMembership, sideMembership))
+
+	inDirectory(t, "organization: "+acmeOrgID+"\nproject: web\nenvironment: dev\n")
+	a, _ := testApp(t)
+	credentials := stored(t)
+	resolved, err := a.resolveScope(credentials, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Project != "web" || stored(t).OrgID != acmeOrgID {
+		t.Fatalf("resolved = %+v, stored id = %q", resolved, stored(t).OrgID)
+	}
+
+	inDirectory(t, "organization: "+sideOrgID+"\nproject: web\nenvironment: dev\n")
+	a, _ = testApp(t)
+	if _, err := a.resolveScope(stored(t), "", ""); err == nil ||
+		!strings.Contains(err.Error(), "xecret orgs use "+sideOrgID) {
+		t.Fatalf("a slug-only credential obeyed another organisation's id: %v", err)
+	}
+}
+
+// When the server cannot be asked, an id the credential cannot confirm is
+// refused rather than trusted.
+func TestAnUnconfirmableFileIdIsRefusedWhenTheServerCannotBeAsked(t *testing.T) {
+	fake := newFakeAPI(t)
+	signedIn(t, cred.Credentials{
+		APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com", OrgSlug: "acme",
+	})
+	fake.reply(http.MethodGet, "/api/auth/me", http.StatusServiceUnavailable, map[string]any{})
+	inDirectory(t, "organization: "+acmeOrgID+"\nproject: web\nenvironment: dev\n")
+
+	a, _ := testApp(t)
+	if _, err := a.resolveScope(stored(t), "", ""); err == nil {
+		t.Fatal("an id nothing could confirm was trusted")
+	}
+}
+
+// A --project flag names a project in the credential's organisation, the one
+// 'xecret projects' lists. The file is not consulted for the project, so its
+// organisation does not stand in the way.
 func TestAProjectFlagUsesTheCredentialsOrganisation(t *testing.T) {
 	inDirectory(t, "organization: "+sideOrgID+"\nproject: web\nenvironment: dev\n")
 	t.Setenv("XECRET_TOKEN", "")
@@ -560,36 +687,6 @@ func TestAProjectFlagUsesTheCredentialsOrganisation(t *testing.T) {
 	}
 	if resolved.Org != acmeOrgID || resolved.Project != "other" || resolved.Environment != "dev" {
 		t.Fatalf("resolved = %+v", resolved)
-	}
-}
-
-// A legacy slug for another organisation is resolved to that organisation's id
-// when an end-to-end path needs one, and refused offline, where nothing can be.
-func TestAnotherOrganisationsSlugIsResolvedForTheAAD(t *testing.T) {
-	fake := newFakeAPI(t)
-	signedIn(t, cred.Credentials{
-		APIURL: fake.URL(), Token: "xct_live_abc", Email: "ada@example.com",
-		OrgID: acmeOrgID, OrgSlug: "acme", UserID: worldUserID,
-	})
-	fake.reply(http.MethodGet, "/api/auth/me", http.StatusOK, meReply(acmeMembership, sideMembership))
-	inDirectory(t, "organization: side\nproject: web\nenvironment: dev\n")
-
-	a, _ := testApp(t)
-	credentials := stored(t)
-	resolved, err := a.resolveScope(credentials, "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := a.orgIdentity(context.Background(), nil, credentials, resolved, true); err == nil ||
-		!strings.Contains(err.Error(), "xecret init") {
-		t.Fatalf("offline, a slug cannot be resolved; got %v", err)
-	}
-
-	client := api.New(fake.URL(), credentials.Token, userAgent())
-	id, slugs, err := a.orgIdentity(context.Background(), client, credentials, resolved, true)
-	if err != nil || id != sideOrgID || !containsString(slugs, "side") {
-		t.Fatalf("orgIdentity = %q, %v, %v", id, slugs, err)
 	}
 }
 
@@ -612,60 +709,6 @@ func TestAServiceTokenKeepsItsOwnOrganisation(t *testing.T) {
 	}
 	if !strings.Contains(warnings.String(), "XECRET_TOKEN is pinned to") {
 		t.Fatalf("no warning about the mismatch: %q", warnings.String())
-	}
-}
-
-// The reason the directory's organisation wins: its id is what every
-// ciphertext in it binds. A directory pinned to one organisation, under a
-// credential that `orgs use` pointed at another, reads that directory's
-// environment, addressing it by id and opening it under that id.
-func TestADirectoryPinnedToAnotherOrganisationDecryptsUnderItsId(t *testing.T) {
-	w := newWorld(t, e2ee.RecipientMember)
-	fake := newFakeAPI(t)
-	credentials := loggedIn(t, w, fake)
-
-	// The credential now addresses a different organisation, as after `orgs use`.
-	credentials.OrgID, credentials.OrgName, credentials.OrgSlug = sideOrgID, "Side Project", "side"
-	if err := cred.Save(keyring.Open(output.New(false).Warnf), *credentials); err != nil {
-		t.Fatal(err)
-	}
-	fake.reply(http.MethodGet, "/pull", http.StatusOK, w.bundle("", w.row(worldSecretID, "DATABASE_URL", sharedURL, 1)))
-	fake.reply(http.MethodGet, "/overrides", http.StatusOK, map[string]any{"overrides": []any{}})
-	fake.reply(http.MethodGet, "/api/auth/me", http.StatusOK, meReply(
-		api.Organization{ID: worldOrgID, Name: "World", Slug: "world", Role: "owner"}, sideMembership))
-
-	run := func(file string) (map[string]string, error) {
-		inDirectory(t, file)
-		a, _ := testApp(t)
-		resolved, err := a.resolveScope(credentials, "", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return fetchSecrets(a, api.New(fake.URL(), credentials.Token, userAgent()), credentials, resolved,
-			cachePolicy{noCache: true, maxAge: cache.DefaultMaxAge})
-	}
-
-	secrets, err := run("organization: " + worldOrgID + "\nproject: web\nenvironment: dev\n")
-	if err != nil {
-		t.Fatalf("the pinned directory did not open: %v", err)
-	}
-	if secrets["DATABASE_URL"] != sharedURL {
-		t.Fatalf("DATABASE_URL = %q", secrets["DATABASE_URL"])
-	}
-	pulls := fake.sent(http.MethodGet, "/pull")
-	if len(pulls) != 1 || pulls[0].path != "/api/orgs/"+worldOrgID+"/projects/web/environments/dev/pull" {
-		t.Fatalf("pulled %+v, want the directory's organisation by id", pulls)
-	}
-
-	// The control: the same file with no organisation resolves in the
-	// credential's, and a ciphertext bound to another organisation's id does
-	// not open there. Which id the AAD carries is the whole difference.
-	if _, err := run("project: web\nenvironment: dev\n"); err == nil {
-		t.Fatal("a ciphertext bound to another organisation's id opened under the credential's")
-	}
-	if pulls := fake.sent(http.MethodGet, "/pull"); pulls[len(pulls)-1].path !=
-		"/api/orgs/"+sideOrgID+"/projects/web/environments/dev/pull" {
-		t.Fatalf("an old file did not resolve in the credential's organisation: %+v", pulls)
 	}
 }
 

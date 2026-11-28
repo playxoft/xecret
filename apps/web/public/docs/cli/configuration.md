@@ -20,21 +20,23 @@ triple. It is resolved in this order, first answer winning:
 3. **The service token's pinned scope**, when `XECRET_TOKEN` is set.
 4. **Nothing** — an error telling you to run `xecret init`.
 
-That order settles the project and the environment. The **organisation**
-travels with the project:
+That order settles the project and the environment. The **organisation** is
+never chosen by a file:
 
 - **Under `XECRET_TOKEN`**, it is always the token's own. A service token is
   pinned to one organisation, project *and* environment; a `.xecret.yaml` that
   names a different organisation gets a warning, and the token's is used.
-- **When the project comes from a `.xecret.yaml` that names an organisation**,
-  it is that one. A directory set up for a project in one organisation keeps
-  reaching that project after `xecret orgs use` picks another, rather than a
-  project with the same Project ID somewhere else.
-- **Otherwise** it is the one your login addresses: the organisation you
+- **Logged in**, it is the one your login addresses: the organisation you
   approved the device for, or the one [`xecret orgs use`](commands.md#xecret-orgs)
-  chose since. That covers a `--project` flag, which names a project in that
-  organisation (the one `xecret projects` lists), and a file with no
-  `organization` line.
+  chose since. A `--project` flag names a project in that organisation (the
+  one `xecret projects` lists), and so does a file with no `organization`
+  line.
+- **A `.xecret.yaml` whose `organization` is a different one** is refused:
+  the command stops before anything is read or written, and says which two
+  organisations disagree and the `xecret orgs use` that would switch to the
+  file's. The file is committed to a repository, and a repository in one
+  organisation must never be able to point `xecret run`, `import` or
+  `secrets set` at another organisation you also belong to.
 
 > **Note** — Naming a scope outside a service token's pin is refused by the
 > server, not merely by the client. Passing `--environment production` to a job
