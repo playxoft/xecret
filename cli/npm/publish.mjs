@@ -102,7 +102,7 @@ function binariesFrom(distDirectory) {
   try {
     artifacts = JSON.parse(readFileSync(manifest, 'utf8'));
   } catch (cause) {
-    throw new Error(`could not read ${manifest} — has GoReleaser run? (${cause.message})`);
+    throw new Error(`could not read ${manifest}. Has GoReleaser run? (${cause.message})`);
   }
 
   const binaries = new Map();
@@ -257,7 +257,7 @@ function buildPlatformPackage(staging, version, binary) {
     `# ${name}\n\n` +
       'The [xecret](https://www.npmjs.com/package/xecret) CLI binary for ' +
       `${binary.platform} ${binary.arch}.\n\n` +
-      'You do not install this directly — `npm install xecret` picks the one that ' +
+      'You do not install this directly: `npm install xecret` picks the one that ' +
       'matches your machine.\n',
   );
 
@@ -340,7 +340,7 @@ function main() {
   // whose optional dependencies do not exist yet is briefly uninstallable.
   for (const pkg of [...platforms, wrapper]) publish(pkg, options);
 
-  console.log(options.dryRun ? 'Dry run — nothing was published.' : 'Published.');
+  console.log(options.dryRun ? 'Dry run: nothing was published.' : 'Published.');
 }
 
 main();

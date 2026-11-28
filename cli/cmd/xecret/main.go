@@ -23,7 +23,7 @@ import (
 	"github.com/playxoft/xecret/cli/internal/output"
 )
 
-const usage = `xecret — open-source secret management
+const usage = `xecret: open-source secret management
 
 Usage:
   xecret <command> [flags]
@@ -32,16 +32,16 @@ Authentication:
   login        Authenticate this device via the browser
   logout       Revoke this device's credential and wipe the offline cache
   whoami       Show which account and organisation this device uses
-  orgs         list | use — which organisation the other commands address
+  orgs         list | use: which organisation the other commands address
 
 Project setup:
   init         Choose a project and environment; writes .xecret.yaml
-  projects     list | delete — projects are created in the dashboard
-  environments list | delete — environments are created in the dashboard
+  projects     list | delete (projects are created in the dashboard)
+  environments list | delete (environments are created in the dashboard)
 
 Working with secrets:
   secrets      list | get | set | annotate | versions | restore | delete
-  overrides    list | set | unset — your own values, applied only by 'run'
+  overrides    list | set | unset: your own values, applied only by 'run'
   import       Send a .env, JSON, YAML or shell file to the server
   pull         Print every secret in a chosen format   (env|json|yaml|shell|docker)
   export       Write every secret to a file            (same formats)
@@ -50,13 +50,13 @@ Working with secrets:
 Administration:
   audit        Read the organisation's audit log
   members      List who is in the organisation
-  tokens       list | revoke — devices and CI service tokens
+  tokens       list | revoke: devices and CI service tokens
 
 Vault:
-  vault        open-archive — open a vault archive offline, with no account
+  vault        open-archive: open a vault archive offline, with no account
 
 Housekeeping:
-  cache        clear — remove the encrypted offline cache
+  cache        clear: remove the encrypted offline cache
   completion   Print a shell completion script  (bash|zsh|fish)
   doctor       Check this machine's setup and say what is wrong
   upgrade      Check whether a newer CLI has been published
@@ -68,7 +68,7 @@ Flags every command that reads secrets accepts:
   --json                     Machine-readable output (where it applies)
 
 CI:
-  XECRET_TOKEN=xst_...       Authenticate with a service token — no login, no
+  XECRET_TOKEN=xst_...       Authenticate with a service token: no login, no
                              keychain, no cache. The token's own scope fills in
                              the project and environment when no flags or
                              .xecret.yaml say otherwise.
@@ -288,10 +288,10 @@ func takesNoArguments(command, argument string) string {
 func unexpectedArgument(flags *flag.FlagSet, argument string) error {
 	command := flags.Name()
 	if flags.Lookup("format") != nil && knownFormat(argument) {
-		return fmt.Errorf("unexpected argument %q — the format is a flag: xecret %s --format %s",
+		return fmt.Errorf("unexpected argument %q. The format is a flag: xecret %s --format %s",
 			argument, command, argument)
 	}
-	return fmt.Errorf("%s — run 'xecret %s --help' for the flags it does take",
+	return fmt.Errorf("%s. Run 'xecret %s --help' for the flags it does take",
 		takesNoArguments(command, argument), command)
 }
 
@@ -310,11 +310,11 @@ func unexpectedArgument(flags *flag.FlagSet, argument string) error {
 func unexpectedHelpArgument(argument string) error {
 	for _, command := range completionTree {
 		if command.Name == argument && slices.Contains(command.Flags, "--help") {
-			return fmt.Errorf("%s — run 'xecret %s --help' for that command's flags",
+			return fmt.Errorf("%s. Run 'xecret %s --help' for that command's flags",
 				takesNoArguments("help", argument), argument)
 		}
 	}
-	return fmt.Errorf("%s — run 'xecret help' on its own for the list of commands",
+	return fmt.Errorf("%s. Run 'xecret help' on its own for the list of commands",
 		takesNoArguments("help", argument))
 }
 
@@ -331,7 +331,7 @@ func hintFor(err error) string {
 			case 401:
 				return "XECRET_TOKEN was not accepted. Check the value, its expiry, and any IP allowlist."
 			case 403:
-				return "This service token cannot do that — it may be read-only, or the action may be reserved for people."
+				return "This service token cannot do that. It may be read-only, or the action may be reserved for people."
 			}
 		}
 		return apiErr.Hint()

@@ -15,7 +15,7 @@ orientation.
 
 - Being welcoming to people whose experience level differs from yours
 - Accepting constructive criticism gracefully
-- Giving constructive criticism kindly — critique the code, not the person
+- Giving constructive criticism kindly: critique the code, not the person
 - Focusing on what is best for the project and its users
 - Assuming good faith when someone is wrong
 
@@ -25,7 +25,7 @@ orientation.
 - Trolling, insults, derogatory comments, and personal or political attacks
 - Public or private harassment
 - Publishing others' private information without explicit permission
-- Dismissiveness toward beginners — everyone was new once
+- Dismissiveness toward beginners (everyone was new once)
 
 ## Enforcement
 
@@ -44,8 +44,8 @@ project's leadership.
 
 ## Scope
 
-This Code of Conduct applies within all project spaces — the repository, issues,
-pull requests, discussions — and when an individual is representing the project
+This Code of Conduct applies within all project spaces (the repository, issues,
+pull requests, discussions) and when an individual is representing the project
 in public spaces.
 
 ## Attribution

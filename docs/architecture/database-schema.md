@@ -16,7 +16,7 @@ document is wrong and must be updated.
 - **Soft delete:** `deleted_at timestamptz`. Present on tenant-visible resources only.
   Uniqueness constraints are partial: `WHERE deleted_at IS NULL`. Organisations, projects,
   environments and secrets are erased 30 days after `deleted_at` by the daily deleted-data
-  purge (`repositories/deleted-data.ts`) — a secret in a live environment at the end of the
+  purge (`repositories/deleted-data.ts`). A secret in a live environment is erased at the end of the
   organisation's point-in-time restore window instead, if that is longer. Users are not purged.
 - **Ciphertext:** always `bytea`. Never `text`, never base64 in the database.
 - **Token storage:** always `bytea` holding SHA-256 of the token. **Never the token itself.**
@@ -50,15 +50,15 @@ CREATE TABLE users (
 CREATE INDEX users_firebase_uid_idx ON users (firebase_uid) WHERE deleted_at IS NULL;
 ```
 
-The provider id columns are the join keys to the identity provider — see
+The provider id columns are the join keys to the identity provider. See
 [ADR 0010](../adr/0010-workos-as-identity-provider.md), which superseded the Firebase design of
 [ADR 0003](../adr/0003-firebase-as-identity-provider.md). Swapping providers was meant to
 mean adding a column, not restructuring, and migration `0018` is exactly that. The WorkOS
 column is the live one; the Firebase column is kept, retired, for the transition.
 
 - `firebase_uid` is **retired**. The Firebase sign-in that wrote it is gone, and nothing in the
-  application reads or writes it any more. It became **nullable** in `0018` — a user who joins
-  through WorkOS never had a Firebase account — but keeps its unique constraint and
+  application reads or writes it any more. It became **nullable** in `0018` (a user who joins
+  through WorkOS never had a Firebase account) but keeps its unique constraint and
   `users_firebase_uid_idx`, because it is the key the WorkOS import's backfill matches on and
   the rollback if the cutover goes wrong. It is dropped by a later, deliberate decommission
   migration.
@@ -69,13 +69,13 @@ column is the live one; the Firebase column is kept, retired, for the transition
   found by `firebase_uid` and must only fill a NULL (`WHERE workos_user_id IS NULL`), so it
   can never overwrite a link a sign-in made. It is NULL on every Firebase-era row until that
   row is linked either way. `users_workos_user_id_format_check` admits only a WorkOS id
-  (`^user_[0-9A-Za-z]+$`) — a Firebase uid written here is the one mistake this migration
+  (`^user_[0-9A-Za-z]+$`), because a Firebase uid written here is the one mistake this migration
   has already seen made once. Its unique constraint's index is its only index: the linking
   pass reads it *including* soft-deleted rows, so that a deleted account is refused as
   deleted rather than taken for nobody.
 - `users_identity_present_check` keeps every row reachable by some provider. **Dropping
   `firebase_uid` drops this constraint silently** (PostgreSQL removes a constraint that
-  references a dropped column), so the decommission migration must replace it — in practice
+  references a dropped column), so the decommission migration must replace it, in practice
   with `workos_user_id SET NOT NULL`, once the rows without one have been dealt with.
 
 ```sql
@@ -117,13 +117,13 @@ through a session whose `sso_workos_org_id` is its `workos_org_id`. A session fr
 has neither, and reads as "not single sign-on". `cli_auth_codes` and `cli_tokens` carry the same
 two columns, copied from the browser session that approved the device.
 
-`workos_session_id` (migration 0023) is the AuthKit session the issuing sign-in came from — the
+`workos_session_id` (migration 0023) is the AuthKit session the issuing sign-in came from: the
 `sid` claim of the code exchange's own access token. Sign-out (`DELETE /api/auth/session`)
 answers WorkOS's logout URL for it, so leaving xecret ends AuthKit's session too and the next
 sign-in on that browser is asked for rather than reused without a word. It names a session; it
 does not authenticate as one. NULL for every session from before 0023, which signs out as
 before. `fresh_auth_at` is when the person actively authenticated, during a `reauth` flow, by a
-method that re-proves who they are — an emailed code included — dated by WorkOS's `auth_time`;
+method that re-proves who they are (an emailed code included), dated by WorkOS's `auth_time`;
 the SSO setup portal's step-up asks for one under ten minutes old. The vault reset's own, stricter
 record stays in `reauthentications`.
 
@@ -132,10 +132,10 @@ does not issue a session for a sign-in that came back through an organisation th
 ask for (the planted-AuthKit-session login CSRF), through the single sign-on of one the account
 is not in, or from a reused WorkOS session for an account other than the browser's last; it
 parks the outcome in a sealed five-minute cookie carrying a random nonce, and `POST
-/api/auth/confirm` inserts that nonce's SHA-256 here before issuing anything — a second use of
+/api/auth/confirm` inserts that nonce's SHA-256 here before issuing anything, so a second use of
 the same cookie collides with the primary key. A row past `expires_at` stops nothing (the cookie
 is refused on its age first) and the hourly scheduled job deletes it
-(`deleteSpentSignInConfirmations`, beside the retained-vault purge) — once it is a minute past,
+(`deleteSpentSignInConfirmations`, beside the retained-vault purge), once it is a minute past,
 not at the instant: the cookie's age is counted in whole seconds and is accepted for up to a
 second beyond `expires_at`, and a replay in that second must still find its row.
 
@@ -175,31 +175,31 @@ The vault reset's re-authentication, kept by the server rather than the client. 
 destroys a vault for good and must stay reachable from a locked session, so it is guarded by
 two re-authentications in a fixed order (ADR 0010): a sign-in again, recorded here by the
 sign-in callback against the **new** session it issues, in the same transaction that inserts
-that session; then a code WorkOS emails — and, for an account with an authenticator app, its
-TOTP code — whose verification mints a five-minute proof stored as `proof_hash`. The reset
+that session; then a code WorkOS emails (and, for an account with an authenticator app, its
+TOTP code), whose verification mints a five-minute proof stored as `proof_hash`. The reset
 spends it with one UPDATE that requires this proof, this user, this session, `used_at IS NULL`
 and an unexpired `proof_expires_at`, so two concurrent resets with one proof cannot both pass.
 
 - `session_id` is **unique**: an attempt belongs to the session the sign-in issued, and a proof
   minted here is refused by every other session, including another of the same account.
 - **What happens to a row when its session ends.** Sessions are *revoked* by an UPDATE
-  (`revoked_at`) — on sign-out, "sign out everywhere", account deletion, or a newer sign-in in
-  the same browser — not deleted, so the row survives its session's revocation. It is inert
+  (`revoked_at`) on sign-out, "sign out everywhere", account deletion, or a newer sign-in in
+  the same browser. They are not deleted, so the row survives its session's revocation. It is inert
   from then on: a revoked or expired session cannot authenticate the reauth or reset requests
-  that would read it. The row goes, by cascade, only when its session row is actually deleted —
-  the expired-session cleanup (`deleteExpiredSessions`, which nothing schedules yet) — or its
+  that would read it. The row goes, by cascade, only when its session row is actually deleted, by
+  the expired-session cleanup (`deleteExpiredSessions`, which nothing schedules yet), or its
   user row is hard-deleted, which the application never does (account deletion soft-deletes).
-- `code_attempts` counts **guesses**, not failures — the emailed code and the TOTP step alike.
+- `code_attempts` counts **guesses**, not failures, for the emailed code and the TOTP step alike.
   Each is reserved here atomically before WorkOS is called: at most five per attempt
   (`code_attempts < 5` in the reserving UPDATE's own predicate), and at most ten per user,
-  summed across the attempts that user started in the last 24 hours under the user's row lock
-  — `reauthentications_user_idx` is that sum's index, and the user foreign key's cascade reads
+  summed across the attempts that user started in the last 24 hours under the user's row lock.
+  `reauthentications_user_idx` is that sum's index, and the user foreign key's cascade reads
   through it too. A guess is accepted only where `code_sent_at` is set. The budget is a column,
   not a rate-limiter counter, so it holds where the rate-limit binding is absent and fails open.
   The sum is correct only at READ COMMITTED, Postgres's default, which nothing here overrides:
   each statement takes a fresh snapshot, so a guess that waited for the row lock sees the
   reservations committed ahead of it.
-- `code_sends` counts **code requests** — each one an email to the account. Reserved the same
+- `code_sends` counts **code requests**, each one an email to the account. Reserved the same
   way, before WorkOS is asked and under the same user-row lock: at most three per attempt
   (`code_sends < 3` in the reserving UPDATE), whatever WorkOS then answers. A fresh sign-in is
   a new attempt with its own three.
@@ -208,8 +208,8 @@ and an unexpired `proof_expires_at`, so two concurrent resets with one proof can
   would accept back with an authenticator code; this row holds only its SHA-256, so the TOTP
   step is accepted only with the token this attempt was given.
 - The CHECKs make the column shapes honest: a proof exists only with an expiry, is exactly a
-  SHA-256 digest — a raw proof here is the one mistake that would make a database read worth
-  the same as the proof — and can only be spent if it exists; the pending-authentication hash
+  SHA-256 digest (a raw proof here is the one mistake that would make a database read worth
+  the same as the proof), and can only be spent if it exists; the pending-authentication hash
   is exactly a digest too, and never present without the factor it belongs to.
 - The application role is granted `SELECT, INSERT, UPDATE, DELETE` in the migration itself,
   guarded the way 0017's grant is, because a new table gets nothing from the role
@@ -286,8 +286,8 @@ For a new organisation it is `organizationSlugFor(id)`, the id in base 36 padded
 characters: never shaped like a UUID, never a reserved word, and shown to nobody.
 
 `workos_org_id` maps an organisation to its WorkOS Organization. It is created **lazily**,
-only when an organisation enables SSO — almost every organisation is a personal one
-provisioned at first login and never needs one — and is set once (`setOrgWorkosOrgId`
+only when an organisation enables SSO (almost every organisation is a personal one
+provisioned at first login and never needs one), and is set once (`setOrgWorkosOrgId`
 refuses to re-point it). The sign-in callback resolves WorkOS organisations back to tenants
 with `findOrgByWorkosOrgId`, which ignores soft-deleted organisations. `workos_client_id`
 (migration 0022) records which WorkOS **environment** the link was made in: an organisation id
@@ -297,15 +297,15 @@ whether it was the write that linked them (`changed`), so of two concurrent enab
 audited; the settings refuse a link whose client id is not this deployment's, and the sign-in
 path (`findOrgByWorkosOrgId`, which takes the asking deployment's client id) resolves only links
 made in its own environment. `organizations_workos_link_client_check` holds on every row: 0022
-added it `NOT VALID` — which turned out to mean a linked row without a client id could not be
+added it `NOT VALID`, which turned out to mean a linked row without a client id could not be
 updated *at all* (Postgres checks a `NOT VALID` constraint on every UPDATE, so a rename, a
-soft-delete, `plan:set` or even switching a policy off failed with a 500) — and 0023 backfilled
+soft-delete, `plan:set` or even switching a policy off failed with a 500), and 0023 backfilled
 such rows with the production client id and validated it.
 
 `workos_home` (migration 0023) is **the one WorkOS environment this database's links may come
-from** — one row, seeded with the Playxoft production environment's client id; a self-hosted
-deployment records its own (`docs/self-hosting.md`). `setOrgWorkosOrgId` — the only writer of
-a link — checks it in the UPDATE's own predicate and answers `forbidden` for any other client
+from**: one row, seeded with the Playxoft production environment's client id; a self-hosted
+deployment records its own (`docs/self-hosting.md`). `setOrgWorkosOrgId`, the only writer of
+a link, checks it in the UPDATE's own predicate and answers `forbidden` for any other client
 id, or while no row exists; the SSO settings check it first, before WorkOS is asked to create
 anything, and for opening the portal and switching a policy on as well. So a deployment
 running against another WorkOS environment can read the settings and switch a policy off, and
@@ -315,10 +315,10 @@ is in `docs/operations/workos-environments.md`.
 
 `sso_required` ("non-owner members reach this organisation only through its own single
 sign-on") is **enforced on every request**, by `resolveOrg`, against the presenting
-credential's `sso_workos_org_id` (§1, migration 0022) — so it takes effect at once for sessions
+credential's `sso_workos_org_id` (§1, migration 0022), so it takes effect at once for sessions
 and CLI tokens issued before it went on, and leaves the member's other organisations alone.
 Invitation acceptance checks it under the organisation lock, and the sign-in callback refuses
-a sign-in only when every organisation of the account would refuse it. **Owners are exempt** —
+a sign-in only when every organisation of the account would refuse it. **Owners are exempt**:
 a deliberate break-glass, so that an identity provider misconfigured after it is switched on
 cannot lock the organisation out of itself; a trade-off, since an owner's password stays a way
 in that the identity provider does not govern, audited as `auth.sso_exemption_used`. Its one
@@ -327,8 +327,8 @@ owner or admin to switch it off, a browser session, the single sign-on add-on, t
 deployment's WorkOS environment, and an active connection and a verified domain to switch it
 on).
 
-An SSO sign-in through an organisation's connection admits a newcomer just in time — as a
-`viewer` `org_members` row with `invited_by` NULL — **only if the organisation opted in**
+An SSO sign-in through an organisation's connection admits a newcomer just in time, as a
+`viewer` `org_members` row with `invited_by` NULL, **only if the organisation opted in**
 (`jit_join_enabled`, migration 0021, off by default and set by the same setter). Connecting an
 identity provider says who an organisation's people are; admitting all of them is a second
 decision. The opt-in and the seat limit are both read under the organisation row lock an
@@ -373,7 +373,7 @@ CREATE UNIQUE INDEX invitations_pending_idx ON invitations (org_id, email)
 
 The partial unique index prevents invitation spam to the same address while still allowing
 re-invitation after expiry or revocation. Acceptance requires the authenticated user's email
-to match `email` — an intercepted invitation link is not enough.
+to match `email`: an intercepted invitation link is not enough.
 
 ---
 
@@ -416,7 +416,7 @@ CREATE UNIQUE INDEX environments_project_slug_idx ON environments (project_id, s
 (stronger permission checks, destructive-action confirmation, distinct UI treatment) key off
 this flag, so an environment named `prod-eu-west` behaves correctly.
 
-`encryption_mode` says which key hierarchy an environment's values live under — `server` for
+`encryption_mode` says which key hierarchy an environment's values live under: `server` for
 the envelope of ADR 0001 (§4), `e2ee` for the client-held keys of ADR 0009 (§4.1). It is a
 **migration mechanism, not a product option**: nothing in the API lets a caller choose one.
 Migration 0013 backfills every existing row to `server` through the `ADD COLUMN` default and
@@ -536,15 +536,15 @@ the server has never seen.
 
 **One active EDK per environment.** Two would be two answers to "which key does the next write
 use", and a client picking the older one would encrypt under a key a revoked principal still
-holds — silently undoing the rotation that retired it. Retired rows are kept for ever, because
+holds, silently undoing the rotation that retired it. Retired rows are kept for ever, because
 historical `secret_versions` reference them.
 
 **The EHK is never versioned**, and that is its entire reason for existing: `value_hmac` must
 survive an EDK rotation (crypto spec §9). If the HMAC key rotated with the data key, the first
 write to every secret after a rotation would be recorded as a change when nothing changed.
 
-**Signatures are `NOT NULL`.** Verification is deferred past v1 — it needs a trust root for
-signer keys — but the columns are not, because turning verification on later has to be a client
+**Signatures are `NOT NULL`.** Verification is deferred past v1 (it needs a trust root for
+signer keys), but the columns are not, because turning verification on later has to be a client
 update rather than a data migration over grants that never carried a signature.
 
 **`pending_key_grants` is a queue, not authority.** Access is decided by people who may not
@@ -594,7 +594,7 @@ CREATE INDEX secret_versions_current_idx ON secret_versions (secret_id, version 
 ```
 
 **The three CHECKs are what make the dual-mode period safe.** A row naming both keys claims two
-different sets of bytes decrypt it; a row naming neither is ciphertext nothing can ever open —
+different sets of bytes decrypt it; a row naming neither is ciphertext nothing can ever open,
 and would read as an e2ee row to any query testing `env_key_id IS NULL`. Both are silent,
 permanent data loss, so the database refuses them rather than the application remembering to.
 
@@ -605,21 +605,21 @@ where it travels with the ciphertext it belongs to and cannot be paired with the
 
 `note` and `enc_note` are the same field seen from the two sides of the migration. No CHECK
 pairs them, because the rule that decides which is written depends on
-`environments.encryption_mode` — a join away, and unreachable from a row constraint. An e2ee
+`environments.encryption_mode`, a join away, and unreachable from a row constraint. An e2ee
 secret leaves `note` NULL: a note is free text people put credentials in, and the column's old
 promise that it "never holds a value" was never enforceable.
 
 **`secret_versions` is append-only.** Updating a secret inserts a new row; it never mutates an
 existing one. This gives rotation, rollback, and audit history for free. The current value is
-the highest `version` — resolved by `secret_versions_current_idx`, which is also what the bulk
+the highest `version`, resolved by `secret_versions_current_idx`, which is also what the bulk
 read path uses.
 
-**`value_hmac` — deliberately an HMAC, not a hash.** It exists so a write can detect "the
+**`value_hmac`: deliberately an HMAC, not a hash.** It exists so a write can detect "the
 value did not actually change" without decrypting. A plain SHA-256 of the plaintext would be
 a brute-force oracle: most secrets are low-entropy enough (`postgres://user:pass@host/db`,
 short API keys) that an attacker with the database could confirm guesses offline. The HMAC key
 is derived from the environment's data key via HKDF, so the value is useless without the key
-hierarchy. Nullable — omitted where the check is not needed.
+hierarchy. Nullable: omitted where the check is not needed.
 
 ### AAD binding
 
@@ -630,7 +630,7 @@ AAD = org_id ‖ environment_id ‖ secret_id ‖ version
 ```
 
 An attacker with database write access cannot copy a production ciphertext row into a
-development environment they can read — decryption fails rather than silently succeeding.
+development environment they can read: decryption fails rather than silently succeeding.
 This defends a real attack that encryption alone does not.
 
 ---
@@ -658,7 +658,7 @@ CREATE INDEX access_grants_member_idx ON access_grants (org_member_id);
 `COALESCE` in the unique index is required because PostgreSQL treats `NULL`s as distinct, so a
 plain unique constraint would permit duplicate project-wide grants.
 
-**Resolution order** — most specific wins, and an explicit `none` always denies:
+**Resolution order** (most specific wins, and an explicit `none` always denies):
 
 ```
 1. Explicit grant for (member, project, environment)   ← most specific
@@ -709,10 +709,10 @@ CREATE INDEX org_members_custom_role_idx ON org_members (custom_role_id)
 ```
 
 **A custom role can only subtract.** A member holding one is resolved through their *effective
-role* — the lower of `org_members.role` and `custom_roles.base_role` — never through the custom
+role* (the lower of `org_members.role` and `custom_roles.base_role`), never through the custom
 row alone. Their capabilities are the effective role's row ANDed with `allowed_actions`, with one
 floor: `member.read` is kept whenever the effective role has it. Their defaults are the effective
-role's, narrowed by the ceiling, and every resolved level — explicit grants included — is capped
+role's, narrowed by the ceiling, and every resolved level, explicit grants included, is capped
 at the ceiling. No row, however it was written, grants anything the member's own role lacks.
 `allowed_actions` is a positive list, so an action added to the product later is denied to every
 existing custom role until somebody opts in.
@@ -728,31 +728,31 @@ delete the members. NO ACTION rather than RESTRICT because RESTRICT's SQLSTATE c
 PostgreSQL 18 (23503 → 23001) and "role still in use" is an error the application maps.
 
 **Owners are never narrowed.** No custom role is based on `owner`, and no owner holds a custom
-role — one CHECK on each table. Together they keep "stored `owner`" and "effective owner" the same
+role: one CHECK on each table. Together they keep "stored `owner`" and "effective owner" the same
 set of members, which is what lets the last-owner invariant (§2) count `role = 'owner'` rows and
 still count the members who can act as owners. A promotion to owner clears `custom_role_id` in the
 same UPDATE (`updateMemberRole`); the promotion is itself the widest change there is, only an owner
 can make it, and it is already an audited `member.role_changed`.
 
-A `custom_role_id` that does not resolve inside the organisation — which the foreign key makes
-impossible — is read as a role based on `viewer` with no actions and a `none` ceiling, never as
+A `custom_role_id` that does not resolve inside the organisation (which the foreign key makes
+impossible) is read as a role based on `viewer` with no actions and a `none` ceiling, never as
 "no custom role".
 
 **Who may write one.** The management API (api.md, "Custom roles") defines, edits and deletes
 roles and moves members onto and off them. Defining needs an actor who holds no custom role and a
-base no higher than their own; editing also measures every current holder, and — where the edit
-widens them — every grant row they hold, because a lifted ceiling switches on grants it was
+base no higher than their own; editing also measures every current holder, and, where the edit
+widens them, every grant row they hold, because a lifted ceiling switches on grants it was
 holding down. Each of those writes takes the organisation lock first and makes its checks on
 rows read under it (`custom-roles.ts`), so a concurrent assignment cannot slip a holder in
 between a check and a write. An organisation may define at most 100 roles.
 
 **Names are unique as a reader sees them, not as `custom_roles_org_name_unique` does.** The
 constraint compares bytes; the application refuses a second name with the same *skeleton*
-(`customRoleNameSkeleton` in `@xecret/core/validation`: case, letter width, lookalike Cyrillic
-and Greek letters, Latin accents, and the lookalikes within Latin — I, l, 1 and `|` as one stroke,
-0 as o, rn as m, vv as w — folded), which no index can express. So the repository reads
-every name in the organisation under the organisation lock and compares them in JavaScript —
-race-free because every role write takes that lock — and the constraint stays behind it for
+(`customRoleNameSkeleton` in `@xecret/core/validation` folds case, letter width, lookalike Cyrillic
+and Greek letters, Latin accents, and the lookalikes within Latin: I, l, 1 and `|` as one stroke,
+0 as o, rn as m, vv as w), which no index can express. So the repository reads
+every name in the organisation under the organisation lock and compares them in JavaScript
+(race-free because every role write takes that lock), and the constraint stays behind it for
 exact duplicates. Stored names are normalised first: variation selectors dropped, spaces
 collapsed, NFC.
 
@@ -767,7 +767,7 @@ CREATE TABLE cli_tokens (
   org_id        uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name          text        NOT NULL,          -- "Nitheesh's MacBook Pro"
   token_hash    bytea       NOT NULL UNIQUE,
-  token_prefix  text        NOT NULL,          -- "xct_live_a1b2" — for display only
+  token_prefix  text        NOT NULL,          -- "xct_live_a1b2", for display only
   created_at    timestamptz NOT NULL DEFAULT now(),
   expires_at    timestamptz,
   last_used_at  timestamptz,
@@ -807,7 +807,7 @@ Two separate tables rather than one with a nullable `user_id`, because they have
 different lifecycles and blast radii. A CI token must never be able to act as a person, and
 the type system should make that impossible rather than merely discouraged.
 
-`service_tokens.environment_id` is `NOT NULL` — a CI token is always scoped to exactly one
+`service_tokens.environment_id` is `NOT NULL`: a CI token is always scoped to exactly one
 environment. This is the primary blast-radius control for threat T5.
 
 `service_tokens.public_key` makes a CI credential a first-class principal under ADR 0009: the
@@ -820,7 +820,7 @@ and a grant to a token without one is refused rather than sealed to nothing.
 
 `invitations.invite_public_key` plays the same role for an invitation (crypto spec §10). The
 16-byte **fragment** it is derived from never reaches the server: it travels to the invitee over
-a different channel from the emailed token, which is the whole of the two-channel design — a
+a different channel from the emailed token, which is the whole of the two-channel design. A
 leaked email decrypts nothing, and a leaked fragment authenticates nothing. There is no column
 for the fragment, and there must never be one.
 
@@ -866,26 +866,26 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
 - **Quarterly range partitions.** `secret.read` is the highest-volume event in the system (every
   `xecret run`, every CI build). Partitioning keeps queries fast and makes retention a
   `DROP TABLE` rather than a mass `DELETE`. Quarterly rather than monthly because reads are
-  clamped to 90 days by `MAX_AUDIT_RANGE_DAYS` — exactly one quarter — so a bounded query opens
+  clamped to 90 days by `MAX_AUDIT_RANGE_DAYS` (exactly one quarter), so a bounded query opens
   one or two partitions instead of three or four, and 3–5 years of retention is 12–20 child
   tables rather than 36–60.
 - **Partitions live in the `audit_parts` schema**, not `public`. Purely an ergonomic decision, and
   a real one. Left in `public`, 12–20 quarterly children would sit beside the 18 real tables and
   roughly double what `\dt` prints; under the monthly scheme this replaces, 36–60 of them would
   have outnumbered the real tables three to one. A `public` listing an operator cannot scan is one
-  they stop reading — and this is the schema where the append-only guarantee lives. PostgreSQL
+  they stop reading, and this is the schema where the append-only guarantee lives. PostgreSQL
   allows a partition in a different schema from its parent, and nothing about it is visible to
   queries; the application only ever names `public.audit_logs`. Migration 0010 made both changes,
   while the table was small enough that they were free.
 - `created_at` is in the primary key because PostgreSQL requires the partition key there.
 - **No foreign keys.** Audit records must outlive the rows they reference. A deleted project
   must not erase the record that it existed and who deleted it.
-- `actor_label` is denormalised for the same reason — the log must still read
+- `actor_label` is denormalised for the same reason: the log must still read
   "nitheesh@playxoft.com deleted DATABASE_URL" after that user is gone.
 - **Append-only.** The application role is granted `INSERT` and `SELECT` on this table, and
   no `UPDATE` or `DELETE`. Enforced at the database grant level, not by convention.
 - **`metadata` never contains a secret value.** Enforced in the audit event builder in
-  `packages/core/audit`, which accepts only an allowlist of field names — not by asking
+  `packages/core/audit`, which accepts only an allowlist of field names, not by asking
   developers to remember.
 
 ---
@@ -895,7 +895,7 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
 ```
 users ──┬──< sessions
         ├──< cli_tokens
-        ├──< user_keys ──< user_key_wraps        (the vault — ADR 0009)
+        ├──< user_keys ──< user_key_wraps        (the vault, ADR 0009)
         ├──< user_passkeys                       │
         ├──< vault_pin_peppers                   │
         └──< org_members >── organizations ──┬──< projects ──< environments
@@ -915,19 +915,19 @@ users ──┬──< sessions
                                                                     │
                                                     secrets ──< secret_versions
 
-secret_versions references env_keys OR env_data_keys — exactly one, by CHECK.
-org_members.custom_role_id references custom_roles (org_id, id) — same organisation, by
+secret_versions references env_keys OR env_data_keys: exactly one, by CHECK.
+org_members.custom_role_id references custom_roles (org_id, id): same organisation, by
   composite FK; organizations ──< custom_roles (0017, not drawn above)
-sessions ── reauthentications — at most one per session, also referencing users (0019, not
+sessions ── reauthentications: at most one per session, also referencing users (0019, not
   drawn above)
-users ──< retained_vaults ──< retained_vault_wraps, retained_vault_grants — a reset vault
+users ──< retained_vaults ──< retained_vault_wraps, retained_vault_grants: a reset vault
   kept seven days; each grant also references env_data_keys (0020, not drawn above)
-organizations ──< org_member_removals >── users — who was removed, so single sign-on does
+organizations ──< org_member_removals >── users: who was removed, so single sign-on does
   not re-admit them (0022, not drawn above)
-users ──< sign_in_confirmations — a held-back sign-in, spent once (0022, not drawn above)
-sign_in_failures — in-app sign-in attempts per throttle pool (HMAC-keyed); no FKs: most
+users ──< sign_in_confirmations: a held-back sign-in, spent once (0022, not drawn above)
+sign_in_failures holds in-app sign-in attempts per throttle pool (HMAC-keyed); no FKs: most
   rows name no account (0034, not drawn above)
-audit_logs — no FKs by design; references are soft
+audit_logs: no FKs by design; references are soft
 ```
 
 ## 10. Migration order
@@ -945,106 +945,106 @@ audit_logs — no FKs by design; references are soft
 0009  organization creator index
 0010  audit partitions: quarterly, and into the audit_parts schema
 0011  user vault (user_keys, user_key_wraps, user_passkeys); retires the PIN
-0012  user_keys.uk_unlock_verifier_hash — the verifier a passkey unlock sends
+0012  user_keys.uk_unlock_verifier_hash: the verifier a passkey unlock sends
 0013  environment data keys (env_data_keys, env_hmac_keys, env_key_grants,
       pending_key_grants), environments.encryption_mode, the dual-mode
       secret_versions columns, service_tokens.public_key, invitations.invite_public_key
-0014  env_key_grants.recipient_public_key — the one signed field the row did not carry
+0014  env_key_grants.recipient_public_key: the one signed field the row did not carry
 0015  unlock convenience: user_keys.auto_lock_minutes becomes nullable and
       range-checked [15, 720]; vault_pin_peppers (the server half of a device PIN)
 0016  plans and entitlements (org_subscriptions, org_usage_counters,
       billing_webhook_events)
-0017  custom roles (custom_roles, org_members.custom_role_id) — additive, every
+0017  custom roles (custom_roles, org_members.custom_role_id); additive, every
       existing member keeps NULL
 0018  WorkOS identity: users.workos_user_id, users.firebase_uid becomes nullable,
-      organizations.workos_org_id and sso_required — additive, nothing dropped
-0019  reauthentications — the vault reset's re-authentication, its user index and the
-      application role's grant — additive
-0020  retained vaults (retained_vaults, retained_vault_wraps, retained_vault_grants) —
+      organizations.workos_org_id and sso_required; additive, nothing dropped
+0019  reauthentications: the vault reset's re-authentication, its user index and the
+      application role's grant; additive
+0020  retained vaults (retained_vaults, retained_vault_wraps, retained_vault_grants):
       a reset vault kept seven days; CHECK pins the window, triggers refuse an early
-      delete and any rewrite of key material; the application role's grants — additive
+      delete and any rewrite of key material; the application role's grants; additive
 0021  SSO settings: organizations.jit_join_enabled (the just-in-time opt-in, default
-      false) and organizations_sso_flags_need_link_check — additive; no new grant
+      false) and organizations_sso_flags_need_link_check; additive; no new grant
 0022  SSO, enforced: sessions / cli_auth_codes / cli_tokens .sign_in_method and
       .sso_workos_org_id (what per-request sso_required reads); organizations
       .workos_client_id (+ a CHECK added NOT VALID); org_member_removals (JIT never re-admits
-      a removed member); sign_in_confirmations (the held-back sign-in, single-use) —
+      a removed member); sign_in_confirmations (the held-back sign-in, single-use);
       additive; grants for the two new tables
 0023  SSO, review round 2: workos_home (the WorkOS environment the database belongs to,
       seeded with production's; SELECT-only grant); a backfill of linked-but-clientless
       organisations and VALIDATE of organizations_workos_link_client_check;
       sessions.workos_session_id (the AuthKit session, ended at sign-out) and
-      sessions.fresh_auth_at (the setup portal's step-up) — additive
+      sessions.fresh_auth_at (the setup portal's step-up); additive
 0024  payments through Dodo (P12): org_subscriptions.current_period_start, .dodo_product_id,
       .dodo_event_at (the ordering guard for webhook snapshots), .renewal_amount_minor;
-      billing_checkouts and billing_license_keys (insert-only grants — a checkout that
+      billing_checkouts and billing_license_keys (insert-only grants; a checkout that
       happened, a licence issued, never the key), billing_seat_syncs (seat counts owed to
-      Dodo), billing_reminders (the email deduplication, by primary key) — additive
+      Dodo), billing_reminders (the email deduplication, by primary key); additive
 0025  P12, review round 1: org_subscriptions.metered_from (usage is billed only from the
       activation or the trial's end), .dodo_mode (test and live never cross), .dodo_event_id
       (the tie-break for snapshots stamped alike), .on_hold_since (fourteen days ends the
       plan), .dodo_scheduled_change_at (seat pushes wait for it), .dodo_currency and
       .dodo_billing_country (what Dodo last reported); billing_checkouts.nonce (unique),
-      .subscription_id and .consumed_at (column-level UPDATE grant only — a checkout attaches
+      .subscription_id and .consumed_at (column-level UPDATE grant only; a checkout attaches
       one subscription); billing_seat_syncs.generation, .claimed_until, .not_before,
       .dead_lettered_at (one push per organisation, cleared only under the generation it
       counted, retried only when due); the plan_ended_unpaid reminder; billing_requests
-      (idempotency keys for checkout and plan change) — additive, one backfill of
+      (idempotency keys for checkout and plan change); additive, one backfill of
       metered_from
-0026  P12, review round 2: org_usage_counters.included_fetches — the allowance a usage
+0026  P12, review round 2: org_usage_counters.included_fetches, the allowance a usage
       month opened with (the plan's includedFetchesPerMonth with any support raise),
       raised and never lowered while the month is current; the overage meter bills a
       month against it alone, so a later downgrade or a cleared override never
       re-bills it, and a month without one is never billed. (A yearly plan's counter
-      rows are months of its year, from the billing anniversary — no schema change.)
-      — additive, one backfill from each organisation's current plan
+      rows are months of its year, from the billing anniversary, so no schema change.)
+      Additive, one backfill from each organisation's current plan
 0027  P12, review round 3: billing_reminders_kind_check widened with three once-only
-      alerts (alert_unknown_product, alert_activation_waiting, alert_operator_managed) —
-      the reminders' primary key deduplicates an error line the hourly job would
-      otherwise repeat every run; never an email — constraint only, no backfill
+      alerts (alert_unknown_product, alert_activation_waiting, alert_operator_managed).
+      The reminders' primary key deduplicates an error line the hourly job would
+      otherwise repeat every run; never an email; constraint only, no backfill
 0028  secret references (P19 §1): environments.parent_environment_id (same-project
       composite FK, never itself), secret_versions.declared_references (jsonb array,
-      GIN-indexed for "who points here"), and 'template' in secrets_value_type_check
-      — additive; no new grant
+      GIN-indexed for "who points here"), and 'template' in secrets_value_type_check;
+      additive; no new grant
 0029  personal_overrides (P19 §2): one per (environment, user, name), an xk2.gcm.
       blob under the owner's override key; cascades with the environment, the user
-      and the organisation — additive; grants
+      and the organisation; additive; grants
 0030  webhooks and webhook_deliveries (P19 §5): endpoints with their sealed signing
       secret and failure run, and the delivery log/queue, due deliveries indexed per
-      organisation for the sweep's turns — additive; grants
+      organisation for the sweep's turns; additive; grants
 0031  org_policies (P19 §6, §8: token policy columns, secret_policy jsonb) and
-      environments.plaintext_export_disabled / .read_alerts (P19 §9, §7) — additive;
+      environments.plaintext_export_disabled / .read_alerts (P19 §9, §7); additive;
       grants for the new table
-0032  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
+0032  environment_read_sightings and read_alert_digests (P19 §7); additive; grants
 0033  the Free plan seats three: organizations.seat_limit defaults to 3 (was 5), and a
-      backfill moves live Free organisations from 5 to 3 — only those carrying no Dodo
+      backfill moves live Free organisations from 5 to 3, only those carrying no Dodo
       ids and no support override whose seated members plus open invitations fit in
       three; every live Free organisation left above 3 is reported as a WARNING.
       lock_timeout 5s for the ALTER's ACCESS EXCLUSIVE. No column, no constraint;
       order against the build does not matter
-0034  sign_in_failures: in-app sign-in attempts per throttle pool — an address's shared
-      pool, or one known device's — keyed by an HMAC of the pool's name under a key
+0034  sign_in_failures: in-app sign-in attempts per throttle pool (an address's shared
+      pool, or one known device's), keyed by an HMAC of the pool's name under a key
       derived from the cookie secret (never the address), with the lockout they
-      earned and the id of the last admitted attempt; pruned hourly — additive;
+      earned and the id of the last admitted attempt; pruned hourly; additive;
       grants. MUST be applied before the build that reads it: without the table every
       password and code sign-in is refused
 ```
 
 Migration 0034 adds the durable brake on guessing at the in-app sign-in page. The web app's
 `server/sign-in-throttle.ts` counts each attempt **before** WorkOS is asked, in one statement that
-also refuses it while the pool is locked and opens the next lockout from the new count — so a
-concurrent burst cannot slip past the end of the free attempts together — then clears the pool on
+also refuses it while the pool is locked and opens the next lockout from the new count (so a
+concurrent burst cannot slip past the end of the free attempts together), then clears the pool on
 a success and refunds an attempt WorkOS never judged. The build that ships with it reads and
 writes it on every password and emailed-code sign-in, so it is applied first.
 
 Migration 0033 changes a default and backfills one column, and the build beside it writes 3
 itself wherever it writes a Free ceiling (`FREE_SEAT_LIMIT`, now read from the plan), so it may
 run before or after that build. The only Free ceiling an older build writes is the 5 a lapsing
-paid subscription is returned to, onto a row that carries its Dodo ids — which the backfill
+paid subscription is returned to, onto a row that carries its Dodo ids, which the backfill
 leaves alone either way.
 
 Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
-build on every whole-row `select()` on `org_subscriptions` names the four new columns — the
+build on every whole-row `select()` on `org_subscriptions` names the four new columns, in the
 billing screen and its routes, the webhook, the billing jobs, and the check that refuses to
 delete an organisation (or an account's last organisation) Dodo still bills. Resolving an
 organisation on a request reads only `entitlementColumns` and is unaffected. Applying it first is
@@ -1066,29 +1066,29 @@ applies an entry only when its `when` is later than the last one the database re
 P19's entries (`when` 1788500000000–1788900000000) are dated strictly after P12's four
 (1788100000000–1788400000000); an equal stamp would have been skipped just the same. Had P19
 been applied first, a database would have recorded P19's later timestamps and then silently
-skipped P12's — so the order was P12, then P19, and a database that ran P19 from its branch
+skipped P12's, so the order was P12, then P19, and a database that ran P19 from its branch
 before P12 was merged is rebuilt, not patched.
 
-Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
+Migration 0022 (WS-5, review round 1) is additive, and, like 0021, **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,
 `cli_tokens`, `cli_auth_codes` and `organizations` names them, and fails against a database
 without them. Applying it first is harmless; older code never writes the new columns, and every
 row it writes satisfies the new CHECKs.
 
-Migration 0023 (review round 2) is additive in the same way and the same rule applies — apply
+Migration 0023 (review round 2) is additive in the same way and the same rule applies: apply
 it before the code. **One hard gate before applying it:** run `SELECT id, slug FROM
 organizations WHERE workos_org_id IS NOT NULL AND workos_client_id IS NULL` and stop if it
 returns a row you cannot vouch for. 0022's claim here was wrong: a `NOT VALID` CHECK does not
-let such a row live quietly as "another environment's" — Postgres checks it on every UPDATE, so
+let such a row live quietly as "another environment's". Postgres checks it on every UPDATE, so
 the row cannot be renamed, soft-deleted, have its plan set or its SSO policies switched off.
 0023 backfills every such row with the **production** client id, which is right only for a link
 production code made (before 0022 nothing else could have). A row that is a Staging link must be
 cleared first, with both flags off, by the remedy in `docs/operations/workos-environments.md`;
-then apply 0023. And `workos_home` arrives seeded with the production client id — on a
+then apply 0023. And `workos_home` arrives seeded with the production client id, so on a
 self-hosted database, record your own straight after (`docs/self-hosting.md`).
 
 Migration 0020 (P23) is additive: three new tables nothing older reads. **Apply it before
-deploying the code that uses it** — the deployment-check skill lists it. The reverse order is
+deploying the code that uses it** (the deployment-check skill lists it). The reverse order is
 worse than a plain 500, because the reset does its irreversible-looking part first: a vault
 reset **emails the archive and then fails** to retain the vault, so the person holds the email,
 nothing was reset, and their reset proof is spent (a retry needs a new sign-in and code);
@@ -1100,27 +1100,27 @@ than seven days after the reset; the application role may update only the recove
 bookkeeping columns, and nothing in the application issues a delete before then.
 
 Migration 0018 is the storage half of the move from Firebase to WorkOS (ADR 0010) and drops
-nothing: `firebase_uid` stays, nullable, until a decommission migration — which must replace
+nothing: `firebase_uid` stays, nullable, until a decommission migration, which must replace
 `users_identity_present_check`, because dropping the column drops the constraint with it.
 Apply 0018 before deploying code that selects the new columns: Drizzle's `select()` names every
-column the schema declares, so from that build on every read of `users` or `organizations` —
-the per-request session lookup among them — fails against a database without them. The reverse
+column the schema declares, so from that build on every read of `users` or `organizations`
+(the per-request session lookup among them) fails against a database without them. The reverse
 order is safe. The same holds for 0019, where the cost of getting it wrong is confined to the
-vault reset — its sign-in included, since the callback writes that session and its
+vault reset, its sign-in included, since the callback writes that session and its
 `reauthentications` row in one transaction. 0019 was amended in place (the grant, the index,
 `code_failures` renamed `code_attempts`, the two MFA columns, `code_sends`) before any database
 applied it.
 
 Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
 row and keeps working exactly as before; the one column that could not be added as a nullable
-afterthought — `environments.encryption_mode` — is backfilled to the behaviour those rows
+afterthought (`environments.encryption_mode`) is backfilled to the behaviour those rows
 already have. What it does relax is `secret_versions.env_key_id` and `secret_versions.iv`, from
 `NOT NULL` to nullable, and the three CHECKs in §5 restore each invariant for exactly the rows
 it ever applied to.
 
 The 15 tables catalogued above are the ones 0000 creates. `cli_auth_codes` arrives in 0005, and
 `user_keys`, `user_key_wraps` and `user_passkeys` in 0011; none of the four is catalogued in this
-document. `user_pins` and `pin_reset_tokens` existed between 0004 and 0011 and are gone — 0011 is
+document. `user_pins` and `pin_reset_tokens` existed between 0004 and 0011 and are gone. 0011 is
 the first migration in the project to drop a table, and the reasoning is at the top of the file.
 `sessions.pin_verified_at` became `sessions.vault_unlocked_at` in the same migration, as an
 add-then-drop rather than a rename: the old values are wrong under the new model, because a session
@@ -1129,8 +1129,8 @@ that entered a PIN has not unlocked a vault.
 Migration 0015 reshapes a column rather than adding one. `user_keys.auto_lock_minutes` has existed
 since 0008 (as `user_pins.auto_lock_minutes`) and drove only a timer in the browser; from 0015 it is
 also what the *server's* unlock gate measures `sessions.vault_unlocked_at` against, so the client
-timer and the API cannot disagree. It becomes nullable — `NULL` is "no preference", which follows
-`DEFAULT_AUTO_LOCK_MINUTES` — and its CHECK becomes the range `[15, 720]` rather than the old menu.
+timer and the API cannot disagree. It becomes nullable (`NULL` is "no preference", which follows
+`DEFAULT_AUTO_LOCK_MINUTES`), and its CHECK becomes the range `[15, 720]` rather than the old menu.
 The value `0`, "never", is deliberately no longer expressible: a window the server honours cannot be
 infinite. Live rows are remapped to the nearest offered interval, and `0` becomes `NULL`.
 `vault_pin_peppers` is created empty and is not catalogued above; the device-PIN flows that use it
@@ -1144,5 +1144,5 @@ anywhere. Migrations run as a separate, more privileged role.
 
 `billing_*` (the `seat_limit` column is the only hook needed now) · `oidc_trust_policies` for
 GitHub Actions federation (Phase 8 designs the token table for it; the feature is v2).
-Webhooks and cross-environment references, once listed here, arrived in 0028–0030 — the
+Webhooks and cross-environment references, once listed here, arrived in 0028–0030, the
 references not as a table of their own but as a declaration on the version that holds them.

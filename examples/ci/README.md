@@ -4,10 +4,10 @@ Every recipe here follows the same three-line story:
 
 1. Mint a **service token** in the dashboard (*Tokens → New service token*).
    It is pinned to exactly one project and environment, read-only by default,
-   and shown once — put it straight into your CI provider's secret store.
+   and shown once. Put it straight into your CI provider's secret store.
 2. Expose it to the job as `XECRET_TOKEN`.
 3. Run your build through `xecret run -- <command>`. Secrets are injected into
-   the child process's environment — never written to disk, never echoed.
+   the child process's environment, never written to disk, never echoed.
 
 There is nothing else to configure. The token knows its own scope, so no
 `.xecret.yaml`, org flag, or login step is needed in CI (`--project` /

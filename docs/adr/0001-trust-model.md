@@ -1,10 +1,10 @@
-# 0001 — Server-side envelope encryption over end-to-end encryption
+# 0001. Server-side envelope encryption over end-to-end encryption
 
 **Status:** Superseded by [0009](0009-zero-knowledge-encryption.md)
 **Date:** 2026-08-10
 
 > **This decision has been reversed.** [ADR 0009](0009-zero-knowledge-encryption.md) adopts
-> option B below — end-to-end encryption — for the reason this ADR named under *Revisit when*.
+> option B below (end-to-end encryption) for the reason this ADR named under *Revisit when*.
 > The text is unchanged and is worth reading: the costs it lists for option B are real, and
 > 0009 pays every one of them. Option A remains in force for existing environments until the
 > migration completes.
@@ -18,9 +18,9 @@ allowed to make. It is extremely expensive to change later.
 
 Two established models exist in this market:
 
-- **Doppler model** — the server encrypts and decrypts. The service operator can technically
+- **Doppler model**: the server encrypts and decrypts. The service operator can technically
   read customer secrets.
-- **Phase model** — the client encrypts. The server stores ciphertext it cannot read
+- **Phase model**: the client encrypts. The server stores ciphertext it cannot read
   ("zero-knowledge").
 
 The original brief cited both products as inspiration without noticing they sit on opposite
@@ -32,7 +32,7 @@ sides of this line.
 
 - ✅ Secrets can be read by the API, which makes server-rendered dashboards, `xecret run`,
   CI service tokens, search, import, and integrations all straightforward.
-- ✅ Password reset and account recovery work normally — losing a device is not fatal.
+- ✅ Password reset and account recovery work normally: losing a device is not fatal.
 - ✅ Team sharing is a database row, not a key-exchange protocol.
 - ✅ Ships in weeks, not months.
 - ❌ A full compromise of the Worker plus the root key exposes all customer secrets.
@@ -43,7 +43,7 @@ sides of this line.
 - ✅ Strongest possible claim: a database breach yields nothing, and we cannot be compelled
   to hand over plaintext.
 - ❌ Every client (browser, CLI, CI runner) needs key material, and key distribution to CI is
-  genuinely hard — the CI runner must get a decryption key from somewhere.
+  genuinely hard: the CI runner must get a decryption key from somewhere.
 - ❌ Team member addition/removal becomes a key re-wrap operation across every secret.
 - ❌ Lost device or forgotten password can mean permanent data loss without a recovery-key
   ceremony that most users will skip.
@@ -51,7 +51,7 @@ sides of this line.
   impossible or must move to the client.
 - ❌ Roughly 3× the implementation effort and far more ways to get it subtly wrong.
 
-### C. Hybrid — server-side by default, opt-in E2E per environment
+### C. Hybrid: server-side by default, opt-in E2E per environment
 
 - ✅ Best of both, in theory.
 - ❌ Two complete code paths for crypto, sharing, CI, and UI from day one. The worst option to
@@ -59,7 +59,7 @@ sides of this line.
 
 ## Decision
 
-**Option A — server-side envelope encryption.**
+**Option A: server-side envelope encryption.**
 
 Key hierarchy:
 
@@ -83,7 +83,7 @@ than a rewrite.
 
 ### Negative
 - **We can read customer secrets.** This must be stated plainly in `SECURITY.md`, the privacy
-  docs, and the landing page — not buried. Attempting to imply otherwise would be dishonest
+  docs, and the landing page, not buried. Attempting to imply otherwise would be dishonest
   and would eventually be discovered.
 - We are a higher-value breach target than a zero-knowledge service.
 - Some security-conscious customers will choose a zero-knowledge competitor. That is an

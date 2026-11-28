@@ -113,11 +113,11 @@ func cmdDoctor(args []string) error {
 	var credentials *cred.Credentials
 	switch {
 	case serviceToken:
-		say(statusOK, "signedIn", "XECRET_TOKEN is set — the keychain and the offline cache are both bypassed")
+		say(statusOK, "signedIn", "XECRET_TOKEN is set, so the keychain and the offline cache are both bypassed")
 	default:
 		loaded, err := cred.Load(a.store)
 		if errors.Is(err, cred.ErrNotLoggedIn) {
-			say(statusFail, "signedIn", "not signed in — run 'xecret login'")
+			say(statusFail, "signedIn", "not signed in. Run 'xecret login'")
 		} else if err != nil {
 			say(statusFail, "signedIn", "stored credential unreadable: %v", err)
 		} else {
@@ -151,7 +151,7 @@ func cmdDoctor(args []string) error {
 		say(statusFail, "serverReachable", "cannot reach the server: %v", reachErr)
 	} else {
 		report["serverVersion"] = deployed.Version
-		say(statusOK, "serverReachable", "server reachable — %s %s (commit %s)",
+		say(statusOK, "serverReachable", "server reachable: %s %s (commit %s)",
 			deployed.Name, deployed.Version, deployed.Commit)
 	}
 
@@ -169,7 +169,7 @@ func cmdDoctor(args []string) error {
 			say(statusFail, "credentialAccepted", "the credential was refused: %v", clientErr)
 		case clientErr != nil:
 			say(statusWarn, "credentialAccepted",
-				"could not check the credential — the server did not answer: %v", clientErr)
+				"could not check the credential because the server did not answer: %v", clientErr)
 		case serviceToken:
 			pin := a.tokenScope
 			say(statusOK, "credentialAccepted", "service token %q is live, pinned to %s/%s in %s",
@@ -181,11 +181,11 @@ func cmdDoctor(args []string) error {
 				say(statusOK, "credentialAccepted", "credential accepted by %s", resolved.APIURL)
 			case credentialRefused(meErr):
 				say(statusFail, "credentialAccepted",
-					"the stored credential was refused: %v — run 'xecret login' again, it may have been revoked from the dashboard",
+					"the stored credential was refused: %v. Run 'xecret login' again, it may have been revoked from the dashboard",
 					meErr)
 			default:
 				say(statusWarn, "credentialAccepted",
-					"could not check the credential — the server did not answer: %v", meErr)
+					"could not check the credential because the server did not answer: %v", meErr)
 			}
 		}
 		cancelCred()
@@ -195,7 +195,7 @@ func cmdDoctor(args []string) error {
 	if cwd, err := os.Getwd(); err == nil {
 		path, file, findErr := config.Find(cwd)
 		if findErr != nil {
-			say(statusWarn, "config", "no %s above %s — pass --project/--environment, or run 'xecret init'",
+			say(statusWarn, "config", "no %s above %s. Pass --project/--environment, or run 'xecret init'",
 				config.Filename, cwd)
 		} else {
 			report["configPath"] = path

@@ -1,4 +1,4 @@
-# 0009 — Zero-knowledge encryption: the client holds the keys
+# 0009. Zero-knowledge encryption: the client holds the keys
 
 **Status:** Accepted
 **Date:** 2026-09-08
@@ -6,7 +6,7 @@
 
 ## Context
 
-[ADR 0001](0001-trust-model.md) chose server-side envelope encryption — the Doppler model —
+[ADR 0001](0001-trust-model.md) chose server-side envelope encryption (the Doppler model)
 and said so plainly: *"We can read customer secrets."* It also said when to revisit:
 
 > Enterprise deals start requiring zero-knowledge, or we have the team to maintain two crypto
@@ -14,7 +14,7 @@ and said so plainly: *"We can read customer secrets."* It also said when to revi
 
 That moment has arrived, and it arrived from the product side rather than the engineering
 side. The claim a secrets manager is bought on is *"even we cannot read them"*, and every
-competitor xecret is compared against — Bitwarden, Proton, MEGA, Phase — can make it. We
+competitor xecret is compared against (Bitwarden, Proton, MEGA, Phase) can make it. We
 cannot, and 0001's honest `SECURITY.md` paragraph saying so is a line item in every security
 review a prospect runs.
 
@@ -49,7 +49,7 @@ Rejected. This is the decision being revisited; restating it is not an option, i
   conversation.
 - ❌ Every feature is built twice and tested twice, at half the confidence in each.
 
-Rejected as a *destination*. It is, however, an unavoidable *transition state* — see the
+Rejected as a *destination*. It is, however, an unavoidable *transition state*. See the
 phasing note below, where dual-mode exists on purpose and has a scheduled removal date.
 
 ### C. Full zero-knowledge for all secret values
@@ -64,14 +64,14 @@ phasing note below, where dual-mode exists on purpose and has a scheduled remova
 
 **Chosen.** The costs are real, and every one of them is listed again individually under
 Consequences rather than allowed to disappear into a decision. What tips it is that the ❌
-items here are *work* — finite, schedulable, testable — while the ❌ items under option A are
+items here are *work* (finite, schedulable, testable), while the ❌ items under option A are
 *permanent properties of the product*.
 
 ## Decision
 
 **All secret values and notes are encrypted on the client, under keys the server never sees.**
 
-Secret **names** stay plaintext. That is a deliberate, documented trade — see Trade-offs.
+Secret **names** stay plaintext. That is a deliberate, documented trade (see Trade-offs).
 
 ### Key hierarchy
 
@@ -92,11 +92,11 @@ USER SIDE (per user)
 
 SHARING SIDE (per environment)
   Environment Data Key (EDK, 32B, random, client-generated, rotates on revocation)
-  Environment HMAC Key (EHK, 32B, random, client-generated, long-lived — survives rotation)
+  Environment HMAC Key (EHK, 32B, random, client-generated, long-lived, survives rotation)
       ├─ EDK+EHK sealed to each authorized member's X25519 public key
       ├─ EDK+EHK sealed to each service token's X25519 public key   (same sealed box)
       │     └─ every grant row carries an Ed25519 signature by its creator
-      │        (verification deferred — see Trade-offs)
+      │        (verification deferred, see Trade-offs)
       ├─ EDK encrypts every secret value + note in that environment (AES-256-GCM + AAD)
       └─ HKDF(EHK) ─► per-env HMAC key ─► valueHmac (computed client-side,
                                           stable across EDK rotations)
@@ -107,7 +107,7 @@ Three properties are worth reading twice, because they are what make the design 
 - **Changing a passphrase re-wraps one 32-byte key.** Nothing else re-encrypts. The UK is
   unchanged, so sessions on other devices stay valid and no secret is touched.
 - **Per-environment EDKs are required, not an optimisation.** Access is granted per
-  project and per environment — production is deny-by-default — so a developer without
+  project and per environment (production is deny-by-default), so a developer without
   production access must simply *not hold* the production EDK. A single org-wide key would
   make the authorization model decorative.
 - **Service tokens survive EDK rotation.** A token carries an X25519 *private* key in its
@@ -122,19 +122,19 @@ rejects versions it does not know.
 
 | Purpose | Choice | Notes |
 |---|---|---|
-| Passphrase KDF | **Argon2id**, m=64 MiB, t=3, p=1, 16B salt, 32B output | Client-side. Per-user params are stored so they can be raised later, with a `needsUpgrade` re-wrap on next unlock — the same shape as the retired `pinNeedsRehash`. Browsers are single-threaded for this, so p=1. Above the OWASP 2025 floor and level with Bitwarden's defaults. Go: `golang.org/x/crypto/argon2`. Library choice for the browser: see the Argon2 measurement section below. |
+| Passphrase KDF | **Argon2id**, m=64 MiB, t=3, p=1, 16B salt, 32B output | Client-side. Per-user params are stored so they can be raised later, with a `needsUpgrade` re-wrap on next unlock, the same shape as the retired `pinNeedsRehash`. Browsers are single-threaded for this, so p=1. Above the OWASP 2025 floor and level with Bitwarden's defaults. Go: `golang.org/x/crypto/argon2`. Library choice for the browser: see the Argon2 measurement section below. |
 | Symmetric | AES-256-GCM, 12-byte IV, 128-bit tag | `crypto/aead.ts` verbatim. No new AEAD, no new IV convention. |
-| Asymmetric — sealing EDK/EHK to members, tokens, and invites | **X25519 via `@noble/curves`, unconditionally** — browser, Worker, everywhere | No feature detection, no P-256 fallback, one code path to review. Go: `crypto/ecdh`. The blob format is versioned (`xk2.x25519.…`) so a future curve change stays possible without inheriting this decision's complexity. |
-| Signing — grant authenticity | **Ed25519 via `@noble/curves`.** Every grant row is signed by its creator at creation | Go: `crypto/ed25519`. **Verification is deferred** — the keys and signature columns exist from day one so enabling it later is a client update, not a data migration. See Trade-offs. |
+| Asymmetric: sealing EDK/EHK to members, tokens, and invites | **X25519 via `@noble/curves`, unconditionally**: browser, Worker, everywhere | No feature detection, no P-256 fallback, one code path to review. Go: `crypto/ecdh`. The blob format is versioned (`xk2.x25519.…`) so a future curve change stays possible without inheriting this decision's complexity. |
+| Signing: grant authenticity | **Ed25519 via `@noble/curves`.** Every grant row is signed by its creator at creation | Go: `crypto/ed25519`. **Verification is deferred**: the keys and signature columns exist from day one so enabling it later is a client update, not a data migration. See Trade-offs. |
 | Sealed box | ephemeral X25519 → ECDH → HKDF-SHA256 → AES-256-GCM; payload = `ephemeralPub ‖ iv ‖ ct` | Deterministic and dependency-light; no libsodium. Cross-implemented in TypeScript and Go against shared test vectors. One construction for member, token, and invite grants. |
 | Subkeys and the unlock verifiers | HKDF-SHA256 with explicit `info` domain separation (`xecret.v2.unlock-verifier`, `xecret.v2.uk-unlock-verifier`, `xecret.v2.uk-wrap`, `xecret.v2.value-hmac`, `xecret.v2.prf-wrap`, …) | No key is ever used raw for two purposes. There are **two** unlock verifiers because an unlock does not always involve a passphrase: a passkey opens the UK directly and never derives `SK`. Both attest to the same capability, so one lockout counts both. The full enumeration is normative in the [crypto spec](../security/e2ee-crypto-spec.md). |
-| Environment HMAC Key (EHK) | 32B random, generated at environment creation, sealed alongside the EDK, **never rotated by default** | Its only job: `valueHmac = HMAC-SHA256(HKDF(EHK, "xecret.v2.value-hmac"), plaintext)` stays stable across EDK rotations, so no-op write detection keeps working. Deriving it from the EDK instead was considered and rejected — it costs one spurious version bump per secret after every rotation. |
+| Environment HMAC Key (EHK) | 32B random, generated at environment creation, sealed alongside the EDK, **never rotated by default** | Its only job: `valueHmac = HMAC-SHA256(HKDF(EHK, "xecret.v2.value-hmac"), plaintext)` stays stable across EDK rotations, so no-op write detection keeps working. Deriving it from the EDK instead was considered and rejected: it costs one spurious version bump per secret after every rotation. |
 | Recovery codes | 5 codes, 125-bit, Crockford base32, `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-C` with a Luhn mod-32 check character | High entropy, so HKDF rather than Argon2. Each code independently wraps the UK. The server stores a lookup hash, the wrap, and `usedAt`. |
 | Blob format | `xk2.<algo>.<base64url payload>` on every stored crypto artifact | Follows the `xecret-share-v1.` precedent in `crypto/escrow.ts`. Every parser rejects unknown versions loudly rather than guessing. |
 | AAD | `xecret.aad.v2.<purpose>|<component>|…`, extending `crypto/aad.ts` | Binds every ciphertext to the row that holds it, so a relocated ciphertext fails to decrypt instead of silently succeeding. Same rationale as v1, new purposes. |
 
-The byte-level definition of all of this — every info string, every payload layout, the
-signature canonicalisation, the check-character algorithm — is
+The byte-level definition of all of this (every info string, every payload layout, the
+signature canonicalisation, the check-character algorithm) is
 [`docs/security/e2ee-crypto-spec.md`](../security/e2ee-crypto-spec.md). This ADR records the
 decision; that document is what an independent Go implementation or a third-party auditor
 reads.
@@ -157,8 +157,8 @@ Eight runs after a warm-up, `dkLen = 32`:
 | `hash-wasm` 4.12.0 | m=64 MiB, t=3, p=1 *(target)* | 174 ms | **178 ms** | 178 ms | 183 ms |
 | `hash-wasm` 4.12.0 | m=19 MiB, t=2, p=1 | 35 ms | 38 ms | 37 ms | 39 ms |
 
-The two libraries produce **byte-identical output** at the target parameters — checked, not
-assumed. Argon2id is a specified function; the library is an implementation detail of speed,
+The two libraries produce **byte-identical output** at the target parameters (checked, not
+assumed). Argon2id is a specified function; the library is an implementation detail of speed,
 not of format. Switching is a dependency change, not a migration.
 
 **What the numbers say.** Pure-JS Argon2id costs **963 ms at the target parameters on a
@@ -167,8 +167,8 @@ three and five times slower, which puts noble at an estimated 3–5 s there. Tha
 the 1.5 s bar; it is several times past it. `hash-wasm` at 178 ms on the same machine has
 roughly an 8× budget before it reaches the bar.
 
-**What we are doing about it.** The plan's default — `@noble/hashes`, on the strength of it
-being a dependency we already want for `@noble/curves` — stands *provisionally*, and the
+**What we are doing about it.** The plan's default (`@noble/hashes`, on the strength of it
+being a dependency we already want for `@noble/curves`) stands *provisionally*, and the
 honest expectation recorded here is that it will not survive the phone test.
 
 - **The phone measurement is a Phase 2 gate, not a nice-to-have.** Before any vault UI ships,
@@ -181,7 +181,7 @@ honest expectation recorded here is that it will not survive the phone test.
   `script-src` for the RSC flight payload, but it carries neither `'unsafe-eval'` nor
   `'wasm-unsafe-eval'`. WebAssembly compilation is gated on `script-src` independently of
   `'unsafe-inline'`, so **hash-wasm will be refused by the policy as it stands today.**
-  Adopting it means adding `'wasm-unsafe-eval'` to `script-src` — a real widening of the
+  Adopting it means adding `'wasm-unsafe-eval'` to `script-src`, a real widening of the
   policy that ADR 0008's constraints already make hard to compensate for elsewhere, and one
   that `csp.test.ts` will force to be a deliberate two-place edit rather than a silent one.
   That trade is to be made explicitly in Phase 2, with the phone numbers in hand, not
@@ -197,7 +197,7 @@ standing between the dump and the whole vault. The cost is the control.
 
 - A database dump, plus the Root KEK, plus every server-side secret, plus the full Worker
   source, produces **no secret value**. This is testable, and Phase 6 ships the test.
-- T9 — the xecret insider — stops being a residual risk we manage by policy and becomes one
+- T9 (the xecret insider) stops being a residual risk we manage by policy and becomes one
   the architecture forecloses. Same for T7 inside the secrets path: code running in the
   Worker has ciphertext and public keys, and nothing that opens them.
 - The claim becomes available, and unlike most products making it, ours will be backed by a
@@ -206,10 +206,10 @@ standing between the dump and the whole vault. The cost is the control.
 - The CLI's offline cache improves as a side effect: it stores ciphertext and sealed grants
   rather than plaintext, so a stolen laptop's cache is no longer plaintext at rest.
 
-### Negative — every one of these is real
+### Negative: every one of these is real
 
 - **A user who loses their passphrase and all five recovery codes is unrecoverable.** Not
-  "hard to recover" — unrecoverable, by anyone, including us. Their org's data survives as
+  "hard to recover" but unrecoverable, by anyone, including us. Their org's data survives as
   long as another member holds a grant, and the answer is that teammates remove and re-invite
   them. The UI must say this in those words, at setup, and mean it.
 - **Team sharing is a key-exchange protocol.** Adding a member is a seal-to-their-public-key
@@ -253,8 +253,8 @@ swap, and the fingerprint change is visible to anyone who looks.
 
 **3. Grant signatures are created but not verified.** Every `env_key_grants` row carries an
 Ed25519 signature by its creator over the environment, the EDK version, the recipient, and
-the sealed blobs. Nothing checks it yet. Verification needs a trust root for signer keys —
-which is trade-off 2 one level up — and a failure UX that does something more useful than
+the sealed blobs. Nothing checks it yet. Verification needs a trust root for signer keys
+(which is trade-off 2 one level up) and a failure UX that does something more useful than
 locking a user out of their own org because a teammate reinstalled. **Residual risk: until
 verification is on, `wrappedBy` is a server-asserted field, and a malicious server could
 insert its own grant and read everything written afterwards.** Signing from day one is what
@@ -262,7 +262,7 @@ makes turning verification on later a client update rather than a data migration
 whole reason the columns exist now.
 
 **4. A removed principal keeps an equality oracle.** The EHK is deliberately not rotated when
-a member or token is revoked — that is what keeps `valueHmac` stable and no-op write detection
+a member or token is revoked. That is what keeps `valueHmac` stable and no-op write detection
 working across EDK rotations. The consequence: a removed principal who kept the EHK, and who
 later obtains a database dump, can **confirm** whether a current value equals one they already
 know or can guess. They cannot decrypt anything, and they cannot read anything new. An org
@@ -272,7 +272,7 @@ default should not silently degrade a feature every user relies on.
 
 **5. Freshness is not protected. The server can lie by omission.** Signatures prove origin,
 not recency. A malicious or compromised server can serve *stale* grants, or silently omit
-recent `secret_versions`, and the client has no way to tell — it sees a well-formed,
+recent `secret_versions`, and the client has no way to tell: it sees a well-formed,
 correctly-signed, correctly-decrypting response that is simply out of date. **Residual risk:
 rollback and stale-serve attacks are undetected in v1.** The named future mitigation is a
 **client-tracked monotonic version counter** per environment: the client remembers the highest
@@ -282,26 +282,26 @@ that adding it later is a client change with no API change.
 
 **6. Recovery is strictly one-time codes. There is no escrow.** No org-admin recovery, no
 support-side reset, no key held anywhere on our side. This was decided by the product owner
-and is not a gap to be filled later — filling it would reintroduce exactly the party this ADR
+and is not a gap to be filled later: filling it would reintroduce exactly the party this ADR
 exists to remove. The cost is paid by the user who loses everything, and it is a real cost;
 the mitigations are a mandatory recovery-code ceremony at setup that will not let itself be
 skipped, a downloadable Emergency Kit, and codes that can be regenerated at any time from the
 Security screen.
 
-The escape hatch beside it — destroying the vault so the account can be used again — is the one
+The escape hatch beside it (destroying the vault so the account can be used again) is the one
 irreversible act in the product, and it is necessarily reachable from a **locked** session,
 since every caller of it is locked out by definition. The vault lock that stands in front of
 every other destructive act therefore cannot stand in front of this one, and a typed phrase
 printed on the screen above the field guards against a mistake rather than against an attacker.
 So the reset demands a **fresh identity-provider re-authentication**: an ID token verified the
 same way sign-in verifies one, whose subject must be this session's account and whose
-`auth_time` — the claim a token refresh does not move — must be minutes old. Without it a stolen
+`auth_time` (the claim a token refresh does not move) must be minutes old. Without it a stolen
 session cookie was enough to destroy somebody's keys for good.
 
 The reset also **re-records the key debts it destroys**. It deletes the account's grants and its
 queued shares, because both address a public key that no longer exists; leaving it there would
-put an entitled member in a state no screen could see — no grant, no pending row, nothing in any
-banner — while the UI promised that "a teammate can share those environments with you again".
+put an entitled member in a state no screen could see (no grant, no pending row, nothing in any
+banner) while the UI promised that "a teammate can share those environments with you again".
 The debts are re-queued in the same transaction, and `GET …/keys` reports the same fact
 independently as `missingGrants`, derived from the rows rather than from a record of what
 somebody meant to do.
@@ -310,21 +310,21 @@ somebody meant to do.
 By the product owner's decision, a reset no longer destroys the vault. It moves the key row,
 the live passphrase wrap, the unused recovery wraps and every member grant into retained tables
 (migration 0020), where for seven days the old passphrase or a recovery code can open it in the
-browser and re-seal its environment keys into the account's *current* vault — a merge, never a
-swap, so nothing sealed to the new vault is touched and the account ends with one working
+browser and re-seal its environment keys into the account's *current* vault (a merge, never a
+swap), so nothing sealed to the new vault is touched and the account ends with one working
 hierarchy. Nothing in xecret can delete a retained vault early: a CHECK pins the window to 168
 hours, triggers refuse the DELETE by the database's own clock, and the application's role may
 update only the recovery bookkeeping; an hourly Cron Trigger purges it after.
-And before the reset, the server emails the account an **escape archive** — every ciphertext the
-vault could open, still sealed, with the wraps that open it (spec §14) — openable offline by
+And before the reset, the server emails the account an **escape archive**: every ciphertext the
+vault could open, still sealed, with the wraps that open it (spec §14). It can be opened offline by
 `xecret vault open-archive` or imported into a project in the browser. A vault is **never
 reset without that archive silently** (owner decision, PR #121 round 1): a production deployment
 with no mail provider refuses resets, and a vault too large to email is reset only when the
 person, told so before confirming, ticks "Reset without the emailed archive".
 
 None of this weakens the sentence this trade-off opens with. The retained tables hold exactly
-what `user_keys`, `user_key_wraps` and `env_key_grants` held — public keys, salts and
-ciphertext under keys the server has never had — and recovery still needs the passphrase or a
+what `user_keys`, `user_key_wraps` and `env_key_grants` held (public keys, salts and
+ciphertext under keys the server has never had), and recovery still needs the passphrase or a
 code, checked nowhere but in the browser. There is still no escrow and no support-side reset.
 What the archive does change is where an offline-attackable copy of the wrapped hierarchy lives:
 the account's mailbox, permanently. The owner accepted that explicitly; threat model T12 states
@@ -334,11 +334,11 @@ it.
 not a signed statement, and every client branches on it: a `server` answer means the dashboard
 puts plaintext values in request bodies and the CLI injects whatever it is handed into a child
 process. So a deployment willing to flip an environment from `e2ee` back to `server` collects
-everything written afterwards without breaking any cryptography — it just asks. No key is bound
+everything written afterwards without breaking any cryptography: it just asks. No key is bound
 to the mode, so nothing in the payload can be checked against anything.
 
 The mitigation is continuity, the same shape as trade-off 2 and with the same honest limit.
-Once a client has seen an environment answer `e2ee`, a later `server` answer is **refused** —
+Once a client has seen an environment answer `e2ee`, a later `server` answer is **refused**,
 not warned about, and with no override offered in the same screen that would have carried out
 the downgrade, because "continue and send your credentials in plaintext" is a button that
 exists to be clicked under deadline pressure. The `server` → `e2ee` direction pins forward and
@@ -346,11 +346,11 @@ is never refused: it takes capability away from the server, and it is the migrat
 schedules. The dashboard files its pins in local storage by address (the organisation's id,
 the project's id and the environment's slug, as its URL holds them); the CLI files them
 beside the offline cache, and a service token that carries a key half is its own pin, in a
-string the server cannot edit after the fact — which is the only one an ephemeral CI runner
+string the server cannot edit after the fact, which is the only one an ephemeral CI runner
 gets. **Residual risk: a first-contact downgrade is undetectable**, exactly as a first-contact
 key substitution is, and a client whose pins were cleared is at first contact again. Accepting
-a genuine migration back is deliberately a manual act — clearing the browser's site data, or
-`xecret cache clear` — taken after asking whoever runs the deployment, because that question is
+a genuine migration back is deliberately a manual act (clearing the browser's site data, or
+`xecret cache clear`) taken after asking whoever runs the deployment, because that question is
 the mitigation and no program can ask it.
 
 **8b. A long-lived CLI token can pull offline-grindable passphrase material.**
@@ -358,14 +358,14 @@ the mitigation and no program can ask it.
 **bearer credential**, not only to a locked browser session. The reason is structural rather
 than an oversight: a CLI token acts as its user, that user's environment grants are sealed to a
 public key whose private half exists only as a wrap under the User Key, so a token that could not
-read the material would authenticate perfectly and decrypt nothing — headless `xecret login
+read the material would authenticate perfectly and decrypt nothing; headless `xecret login
 --passphrase` would not exist.
 
 The concession is wider than the session one it inherits, and the comment that said "the wraps
 are useless without the passphrase" was true of a browser and weaker here. What the token holder
 gets is an *offline* Argon2id attack on the master passphrase, unbounded by the unlock lockout,
 from a credential that lives in a file on a laptop or an environment variable in a CI runner and
-is good for months rather than for a session — **and the parameters disclose the cost of that
+is good for months rather than for a session. **And the parameters disclose the cost of that
 attack**, so an attacker knows in advance what it will take rather than having to guess.
 
 Not removable without removing the flow, so it is bounded and made visible instead: the read
@@ -374,13 +374,13 @@ carrying the principal kind, so "a token in a CI runner pulled my wraps at 04:00
 somebody can ask rather than an event with no trace. **Residual risk: a stolen `xct_…` token
 yields an unbounded offline attack on that account's passphrase, at a cost the token holder can
 read off the response.** The mitigations that actually bear on it are the passphrase bar this ADR
-sets, token expiry, and revocation — none of which is defeated by the disclosure, all of which
+sets, token expiry, and revocation, none of which is defeated by the disclosure, all of which
 are weakened by a long-lived token nobody rotates.
 
 **8c. The CLI hand-off trusts a consent screen a local process can also ask for.** The wrap's
 AAD binds the PKCE code challenge and the recipient public key, so a sealed User Key cannot be
-replayed into another login or re-labelled as addressed to a different key. It does not — and
-cannot — bind *which process* generated that key: both values exist before anybody has
+replayed into another login or re-labelled as addressed to a different key. It does not (and
+cannot) bind *which process* generated that key: both values exist before anybody has
 authenticated, and nothing about a locally-generated X25519 key identifies its owner. So an
 unprivileged process running as the same user can begin its own authorization flow, put its own
 hand-off key in the URL, and open a browser at it. Somebody who has just typed `xecret login`
@@ -391,7 +391,7 @@ The mitigation is a comparison rather than a proof: the CLI prints its own hand-
 before opening the browser, and the consent screen renders the fingerprint of the key it is
 about to seal to, in the same `XXXX-XXXX` form used for member keys. They match exactly when the
 page is talking to the process the person started. It is a human check, and it is the same class
-of defence as SSH's host-key prompt — which people do click through. **Residual risk: an
+of defence as SSH's host-key prompt, which people do click through. **Residual risk: an
 attacker with local code execution as the user, plus a person who approves without comparing,
 obtains the User Key.** An attacker with local code execution as the user can also read the
 keyring the CLI stores that key in, so this does not widen the boundary so much as offer a
@@ -399,8 +399,8 @@ second door into it; it is recorded because the flow's own documentation implied
 does not exist.
 
 **8d. The sealed hand-off blob persists in browser history.** It rides the loopback redirect as
-a query parameter — it must, because the CLI's callback is an HTTP listener and a fragment is
-never transmitted — so a copy lands in history and in whatever syncs it. It is ciphertext to an
+a query parameter (it must, because the CLI's callback is an HTTP listener and a fragment is
+never transmitted), so a copy lands in history and in whatever syncs it. It is ciphertext to an
 ephemeral key that is wiped when the login ends and is never written to disk, so what persists
 is unopenable by anybody who did not already have memory access to a process that has since
 exited. It is recorded because "the User Key never touches disk" is a claim people make about
@@ -411,7 +411,7 @@ to be destroyed by the response that served them, which bounded a leaked fragmen
 to the acceptance itself. It also made the two-channel flow unusable for its primary population:
 somebody arriving on an invitation link has no vault, cannot re-seal anything until they set one
 up, and found the grants deleted by the time they had. Consumption now happens where the
-re-sealed grant is stored — one environment at a time, in the same transaction — and unclaimed
+re-sealed grant is stored (one environment at a time, in the same transaction), and unclaimed
 grants are re-served to the account that accepted the invitation so the code can be entered
 later. **Residual risk: between acceptance and the claim, a grant openable by whoever holds the
 fragment remains in the database.** Bounded by the invitee claiming, by any rotation of the
@@ -421,7 +421,7 @@ exchange for a feature that did not work.
 
 **8f. An offline cache defers a rotation's revocation by exactly its age.** A rotation only
 takes access away from a principal that reaches this API. `xecret run --offline` reads a bundle
-the CLI stored on an earlier online run, under a grant a rotation may since have replaced — so
+the CLI stored on an earlier online run, under a grant a rotation may since have replaced, so
 for as long as that file is served, the revocation has not happened on that machine. It is not
 avoidable while offline operation exists at all, so it is bounded: seven days by default,
 overridable with `--max-cache-age` or `XECRET_CACHE_MAX_AGE`, and the override prints a warning
@@ -438,7 +438,7 @@ above assumes the client is running the code we published. A server willing to s
 poisoned bundle to one targeted user defeats all of it, and no amount of client-side crypto
 changes that. What we can do, and will:
 
-- A strict CSP, kept as tight as the stack permits — and read
+- A strict CSP, kept as tight as the stack permits. Read
   [`csp.ts`](../../apps/web/src/lib/csp.ts) and the threat model's T1 section for an honest
   account of what it does *not* enforce, because `'unsafe-inline'` is in `script-src` and ADR
   0008 explains why it cannot be removed.
@@ -451,11 +451,11 @@ changes that. What we can do, and will:
 
 This belongs in `SECURITY.md` in these terms, not softened.
 
-### Sequencing — and the one rule that matters
+### Sequencing, and the one rule that matters
 
 Phases 0–4 ship zero-knowledge for **new environments only**. Every existing environment stays
-on the server envelope, untouched, and both paths run side by side on purpose. Phase 5 —
-migrating existing data — **does not begin until the new path has run in production for a
+on the server envelope, untouched, and both paths run side by side on purpose. Phase 5
+(migrating existing data) **does not begin until the new path has run in production for a
 meaningful soak period** with no crypto-path incidents.
 
 Migration is the step that reads every historical secret, re-encrypts it, and deletes the
@@ -468,14 +468,14 @@ customer secrets, and saying otherwise would be the one mistake this ADR cannot 
 
 ### Revisit when
 
-- The phone Argon2 numbers arrive (Phase 2) — the library decision and possibly the CSP
+- The phone Argon2 numbers arrive (Phase 2): the library decision and possibly the CSP
   change with them.
 - A signer trust root exists, at which point grant-signature verification turns on
   (trade-off 3).
 - Rollback protection is wanted badly enough to build the monotonic counter (trade-off 5).
 - Customers ask for encrypted secret names (trade-off 1).
 
-## Amendment — 2026-11-23: Phase 5 delivered
+## Amendment, 2026-11-23: Phase 5 delivered
 
 Existing environments are migrated **in place, by a member's browser**, rather than by a
 server-side job or by moving values into a new environment. A job could not do it honestly:
@@ -485,7 +485,7 @@ member's Ed25519 signature (`env_key_grants.signature` is NOT NULL). So the dash
 `environment.update` (and `secret.read`, `secret.update`, `secret.delete`) and a vault:
 
 - `GET …/encryption-upgrade` says whether the caller can upgrade and, to one who may, what it
-  will do — counts, the deleted secrets it erases, the keyless CI tokens it revokes, how many
+  will do: counts, the deleted secrets it erases, the keyless CI tokens it revokes, how many
   others need the key; it refuses nobody and records nothing. `GET …/encryption-upgrade/material` hands over every version
   of every live secret and every note, decrypted: the server half's last read of that
   environment, audited as `secret.read` with reason `encryption-upgrade`.
@@ -493,23 +493,23 @@ member's Ed25519 signature (`env_key_grants.signature` is NOT NULL). So the dash
   creation does, and re-encrypts every value for **the secret id and version number it
   already has** with the ordinary write path's functions. Before anything is sent it opens
   every value and note again with the read path's functions and compares them byte for byte,
-  and opens its own grant to the exact key bytes — the commit deletes the only key that could
+  and opens its own grant to the exact key bytes. The commit deletes the only key that could
   recover from a ciphertext nothing opens.
-- `POST …/encryption-upgrade` commits it in one transaction — the organisation row and the
+- `POST …/encryption-upgrade` commits it in one transaction (the organisation row and the
   upgrader's vault row `FOR SHARE`, then the environment row, its `secrets` rows and its
   `env_keys` rows `FOR UPDATE`; every server-mode writer takes the environment row first too,
-  so the two cannot deadlock — after checking the submitted set is exactly the stored one
+  so the two cannot deadlock) after checking the submitted set is exactly the stored one
   (every live secret by id and revision, every version by id and number, every note present
   exactly where one is stored, every soft-deleted secret, every live keyless token) and that
   the grant is sealed to the upgrader's current vault key; any difference is a 409 and
   nothing is written. Versions are rewritten in place, set-based (the one `UPDATE`
   `secret_versions` has ever had), notes move to `enc_note`, soft-deleted secrets are
   erased (they cannot be re-encrypted and their versions pin `env_keys`), keyless tokens are
-  revoked, the mode flips, and the `env_keys` rows are **deleted** — `ON DELETE RESTRICT`
+  revoked, the mode flips, and the `env_keys` rows are **deleted**: `ON DELETE RESTRICT`
   makes that delete the proof that no row still needs them. Key shares are queued for every
   other entitled member; after a confirmed upgrade the upgrading browser fulfils them straight
   away for everyone with a vault whose pinned public key has not changed.
-- An environment with nothing to decide — no secret, no deleted secret, no keyless token — and
+- An environment with nothing to decide (no secret, no deleted secret, no keyless token) and
   **nobody else entitled to read it** is upgraded without a dialog the first time a member who
   may upgrade it opens it. Anywhere a teammate may read it, the dialog asks, so nobody is left
   holding names they cannot read because of an act they did not see.
@@ -520,7 +520,7 @@ member's Ed25519 signature (`env_key_grants.signature` is NOT NULL). So the dash
 
 Values whose bytes NFC normalisation would change are refused rather than upgraded: the
 envelope stored text as given and every e2ee value is normalised, so re-encrypting one would
-quietly change a credential. Personal overrides need nothing — they were e2ee-only and were
+quietly change a credential. Personal overrides need nothing: they were e2ee-only and were
 never under a server key.
 
 What is left of the gate in *Sequencing*: the marketing claim follows the last `server`-mode

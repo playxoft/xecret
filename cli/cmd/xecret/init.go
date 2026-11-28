@@ -42,7 +42,7 @@ func cmdInit(args []string) error {
 		// `init` browses projects, which a pinned CI credential cannot do —
 		// and a CI job has no business writing config files anyway: the
 		// token's own pin already answers what .xecret.yaml would.
-		return errors.New("XECRET_TOKEN is set — 'xecret init' needs a personal login; in CI the token's own scope is used automatically")
+		return errors.New("XECRET_TOKEN is set, but 'xecret init' needs a personal login; in CI the token's own scope is used automatically")
 	}
 	client, credentials, err := a.client()
 	if err != nil {
@@ -55,7 +55,7 @@ func cmdInit(args []string) error {
 	}
 	target := filepath.Join(cwd, config.Filename)
 	if _, statErr := os.Stat(target); statErr == nil && !*force {
-		return errors.New(config.Filename + " already exists here — pass --force to replace it")
+		return errors.New(config.Filename + " already exists here. Pass --force to replace it")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -78,13 +78,13 @@ func cmdInit(args []string) error {
 		return err
 	}
 	if len(projects) == 0 {
-		return errors.New("this organisation has no projects yet — create one in the dashboard first")
+		return errors.New("this organisation has no projects yet. Create one in the dashboard first")
 	}
 
 	projectSlug := strings.TrimSpace(*projectFlag)
 	if projectSlug == "" {
 		if !interactive {
-			return errors.New("no terminal to prompt on — pass --project and --environment")
+			return errors.New("no terminal to prompt on. Pass --project and --environment")
 		}
 		names := make([]string, len(projects))
 		slugs := make([]string, len(projects))
@@ -105,13 +105,13 @@ func cmdInit(args []string) error {
 		return err
 	}
 	if len(environments) == 0 {
-		return errors.New("that project has no environments — create one in the dashboard first")
+		return errors.New("that project has no environments. Create one in the dashboard first")
 	}
 
 	envSlug := strings.TrimSpace(*envFlag)
 	if envSlug == "" {
 		if !interactive {
-			return errors.New("no terminal to prompt on — pass --project and --environment")
+			return errors.New("no terminal to prompt on. Pass --project and --environment")
 		}
 		names := make([]string, len(environments))
 		slugs := make([]string, len(environments))
@@ -128,7 +128,7 @@ func cmdInit(args []string) error {
 			return err
 		}
 	} else if !containsEnvironment(environments, envSlug) {
-		return fmt.Errorf("no environment with slug %q — run 'xecret environments --project %s'", envSlug, projectSlug)
+		return fmt.Errorf("no environment with slug %q. Run 'xecret environments --project %s'", envSlug, projectSlug)
 	}
 
 	if err := config.Write(target, config.Config{

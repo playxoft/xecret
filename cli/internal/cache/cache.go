@@ -165,7 +165,7 @@ func key(store keyring.Store, createIfMissing bool) ([]byte, error) {
 	if err == nil {
 		decoded, decodeErr := base64.RawStdEncoding.DecodeString(stored)
 		if decodeErr != nil || len(decoded) != 32 {
-			return nil, errors.New("stored cache key is corrupt — run 'xecret cache clear'")
+			return nil, errors.New("stored cache key is corrupt. Run 'xecret cache clear'")
 		}
 		return decoded, nil
 	}
@@ -319,19 +319,19 @@ func readOne(store keyring.Store, scope Scope) (*Entry, error) {
 		return nil, err
 	}
 	if len(sealed) < gcm.NonceSize() {
-		return nil, errors.New("cache file is corrupt — run 'xecret cache clear'")
+		return nil, errors.New("cache file is corrupt. Run 'xecret cache clear'")
 	}
 
 	plaintext, err := gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], []byte(aad(scope)))
 	if err != nil {
 		// Tampered, or renamed across scopes. Either way it is not the file
 		// it claims to be, and it does not decrypt.
-		return nil, errors.New("cache file failed verification — run 'xecret cache clear'")
+		return nil, errors.New("cache file failed verification. Run 'xecret cache clear'")
 	}
 
 	var entry Entry
 	if err := json.Unmarshal(plaintext, &entry); err != nil {
-		return nil, errors.New("cache file is corrupt — run 'xecret cache clear'")
+		return nil, errors.New("cache file is corrupt. Run 'xecret cache clear'")
 	}
 	return &entry, nil
 }

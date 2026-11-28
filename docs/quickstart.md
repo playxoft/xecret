@@ -1,21 +1,21 @@
 # Quickstart
 
 From nothing to `xecret run` in about five minutes. Everything here also works
-against a self-hosted deployment — set `XECRET_API_URL` and the steps are
+against a self-hosted deployment: set `XECRET_API_URL` and the steps are
 identical.
 
 ## 1. Create an account
 
 Sign up at the dashboard with Google or email. Your personal organisation is
 created on first sign-in. Then set up your vault and create your first project:
-it starts with three environments — development, staging, production — and the
+it starts with three environments (development, staging, production) and the
 key for each is generated in your browser and sealed to you, so the server never
 sees it.
 
 ## 2. Import the .env you already have
 
 Open your project, pick an environment, and drag your `.env` file into the
-import dialog. Parsing happens **in your browser** — the dry-run preview shows
+import dialog. Parsing happens **in your browser**. The dry-run preview shows
 exactly what will be created, renamed or skipped before a single value is
 sent. Multiline PEM blocks, `export` prefixes, CRLF files and trailing
 comments all parse the way you would hope.
@@ -56,7 +56,7 @@ xecret run -- npm run dev
 Secrets are decrypted server-side, injected into the child process's
 environment, and never touch disk, argv, or your shell history. Every read
 lands in the audit log. If the API is unreachable, an encrypted local cache
-answers instead — loudly, with its age printed — so an outage on our side
+answers instead (loudly, with its age printed), so an outage on our side
 does not stop your `npm run dev`.
 
 ## 6. Put it in CI
@@ -73,12 +73,12 @@ exactly once. Then:
     XECRET_TOKEN: ${{ secrets.XECRET_TOKEN }}
 ```
 
-No login, no config file — the token's own scope answers everything. Recipes
+No login, no config file: the token's own scope answers everything. Recipes
 for GitLab, CircleCI and Docker are in [`examples/ci/`](../examples/ci/).
 
 ## Where next
 
-- Working with a team? Invite people from *Members* — roles, per-environment
+- Working with a team? Invite people from *Members*. Roles, per-environment
   grants, and the effective-access preview are covered in the dashboard.
 - The full command surface: [CLI reference](cli/reference.md).
 - What xecret can and cannot protect you from, stated plainly:

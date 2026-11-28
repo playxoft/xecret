@@ -7,8 +7,8 @@ a problem early and awkwardly than late and publicly.
 
 Two private channels, either is fine:
 
-- **GitHub:** [open a private security advisory](https://github.com/playxoft/xecret/security/advisories/new) —
-  the report stays between you and the maintainers, and the eventual advisory
+- **GitHub:** [open a private security advisory](https://github.com/playxoft/xecret/security/advisories/new).
+  The report stays between you and the maintainers, and the eventual advisory
   is published from the same thread.
 - **Email:** security@playxoft.com
 
@@ -40,8 +40,8 @@ design.
 
 ### The most important thing to understand
 
-**Secret values and notes are end-to-end encrypted. xecret — the service, and
-Playxoft — cannot decrypt them.**
+**Secret values and notes are end-to-end encrypted. xecret (the service, and
+Playxoft) cannot decrypt them.**
 
 They are encrypted on the user's device, by the web dashboard (Web Crypto) or
 the Go CLI, with AES-256-GCM under a per-environment data key the client
@@ -65,14 +65,14 @@ and no support reset.
 
 | Attack | Protection |
 |---|---|
-| Database breach | A dump yields ciphertext, wrapped keys and public keys — nothing that opens a value. It does allow offline guessing of each user's passphrase, at Argon2id's cost per guess. Session and API tokens are stored as hashes. |
+| Database breach | A dump yields ciphertext, wrapped keys and public keys, none of which opens a value. It does allow offline guessing of each user's passphrase, at Argon2id's cost per guess. Session and API tokens are stored as hashes. |
 | Root key compromise | The server's root key protects only its own operational secrets (webhook signing secrets) and environments created before end-to-end encryption shipped. It opens no end-to-end encrypted value. |
 | An xecret operator, or compelled disclosure | There is no key on our side to use or hand over. |
 | Another tenant's user | Every request is authorized against current database state through one function. Cross-tenant probes get 404, not 403, so existence is not confirmed. |
 | Stolen CLI credential | Credentials live in the OS keychain (or a 0600 file where there is none), are revocable, expire, and every use is logged with IP and device. |
 | Compromised CI | Service tokens are scoped to one project and one environment, read-only by default, and carry no user identity. |
 | Ciphertext relocation | Every ciphertext is bound to its organisation, environment, secret and version. Moving a row makes decryption fail rather than succeed. |
-| Audit tampering | The audit table is append-only enforced by database grants — the application role has no UPDATE or DELETE on it. |
+| Audit tampering | The audit table is append-only enforced by database grants: the application role has no UPDATE or DELETE on it. |
 
 ### What we do not protect against
 
@@ -80,8 +80,8 @@ The limits of the guarantee, stated as plainly as the guarantee itself:
 
 - **The web dashboard is JavaScript we serve.** A server willing to deliver a
   malicious bundle to a targeted user could capture what that user decrypts in
-  the browser. A strict CSP narrows this; it cannot close it. The CLI — Go,
-  MIT-licensed, releases signed with cosign, buildable from source — is the
+  the browser. A strict CSP narrows this; it cannot close it. The CLI (Go,
+  MIT-licensed, releases signed with cosign, buildable from source) is the
   verifiable client.
 - **Public keys are trusted on first use.** A server that substituted a
   member's public key could receive keys sealed to that member afterwards.
@@ -90,7 +90,7 @@ The limits of the guarantee, stated as plainly as the guarantee itself:
 - **Grant signatures are created but not yet verified.** Until they are, a
   malicious server could insert a grant of its own and read values written
   afterwards.
-- **Secret names and metadata are plaintext** — names, project and environment
+- **Secret names and metadata are plaintext**: names, project and environment
   names, members, the audit log, IP addresses. Deliberately, so listing and
   search stay server-side.
 - **No rollback protection yet.** A server could serve stale values or stale
@@ -131,5 +131,5 @@ Never invent cryptography, and never implement a primitive by hand. xecret uses
 Web Crypto AES-256-GCM, X25519 and Ed25519 from `@noble/curves`, Argon2id and
 HKDF-SHA256, under a versioned format specified byte for byte in
 [`docs/security/e2ee-crypto-spec.md`](docs/security/e2ee-crypto-spec.md). If you
-believe you have found a cryptographic weakness, that is a high-severity report
-— please say so in the subject line.
+believe you have found a cryptographic weakness, that is a high-severity report.
+Please say so in the subject line.

@@ -110,7 +110,7 @@ func (o *archiveOpener) run(args []string) error {
 		return errors.New("name one archive file: xecret vault open-archive <file>")
 	}
 	if !knownFormat(*format) {
-		return fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", *format)
+		return fmt.Errorf("unknown format %q. Use env, json, yaml, shell or docker", *format)
 	}
 
 	data, err := readArchiveBytes(positional[0])
@@ -278,7 +278,7 @@ func (o *archiveOpener) readSecret(prompt string, fromStdin bool) (string, error
 		return value, nil
 	}
 	if !o.stdinIsTTY() {
-		return "", errors.New("there is no terminal to ask on — pipe the passphrase in with --passphrase-stdin")
+		return "", errors.New("there is no terminal to ask on. Pipe the passphrase in with --passphrase-stdin")
 	}
 	fmt.Fprint(o.stderr, prompt)
 	raw, err := o.readPassword()
@@ -304,13 +304,13 @@ func describeOpenFailure(err error, recoveryCode bool) error {
 	switch {
 	case errors.Is(err, e2ee.ErrDecrypt):
 		if recoveryCode {
-			return errors.New("that recovery code does not open this archive — it may be a code from another vault, or one already used")
+			return errors.New("that recovery code does not open this archive. It may be a code from another vault, or one already used")
 		}
 		return errors.New("that passphrase does not open this archive")
 	case errors.Is(err, e2ee.ErrRecoveryChecksum):
-		return errors.New("that recovery code has a typo — check each character against your Emergency Kit")
+		return errors.New("that recovery code has a typo. Check each character against your Emergency Kit")
 	case errors.Is(err, e2ee.ErrRecoveryFormat):
-		return errors.New("that is not a recovery code — they look like XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-X")
+		return errors.New("that is not a recovery code. They look like XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-X")
 	}
 	return err
 }
@@ -463,7 +463,7 @@ func (o *archiveOpener) writeFiles(opened *vaultarchive.Opened, dir, format stri
 		written[path] = true
 
 		if _, err := os.Stat(path); err == nil && !force {
-			return fmt.Errorf("%s already exists — pass --force to overwrite it", printable(path))
+			return fmt.Errorf("%s already exists. Pass --force to overwrite it", printable(path))
 		}
 		if err := os.MkdirAll(folder, 0o700); err != nil {
 			return fmt.Errorf("could not create %s", printable(folder))

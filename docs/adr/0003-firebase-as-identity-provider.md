@@ -1,4 +1,4 @@
-# 0003 — Firebase Auth as identity provider only; xecret issues its own sessions
+# 0003. Firebase Auth as identity provider only; xecret issues its own sessions
 
 **Status:** Superseded by [0010](0010-workos-as-identity-provider.md)
 **Date:** 2026-08-10
@@ -6,7 +6,7 @@
 > **This decision has been replaced.** [ADR 0010](0010-workos-as-identity-provider.md) moves
 > identity from Firebase to WorkOS AuthKit, for the second reason this ADR named under
 > *Revisit when*: enterprise SAML/OIDC. The half of this decision that mattered most survives
-> unchanged — the provider is consulted once, at sign-in, and every session is xecret's own.
+> unchanged: the provider is consulted once, at sign-in, and every session is xecret's own.
 > The text below is unchanged.
 
 ## Context
@@ -20,7 +20,7 @@ Two complications:
 1. **The Firebase Admin SDK cannot run on Cloudflare Workers.** It depends on Node-native
    modules and gRPC. Anything that needs it is off the table.
 2. **Firebase ID tokens cannot be revoked.** They are self-contained JWTs valid for roughly
-   one hour. If one leaks, there is no server-side kill switch — it stays valid until it
+   one hour. If one leaks, there is no server-side kill switch: it stays valid until it
    expires. For a product whose entire job is protecting credentials, that is unacceptable.
 
 ## Options considered
@@ -34,12 +34,12 @@ Two complications:
 ### B. Firebase session cookies (via `createSessionCookie`)
 - ✅ Longer-lived, revocable through Firebase.
 - ❌ Minting them **requires the Admin SDK** or a service-account-signed call to the Identity
-  Toolkit REST API — extra complexity in a Worker for no real gain.
+  Toolkit REST API: extra complexity in a Worker for no real gain.
 - ❌ Still leaves session state owned by Firebase rather than by us.
 
 ### C. Firebase for authentication only; xecret mints its own sessions
 - ✅ Verify the ID token exactly once, at login.
-- ✅ Sessions live in our database — instant revocation, visible device list, one session
+- ✅ Sessions live in our database: instant revocation, visible device list, one session
   model shared by dashboard, CLI, and CI.
 - ✅ No Admin SDK anywhere.
 - ✅ Firebase becomes swappable.
@@ -60,7 +60,7 @@ Browser ──every later request uses OUR session, never a Firebase token
 ```
 
 The session cookie carries a 256-bit opaque random token. **Only its SHA-256 hash is
-stored** — a database leak does not yield usable sessions.
+stored**, so a database leak does not yield usable sessions.
 
 Verification uses [`firebase-auth-cloudflare-workers`](https://github.com/Code-Hex/firebase-auth-cloudflare-workers):
 zero dependencies, Web Standard APIs only, purpose-built for this runtime.
@@ -88,12 +88,12 @@ interface IdentityProvider {
   open-source product and is stated plainly in `docs/self-hosting.md` rather than hidden.
   The `IdentityProvider` interface means a contributor can add a Postgres-native provider
   without touching authorization, crypto, or the API.
-- Google is in our availability path for login (not for secret reads — an existing session
+- Google is in our availability path for login (not for secret reads: an existing session
   keeps working during a Firebase outage).
 - We must get cookie security right ourselves: `__Host-` prefix, `HttpOnly`, `Secure`,
   `SameSite=Lax`, plus CSRF tokens on cookie-authenticated mutations.
 
 ### Revisit when
 Self-hosting friction shows up repeatedly in issues, or an enterprise customer requires
-SAML/OIDC — at which point a second `IdentityProvider` implementation is the answer, not a
+SAML/OIDC, at which point a second `IdentityProvider` implementation is the answer, not a
 rewrite.

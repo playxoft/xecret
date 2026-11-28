@@ -26,7 +26,7 @@ import (
 // one is the bug this line exists to prevent.
 func Exec(ctx context.Context, argv []string, extra map[string]string) (int, error) {
 	if len(argv) == 0 {
-		return 2, errors.New("no command given — usage: xecret run -- <command> [args]")
+		return 2, errors.New("no command given. Usage: xecret run -- <command> [args]")
 	}
 
 	path, err := exec.LookPath(argv[0])

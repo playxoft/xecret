@@ -73,7 +73,7 @@ func cmdProjects(args []string) error {
 		_, _ = io.WriteString(os.Stdout, projectsUsage)
 		return nil
 	default:
-		return fmt.Errorf("unknown projects subcommand %q — run 'xecret projects help'", args[0])
+		return fmt.Errorf("unknown projects subcommand %q. Run 'xecret projects help'", args[0])
 	}
 }
 
@@ -87,7 +87,7 @@ func cmdEnvironments(args []string) error {
 		_, _ = io.WriteString(os.Stdout, environmentsUsage)
 		return nil
 	default:
-		return fmt.Errorf("unknown environments subcommand %q — run 'xecret environments help'", args[0])
+		return fmt.Errorf("unknown environments subcommand %q. Run 'xecret environments help'", args[0])
 	}
 }
 
@@ -101,7 +101,7 @@ func cmdOrgs(args []string) error {
 		_, _ = io.WriteString(os.Stdout, orgsUsage)
 		return nil
 	default:
-		return fmt.Errorf("unknown orgs subcommand %q — run 'xecret orgs help'", args[0])
+		return fmt.Errorf("unknown orgs subcommand %q. Run 'xecret orgs help'", args[0])
 	}
 }
 
@@ -163,7 +163,7 @@ func projectsList(args []string) error {
 	}
 
 	if len(projects) == 0 {
-		a.printer.Infof("No projects yet. Create one in the dashboard — a project's environment keys are generated in your browser, which this CLI cannot do.")
+		a.printer.Infof("No projects yet. Create one in the dashboard: a project's environment keys are generated in your browser, which this CLI cannot do.")
 		return nil
 	}
 
@@ -204,7 +204,7 @@ func projectsDelete(args []string) error {
 	if err := client.DeleteProject(ctx, credentials.OrgRef(), slug, slug); err != nil {
 		return err
 	}
-	a.printer.Successf("Deleted project %s. The delete is soft — an operator can still recover it.", slug)
+	a.printer.Successf("Deleted project %s. The delete is soft: an operator can still recover it.", slug)
 	return nil
 }
 
@@ -287,7 +287,7 @@ func environmentsDelete(args []string) error {
 	if err := client.DeleteEnvironment(ctx, resolved.Org, resolved.Project, slug, slug); err != nil {
 		return err
 	}
-	a.printer.Successf("Deleted environment %s. The delete is soft — the key still unwraps what was in it.", slug)
+	a.printer.Successf("Deleted environment %s. The delete is soft: the key still unwraps what was in it.", slug)
 	return nil
 }
 
@@ -300,7 +300,7 @@ func orgsList(args []string) error {
 
 	a := newApp(*jsonMode)
 	if a.usingServiceToken() {
-		return errors.New("a service token is pinned to one organisation — 'xecret whoami' names it")
+		return errors.New("a service token is pinned to one organisation, and 'xecret whoami' names it")
 	}
 
 	client, credentials, err := a.client()
@@ -527,7 +527,7 @@ func confirmDestructive(a *app, yes bool, expected, question string) error {
 		return nil
 	}
 	if !output.StdinIsTerminal() {
-		return errors.New("refusing to delete without confirmation — pass --yes in scripts")
+		return errors.New("refusing to delete without confirmation. Pass --yes in scripts")
 	}
 	fmt.Fprintf(a.printer.Err, "%s Type %q to confirm: ", question, expected)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')

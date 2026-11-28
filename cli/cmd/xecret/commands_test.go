@@ -684,7 +684,7 @@ func TestAuditRowFormatting(t *testing.T) {
 	if got := actorLabel(anonymous); got != "serviceToken" {
 		t.Errorf("actorLabel without a label = %q", got)
 	}
-	if got := auditSubject(anonymous); got != "—" {
+	if got := auditSubject(anonymous); got != "none" {
 		t.Errorf("auditSubject without metadata = %q", got)
 	}
 }

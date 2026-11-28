@@ -40,10 +40,10 @@ const secretsUsage = `Usage:
   xecret secrets delete   <NAME> [--yes]
 
 All subcommands accept --project and --environment to override .xecret.yaml.
-'xecret secrets' with no argument prints this; with a flag first — 'xecret
-secrets --json' — it lists.
+'xecret secrets' with no argument prints this; with a flag first ('xecret
+secrets --json') it lists.
 
-The value for 'set' is never taken from the command line — an argument would
+The value for 'set' is never taken from the command line: an argument would
 land in shell history and 'ps' output. Pipe it in, read it from a file, have
 one generated, or type it at the hidden prompt:
 
@@ -53,8 +53,8 @@ one generated, or type it at the hidden prompt:
 
 'get' prints metadata; only 'get --plain' prints the value (audited server-side).
 
-'set' appends a version; 'annotate' changes what is *said* about a secret — its
-name, note or declared type — and appends none. Declaring PORT an integer is
+'set' appends a version; 'annotate' changes what is *said* about a secret (its
+name, note or declared type) and appends none. Declaring PORT an integer is
 not a rotation, and the version number has to keep meaning "when did this
 credential last actually change?".
 
@@ -94,7 +94,7 @@ func cmdSecrets(args []string) error {
 		_, _ = io.WriteString(os.Stdout, secretsUsage)
 		return nil
 	default:
-		return fmt.Errorf("unknown secrets subcommand %q — run 'xecret secrets help'", args[0])
+		return fmt.Errorf("unknown secrets subcommand %q. Run 'xecret secrets help'", args[0])
 	}
 }
 
@@ -176,7 +176,7 @@ func secretsGet(args []string) error {
 		return err
 	}
 	if *version < 0 {
-		return errors.New("a version is a positive number — 'xecret secrets versions NAME' lists them")
+		return errors.New("a version is a positive number ('xecret secrets versions NAME' lists them)")
 	}
 	if *version > 0 && !*plain {
 		// The metadata of every version is already in the history listing, so
@@ -223,7 +223,7 @@ func secretsGet(args []string) error {
 			// likely to be got wrong: an old version is usually still live at
 			// the provider that issued it, and pasting one back into a config
 			// is a rollback nobody recorded.
-			a.printer.Warnf("v%d is not the current version — it may still be live at whoever issued it.", revealed.Version)
+			a.printer.Warnf("v%d is not the current version. It may still be live at whoever issued it.", revealed.Version)
 		}
 
 		value := ""
@@ -305,7 +305,7 @@ func secretsGet(args []string) error {
 		if secret.Note != nil && *secret.Note != "" {
 			fmt.Fprintf(a.printer.Out, "Note      %s\n", *secret.Note)
 		}
-		a.printer.Infof("The value stays masked — 'xecret secrets get %s --plain' reveals it.", name)
+		a.printer.Infof("The value stays masked. 'xecret secrets get %s --plain' reveals it.", name)
 		return nil
 	}
 	return fmt.Errorf("no secret named %q in %s/%s", name, resolved.Project, resolved.Environment)
@@ -416,7 +416,7 @@ func secretsSet(args []string) error {
 
 	switch result.Status {
 	case "unchanged":
-		a.printer.Successf("%s is already at that value (v%d) — nothing written.", name, result.Version)
+		a.printer.Successf("%s is already at that value (v%d), so nothing was written.", name, result.Version)
 	case "created":
 		a.printer.Successf("Created %s (v%d) in %s/%s.", name, result.Version, resolved.Project, resolved.Environment)
 	default:
@@ -427,14 +427,14 @@ func secretsSet(args []string) error {
 		// Nobody has seen this value, including the person who created it. Say
 		// where it can be read from, once, rather than printing it here and
 		// putting it in the terminal's scrollback for the sake of convenience.
-		a.printer.Infof("The generated value was never printed — 'xecret secrets get %s --plain' reveals it.", name)
+		a.printer.Infof("The generated value was never printed. 'xecret secrets get %s --plain' reveals it.", name)
 	}
 
 	if noteErr != nil {
 		// The value landed; only the note did not. Which is which is said above,
 		// and the exit code has to carry it too: `xecret secrets set … --note …
 		// && deploy` must not read a half-applied write as success.
-		return fmt.Errorf("%s is at v%d, but the note was not applied: %w — retry with 'xecret secrets annotate %s --note …'",
+		return fmt.Errorf("%s is at v%d, but the note was not applied: %w (retry with 'xecret secrets annotate %s --note …')",
 			name, result.Version, noteErr, name)
 	}
 	return nil
@@ -498,7 +498,7 @@ func readSecretValue(a *app, name string) (string, error) {
 		value := strings.TrimSuffix(string(data), "\n")
 		value = strings.TrimSuffix(value, "\r")
 		if value == "" {
-			return "", errors.New("stdin was empty — pipe the value in, or run interactively for a prompt")
+			return "", errors.New("stdin was empty. Pipe the value in, or run interactively for a prompt")
 		}
 		return value, nil
 	}
@@ -663,7 +663,7 @@ func secretsAnnotate(args []string) error {
 		update.Name = rename
 	}
 	if update.Note == nil && update.ValueType == nil && update.Name == nil {
-		return errors.New("nothing to change — pass --note, --type or --rename")
+		return errors.New("nothing to change. Pass --note, --type or --rename")
 	}
 
 	a := newApp(false)
@@ -690,10 +690,10 @@ func secretsAnnotate(args []string) error {
 	}
 
 	if update.Name != nil {
-		a.printer.Successf("Renamed %s to %s — the version history follows the secret.", name, updated.Name)
+		a.printer.Successf("Renamed %s to %s. The version history follows the secret.", name, updated.Name)
 		a.printer.Warnf("everything that reads %s by name stops finding it. Update your code and CI.", name)
 	} else {
-		a.printer.Successf("Updated %s — no new version; the value is untouched.", updated.Name)
+		a.printer.Successf("Updated %s: no new version; the value is untouched.", updated.Name)
 	}
 	return nil
 }
@@ -763,7 +763,7 @@ func versionActor(version api.SecretVersion) string {
 	case version.CreatedBy != nil:
 		return "user"
 	default:
-		return "—"
+		return "unknown"
 	}
 }
 
@@ -815,12 +815,12 @@ func secretsRestore(args []string) error {
 	}
 
 	if result.Status == "unchanged" {
-		a.printer.Successf("%s already held the value from v%d — nothing written.", name, result.RestoredFrom)
+		a.printer.Successf("%s already held the value from v%d, so nothing was written.", name, result.RestoredFrom)
 		return nil
 	}
 	a.printer.Successf("Restored %s from v%d as v%d in %s/%s.",
 		name, result.RestoredFrom, result.Version, resolved.Project, resolved.Environment)
-	a.printer.Infof("History was not rewritten — v%d is still there.", result.RestoredFrom)
+	a.printer.Infof("History was not rewritten: v%d is still there.", result.RestoredFrom)
 	return nil
 }
 
@@ -1000,7 +1000,7 @@ func writeClientSecret(
 func withCrossingHint(err error) error {
 	if apiErr, ok := api.AsError(err); ok && apiErr.Status == 409 &&
 		strings.HasPrefix(apiErr.Message, "link_crosses_protection:") {
-		return fmt.Errorf("%w — run the command again with --confirm-link to make the link anyway", err)
+		return fmt.Errorf("%w Run the command again with --confirm-link to make the link anyway", err)
 	}
 	return err
 }
@@ -1093,7 +1093,7 @@ func refuseByPolicy(rules *policy.SecretPolicy, isProduction bool, name, value, 
 	}
 
 	var message strings.Builder
-	fmt.Fprintf(&message, "%s was not written — this organisation's secret policy refuses the value:", name)
+	fmt.Fprintf(&message, "%s was not written, because this organisation's secret policy refuses the value:", name)
 	for _, violation := range violations {
 		fmt.Fprintf(&message, "\n  %s", violation.Message)
 	}

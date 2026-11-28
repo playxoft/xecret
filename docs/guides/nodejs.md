@@ -14,7 +14,7 @@ xecret run -- node server.js
 ```
 
 `xecret run` puts every secret into the child's environment before your first
-line executes — `process.env` simply has the values, with no loader, no import
+line executes: `process.env` simply has the values, with no loader, no import
 order problem, and no file on disk.
 
 ## Scripts and tooling
@@ -27,7 +27,7 @@ xecret run -- npx prisma migrate deploy
 xecret run -- node --env-file=/dev/null server.js   # belt and braces: no stray file
 ```
 
-package.json scripts stay portable — put `xecret run --` in front of the
+package.json scripts stay portable. Put `xecret run --` in front of the
 invocation, not inside the script, so contributors without xecret can still
 read what the script does:
 

@@ -6,4 +6,4 @@ The complete guide lives at [docs/guides/nodejs.md](../../docs/guides/nodejs.md)
 xecret run -- node server.js
 ```
 
-Delete `require('dotenv').config()` — `process.env` already has the values.
+Delete `require('dotenv').config()`: `process.env` already has the values.

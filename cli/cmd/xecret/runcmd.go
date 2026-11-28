@@ -38,7 +38,7 @@ func cmdRun(args []string) error {
 
 	child := childArgv(args, flags.Args())
 	if len(child) == 0 {
-		return errors.New("no command given — usage: xecret run -- <command> [args]")
+		return errors.New("no command given. Usage: xecret run -- <command> [args]")
 	}
 	if *offline && *noCache {
 		return errors.New("--offline and --no-cache contradict each other")
@@ -300,7 +300,7 @@ func (a *app) checkCacheAge(entry *cache.Entry, policy cachePolicy) error {
 				entry.Age(time.Now()), cache.DefaultMaxAge)
 			a.printer.Warnf(
 				"a key rotation revokes access going forward, and an old cached bundle carries the grant " +
-					"it was rotated away from — so every day of this is a day that revocation is deferred.")
+					"it was rotated away from, so every day of this is a day that revocation is deferred.")
 		}
 		return nil
 	}
@@ -308,7 +308,7 @@ func (a *app) checkCacheAge(entry *cache.Entry, policy cachePolicy) error {
 	return fmt.Errorf(
 		"%w: this copy is %s old and the bound is %s.\n"+
 			"  The bound exists because a key rotation only takes access away from somebody who reaches\n"+
-			"  the API — a cached bundle carries the grant the rotation replaced, and serving it defers\n"+
+			"  the API: a cached bundle carries the grant the rotation replaced, and serving it defers\n"+
 			"  the revocation for as long as the file lasts.\n"+
 			"  Reach the deployment once to refresh it, or raise the bound with --max-cache-age",
 		cache.ErrTooOld, entry.Age(time.Now()), policy.maxAge,
@@ -325,7 +325,7 @@ func openCachedBundle(
 ) (map[string]string, error) {
 	var bundle api.EnvironmentBundle
 	if err := json.Unmarshal(entry.Bundle, &bundle); err != nil {
-		return nil, errors.New("the offline copy is corrupt — run 'xecret cache clear'")
+		return nil, errors.New("the offline copy is corrupt. Run 'xecret cache clear'")
 	}
 
 	principal, err := a.offlinePrincipal(credentials, resolved)
@@ -449,7 +449,7 @@ func (a *app) applyPersonalOverrides(
 		}
 		return nil, fmt.Errorf(
 			"your personal override(s) for %s in %s/%s could not be opened, so nothing was run. "+
-				"They were made under a key this account no longer holds — a vault reset does this — and "+
+				"They were made under a key this account no longer holds (a vault reset does this), and "+
 				"running with the shared values in their place is what an override exists to prevent. "+
 				"Remove each one, then set it again if you still want it:%s",
 			strings.Join(unopenable, ", "), resolved.Project, resolved.Environment, remedy.String())
@@ -473,7 +473,7 @@ func (a *app) readCache(scopeKey cache.Scope, policy cachePolicy, cause error) (
 	if err != nil {
 		if errors.Is(err, cache.ErrMiss) {
 			return nil, fmt.Errorf(
-				"the API is unreachable (%v) and no offline copy exists yet — a successful 'xecret run' creates one",
+				"the API is unreachable (%v) and no offline copy exists yet. A successful 'xecret run' creates one",
 				cause,
 			)
 		}

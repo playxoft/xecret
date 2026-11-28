@@ -72,7 +72,7 @@ const VaultWrapsEntry = "vault-wraps"
 
 // ErrNoUserKey means this machine has never completed a hand-off.
 var ErrNoUserKey = errors.New(
-	"this login holds no vault key — run 'xecret login' again to hand one over",
+	"this login holds no vault key. Run 'xecret login' again to hand one over",
 )
 
 // ErrNoVaultWraps means the User Key is here but the wraps it opens are not, and
@@ -134,8 +134,8 @@ func ServicePrincipal(token string, self *api.TokenSelf) (*Principal, error) {
 	}
 	if parsed.PrivateKey == nil {
 		return nil, errors.New(
-			"this service token was minted before end-to-end encryption and holds no key — " +
-				"mint a replacement from the dashboard",
+			"this service token was minted before end-to-end encryption and holds no key. " +
+				"Mint a replacement from the dashboard",
 		)
 	}
 	if self.Token.ID == "" || self.Organization.ID == "" {
@@ -318,7 +318,7 @@ func readVaultWraps(store keyring.Store) (*vaultWraps, error) {
 	if err != nil {
 		if keyring.IsNotFound(err) {
 			return nil, fmt.Errorf(
-				"%w — run any command with the API reachable once, and this machine keeps it",
+				"%w. Run any command with the API reachable once, and this machine keeps it",
 				ErrNoVaultWraps,
 			)
 		}

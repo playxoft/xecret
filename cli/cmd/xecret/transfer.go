@@ -44,7 +44,7 @@ func cmdImport(args []string) error {
 	switch *strategy {
 	case "skip", "overwrite", "rename":
 	default:
-		return fmt.Errorf("unknown strategy %q — use skip, overwrite or rename", *strategy)
+		return fmt.Errorf("unknown strategy %q. Use skip, overwrite or rename", *strategy)
 	}
 
 	info, err := os.Stat(filePath)
@@ -126,7 +126,7 @@ func cmdImport(args []string) error {
 	summary := fmt.Sprintf("%d created, %d overwritten, %d unchanged, %d skipped",
 		result.Counts["create"], result.Counts["overwrite"], result.Counts["unchanged"], result.Counts["skip"])
 	if result.DryRun {
-		a.printer.Infof("Dry run — nothing written. Plan: %s.", summary)
+		a.printer.Infof("Dry run: nothing written. Plan: %s.", summary)
 		a.printer.Infof("Re-run without --dry-run to apply.")
 	} else {
 		a.printer.Successf("Imported into %s/%s: %s.", resolved.Project, resolved.Environment, summary)
@@ -167,7 +167,7 @@ func importClientSide(
 	if input.format == "" {
 		format = importer.Detect(input.filename, input.content)
 	} else if !importer.KnownFormat(input.format) {
-		return fmt.Errorf("unknown format %q — use dotenv, json, yaml or shell", input.format)
+		return fmt.Errorf("unknown format %q. Use dotenv, json, yaml or shell", input.format)
 	}
 
 	parsed := importer.Parse(input.content, format)
@@ -216,7 +216,7 @@ func importClientSide(
 		}
 	}
 	if len(refusals) > 0 {
-		return fmt.Errorf("nothing was imported — this organisation's secret policy refuses %d value(s):\n%s",
+		return fmt.Errorf("nothing was imported, because this organisation's secret policy refuses %d value(s):\n%s",
 			len(refusals), strings.Join(refusals, "\n"))
 	}
 
@@ -299,7 +299,7 @@ func importClientSide(
 		result.Counts["create"], result.Counts["overwrite"], result.Counts["unchanged"],
 		localCounts[string(importer.StatusSkip)]+localCounts[string(importer.StatusInvalid)])
 	if result.DryRun {
-		a.printer.Infof("Dry run — nothing written. Plan: %s.", summary)
+		a.printer.Infof("Dry run: nothing written. Plan: %s.", summary)
 		a.printer.Infof("Re-run without --dry-run to apply.")
 	} else {
 		a.printer.Successf("Imported into %s/%s: %s.", resolved.Project, resolved.Environment, summary)
@@ -334,7 +334,7 @@ func cmdExport(args []string) error {
 	}
 
 	if !knownFormat(*format) {
-		return fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", *format)
+		return fmt.Errorf("unknown format %q. Use env, json, yaml, shell or docker", *format)
 	}
 
 	path := *outPath
@@ -345,7 +345,7 @@ func cmdExport(args []string) error {
 	// Checked before the request, so a refusal costs no decryption and writes
 	// no audit record for a read that was never going to land anywhere.
 	if _, err := os.Stat(path); err == nil && !*force {
-		return fmt.Errorf("%s already exists — pass --force to overwrite it", path)
+		return fmt.Errorf("%s already exists. Pass --force to overwrite it", path)
 	}
 
 	a := newApp(false)
@@ -474,7 +474,7 @@ func cmdPull(args []string) error {
 	}
 
 	if !knownFormat(*format) {
-		return fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", *format)
+		return fmt.Errorf("unknown format %q. Use env, json, yaml, shell or docker", *format)
 	}
 
 	a := newApp(false)
@@ -522,7 +522,7 @@ func cmdPull(args []string) error {
 		if err := writeSecretDocument(*outPath, document); err != nil {
 			return err
 		}
-		a.printer.Warnf("wrote plaintext secrets to %s (mode 0600) — they are now outside xecret's control. Delete the file when done.", *outPath)
+		a.printer.Warnf("wrote plaintext secrets to %s (mode 0600). They are now outside xecret's control. Delete the file when done.", *outPath)
 		return nil
 	}
 

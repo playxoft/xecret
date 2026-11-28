@@ -1,11 +1,11 @@
 # Contributor Licence Agreement
 
-**Version 1.0 — effective 19 August 2026.** A signature binds only the version
+**Version 1.0, effective 19 August 2026.** A signature binds only the version
 in force when it was given; if this document changes version, you will be asked
 again.
 
 The agreement below is the Harmony template used as published, with its blanks
-filled — it has not been reworded. It has not been read by a solicitor, and for
+filled. It has not been reworded. It has not been read by a solicitor, and for
 a document this standard that is a smaller gap than it would be for bespoke
 drafting, but it is a gap: if you are contributing on behalf of an employer, or
 anything here matters to you, take your own advice before signing.
@@ -14,7 +14,7 @@ anything here matters to you, take your own advice before signing.
 
 ## What this is, in plain words
 
-This section explains the agreement. It is **not** part of it — the agreement
+This section explains the agreement. It is **not** part of it: the agreement
 begins at "Harmony Individual Contributor License Agreement" below, and that
 text is what you are agreeing to.
 
@@ -24,9 +24,9 @@ proprietary ones, and section 2.3 is where that is written down.
 
 It also binds us in return. Under 2.3 we must _always_ keep your contribution
 available under whichever licence the project was using on the day you sent it.
-So if xecret ever moves to a source-available licence like BSL or FSL — which
+So if xecret ever moves to a source-available licence like BSL or FSL (which
 [ADR 0007](docs/adr/0007-licensing.md) says may happen, and which is not open
-source — your work stays available under the open licence it arrived under.
+source), your work stays available under the open licence it arrived under.
 Nobody can take that back, including us.
 
 You keep your copyright (2.1(a)) and everything not granted stays yours (2.6).
@@ -37,7 +37,7 @@ changed the meaning in several clauses and reversed one, in a way that would
 have harmed contributors. This is the [Harmony][harmony] agreement instead, used
 as published, with only its intended blanks filled in. It is the standard
 instrument for a company that wants the option to relicense, and it is not
-reworded — the trade for readability was not worth what it cost.
+reworded: the trade for readability was not worth what it cost.
 
 **One deliberate change.** Harmony ends with a paper signature block. We collect
 agreement through a bot on your pull request instead; see [Signing](#signing).
@@ -228,7 +228,7 @@ and you reply in the thread with:
 I have read the CLA and I agree to its terms.
 ```
 
-Type it on its own, with nothing else in the comment — the check is an exact
+Type it on its own, with nothing else in the comment. The check is an exact
 match, so a "thanks!" in front of it fails with no explanation.
 
 Four things worth knowing before you do:
@@ -241,7 +241,7 @@ Four things worth knowing before you do:
   account id, the comment id, the pull request number and a timestamp, committed
   to `.github/cla-signatures.json` on this repository's `cla-signatures` branch.
   Your legal name and email are not collected.
-- **Bot accounts are exempt** — they cannot agree to anything. That exempts the
+- **Bot accounts are exempt**, because they cannot agree to anything. That exempts the
   account, not the work: a person or an agent submitting substantive code
   through an automated account is contributing, and that needs a signature.
 - **You are not asked again** on later pull requests, unless this agreement
@@ -249,9 +249,9 @@ Four things worth knowing before you do:
 
 ## Work you do not own
 
-If part of what you are submitting is not yours — a snippet from another
+If part of what you are submitting is not yours (a snippet from another
 project, generated output you did not write, anything under someone else's
-licence — do not include it in the same commits as your own work. Put it in a
+licence), do not include it in the same commits as your own work. Put it in a
 separate commit, and say so in the pull request: where it came from, the licence
 it carries, and any restriction attached to it that you know about.
 

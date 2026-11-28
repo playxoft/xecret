@@ -20,7 +20,7 @@ import (
 const storeKey = "credentials"
 
 // ErrNotLoggedIn is the uniform "run xecret login first" signal.
-var ErrNotLoggedIn = errors.New("not signed in — run 'xecret login' first")
+var ErrNotLoggedIn = errors.New("not signed in. Run 'xecret login' first")
 
 // Credentials is everything `xecret login` establishes.
 //
@@ -143,7 +143,7 @@ func Load(store keyring.Store) (*Credentials, error) {
 
 	var credentials Credentials
 	if err := json.Unmarshal([]byte(payload), &credentials); err != nil {
-		return nil, errors.New("stored credentials are corrupt — run 'xecret login' again")
+		return nil, errors.New("stored credentials are corrupt. Run 'xecret login' again")
 	}
 	if credentials.Token == "" || credentials.APIURL == "" {
 		return nil, ErrNotLoggedIn

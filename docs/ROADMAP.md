@@ -1,21 +1,21 @@
-# xecret — Implementation Plan v2
+# xecret: Implementation Plan v2
 
 > Open-source, developer-first secret management.
 > Powered by Playxoft.
 
-**Status:** M0, M1, M2 and **M3's build half** complete — Phases 7 (teams), 8 (CI +
+**Status:** M0, M1, M2 and **M3's build half** complete. Phases 7 (teams), 8 (CI +
 audit) and 9 (launch material) are built. Phase 10 (security audit, performance,
 production) is what remains, together with the standing integration caveat below.
 **History:** this supersedes an earlier internal build plan, which was removed
-when the repository went public — it was scaffolding written before the product
+when the repository went public. It was scaffolding written before the product
 had its name, and nothing in it was still true.
 
 **Progress:** ▓▓▓▓▓▓▓▓▓▓░ 10 of 11 phases done
 
 | Phase | Status | Branch |
 |---|---|---|
-| 0 · Decisions & threat model | ✅ merged | — |
-| 1 · Repo foundation | ✅ merged | — |
+| 0 · Decisions & threat model | ✅ merged | none |
+| 1 · Repo foundation | ✅ merged | none |
 | 2 · Crypto core | ✅ merged | `feat/crypto-core` |
 | 3 · Auth & organisations | ✅ merged | `feat/auth-organizations` |
 | 4 · Projects, environments, secrets API | ✅ merged | `feat/secrets-api` |
@@ -48,17 +48,17 @@ These are decided. Do not re-open them without an ADR.
 
 | # | Decision | Choice |
 |---|---|---|
-| D1 | Product name | **xecret** — CLI binary `xecret` |
+| D1 | Product name | **xecret** (CLI binary `xecret`) |
 | D2 | Trust model | **End-to-end encryption**: secret values and notes are encrypted on the client, and the server cannot decrypt them ([ADR 0009](adr/0009-zero-knowledge-encryption.md)). Was server-side envelope encryption, where the server could decrypt, until ADR 0009 superseded [ADR 0001](adr/0001-trust-model.md). |
 | D3 | Hosting | Cloudflare Workers, **Paid plan** |
 | D4 | Web framework | Next.js 16.3 (App Router) via `@opennextjs/cloudflare` |
 | D5 | Database | Neon PostgreSQL |
-| D6 | Auth provider | **WorkOS AuthKit** (hosted: password, Google, MFA, enterprise SSO), reached server-side with `@workos-inc/node` — never `@workos-inc/authkit-nextjs`, which needs middleware. Was Firebase Auth via `firebase-auth-cloudflare-workers` until [ADR 0010](adr/0010-workos-as-identity-provider.md). |
+| D6 | Auth provider | **WorkOS AuthKit** (hosted: password, Google, MFA, enterprise SSO), reached server-side with `@workos-inc/node`, never `@workos-inc/authkit-nextjs`, which needs middleware. Was Firebase Auth via `firebase-auth-cloudflare-workers` until [ADR 0010](adr/0010-workos-as-identity-provider.md). |
 | D7 | CLI language | **Go** (single static binary, no runtime, ideal for CI images) |
-| D8 | Repo layout | **Monorepo** — web + CLI + shared packages in one repo |
+| D8 | Repo layout | **Monorepo**: web + CLI + shared packages in one repo |
 | D9 | No Redis | Cloudflare native primitives instead |
 | D10 | Root key custody | **Phase.dev** as source of truth → synced to **Cloudflare Secrets Store** at deploy time → read from a binding at runtime. Offline Shamir escrow as backup. |
-| D11 | Identity provider's role | Identity **only** — xecret issues its own sessions. Unchanged by the move from Firebase to WorkOS. |
+| D11 | Identity provider's role | Identity **only**: xecret issues its own sessions. Unchanged by the move from Firebase to WorkOS. |
 | D12 | DB access | **Drizzle ORM + Hyperdrive + `postgres.js`** |
 | D13 | Licence | **AGPL-3.0** (server) + **MIT** (CLI & client SDKs) + CLA |
 
@@ -66,17 +66,17 @@ These are decided. Do not re-open them without an ADR.
 
 Researched, not assumed:
 
-- **Workers Paid limits:** 10 MB compressed / 64 MB uncompressed script; **30 s CPU default** (raisable to 5 min) — *not* 10 ms, that's the free tier; 10,000 subrequests/request; 128 MB memory; **only 6 simultaneous outgoing connections** per invocation ← this one shapes the design.
+- **Workers Paid limits:** 10 MB compressed / 64 MB uncompressed script; **30 s CPU default** (raisable to 5 min), *not* 10 ms (that's the free tier); 10,000 subrequests/request; 128 MB memory; **only 6 simultaneous outgoing connections** per invocation ← this one shapes the design.
 - **OpenNext Cloudflare** supports all Next.js 16 minors. Next 16.2 shipped a stable Adapter API built with Cloudflare + OpenNext.
 - **Rate Limiting binding is GA** (since Sep 2025, wrangler ≥ 4.36.0). No Redis, no DB counters for the hot path.
 - **Neon on Workers:** Hyperdrive + a native driver (`postgres.js` / `pg`) is the fastest and Cloudflare-recommended path. The Neon serverless HTTP driver is the fallback for self-hosters without Hyperdrive.
-- **Firebase Admin SDK does not run on Workers** (Node-native deps). ID tokens must be verified as plain RS256 JWTs against Google's JWKS using Web Crypto. *(Moot since ADR 0010: `@workos-inc/node` is fetch-based and resolves to a workerd build, and a WorkOS sign-in is an authenticated code exchange — there is no token to verify at all.)*
+- **Firebase Admin SDK does not run on Workers** (Node-native deps). ID tokens must be verified as plain RS256 JWTs against Google's JWKS using Web Crypto. *(Moot since ADR 0010: `@workos-inc/node` is fetch-based and resolves to a workerd build, and a WorkOS sign-in is an authenticated code exchange, so there is no token to verify at all.)*
 
 ---
 
 ## 1. Key management architecture (decided)
 
-### D10 — Root key custody: Phase.dev → Cloudflare Secrets Store
+### D10. Root key custody: Phase.dev → Cloudflare Secrets Store
 
 **The key hierarchy:**
 
@@ -101,28 +101,28 @@ Answer: **Phase.dev owns it. Cloudflare serves it. The Worker never calls Phase.
 │  - `phase run -- wrangler deploy`  → CI/deploy process env           │
 │  - Phase's Cloudflare Workers sync integration is the alternative    │
 └────────────────────────────┬─────────────────────────────────────────┘
-                             │  DEPLOY TIME — once per release
+                             │  DEPLOY TIME: once per release
                              ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Cloudflare Secrets Store    RUNTIME COPY                            │
 │  - bound to the Worker as env.XECRET_ROOT_KEK                        │
 │  - read once per isolate, imported as a non-extractable CryptoKey    │
 └────────────────────────────┬─────────────────────────────────────────┘
-                             │  RUNTIME — 0 ms, 0 subrequests
+                             │  RUNTIME: 0 ms, 0 subrequests
                              ▼
                     Worker unwraps Org key → Env key → secret
 ```
 
-**Why the Worker must not fetch from Phase at runtime** — four independent reasons, any one of which is disqualifying:
+**Why the Worker must not fetch from Phase at runtime** (four independent reasons, any one of which is disqualifying):
 
 1. Workers have no `.env` and no disk at runtime. Env values are baked in at deploy. There is nothing to fetch *into*.
-2. Phase outage = **total** xecret outage. Not degraded — no secret is decryptable for any customer.
+2. Phase outage = **total** xecret outage. Not degraded: no secret is decryptable for any customer.
 3. It's circular: calling Phase requires a Phase service token, which is itself a secret that must live in the Worker. The problem is moved, not solved, and a network hop is added.
 4. It burns the 6-simultaneous-connection budget and adds cold-start latency to the exact path (`xecret run`) we are optimising.
 
-**The bootstrap problem, stated plainly:** xecret can never store xecret's own root key — you would need the key to read the key. Every secret manager has this (Doppler uses AWS KMS). Phase.dev is therefore a **permanent** architectural dependency, not a temporary crutch. That is a deliberate, documented choice.
+**The bootstrap problem, stated plainly:** xecret can never store xecret's own root key, because you would need the key to read the key. Every secret manager has this (Doppler uses AWS KMS). Phase.dev is therefore a **permanent** architectural dependency, not a temporary crutch. That is a deliberate, documented choice.
 
-**Escrow — non-negotiable, and the biggest hole in the original design:**
+**Escrow (non-negotiable, and the biggest hole in the original design):**
 
 Phase.dev is the *working* copy, never the *only* copy. If the Phase account is lost, locked, or deleted, every customer's secrets become permanently unrecoverable.
 
@@ -131,7 +131,7 @@ Phase.dev is the *working* copy, never the *only* copy. If the Phase account is 
 3. Documented restore drill, run quarterly, from escrow shares alone with Phase assumed dead.
 4. `key_version` column on every wrapped key and every ciphertext from migration #1.
 
-**Provider interface** — so this is a config change later, not a rewrite:
+**Provider interface** (so this is a config change later, not a rewrite):
 
 ```ts
 interface KeyProvider {
@@ -143,18 +143,18 @@ interface KeyProvider {
 // v3: OrgScopedKmsProvider             ← BYOK, enterprise sales lever
 ```
 
-Considered and rejected for v1: per-request KMS unwrap (adds a round-trip to every secret read, and an attacker with Worker code execution simply asks KMS themselves — near-zero security gain for real latency cost).
+Considered and rejected for v1: per-request KMS unwrap (adds a round-trip to every secret read, and an attacker with Worker code execution simply asks KMS themselves; near-zero security gain for real latency cost).
 
 ---
 
-### D11 — The identity provider: use it for identity only
+### D11. The identity provider: use it for identity only
 
 > Decided for Firebase, and carried over unchanged when Firebase was replaced by WorkOS
-> AuthKit ([ADR 0010](adr/0010-workos-as-identity-provider.md)) — which is the point of the
+> AuthKit ([ADR 0010](adr/0010-workos-as-identity-provider.md)), which is the point of the
 > decision: swapping the provider swapped one module, not the session model. What follows
 > describes the current flow.
 
-You don't want to run auth yourself. Fine — but **do not use the identity provider for sessions.** Here's why and what to do instead.
+You don't want to run auth yourself. Fine, but **do not use the identity provider for sessions.** Here's why and what to do instead.
 
 ```
 Browser ──GET /api/auth/login──────────────────────────▶ Worker
@@ -166,19 +166,19 @@ Worker  ──check state against the cookie, exchange the code with WorkOS (one
 Browser ──all further requests use OUR session, never a WorkOS token
 ```
 
-WorkOS is reached with **`@workos-inc/node`** — fetch-based, no Node-only dependencies, runs on Workers. The browser never runs any identity-provider code: it only navigates to AuthKit's hosted pages and back. **`@workos-inc/authkit-nextjs` is banned by an ESLint `no-restricted-imports` rule** because it is built around middleware, which this stack cannot have (ADR 0008); the Firebase packages are banned beside it.
+WorkOS is reached with **`@workos-inc/node`**: fetch-based, no Node-only dependencies, runs on Workers. The browser never runs any identity-provider code: it only navigates to AuthKit's hosted pages and back. **`@workos-inc/authkit-nextjs` is banned by an ESLint `no-restricted-imports` rule** because it is built around middleware, which this stack cannot have (ADR 0008); the Firebase packages are banned beside it.
 
 Why this shape:
 - Nothing Node-only anywhere → no Workers incompatibility.
 - **Real revocation.** A provider's tokens are not ours to kill; WorkOS's are discarded at the callback. Ours die instantly.
 - One session model shared by dashboard, CLI, and CI.
-- The provider stays swappable behind an `IdentityProvider` interface — and was swapped.
+- The provider stays swappable behind an `IdentityProvider` interface, and was swapped.
 
-**Honest trade-off you're accepting:** self-hosters need their own WorkOS account (AuthKit is free up to a million monthly active users). That's real friction for an open-source product. The `IdentityProvider` interface means someone can contribute another provider later without touching authz, crypto, or the API. This is stated plainly in `docs/self-hosting.md` — not hidden.
+**Honest trade-off you're accepting:** self-hosters need their own WorkOS account (AuthKit is free up to a million monthly active users). That's real friction for an open-source product. The `IdentityProvider` interface means someone can contribute another provider later without touching authz, crypto, or the API. This is stated plainly in `docs/self-hosting.md`, not hidden.
 
 ---
 
-### D12 — Database access
+### D12. Database access
 
 **Drizzle ORM + Hyperdrive + `postgres.js`.** Drizzle for type-safe schema + migrations without ORM magic; Hyperdrive because it's the fastest and Cloudflare-recommended path for Neon.
 
@@ -186,15 +186,15 @@ Behind a 30-line adapter so self-hosters without Hyperdrive can swap in `@neonda
 
 ---
 
-### D13 — Licensing: split AGPL / MIT + CLA
+### D13. Licensing: split AGPL / MIT + CLA
 
 | Component | Licence | Reason |
 |---|---|---|
-| `apps/web`, `packages/*` | **AGPL-3.0** | Fork it, modify it, run it as a service → you must publish your changes. Still OSI-approved, so xecret is honestly "open source" — which matters enormously for a product people are asked to trust with secrets. |
+| `apps/web`, `packages/*` | **AGPL-3.0** | Fork it, modify it, run it as a service → you must publish your changes. Still OSI-approved, so xecret is honestly "open source", which matters enormously for a product people are asked to trust with secrets. |
 | `cli/`, future client SDKs | **MIT** | The CLI ships inside customers' Docker images and CI pipelines. AGPL there triggers corporate legal bans and would kill adoption. Standard industry split. |
 | Contributions | **CLA required** | Every outside contributor assigns rights. Without this, once there are external contributors the licence can *never* be changed. With it, moving to BSL/FSL or selling commercial exceptions stays possible. |
 
-**Honest limit:** AGPL does **not** stop someone running an *unmodified* copy as a competing SaaS — only BSL 1.1 / FSL do, at the cost of losing the "open source" label (see HashiCorp → OpenTofu). If blocking competing SaaS outright becomes the priority, the CLA is what makes that switch legally possible later.
+**Honest limit:** AGPL does **not** stop someone running an *unmodified* copy as a competing SaaS. Only BSL 1.1 / FSL do, at the cost of losing the "open source" label (see HashiCorp → OpenTofu). If blocking competing SaaS outright becomes the priority, the CLA is what makes that switch legally possible later.
 
 ---
 
@@ -216,7 +216,7 @@ xecret/
 │       │   │   ├── cli/authorize/  # CLI consent screen
 │       │   │   └── api/
 │       │   ├── components/         # shadcn/ui + app components
-│       │   ├── server/             # route logic — never imported by client
+│       │   ├── server/             # route logic, never imported by client
 │       │   └── lib/
 │       ├── wrangler.toml
 │       ├── open-next.config.ts
@@ -240,7 +240,7 @@ xecret/
 ├── packages/
 │   ├── core/                       # pure TS, zero Cloudflare imports, 100% unit-testable
 │   │   ├── crypto/                 # envelope encryption, key providers, KAT vectors
-│   │   ├── authz/                  # permission evaluation — THE single source of truth
+│   │   ├── authz/                  # permission evaluation: THE single source of truth
 │   │   ├── audit/                  # event builders + redaction
 │   │   └── validation/             # Zod schemas shared by API + UI + CLI contract
 │   └── db/
@@ -271,13 +271,13 @@ xecret/
 ### Git setup (Phase 1)
 
 - `.gitignore` += `.idea/`, `.wrangler/`, `.dev.vars`, `.env*`, `*.enc`, `cli/dist/`
-- `git config user.email nitheesh@playxoft.com` (repo-local — the machine's global is a personal address)
+- `git config user.email nitheesh@playxoft.com` (repo-local: the machine's global is a personal address)
 - Commit messages carry **no AI attribution or co-author trailers**
 - Branch protection on `main`; work on `feat/*` branches
 - Conventional Commits (drives CHANGELOG + release automation)
 - Signed commits recommended for a security product
 - `.github/workflows/`: `ci.yml` (lint/typecheck/test/bundle-size), `cli.yml` (go test, matrix build), `release.yml` (GoReleaser)
-- **Secret-scanning + gitleaks in pre-commit.** Non-negotiable for this product — the embarrassment of leaking a key in a secrets manager's own repo is existential.
+- **Secret-scanning + gitleaks in pre-commit.** Non-negotiable for this product: the embarrassment of leaking a key in a secrets manager's own repo is existential.
 
 ---
 
@@ -289,17 +289,17 @@ Estimates assume focused work; treat as relative sizing, not commitments.
 
 ---
 
-### 🏁 M0 — Foundations
+### 🏁 M0: Foundations
 
-#### ✅ Phase 0 — Decisions & threat model
+#### ✅ Phase 0: Decisions & threat model
 
 - [x] ADRs 0001–0007: trust model, root key custody, Firebase-as-IdP, Go CLI, monorepo, database access, licensing *(0001 since superseded by 0009, 0003 by 0010)*
-- [x] `docs/security/threat-model.md` — 10 attacker classes × (threat, impact, likelihood, mitigation, residual risk)
-- [x] `docs/security/key-recovery.md` — **gate: no crypto code before this exists**
+- [x] `docs/security/threat-model.md`: 10 attacker classes × (threat, impact, likelihood, mitigation, residual risk)
+- [x] `docs/security/key-recovery.md` (**gate: no crypto code before this exists**)
 - [x] Full DB schema on paper, reviewed end-to-end before a single migration
 - [x] `docs/architecture/system-architecture.md`
 
-#### ✅ Phase 1 — Repo foundation
+#### ✅ Phase 1: Repo foundation
 
 - [x] Monorepo restructure, history preserved via `git mv`
 - [x] npm workspaces, TypeScript strict, ESLint, Prettier, Vitest
@@ -307,38 +307,38 @@ Estimates assume focused work; treat as relative sizing, not commitments.
 - [x] Drizzle configured; `db:generate` / `db:migrate`; 15 tables, 3 migrations
 - [x] CI: lint, typecheck, test, prod-dependency audit, gitleaks, bundle-size gate
 - [x] `LICENSE` (AGPL-3.0), `cli/LICENSE` (MIT), `SECURITY.md`, `.env.example`
-- [x] Go CLI skeleton — builds, vets, tests, cross-compiles
+- [x] Go CLI skeleton: builds, vets, tests, cross-compiles
 - [ ] Neon project + Hyperdrive binding created *(needs your Cloudflare/Neon account)*
 - [ ] Phase.dev project + values populated *(you're doing this)*
-- [x] CLA bot configured — `.github/workflows/cla.yml` + [CLA.md](../CLA.md) *(text still wants a legal read)*
+- [x] CLA bot configured: `.github/workflows/cla.yml` + [CLA.md](../CLA.md) *(text still wants a legal read)*
 - [ ] Deploy a live Worker *(needs Cloudflare auth)*
 
-#### ✅ Phase 2 — Crypto core
+#### ✅ Phase 2: Crypto core
 
 Built **before** the API, because it is the highest-risk component and the hardest to change later.
 
-- [x] `packages/core/ids` — UUIDv7 generator, monotonic within a millisecond (RFC 9562)
+- [x] `packages/core/ids`: UUIDv7 generator, monotonic within a millisecond (RFC 9562)
 - [x] `KeyProvider` interface + Secrets Store / env / in-memory sources
 - [x] AES-256-GCM envelope encryption, unique 96-bit IV per operation
-- [x] AAD binding ciphertext to `(org_id, env_id, secret_id, version)` — blocks ciphertext relocation
+- [x] AAD binding ciphertext to `(org_id, env_id, secret_id, version)`, which blocks ciphertext relocation
 - [x] Key generation, wrapping, unwrapping, versioning (root → org → env)
-- [x] `value_hmac` via HKDF-derived key — change detection without decryption
+- [x] `value_hmac` via HKDF-derived key, for change detection without decryption
 - [x] Root-key rotation (re-wrap) + env-key rotation (re-encrypt)
 - [x] Cryptographic erasure path for deletes
 - [x] `scripts/keygen.ts` (generate + Shamir 2-of-3 split + recover + drill), `scripts/rotate-root-key.ts`
 - [x] Tests: known-answer vectors, tamper detection, wrong-AAD rejection, IV uniqueness, rotation round-trip, key-version downgrade rejection
 
-**Exit:** ≥95% coverage on `crypto/`. — **achieved: 99.4% statements, 98.4% branches, 221 tests.**
+**Exit:** ≥95% coverage on `crypto/`. **Achieved: 99.4% statements, 98.4% branches, 221 tests.**
 
 ---
 
-### 🏁 M1 — A solo developer's loop works end to end
+### 🏁 M1: A solo developer's loop works end to end
 
-#### ✅ Phase 3 — Auth & organisations
+#### ✅ Phase 3: Auth & organisations
 
-- [x] `IdentityProvider` interface so the provider is swappable — and it was swapped: Firebase → WorkOS AuthKit ([ADR 0010](adr/0010-workos-as-identity-provider.md))
-- [x] Worker-side identity verification — built as Firebase ID-token verification via `firebase-auth-cloudflare-workers` with JWKS cached in KV; now one server-side WorkOS code exchange per sign-in, bound to the browser by a signed state cookie and PKCE
-- [x] Google + email/password sign-in, verification, password reset — built on the Firebase client SDK; now AuthKit's hosted pages
+- [x] `IdentityProvider` interface so the provider is swappable, and it was swapped: Firebase → WorkOS AuthKit ([ADR 0010](adr/0010-workos-as-identity-provider.md))
+- [x] Worker-side identity verification: built as Firebase ID-token verification via `firebase-auth-cloudflare-workers` with JWKS cached in KV; now one server-side WorkOS code exchange per sign-in, bound to the browser by a signed state cookie and PKCE
+- [x] Google + email/password sign-in, verification, password reset: built on the Firebase client SDK; now AuthKit's hosted pages
 - [x] Session policy + token/cookie primitives (`packages/core/auth`)
 - [x] Session lifecycle wired to the database: create, resolve, touch, revoke, revoke-all
 - [x] Auto-create personal organisation on first login (owner role, org + env keys, default project, all in one transaction)
@@ -349,49 +349,49 @@ Built **before** the API, because it is the highest-risk component and the harde
 
 **Exit:** a credential can be established, resolved, and revoked, and nothing below the route layer can be reached without passing through `authenticate()`.
 
-#### ✅ Phase 4 — Projects, environments, secrets API
+#### ✅ Phase 4: Projects, environments, secrets API
 
-- [x] **The authz engine** — one `can(actor, action, resource)`. Every route calls it via `authorize()`. Two gates that cannot bypass each other: role capability **and** resolved access level
+- [x] **The authz engine**: one `can(actor, action, resource)`. Every route calls it via `authorize()`. Two gates that cannot bypass each other: role capability **and** resolved access level
 - [x] Grant resolution: env-specific → project-wide → role default; explicit `none` always denies, even an owner
 - [x] Org → Project → Environment CRUD; slugs are immutable because they appear in `.xecret.yaml` and CI config
 - [x] Secrets + `secret_versions` (append-only): create, update, delete, restore
-- [x] Bulk read path for `xecret run` — **2 queries** plus a batched audit insert, constant in the number of secrets, 0 outgoing fetches
+- [x] Bulk read path for `xecret run`: **2 queries** plus a batched audit insert, constant in the number of secrets, 0 outgoing fetches
 - [x] **Import engine** (`packages/core/importer`): `.env` (quoting, multiline PEM, `export` prefix, CRLF, BOM, trailing comments), JSON (flat + nested → `A_B`), YAML, shell exports
 - [x] Import conflict resolution: skip / overwrite / rename, with a dry run that calls the identical planning function as the real import
-- [x] Export formats: `env`, `json`, `yaml`, `shell`, `docker` — round-trip property-tested against the parsers
+- [x] Export formats: `env`, `json`, `yaml`, `shell`, `docker`, all round-trip property-tested against the parsers
 - [x] IDOR defence: every resolver joins through verified membership; cross-tenant returns 404, never 403
 - [x] Audit events for every mutation, every decryption, and every denial
-- [x] Tests: the security matrix — cross-org, cross-project, cross-env, service-token pinning, suspended member, production deny-by-default, role escalation, and all four ciphertext-relocation attacks
+- [x] Tests: the security matrix (cross-org, cross-project, cross-env, service-token pinning, suspended member, production deny-by-default, role escalation, and all four ciphertext-relocation attacks)
 
 **Two real bugs caught here, both silent and both fatal:**
 - `createSecret` minted the secret id *after* the value was encrypted, while AAD binds `secret_id`. Every secret created through it would have been permanently undecryptable, with no error anywhere.
-- `addSecretVersion` computed `MAX(version)+1` inside the INSERT while the AAD was bound to the version the request expected. A concurrent writer committing first produced a row whose ciphertext was bound to a version it was never assigned — again undecryptable, again silent.
+- `addSecretVersion` computed `MAX(version)+1` inside the INSERT while the AAD was bound to the version the request expected. A concurrent writer committing first produced a row whose ciphertext was bound to a version it was never assigned: again undecryptable, again silent.
 
-**One restriction shipped deliberately:** service tokens are read-only, because `secret_versions.created_by` is `NOT NULL REFERENCES users`. Lifting it is a Phase 8 migration — see `docs/architecture/api.md` §2.
+**One restriction shipped deliberately:** service tokens are read-only, because `secret_versions.created_by` is `NOT NULL REFERENCES users`. Lifting it is a Phase 8 migration (see `docs/architecture/api.md` §2).
 
-#### ✅ Phase 5 — Dashboard UI
+#### ✅ Phase 5: Dashboard UI
 
 - [x] Own design system on Radix + Tailwind v4; light / dark / system, dark primary, no flash of wrong theme
-- [x] Palette documented with **measured** WCAG ratios in both themes — body text AAA, every interactive state AA, non-text UI ≥3:1
+- [x] Palette documented with **measured** WCAG ratios in both themes: body text AAA, every interactive state AA, non-text UI ≥3:1
 - [x] App shell: collapsible sidebar, org switcher, user menu, breadcrumbs
 - [x] Projects list → project overview → environment cards → secret table
 - [x] Masked by default; reveal is per-secret, goes through the audited endpoint every time, auto-remasks on timeout **and** on tab-hide
-- [x] Copy-to-clipboard never renders the value — and is audited, because a copy is a decryption
+- [x] Copy-to-clipboard never renders the value, and is audited, because a copy is a decryption
 - [x] Add / edit / delete with inline validation mirroring the server's rules
-- [x] **Import modal** — drag a `.env`, live dry-run preview, conflict resolution, per-row status. No value column, and the server never sends values back
+- [x] **Import modal**: drag a `.env`, live dry-run preview, conflict resolution, per-row status. No value column, and the server never sends values back
 - [x] Export dialog that states plainly that writing secrets to disk is a downgrade
 - [x] Production styling that survives greyscale: a reserved accent **plus** hazard hatching and letterform, never colour alone
 - [x] Destructive actions confirmed; production requires typing the resource name
 - [x] Search, filter, empty states, skeletons, error states surfacing the `requestId`
-- [x] Auth pages: sign in, sign up, forgot password, reset — with the four "wrong credential" Firebase codes collapsed into one message, so the form is not a user-enumeration oracle *(the forms have since moved to AuthKit's hosted pages — ADR 0010; the sign-in page's error messages keep the same rule)*
+- [x] Auth pages: sign in, sign up, forgot password, reset, with the four "wrong credential" Firebase codes collapsed into one message, so the form is not a user-enumeration oracle *(the forms have since moved to AuthKit's hosted pages, per ADR 0010; the sign-in page's error messages keep the same rule)*
 
-**Caught while measuring:** the root layout's barrel imports were pulling `UserMenu → lib/firebase → firebase/auth`, shipping **310 KB of the Firebase SDK to the public landing page**. Fixed structurally — sign-out no longer needs the Firebase SDK at all, since it is one `DELETE /api/auth/session`. *(Since ADR 0010 there is no identity-provider SDK in the browser at all.)*
+**Caught while measuring:** the root layout's barrel imports were pulling `UserMenu → lib/firebase → firebase/auth`, shipping **310 KB of the Firebase SDK to the public landing page**. Fixed structurally: sign-out no longer needs the Firebase SDK at all, since it is one `DELETE /api/auth/session`. *(Since ADR 0010 there is no identity-provider SDK in the browser at all.)*
 
 **Removed:** `src/proxy.ts`. Next 16 defaults Proxy to the Node.js runtime and throws if `runtime` is set; `@opennextjs/cloudflare` refuses to build Node middleware. It could never have deployed. The signed-out redirect lives in the API client's 401 handling, which is where Next's own docs say authorization belongs anyway.
 
-**Exit:** the whole solo flow is reachable in a browser. Not yet exercised end to end — that needs the Neon database and the Phase.dev values.
+**Exit:** the whole solo flow is reachable in a browser. Not yet exercised end to end: that needs the Neon database and the Phase.dev values.
 
-#### ✅ Phase 6 — Go CLI v1
+#### ✅ Phase 6: Go CLI v1
 The phase that decides whether people love this product.
 
 ```bash
@@ -418,24 +418,24 @@ xecret cache clear
 **Shipped, with four decisions worth recording:**
 
 - **The server half now exists too.** `POST /api/cli/authorize` (consent, session+CSRF,
-  PIN-gated), `POST /api/cli/token` (PKCE exchange — the code is consumed atomically
+  PIN-gated), `POST /api/cli/token` (PKCE exchange: the code is consumed atomically
   *before* the verifier check, so a failed binding kills it), `DELETE /api/cli/token`
   (logout self-revocation), a `cli_auth_codes` table (migration 0005), and a consent
   screen at `/cli/authorize`. All in `docs/architecture/api.md` §4.
 - **Consent requires membership, not `token.create`.** That capability gates *service*
   tokens, which grant standing access and outlive their creator. A CLI token acts as its
-  user and adds no authority — requiring an admin to approve every developer's laptop
+  user and adds no authority. Requiring an admin to approve every developer's laptop
   would kill the golden path while protecting nothing `can()` does not already enforce.
 - **`secrets get` is masked by default; `--plain` reveals.** An audited `secret.revealed`
   row therefore always means a plaintext actually left the server.
 - **The offline cache never answers a 4xx.** Network failure and 5xx fall back, loudly,
-  with the cache age; a revoked or denied credential does not — a cache that outlives
+  with the cache age; a revoked or denied credential does not: a cache that outlives
   revocation would be a revocation bypass. Cache files are AES-256-GCM with the key in
-  the OS keychain and the AAD bound to (host, org, project, env) — the client-side twin
+  the OS keychain and the AAD bound to (host, org, project, env), the client-side twin
   of the server's anti-relocation design.
 
 **Still open before binaries are *distributed* (not before merging):** the permanent
-domain (§7) — it is compiled into every copy — plus the `playxoft/homebrew-tap` repo and
+domain (§7), which is compiled into every copy, plus the `playxoft/homebrew-tap` repo and
 a cosign key for the release workflow. `xecret login` has not yet run against a deployed
 Worker; that joins the same integration pass as everything else in the standing caveat
 at the top of this document.
@@ -444,61 +444,61 @@ at the top of this document.
 
 ---
 
-### 🏁 M2 — Teams and CI
+### 🏁 M2: Teams and CI
 
-#### ✅ Phase 7 — Team, roles, granular access
-- [x] Four fixed roles: Owner, Admin, Developer, Viewer. **No custom roles in v1** — the schema supports them, the UI does not.
+#### ✅ Phase 7: Team, roles, granular access
+- [x] Four fixed roles: Owner, Admin, Developer, Viewer. **No custom roles in v1**: the schema supports them, the UI does not.
 - [x] Per-member grants: project → environment → `none | read | write | admin` (the engine's fourth level, kept rather than papered over)
 - [x] Invitations: single-use, expiring, hashed-at-rest tokens, revocable
-- [x] Member management UI, seat counting (no billing — just the data model)
-- [x] Effective-permission preview: "what can Alice actually see?" — computed by the same `resolveAccessLevel` the enforcement path calls
+- [x] Member management UI, seat counting (no billing, just the data model)
+- [x] Effective-permission preview: "what can Alice actually see?" (computed by the same `resolveAccessLevel` the enforcement path calls)
 
 **Shipped, with the decisions worth recording:**
 
 - **The role hierarchy is a second predicate, not a capability.** `canAssignRole`
   (core/authz) refuses any role above the actor's own, applied to *both* sides of
-  every member change — the role being handed out and the role currently held.
+  every member change: the role being handed out and the role currently held.
   Without it, `member.invite` plus one forged request lets an admin mint an owner.
 - **Invitations supersede on re-invite.** A new invitation revokes the address's
   outstanding one inside the same transaction, so "resend" is just "invite" and at
-  most one live link per (org, email) can circulate — which is also what makes
+  most one live link per (org, email) can circulate, which is also what makes
   re-inviting after expiry survive the partial unique index.
 - **Acceptance is one transaction under the organisation lock:** state, address
   match (a forwarded email must not let a colleague join as somebody else), seat
   count, and the membership insert all settle together. Seats count members
-  whatever their status — suspension is a security act, never a discount — plus
+  whatever their status (suspension is a security act, never a discount), plus
   open unexpired invitations.
 - **The invite link is returned once, like a token.** Mail stays optional for
   self-hosters; the inviter can hand the link over themselves, and closing the
   dialog discards it.
 - **Member mutations are session-only** (a bearer credential may not mint further
-  credentials — the CLI-authorize rule, generalised), and self-changes are refused
+  credentials, which is the CLI-authorize rule, generalised), and self-changes are refused
   outright: demoting yourself has no self-service undo.
 - Audit grew `member.suspended`, `member.reinstated`, `invitation.revoked`, and
-  previous/new access-level metadata — and a real bug fell out: `sanitizeMetadata`
+  previous/new access-level metadata, and a real bug fell out: `sanitizeMetadata`
   silently dropped `deviceName`, `sessionCount` and `valueType` because the
   field-by-field rebuild never learned them. Fixed with a test that sweeps every
   declared field.
 
-#### ✅ Phase 8 — CI, service tokens, audit logs
+#### ✅ Phase 8: CI, service tokens, audit logs
 CI is a **first-class use case**, not a v2 afterthought.
 
 - [x] **Service tokens:** scoped to exactly one project + environment, read-only by default, no user attached, shown once at creation, revocable, optional expiry, optional IP allowlist, `last_used_at` tracked
-- [x] **Migration 0006: service-token write attribution** — exactly as specified, applied to `secrets` *and* `secret_versions` (both carried `NOT NULL created_by`; `secret.create` is in the allowlist, so both needed the pair + CHECK). The 403 in `secrets-service.ts` became `secretWriter`, returning `{userId}` or `{serviceTokenId}`.
-- [x] `XECRET_TOKEN=xst_... xecret run -- npm run build` — zero interactive login *(the plan's `xct_` here was a typo: `xst_` is the service prefix, as api.md and the CLI README already said)*
+- [x] **Migration 0006: service-token write attribution**, exactly as specified, applied to `secrets` *and* `secret_versions` (both carried `NOT NULL created_by`; `secret.create` is in the allowlist, so both needed the pair + CHECK). The 403 in `secrets-service.ts` became `secretWriter`, returning `{userId}` or `{serviceTokenId}`.
+- [x] `XECRET_TOKEN=xst_... xecret run -- npm run build`, with zero interactive login *(the plan's `xct_` here was a typo: `xst_` is the service prefix, as api.md and the CLI README already said)*
 - [x] `xecret pull --format env > .env` for legacy pipelines, with a stderr warning
-- [x] Distribution: GitHub Action (`action.yml`, composite, checksum-verified), Docker image `ghcr.io/playxoft/xecret` (distroless static, multi-arch), `curl | sh` wired at `/install.sh`, `release.yml` with keyless cosign — all actions SHA-pinned
+- [x] Distribution: GitHub Action (`action.yml`, composite, checksum-verified), Docker image `ghcr.io/playxoft/xecret` (distroless static, multi-arch), `curl | sh` wired at `/install.sh`, `release.yml` with keyless cosign; all actions SHA-pinned
 - [x] Recipes in `examples/ci/` for GitHub Actions, GitLab, CircleCI, Docker (BuildKit secret mounts, and what never to do)
-- [x] Token table already shaped for GitHub OIDC federation in v2 — schema now, feature later
-- [x] **Audit logs:** the Phase 1 partitioned table + Phase 4 writes, now readable — keyset-paginated query API over `(created_at, id)` with the clamped 90-day window stated in every response
+- [x] Token table already shaped for GitHub OIDC federation in v2: schema now, feature later
+- [x] **Audit logs:** the Phase 1 partitioned table + Phase 4 writes, now readable through a keyset-paginated query API over `(created_at, id)` with the clamped 90-day window stated in every response
 - [x] Audit UI: filter by action, outcome, project; load-more pagination *(actor and date filters are in the API; the UI exposes the three that answer real questions first)*
-- [x] Redaction enforced in the audit event builder itself — unchanged from Phase 4, now also covering the new fields
+- [x] Redaction enforced in the audit event builder itself, unchanged from Phase 4, now also covering the new fields
 
 **Shipped, with the decisions worth recording:**
 
 - **`GET /api/tokens/self`** is the piece the spec did not name: a service token
   is pinned to ids but every API path speaks slugs, so the CLI introspects the
-  credential once and learns exactly its own scope — which is why CI needs zero
+  credential once and learns exactly its own scope, which is why CI needs zero
   configuration beyond the token. The answer derives from the token row alone;
   there is no parameter to lie in.
 - **XECRET_TOKEN never touches the offline cache.** A runner is ephemeral, a
@@ -509,34 +509,34 @@ CI is a **first-class use case**, not a v2 afterthought.
   a value by writing a new one; destroying history remains a human's decision.
 - **Revocation authority differs by kind on purpose:** your own CLI token always
   (signing out a laptop must not need an admin), anything else `token.revoke`.
-  The service-token *listing* shares the mint gate — a map of standing
+  The service-token *listing* shares the mint gate: a map of standing
   credentials is reconnaissance.
 - The dashboard's Actor display now says "CI token" for token-attributed writes;
   the token's display prefix in audit metadata is redacted by the credential
-  detector, accepted as correct — the row's resource id already names the token.
+  detector, accepted as correct: the row's resource id already names the token.
 
 ---
 
-### 🏁 M3 — Launch ready
+### 🏁 M3: Launch ready
 
-#### ✅ Phase 9 — Landing page, docs, open source
+#### ✅ Phase 9: Landing page, docs, open source
 - [x] Landing: hero, the 60-second story, CLI demo, security explainer in plain language, open-source pitch, CTA
-- [x] Original visual identity — the Phase 5 design system, extended rather than replaced
-- [x] Colour system documented (`docs/design/colour-system.md`) — the measured WCAG ratios were already annotated in `globals.css`; the doc explains the system and makes the annotation the review artifact
+- [x] Original visual identity: the Phase 5 design system, extended rather than replaced
+- [x] Colour system documented (`docs/design/colour-system.md`): the measured WCAG ratios were already annotated in `globals.css`; the doc explains the system and makes the annotation the review artifact
 - [x] `docs/`: index, quickstart, CLI reference, self-hosting; security architecture / threat model / encryption / authz already existed from Phases 0–4 and are now linked from one index
 - [x] Framework guides: Next.js, React/Vite, Node, Go (+ pointer READMEs in `examples/`)
 - [x] Full OSS scaffolding: issue forms (security routed to private advisories before anything else), PR template restating the standing rules as its checklist, `SECURITY.md` gained GitHub private vulnerability reporting beside the existing mail route and SLA
 
 **Shipped, with one honest substitution:** the plan asked for "real asciinema,
-not a fake screenshot" — and there is no deployed server to record against yet.
+not a fake screenshot", and there is no deployed server to record against yet.
 The landing demo is a typed re-enactment built from the CLI's actual format
 strings (login → init → run), labelled as such on the page, with the child
 process's lines visually attributed to the child. Reduced-motion and no-JS
 visitors get the complete transcript immediately. A true recording replaces it
 the day the integration pass produces a deployment to point a terminal at.
 
-#### Phase 10 — Security audit, performance, production  *(~5 days)*
-- **Adversarial security pass** — I attack the app as an external tester: IDOR/BOLA, authz bypass, privilege escalation, token replay, session fixation, invitation reuse, cross-env leakage, rate-limit bypass, SSRF, XSS, CSRF, injection, timing attacks on token comparison, CLI credential theft
+#### Phase 10: Security audit, performance, production  *(~5 days)*
+- **Adversarial security pass** (I attack the app as an external tester): IDOR/BOLA, authz bypass, privilege escalation, token replay, session fixation, invitation reuse, cross-env leakage, rate-limit bypass, SSRF, XSS, CSRF, injection, timing attacks on token comparison, CLI credential theft
 - Verify the log pipeline for secret leakage end to end (app logs, error responses, Sentry-equivalent, CF analytics)
 - Performance: bundle size, CPU per request, DB query count (kill all N+1s), p50/p99 secret retrieval, CLI startup time, cold-start impact
 - Production: migrations runbook, WorkOS Production environment config, key ceremony + escrow, monitoring, error reporting, backup + **tested** restore, incident response doc
@@ -556,13 +556,13 @@ Each is a schema-compatible addition, not a rewrite. That's the point of the pha
 
 ```
 Phase / Status
-Implemented          — what actually works now
-Architecture decisions — what I chose and why (ADR link if significant)
+Implemented:           what actually works now
+Architecture decisions: what I chose and why (ADR link if significant)
 Files changed
-Security considerations — what this phase exposes and how it's mitigated
-Tests                — what's covered, what isn't
-Known limitations    — stated plainly, not buried
-Next phase           — and what I need from you
+Security considerations: what this phase exposes and how it's mitigated
+Tests:                 what's covered, what isn't
+Known limitations:     stated plainly, not buried
+Next phase:            what it is, and what I need from you
 ```
 
 ---
@@ -578,7 +578,7 @@ Next phase           — and what I need from you
 7. Every security-sensitive action produces an audit event.
 8. No dependency that can't run on Workers. Prefer Web APIs.
 9. Major architecture changes need an ADR and your approval.
-10. When uncertain, research and present options — don't guess.
+10. When uncertain, research and present options. Don't guess.
 
 ---
 
@@ -590,23 +590,23 @@ Next phase           — and what I need from you
 | ✅ | Repo restructure to `apps/web` + `cli` + `packages` | Approved |
 | ✅ | Go module path | `github.com/playxoft/xecret` |
 | ✅ | Database access | Hyperdrive (D12) |
-| ✅ | Identity provider library | `@workos-inc/node` (D6/D11, ADR 0010) — was `firebase-auth-cloudflare-workers` |
-| ✅ | Licence | AGPL-3.0 server + MIT CLI + CLA (D13) — confirmed |
-| ✅ | **Domain name** | `xecret.playxoft.com` — settled 2026-08-19. No separate apex domain. See below. |
+| ✅ | Identity provider library | `@workos-inc/node` (D6/D11, ADR 0010), previously `firebase-auth-cloudflare-workers` |
+| ✅ | Licence | AGPL-3.0 server + MIT CLI + CLA (D13), confirmed |
+| ✅ | **Domain name** | `xecret.playxoft.com`, settled 2026-08-19. No separate apex domain. See below. |
 
-### The domain question — decided
+### The domain question (decided)
 
 **`xecret.playxoft.com` is the permanent origin.** A separate apex (`xecret.dev` and the rest) was considered and deliberately not bought: the name would have to be defended across registrars and namespaces to be worth anything, and a subdomain of a domain we already own costs nothing, renews with the parent, and cannot lapse on its own. Nothing about the product's shape depends on the hostname.
 
-That decision is what unblocked shipping a CLI binary, because the origin is compiled into every distributed copy and changing it afterwards breaks every installation — including the ones nobody can reach to update.
+That decision is what unblocked shipping a CLI binary, because the origin is compiled into every distributed copy and changing it afterwards breaks every installation, including the ones nobody can reach to update.
 
 It is wired into three places, all of them pointing at the settled name:
 
-1. **WorkOS redirect URI** — `https://xecret.playxoft.com/api/auth/callback`, registered in the WorkOS Production environment; AuthKit refuses any other. Derived from `XECRET_PUBLIC_URL` at runtime, never configured beside it. *(Until ADR 0010 this was two places: Firebase's authorised domains and the Google OAuth redirect URI. Google sign-in now goes through WorkOS, so the redirect URI registered with Google is WorkOS's, not ours.)*
-2. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; `internal/buildinfo.DefaultAPIURL` is the compiled-in default. Self-hosters override it with `XECRET_API_URL` or `xecret login --api-url`, which is the whole reason those exist.
-3. **Cloudflare Worker route** — the custom domain in the Worker configuration.
+1. **WorkOS redirect URI**: `https://xecret.playxoft.com/api/auth/callback`, registered in the WorkOS Production environment; AuthKit refuses any other. Derived from `XECRET_PUBLIC_URL` at runtime, never configured beside it. *(Until ADR 0010 this was two places: Firebase's authorised domains and the Google OAuth redirect URI. Google sign-in now goes through WorkOS, so the redirect URI registered with Google is WorkOS's, not ours.)*
+2. **CLI login target**: `xecret login` opens `https://<domain>/cli/authorize`; `internal/buildinfo.DefaultAPIURL` is the compiled-in default. Self-hosters override it with `XECRET_API_URL` or `xecret login --api-url`, which is the whole reason those exist.
+3. **Cloudflare Worker route**: the custom domain in the Worker configuration.
 
-`github.com/playxoft/xecret` is held. **The npm names are not yet**: `xecret` and the six `xecret-{platform}-{arch}` packages the CLI is distributed as were all unregistered as of 2026-08-19, and the first release is what claims them. That is a release prerequisite, not a completed step — the name is the product and squatters are fast, so publish (or reserve) before announcing anywhere. The npm `@xecret` *scope* is not needed; the wrapper takes the unscoped name.
+`github.com/playxoft/xecret` is held. **The npm names are not yet**: `xecret` and the six `xecret-{platform}-{arch}` packages the CLI is distributed as were all unregistered as of 2026-08-19, and the first release is what claims them. That is a release prerequisite, not a completed step: the name is the product and squatters are fast, so publish (or reserve) before announcing anywhere. The npm `@xecret` *scope* is not needed; the wrapper takes the unscoped name.
 
 ---
 

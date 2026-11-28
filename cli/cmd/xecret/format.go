@@ -103,7 +103,7 @@ func formatSecrets(secrets map[string]string, format string) ([]byte, error) {
 		}
 
 	default:
-		return nil, fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", format)
+		return nil, fmt.Errorf("unknown format %q. Use env, json, yaml, shell or docker", format)
 	}
 
 	return out.Bytes(), nil
