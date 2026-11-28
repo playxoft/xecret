@@ -7,5 +7,5 @@ xecret init
 xecret run -- vite
 ```
 
-Remember: anything prefixed `VITE_` ships to the browser — real secrets belong
+Remember: anything prefixed `VITE_` ships to the browser, so real secrets belong
 on the backend the app calls, injected there by `xecret run`.

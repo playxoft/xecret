@@ -288,7 +288,7 @@ func (a *app) resolveScope(credentials *cred.Credentials, projectFlag, envFlag s
 		if findErr != nil {
 			return scope{}, findErr
 		}
-		return scope{}, fmt.Errorf("no project or environment resolved — pass --project/--environment or run 'xecret init'")
+		return scope{}, fmt.Errorf("no project or environment resolved. Pass --project/--environment or run 'xecret init'")
 	}
 	return resolved, nil
 }

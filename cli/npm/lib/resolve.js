@@ -78,8 +78,8 @@ function resolveBinary(platform = process.platform, arch = process.arch) {
     return require.resolve(`${dependency}/bin/${binaryName(platform)}`);
   } catch {
     throw new Error(
-      `xecret is installed, but ${dependency} — the package holding the binary for this\n` +
-        'machine — is not. It is an optional dependency, so this usually means the install\n' +
+      `xecret is installed, but ${dependency} (the package holding the binary for this\n` +
+        'machine) is not. It is an optional dependency, so this usually means the install\n' +
         'ran with --omit=optional or --no-optional.\n\n' +
         '  Reinstall without that flag:  npm install xecret\n' +
         '  Or install the binary directly, with no Node in the way:\n' +

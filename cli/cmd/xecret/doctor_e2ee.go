@@ -107,7 +107,7 @@ func e2eeSelfTest() error {
 	elsewhere := context
 	elsewhere.Version = 2
 	if _, err := e2ee.DecryptSecret(opened.EDK, elsewhere, sealed); !errors.Is(err, e2ee.ErrDecrypt) {
-		return errors.New("a ciphertext opened under the wrong version — AAD binding is broken")
+		return errors.New("a ciphertext opened under the wrong version, so AAD binding is broken")
 	}
 
 	// And the parser must refuse what it does not recognise.
@@ -180,7 +180,7 @@ func e2eeChecks(
 			say(statusWarn, "tokenFormat", "XECRET_TOKEN is not a recognised service token")
 		case parsed.PrivateKey == nil:
 			say(statusWarn, "tokenFormat",
-				"XECRET_TOKEN carries no key — it predates end-to-end encryption and cannot read an e2ee environment; mint a replacement")
+				"XECRET_TOKEN carries no key: it predates end-to-end encryption and cannot read an e2ee environment; mint a replacement")
 		default:
 			parsed.Zeroize()
 			say(statusOK, "tokenFormat", "XECRET_TOKEN carries its own key and can open an e2ee environment")
@@ -201,14 +201,14 @@ func e2eeChecks(
 			say(statusOK, "offlineKey", "offline decryption: this machine holds what '--offline' needs")
 		} else {
 			say(statusWarn, "offlineKey",
-				"offline decryption: not available yet — run any command with the API reachable once")
+				"offline decryption: not available yet. Run any command with the API reachable once")
 		}
 	case err == nil:
 		say(statusWarn, "vaultKey",
-			"vault key: held, but this account's ids are missing — the next command that needs them will fetch them")
+			"vault key: held, but this account's ids are missing. The next command that needs them will fetch them")
 	case keyring.IsNotFound(err):
 		say(statusWarn, "vaultKey",
-			"vault key: none — end-to-end encrypted environments will not open; run 'xecret login' to hand one over")
+			"vault key: none, so end-to-end encrypted environments will not open; run 'xecret login' to hand one over")
 	default:
 		say(statusFail, "vaultKey", "vault key: unreadable (%v)", err)
 	}

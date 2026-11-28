@@ -24,7 +24,7 @@ const Filename = ".xecret.yaml"
 
 // ErrNotFound means no .xecret.yaml exists here or in any parent directory.
 var ErrNotFound = errors.New(
-	"no " + Filename + " found — run 'xecret init' in your project, or pass --project and --environment",
+	"no " + Filename + " found. Run 'xecret init' in your project, or pass --project and --environment",
 )
 
 // Config is the entire file.
@@ -100,7 +100,7 @@ func Load(path string) (*Config, error) {
 
 	if cfg.Project == "" || cfg.Environment == "" {
 		return nil, fmt.Errorf(
-			"%s must name both a project and an environment — run 'xecret init' to rewrite it",
+			"%s must name both a project and an environment. Run 'xecret init' to rewrite it",
 			path,
 		)
 	}

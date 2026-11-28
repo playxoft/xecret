@@ -42,8 +42,8 @@ All subcommands accept --project and --environment to override .xecret.yaml.
 
 A personal override is your own value for one secret in one environment.
 'xecret run' uses it on your machine in place of the shared value; nobody
-else's environment changes, and nobody else — no other member, no
-administrator, not the server — can read it, or make one in its place: it is
+else's environment changes, and nobody else (no other member, no
+administrator, not the server) can read it, or make one in its place: it is
 encrypted under a key only your own vault can derive.
 
 'pull' and 'export' never include overrides; each tells you when you have any.
@@ -74,15 +74,15 @@ func cmdOverrides(args []string) error {
 		_, _ = io.WriteString(os.Stdout, overridesUsage)
 		return nil
 	default:
-		return fmt.Errorf("unknown overrides subcommand %q — run 'xecret overrides help'", args[0])
+		return fmt.Errorf("unknown overrides subcommand %q. Run 'xecret overrides help'", args[0])
 	}
 }
 
 // errOverridesNeedAPerson is the refusal every subcommand gives under
 // XECRET_TOKEN, before it parses a credential or makes a request.
 var errOverridesNeedAPerson = errors.New(
-	"personal overrides belong to a person, and XECRET_TOKEN is a service token — " +
-		"unset it and use your own login ('xecret login')")
+	"personal overrides belong to a person, and XECRET_TOKEN is a service token. " +
+		"Unset it and use your own login ('xecret login')")
 
 func overridesList(args []string) error {
 	flags := flag.NewFlagSet("overrides list", flag.ContinueOnError)
@@ -156,7 +156,7 @@ func overridesSet(args []string) error {
 	if len(positional) == 2 {
 		if positional[1] != "-" {
 			return fmt.Errorf(
-				"the value is never taken from the command line — pipe it in instead: "+
+				"the value is never taken from the command line. Pipe it in instead: "+
 					"printf '%%s' \"$VALUE\" | xecret overrides set %s -", positional[0])
 		}
 		if *fromFile != "" {
@@ -267,12 +267,12 @@ func overridesUnset(args []string) error {
 
 	if err := client.DeleteOverride(ctx, resolved.Org, resolved.Project, resolved.Environment, name); err != nil {
 		if apiErr, ok := api.AsError(err); ok && apiErr.Status == 404 {
-			return fmt.Errorf("you have no personal override for %s in %s/%s — 'xecret overrides list' shows the ones you do",
+			return fmt.Errorf("you have no personal override for %s in %s/%s ('xecret overrides list' shows the ones you do)",
 				name, resolved.Project, resolved.Environment)
 		}
 		return err
 	}
-	a.printer.Successf("Removed your personal override for %s in %s/%s — 'xecret run' uses the shared value again.",
+	a.printer.Successf("Removed your personal override for %s in %s/%s, so 'xecret run' uses the shared value again.",
 		name, resolved.Project, resolved.Environment)
 	return nil
 }

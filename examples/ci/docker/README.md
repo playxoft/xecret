@@ -9,7 +9,7 @@ where `docker history` reads it back out forever.
 Do not put secrets in the image at all. Inject them when the container runs:
 
 ```dockerfile
-# Dockerfile — no secrets anywhere
+# Dockerfile: no secrets anywhere
 FROM node:22-slim
 WORKDIR /app
 COPY . .
@@ -29,7 +29,7 @@ forwards them into the container without ever writing them down.
 
 ## Build-time secrets (when a build genuinely needs one)
 
-Use BuildKit secret mounts — the one mechanism that keeps the value out of
+Use BuildKit secret mounts, the one mechanism that keeps the value out of
 layers and build history:
 
 ```dockerfile
@@ -57,5 +57,5 @@ xecret pull --format docker > args.txt && docker build $(cat args.txt) .
 COPY .env .env
 ```
 
-The `docker` export format exists for `docker run --env-file` at *runtime* —
+The `docker` export format exists for `docker run --env-file` at *runtime*,
 never for `docker build`.

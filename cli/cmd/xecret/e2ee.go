@@ -268,7 +268,7 @@ func (a *app) checkMode(
 				return fmt.Errorf(
 					"%w.\n"+
 						"  XECRET_TOKEN carries an environment key, which is only minted for an\n"+
-						"  end-to-end encrypted environment — so a 'server' answer means either the\n"+
+						"  end-to-end encrypted environment, so a 'server' answer means either the\n"+
 						"  environment was migrated back or this is not the deployment that issued\n"+
 						"  the token. Confirm with an administrator before re-issuing it",
 					cache.ErrModeDowngrade,

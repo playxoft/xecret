@@ -1,4 +1,4 @@
-# 0005 — Single monorepo for web, CLI, and shared packages
+# 0005. Single monorepo for web, CLI, and shared packages
 
 **Status:** Accepted
 **Date:** 2026-08-10
@@ -32,7 +32,7 @@ already a self-contained Go module with its own licence and release pipeline.
 
 ## Decision
 
-**Option C — monorepo, structured so extraction is cheap.**
+**Option C: monorepo, structured so extraction is cheap.**
 
 ```
 xecret/
@@ -44,7 +44,7 @@ xecret/
 ├── docs/  examples/  scripts/
 ```
 
-npm workspaces for the TypeScript side. `cli/` is an ordinary Go module in a subdirectory —
+npm workspaces for the TypeScript side. `cli/` is an ordinary Go module in a subdirectory:
 `go build ./...` and GoReleaser both handle this natively with no special configuration.
 
 **`packages/core` must not import Cloudflare bindings, `next`, or any runtime-specific API.**

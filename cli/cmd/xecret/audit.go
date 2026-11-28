@@ -38,10 +38,10 @@ func cmdAudit(args []string) error {
 	switch *outcome {
 	case "", "success", "denied", "error":
 	default:
-		return fmt.Errorf("unknown outcome %q — use success, denied or error", *outcome)
+		return fmt.Errorf("unknown outcome %q. Use success, denied or error", *outcome)
 	}
 	if *envFlag != "" && *projectFlag == "" {
-		return errors.New("--environment narrows a project — pass --project too")
+		return errors.New("--environment narrows a project, so pass --project too")
 	}
 	if *limit < 1 {
 		return errors.New("--limit must be at least 1")
@@ -233,7 +233,7 @@ func auditSubject(event api.AuditEvent) string {
 		if event.ResourceType != nil {
 			return *event.ResourceType
 		}
-		return "—"
+		return "none"
 	}
 	return strings.Join(parts, "/")
 }
