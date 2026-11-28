@@ -7,7 +7,7 @@ updated: 2026-11-28
 ---
 
 Five steps, about five minutes. Everything here also works against a
-self-hosted deployment — set `XECRET_API_URL` and the steps are identical.
+self-hosted deployment: set `XECRET_API_URL` and the steps are identical.
 
 If a word here is unfamiliar, [core concepts](concepts.md) defines all of them
 in one page.
@@ -15,14 +15,14 @@ in one page.
 ## 1. Create an account
 
 Sign up with Google or with an email address and password. On your first
-sign-in xecret creates your **personal organisation** — a workspace with just
+sign-in xecret creates your **personal organisation**, a workspace with just
 you in it. Set up your vault, then create your first **project**: one project per
-application, and it starts with three **environments** — `development`,
+application, and it starts with three **environments**: `development`,
 `staging` and `production`. Its **Project ID** (`my-app` below) is filled in
 from the name and can be edited until you create the project. It is how the CLI
 and CI name the project, so after that it never changes.
 
-Each environment gets its own encryption key at the moment it is created —
+Each environment gets its own encryption key at the moment it is created,
 generated in your browser and sealed to you, so the server never holds it. A
 secret stored in `staging` is encrypted under a different key from the same
 secret in `production`.
@@ -33,14 +33,14 @@ Open your project in the dashboard, pick an environment, and drag your `.env`
 file into the import dialog.
 
 The file is parsed **in your browser**. A dry-run preview shows exactly what
-will be created, renamed or skipped before a single value is sent anywhere —
+will be created, renamed or skipped before a single value is sent anywhere,
 which means a pasted blob of production credentials never becomes a request
 body you have to trust us with.
 
 Multiline PEM blocks, `export ` prefixes, CRLF line endings and trailing
 comments all parse the way you would hope. JSON and YAML work too.
 
-> **Tip** — No `.env` to import? Add one secret by hand to see the flow:
+> **Tip**: No `.env` to import? Add one secret by hand to see the flow:
 > `DATABASE_URL` is the usual first.
 
 ## 3. Install the CLI
@@ -49,7 +49,7 @@ comments all parse the way you would hope. JSON and YAML work too.
 # macOS
 brew install playxoft/tap/xecret
 
-# Linux, WSL, CI — verifies the release checksum before unpacking
+# Linux, WSL, CI (verifies the release checksum before unpacking)
 curl -fsSL https://xecret.playxoft.com/install.sh | sh
 
 # anywhere you already have Node
@@ -71,8 +71,8 @@ xecret init      # pick a project and environment; writes .xecret.yaml
 ```
 
 `xecret login` opens a browser page where you approve the device by name. The
-credential it receives is stored in your operating system's keychain — macOS
-Keychain, Windows Credential Manager, or Secret Service on Linux — never in a
+credential it receives is stored in your operating system's keychain (macOS
+Keychain, Windows Credential Manager, or Secret Service on Linux), never in a
 dotfile you might commit or sync.
 
 `xecret init` writes a file called `.xecret.yaml`:
@@ -109,8 +109,8 @@ What happens under the hood:
 Secrets never touch disk, never appear in `ps` output, and never enter your
 shell history. Every read is written to the audit log.
 
-If the API is unreachable, an encrypted local cache answers instead — loudly,
-printing its age to stderr — so an outage on our side does not stop your
+If the API is unreachable, an encrypted local cache answers instead, and says so
+loudly on stderr, so an outage on our side does not stop your
 `npm run dev`. See [the offline cache](cli/offline-cache.md).
 
 Now delete your `.env` file, and make sure `.env*` is in `.gitignore`.
@@ -119,7 +119,7 @@ Now delete your `.env` file, and make sure `.env*` is in `.gitignore`.
 
 Mint a **service token** in the dashboard, under *Tokens → New service token*.
 A service token is pinned to exactly one project and one environment, is
-read-only by default, and is shown to you exactly once — copy it straight into
+read-only by default, and is shown to you exactly once, so copy it straight into
 your CI provider's secret store.
 
 ```yaml

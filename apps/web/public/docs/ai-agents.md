@@ -9,24 +9,24 @@ updated: 2026-11-28
 Three separate things share this page, because the people asking about one are
 usually about to need the next:
 
-1. **Teaching an agent to use xecret** — one document, one line to install it.
-2. **Reading this documentation programmatically** — the endpoints an agent
+1. **Teaching an agent to use xecret**: one document, one line to install it.
+2. **Reading this documentation programmatically**: the endpoints an agent
    should fetch.
-3. **Letting an agent run your code** — without giving it production
+3. **Letting an agent run your code** without giving it production
    credentials.
 
 ## The skill
 
 A single document teaches any agent how this product works: the commands, the
 scoping rules, the CI story, the errors, and the conventions it is expected to
-respect — never print a value, prefer `xecret run` over a `.env` file, ask
+respect: never print a value, prefer `xecret run` over a `.env` file, ask
 before touching production.
 
 It is published at `https://xecret.playxoft.com/skill.md` and is the same
 document however you load it.
 
-**In a repository**, for agents that read files — Claude Code, Codex, Cursor,
-Antigravity, Gemini CLI, Copilot, Windsurf, Zed:
+**In a repository**, for agents that read files (Claude Code, Codex, Cursor,
+Antigravity, Gemini CLI, Copilot, Windsurf, Zed):
 
 ```bash
 curl -fsSL https://xecret.playxoft.com/skill.sh | sh
@@ -86,7 +86,7 @@ curl https://xecret.playxoft.com/llms-full.txt
 ```
 
 Each page's markdown carries frontmatter with its title, a one-sentence
-description, keywords and the date it was last edited — enough to decide
+description, keywords and the date it was last edited, enough to decide
 relevance without fetching the body.
 
 ### Which to fetch
@@ -109,7 +109,7 @@ that is what was in your shell is how a debugging session becomes an incident.
 
 ### Give the agent its own environment
 
-Create an environment in the dashboard — call it `agent`, or reuse `test` —
+Create an environment in the dashboard (call it `agent`, or reuse `test`)
 containing values that are **shaped correctly but not real**: a local database
 URL, a Stripe test key, a signing secret generated for the purpose.
 
@@ -140,7 +140,7 @@ months.
 ### What the agent can see either way
 
 `xecret run` puts values into the child process's environment. An agent that
-can run arbitrary commands in that process can read them — `printenv` is not a
+can run arbitrary commands in that process can read them; `printenv` is not a
 sophisticated attack. The protection is the *scope of the credential*, not
 secrecy from the process you deliberately started.
 
@@ -186,6 +186,6 @@ conventions this tool expects:
 
 ## Next
 
-- [Command reference](cli/commands.md) — every command, in one page.
-- [Tokens](api/tokens.md) — scoping a credential for an agent.
-- [Teams and access](guides/teams.md) — why production is denied by default.
+- [Command reference](cli/commands.md): every command, in one page.
+- [Tokens](api/tokens.md): scoping a credential for an agent.
+- [Teams and access](guides/teams.md): why production is denied by default.

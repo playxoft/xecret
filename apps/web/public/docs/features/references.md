@@ -1,7 +1,7 @@
 ---
 title: Secret references and environment inheritance
 navTitle: References and inheritance
-description: Build one secret from others with ${env.KEY} templates, and let an environment inherit from a parent — resolved on your machine, never on our servers.
+description: Build one secret from others with ${env.KEY} templates, and let an environment inherit from a parent, resolved on your machine and never on our servers.
 keywords: [secret references, environment inheritance, secret templates, interpolation, environment variables composition]
 updated: 2026-10-21
 ---
@@ -23,11 +23,11 @@ postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/app
 | `${KEY}` | `KEY` in the environment being read |
 | `${env.KEY}` | `KEY` in another environment of the same project |
 | `${project.env.KEY}` | `KEY` in an environment of another project |
-| `$${` | A literal `${` — not a reference |
+| `$${` | A literal `${`, not a reference |
 
 Names follow the secret-name rules (`[A-Za-z_][A-Za-z0-9_]*`). Anything that
-looks like a reference but is malformed — an unclosed `${`, an empty one, four
-parts — is refused when you save it, never discovered when a process starts.
+looks like a reference but is malformed (an unclosed `${`, an empty one, four
+parts) is refused when you save it, never discovered when a process starts.
 
 Set one from the dashboard by choosing the *template* type, or from the CLI:
 
@@ -39,17 +39,17 @@ printf '%s' 'https://${API_HOST}/v1' | xecret secrets set API_URL --type templat
 
 `${KEY}` resolves in the view of the environment **being read**, not the one the
 template is stored in. A template in a parent environment saying `${DB_HOST}`
-therefore picks up each child's own `DB_HOST` — which is usually exactly why you
+therefore picks up each child's own `DB_HOST`, which is usually exactly why you
 put it in the parent. A qualified `${staging.DB_HOST}` always means staging.
 
 ### What is checked before anything is stored
 
 Your client parses the template and declares its references beside the
-encrypted value. The server cannot read the template — it is end-to-end
-encrypted like every other value — so the declaration is what it checks, before
+encrypted value. The server cannot read the template (it is end-to-end
+encrypted like every other value), so the declaration is what it checks, before
 storing, against the graph as it would be after the write:
 
-- every reference names an environment that exists and **that you can read** —
+- every reference names an environment that exists and **that you can read**:
   a template is not a way round a grant you do not hold;
 - no loop: `A → B → A` is refused, in every view that can see the template;
 - no chain deeper than **five** references;
@@ -64,7 +64,7 @@ holds cannot say something the text does not. What that check does **not**
 prove is that the server answered each reference honestly: which environment a
 slug means, and which stored secret a name means, are things the client learns
 from the server. A server that misbehaved could therefore answer
-`${staging.DB_HOST}` with a different value — but only one the reader can
+`${staging.DB_HOST}` with a different value, but only one the reader can
 already decrypt, from an environment whose key they hold. It cannot make up a
 value, because it holds no key to encrypt one, and it cannot reach into an
 environment the reader has no key for. The [trust model](../security/trust-model.md)
@@ -88,19 +88,19 @@ needs read access to it. Clearing a parent is always allowed, on any plan.
 
 ## Production reading from elsewhere {#production-reading-from-elsewhere}
 
-Linking a **production** environment to one that is **not** — making it
-inherit from staging, or giving it a template that reads `${staging.DB_HOST}` —
+Linking a **production** environment to one that is **not** (making it
+inherit from staging, or giving it a template that reads `${staging.DB_HOST}`)
 is allowed, and asked about. The reason is a trust consequence that is easy to
 miss: the link is a write path onto production for everybody who can change the
 source. A developer who may edit staging but not production changes what
-production reads the moment production inherits staging's value — without
+production reads the moment production inherits staging's value, without
 production's grants, its deny-by-default for developers, or anybody with
 production access being asked.
 
 So such a link is never made silently:
 
 - The first attempt is refused with a warning that names the source and **who
-  can write it** — the people, and any write service tokens pinned to it.
+  can write it**: the people, and any write service tokens pinned to it.
 - The dashboard shows that warning and asks again (*Inherit anyway*, or saving
   the template a second time); the CLI takes `--confirm-link`; the API takes
   `confirmCrossesProtection: true`.
@@ -111,7 +111,7 @@ The same question is asked when an environment's production mark changes
 underneath a link that was already there, in whichever direction makes it
 cross: marking an environment production while it already inherits from, or
 already holds a template reading, one that is not; or removing the mark from
-an environment a still-production one — in this project or another — already
+an environment a still-production one (in this project or another) already
 inherits from or reads through a template. Nothing about the link moved; only
 which side now answers to production's rules did, and that is exactly as much
 a new write path onto (or out from under) production as making the link
@@ -122,7 +122,7 @@ about. Re-saving a template with a reference it already had, a production
 environment inheriting from another production one, and staging reading from
 production ask nothing. If you want production's values to come only from
 places production's own rules govern, keep the production environments'
-parents and references production too — including a production environment
+parents and references production too, including a production environment
 of *another* project: it answers to that project's own writers, not to this
 one's, so a link into it is exactly as much a crossing as a link into staging.
 
@@ -130,8 +130,8 @@ one's, so a link into it is exactly as much a crossing as a link into staging.
 
 Every value stays encrypted under its own environment's key. `xecret run` and
 `xecret pull` fetch one bundle holding the environment, its ancestors and only
-the referenced secrets from elsewhere — a reference to `shared.DB_HOST` carries
-`DB_HOST`, not the rest of `shared` — open each with your own grant for that
+the referenced secrets from elsewhere (a reference to `shared.DB_HOST` carries
+`DB_HOST`, not the rest of `shared`), open each with your own grant for that
 environment, and resolve the result locally. Nothing is re-encrypted and nothing
 moves between environments; the server never sees a resolved value.
 
@@ -161,6 +161,6 @@ plan that includes them.
 
 ## Next
 
-- [Personal overrides](overrides.md) — your own value for one key, on your machine only.
-- [Promotion and point-in-time restore](promotion-and-restore.md) — moving values between environments, and back in time.
-- [The trust model](../security/trust-model.md) — what the server can and cannot see.
+- [Personal overrides](overrides.md): your own value for one key, on your machine only.
+- [Promotion and point-in-time restore](promotion-and-restore.md): moving values between environments, and back in time.
+- [The trust model](../security/trust-model.md): what the server can and cannot see.

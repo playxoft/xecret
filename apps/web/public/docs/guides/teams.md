@@ -14,7 +14,7 @@ page until somebody joins.
 *Members → Invite*. You need an email address and a role.
 
 The invitation email carries a single-use link. Accepting it requires being
-signed in as **that same address** — a forwarded email must not let a colleague
+signed in as **that same address**: a forwarded email must not let a colleague
 join as somebody else.
 
 Only the hash of the invitation token is stored, so the link is shown to you
@@ -29,7 +29,7 @@ Ordered `viewer` < `developer` < `admin` < `owner`.
 
 | Role | Can | Cannot |
 |---|---|---|
-| `owner` | Everything, including deleting the organisation | — |
+| `owner` | Everything, including deleting the organisation | Nothing |
 | `admin` | Manage members, tokens, projects, environments; read the audit log | Delete the organisation |
 | `developer` | Read and write secrets where granted | Manage members or tokens |
 | `viewer` | Read secrets where granted | Write anything |
@@ -59,8 +59,8 @@ A developer who needs production must be granted it explicitly, by somebody who
 manages members, and that grant is written to the audit log with a name
 attached.
 
-The alternative — production behaving like every other environment until
-somebody remembers to lock it down — makes the safe state the one that requires
+The alternative (production behaving like every other environment until
+somebody remembers to lock it down) makes the safe state the one that requires
 work. Every organisation that has done it the other way has, at some point,
 discovered a contractor with production access nobody meant to give.
 
@@ -127,7 +127,7 @@ that is the member page's job.
 "Both sides" means: to change somebody from `developer` to `admin`, you must be
 at least an `admin` yourself, to assign that role, *and* rank above the role
 they currently hold, to touch them at all. Without the second half, an admin
-could "demote" an owner — which is removing an owner's authority without
+could "demote" an owner, which is removing an owner's authority without
 holding it.
 
 You cannot change or remove yourself, and an organisation can never be left
@@ -139,8 +139,8 @@ investigating". Removal is permanent, and their grants do not come back.
 
 ## Custom roles
 
-On the Enterprise plan, an organisation can define its own roles — job titles
-such as "Deployer" or "Contractor" — under *Organisation settings → Roles*, and
+On the Enterprise plan, an organisation can define its own roles (job titles
+such as "Deployer" or "Contractor") under *Organisation settings → Roles*, and
 put members on them from the member list.
 
 - **A custom role only takes away.** It names a built-in role to narrow, and a
@@ -148,7 +148,7 @@ put members on them from the member list.
   has. It can never give anybody more than the role it is based on, or more
   than their own built-in role.
 - **An optional ceiling** caps how far its holders reach, separately outside
-  and inside production — "never above read in production", say. It caps
+  and inside production ("never above read in production", say). It caps
   explicit grants too, so a production grant written by mistake cannot get
   past it.
 - **Everybody still sees the member list.** Seeing who is in the organisation
@@ -158,10 +158,10 @@ put members on them from the member list.
   one, is refused if it would reach somebody beyond your authority, or switch
   on access grants you could not have written yourself.
 - **A role in use cannot be deleted.** Move its members to another role, or to
-  none, first — so nobody's access widens as a side effect of tidying up.
+  none, first, so nobody's access widens as a side effect of tidying up.
 - **Names are read, not just stored.** Two roles cannot have names a colleague
-  would read as one — "Deployer" and "deployer", or the same word in another
-  letter width or with a lookalike letter — and no role may be named, or look
+  would read as one ("Deployer" and "deployer", or the same word in another
+  letter width or with a lookalike letter), and no role may be named, or look
   like, a built-in one.
 - Owners never hold a custom role; promoting somebody to owner takes theirs off.
 
@@ -176,7 +176,7 @@ role, their grants, nothing more. Revoking their membership makes every one of
 their devices stop working immediately.
 
 A **service token** is not a person. It is pinned to one project and
-environment, and its actions are recorded against the token's own name — never
+environment, and its actions are recorded against the token's own name, never
 against whoever minted it. See [tokens](../api/tokens.md).
 
 Members can see and revoke their own devices under *Tokens → Your devices*.
@@ -197,6 +197,6 @@ For a team of five to fifteen:
 
 ## Next
 
-- [Core concepts](../concepts.md) — the hierarchy these rules apply to.
-- [The audit log](../security/audit-log.md) — checking what actually happened.
-- [Tokens](../api/tokens.md) — credentials in detail.
+- [Core concepts](../concepts.md): the hierarchy these rules apply to.
+- [The audit log](../security/audit-log.md): checking what actually happened.
+- [Tokens](../api/tokens.md): credentials in detail.

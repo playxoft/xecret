@@ -281,8 +281,8 @@ sign-in failed. Then it prints what it resolved before it starts:
 
 ```
 Building for production at https://secrets.your-company.com
-  (from apps/web/wrangler.toml → env.production.vars — stop now if that is not your deployment)
-  (signing in against WorkOS client client_… — its API key must be from the same WorkOS environment)
+  (from apps/web/wrangler.toml → env.production.vars; stop now if that is not your deployment)
+  (signing in against WorkOS client client_…; its API key must be from the same WorkOS environment)
 ```
 
 Read those lines. If they do not name your domain and your WorkOS client, step 4

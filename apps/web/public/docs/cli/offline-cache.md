@@ -41,8 +41,7 @@ you are still allowed, so falling back is safe.
 Every time the cache answers, the CLI writes to **stderr**:
 
 ```text
-warning: xecret API unreachable, using cached secrets
-         cached 2026-08-15 17:41 (18 hours ago), 24 secrets
+! using the offline copy from 2026-08-15 17:41 (24 secrets), decrypted locally.
 ```
 
 Stderr, not stdout, so it never contaminates a pipe. Loud, because silently

@@ -16,7 +16,7 @@ Applications need configuration they cannot publish: database passwords, API
 keys, signing secrets. The traditional home for these is a file called `.env`
 sitting in your project folder, ignored by Git so it never reaches the
 repository. That works perfectly right up until a second person joins. Then the
-file has to travel — over chat, over email, over a USB stick — and from that
+file has to travel (over chat, over email, over a USB stick), and from that
 moment nobody can answer three questions that matter:
 
 - **Who has a copy?** Every place the file was pasted still has it.
@@ -31,7 +31,7 @@ they are *copies*, and a copy is something you have stopped tracking.
 ## What xecret does instead
 
 xecret stores each environment's variables once, on a server, encrypted on
-your own device before they leave it. Your app never reads them from a file — a command-line tool fetches them and hands
+your own device before they leave it. Your app never reads them from a file: a command-line tool fetches them and hands
 them to your program as it starts:
 
 ```bash
@@ -58,7 +58,7 @@ tired of `.env.example` drifting out of date, and teams who need production
 credentials to be something an admin grants rather than something everyone
 inherits.
 
-It is *not* a password manager for humans — it does not autofill your bank
+It is *not* a password manager for humans; it does not autofill your bank
 login. It is for credentials that programs use.
 
 ## How this compares to what you may be using now
@@ -68,7 +68,7 @@ login. It is for credentials that programs use.
 | **`.env` files** | Copies you cannot track, no rotation story, no audit trail. Free and fine for a solo hobby project. |
 | **CI provider secrets** (GitHub Actions secrets, etc.) | Fine for CI, but they do not help on your laptop, and each provider is a separate silo you keep in sync by hand. |
 | **Cloud KMS / Secrets Manager** (AWS, GCP) | Powerful, and built for infrastructure rather than for `npm run dev`. Usually needs SDK changes in your app. |
-| **xecret** | One store for laptop, CI and production, injected without code changes, audited — and end-to-end encrypted, so the server holding it cannot read it. |
+| **xecret** | One store for laptop, CI and production, injected without code changes, audited, and end-to-end encrypted, so the server holding it cannot read it. |
 
 ## Who can read your secrets
 
@@ -78,7 +78,7 @@ Every value is encrypted in your browser or by the CLI before it is sent, with
 a key that belongs to its environment. That key is sealed to each person and
 each CI token allowed to read it, and only they hold the private keys that
 unseal it.
-xecret's servers store ciphertext and hold nothing that opens it — so a breach
+xecret's servers store ciphertext and hold nothing that opens it, so a breach
 of our database, somebody at Playxoft, or a court order has no values to give
 up.
 
@@ -87,15 +87,15 @@ environment names, who is a member, and the audit log of who read what. The
 details, and the limits of the guarantee, are in
 [what xecret can and cannot see](security/trust-model.md).
 
-> **Note** — For how xecret protects your data end to end — encryption, access
-> control, the audit log and vulnerability disclosure — see
+> **Note**: For how xecret protects your data end to end (encryption, access
+> control, the audit log and vulnerability disclosure), see
 > [security at xecret](/security). [The trust model](security/trust-model.md)
 > says exactly what the service can and cannot see.
 
 ## What to read next
 
-- [Quickstart](quickstart.md) — from sign-up to a running app, about five
+- [Quickstart](quickstart.md): from sign-up to a running app, about five
   minutes.
-- [Core concepts](concepts.md) — the five words the rest of these pages use.
-- [What xecret can and cannot see](security/trust-model.md) — the security
+- [Core concepts](concepts.md): the five words the rest of these pages use.
+- [What xecret can and cannot see](security/trust-model.md): the security
   model in full, before you trust it with anything real.

@@ -14,9 +14,9 @@ you need. Set them up in *Organisation settings → Webhooks* (owners and admins
 
 | Event | When |
 |---|---|
-| `secret.created` | A secret is created — directly, by an import, a promotion or a restore |
+| `secret.created` | A secret is created, directly or by an import, a promotion or a restore |
 | `secret.updated` | A secret's value changes, or it is renamed |
-| `secret.deleted` | A secret is deleted — directly, or by a promotion or a restore |
+| `secret.deleted` | A secret is deleted, directly or by a promotion or a restore |
 | `secret.rotated` | An earlier version is made current again |
 | `environment.promoted` | A [promotion](promotion-and-restore.md#promotion) lands, with counts |
 | `environment.restored` | A [point-in-time restore](promotion-and-restore.md#point-in-time-restore) lands, with counts |
@@ -27,8 +27,8 @@ Each endpoint subscribes to the events it wants.
 ### One event per kind of change, not per secret
 
 An import, a promotion or a restore can change hundreds of secrets in one go.
-It sends **one event of each kind it caused** — one `secret.created` for
-everything it created, one `secret.updated`, one `secret.deleted` — listing the
+It sends **one event of each kind it caused** (one `secret.created` for
+everything it created, one `secret.updated`, one `secret.deleted`), listing the
 secrets in `data.secrets`, with `data.counts` saying how many:
 
 ```json
@@ -50,7 +50,7 @@ secrets in `data.secrets`, with `data.counts` saying how many:
 ```
 
 An event about one secret carries `data.secret`; an event about several carries
-`data.secrets` instead — never both — so handle both shapes. The list holds at
+`data.secrets` instead (never both), so handle both shapes. The list holds at
 most 1,000 entries, which is also the most one batch can change.
 
 Match an organisation on `organization.id`. Its `slug` stays in the payload for
@@ -60,7 +60,7 @@ identified by its id, and a new one's slug is derived from that id. A project's
 
 ## The payload never contains a value
 
-Names, slugs, version numbers, counts and who did it — the same vocabulary as
+Names, slugs, version numbers, counts and who did it: the same vocabulary as
 the [audit log](../security/audit-log.md). Anybody who wants the value fetches
 it with a credential, and is audited doing so.
 
@@ -81,7 +81,7 @@ it with a credential, and is audited doing so.
 ## Verifying the signature
 
 Every delivery is signed with the [Standard Webhooks](https://www.standardwebhooks.com/)
-scheme — the same one xecret consumes from its own payment provider — using the
+scheme (the same one xecret consumes from its own payment provider), using the
 endpoint's `whsec_…` secret. It is shown **once**, when the endpoint is created
 or its secret rotated; xecret stores it encrypted and never shows it again.
 
@@ -116,10 +116,10 @@ libraries do all of this for you.
 
 ## Delivery and retries
 
-A 2xx response is a success; anything else — including a redirect, which is
-never followed — is a failure. Each attempt waits up to ten seconds. A failed
-delivery is retried with backoff — 1 minute, 5 minutes, 30 minutes, 2 hours, 6
-hours, 12 hours and 24 hours after each failure — then abandoned. Retries are
+A 2xx response is a success; anything else (including a redirect, which is
+never followed) is a failure. Each attempt waits up to ten seconds. A failed
+delivery is retried with backoff (1 minute, 5 minutes, 30 minutes, 2 hours, 6
+hours, 12 hours and 24 hours after each failure), then abandoned. Retries are
 sent by delivery sweeps, which currently run twice a day (10:17 and 22:17 UTC),
 so a retry goes out on the first sweep after its delay has passed: the early
 ones can arrive hours later than these figures. A retry sends the same body,
@@ -128,26 +128,26 @@ discard duplicates.
 
 The first few deliveries of a change are sent straight away; anything left over,
 and every retry, is sent by the next delivery sweep. A sweep takes organisations
-**in turns** — every organisation's oldest delivery before anybody's second — so
+**in turns** (every organisation's oldest delivery before anybody's second), so
 another organisation's large backlog never holds yours up, and keeps sending
 until nothing is due or its time is up, when the rest waits for the next sweep.
 
-An endpoint that keeps failing — 15 failures in a row spanning at least a day —
+An endpoint that keeps failing (15 failures in a row spanning at least a day)
 is **disabled automatically**, and the organisation's owners and admins are
 emailed. Re-enable it from the dashboard once it is fixed.
 
-Each endpoint has a delivery log — status, attempts, the response code, the
-body sent — and a *Send test* button that sends one `webhook.test` delivery.
+Each endpoint has a delivery log (status, attempts, the response code, the
+body sent) and a *Send test* button that sends one `webhook.test` delivery.
 
 Endpoint URLs must be `https://`, and may not point at a private, loopback or
 link-local address.
 
 ## If your plan changes
 
-Your endpoints are kept. On a plan with no webhooks they are paused — nothing is
-sent, and the dashboard says why — and resume when the plan includes them again.
+Your endpoints are kept. On a plan with no webhooks they are paused (nothing is
+sent, and the dashboard says why) and resume when the plan includes them again.
 
 ## Next
 
-- [Promotion and restore](promotion-and-restore.md) — the environment-wide events.
-- [The audit log](../security/audit-log.md) — the same facts, kept forever.
+- [Promotion and restore](promotion-and-restore.md): the environment-wide events.
+- [The audit log](../security/audit-log.md): the same facts, kept forever.

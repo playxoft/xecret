@@ -1,7 +1,7 @@
 ---
 title: HTTP API overview
 navTitle: Overview
-description: The contract the dashboard, CLI and CI all speak — authentication, request shape, error codes, pagination, rate limits and CSRF.
+description: The contract the dashboard, CLI and CI all speak: authentication, request shape, error codes, pagination, rate limits and CSRF.
 keywords: [xecret api, secrets rest api, bearer token api, api error codes, rate limits, csrf]
 updated: 2026-11-28
 ---
@@ -9,7 +9,7 @@ updated: 2026-11-28
 Everything the dashboard does, the CLI does, and CI does, it does through this
 API. There is no private back channel.
 
-You will rarely need it directly — `xecret run` is the supported path — but it
+You will rarely need it directly (`xecret run` is the supported path), but it
 is here, documented, for tooling you build yourself.
 
 ## Shape
@@ -75,7 +75,7 @@ do: [tokens](api/tokens.md).
 Cookie-authenticated mutations require a double-submit pair: the value of the
 `__Host-xecret_csrf` cookie echoed in an `X-Xecret-Csrf` header.
 
-Bearer-authenticated requests do not need it, and must not send it — they carry
+Bearer-authenticated requests do not need it, and must not send it: they carry
 no ambient credential for a browser to attach on your behalf, which is the
 entire thing CSRF protection defends against.
 
@@ -118,15 +118,15 @@ A leaked CI token must not be able to grow itself into a permanent one.
 | `payload_too_large` | 413 | Body over 1 MB, or a secret over 64 KB |
 | `rate_limited` | 429 | Bucket exhausted |
 | `csrf_failed` | 403 | Double-submit pair missing or mismatched |
-| `session_locked` | 403 | Authenticated, but the session's vault is locked — idle too long, or locked on purpose |
-| `unavailable` | 503 | Misconfigured deployment — a missing binding, an unreachable database |
+| `session_locked` | 403 | Authenticated, but the session's vault is locked (idle too long, or locked on purpose) |
+| `unavailable` | 503 | Misconfigured deployment, such as a missing binding or an unreachable database |
 | `internal_error` | 500 | Unhandled fault |
 
 ### 404 and 403 are not interchangeable
 
 403 is returned **only** once your membership in the organisation is already
-established, so it reveals nothing you did not already know. Everything else —
-wrong tenant, no grant, genuinely absent — is 404.
+established, so it reveals nothing you did not already know. Everything else
+(wrong tenant, no grant, genuinely absent) is 404.
 
 A client that could tell those apart could enumerate another company's
 projects by watching which ones answer 403 rather than 404.
@@ -166,7 +166,7 @@ table, that degradation is severe.
 | `RL_SERVICE` | service-token requests | token |
 | `RL_MUTATION` | every other write | actor |
 
-Exhausting one returns 429. Counters are per-datacentre rather than global —
+Exhausting one returns 429. Counters are per-datacentre rather than global:
 they are abuse control, not a security boundary. What actually protects a
 secret is authentication, authorisation and the audit trail.
 
@@ -177,11 +177,11 @@ what succeeded cannot detect an attack in progress. Values are decrypted by the
 client, so a read is recorded when the server hands over the ciphertext.
 
 Audit metadata is typed as a fixed allowlist of fields with no catch-all, so a
-secret value cannot be placed into a record — the type system rejects it rather
+secret value cannot be placed into a record: the type system rejects it rather
 than a reviewer having to notice. See [the audit log](security/audit-log.md).
 
 ## Next
 
-- [Endpoint reference](api/reference.md) — every route.
-- [Tokens](api/tokens.md) — how to get a credential and what it can do.
-- [The CLI](cli.md) — the supported way to use all of this.
+- [Endpoint reference](api/reference.md): every route.
+- [Tokens](api/tokens.md): how to get a credential and what it can do.
+- [The CLI](cli.md): the supported way to use all of this.

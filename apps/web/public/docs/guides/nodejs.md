@@ -1,7 +1,7 @@
 ---
 title: xecret with Node.js
 navTitle: Node.js
-description: Use xecret in any Node project — npm scripts, dotenv removal, TypeScript, monorepos, tests, and reading configuration safely at startup.
+description: Use xecret in any Node project: npm scripts, dotenv removal, TypeScript, monorepos, tests, and reading configuration safely at startup.
 keywords: [nodejs secrets, dotenv replacement, process.env node, npm scripts secrets, node environment variables]
 updated: 2026-08-16
 ---
@@ -23,7 +23,7 @@ Then delete the `dotenv` call and the `.env` file:
 import 'dotenv/config';
 const url = process.env.DATABASE_URL;
 
-// after — the import is gone; the second line is unchanged
+// after: the import is gone; the second line is unchanged
 const url = process.env.DATABASE_URL;
 ```
 
@@ -47,11 +47,11 @@ Put `xecret run` in the script, so nobody has to remember it:
 ```
 
 Note `start` has no `xecret run`. In production the environment is usually
-supplied by the platform — a container's env vars, a systemd unit — and the
+supplied by the platform (a container's env vars, a systemd unit), and the
 process should read whatever it is given. Wrapping `start` too would mean your
 production container needs network access to xecret at boot.
 
-> **Tip** — If you *do* want the container to fetch its own secrets at boot,
+> **Tip**: If you *do* want the container to fetch its own secrets at boot,
 > that is a legitimate pattern, and [Docker](docker.md) covers it, including
 > the trade-off you are accepting.
 
@@ -100,9 +100,9 @@ export const config = {
 `.xecret.yaml` is found by walking up from the working directory, the way
 `git` finds `.git`. Two arrangements both work:
 
-- **One file at the repository root** — every package shares an environment.
+- **One file at the repository root**: every package shares an environment.
   Simple, and right when the packages deploy together.
-- **One file per package** — each service gets its own project and its own
+- **One file per package**: each service gets its own project and its own
   secrets. Right when they deploy separately.
 
 ```text
@@ -125,7 +125,7 @@ credentials:
 ```
 
 Create a `test` environment in the dashboard alongside `development`. Its
-values can be fakes — the point is that they are managed and shared rather than
+values can be fakes; the point is that they are managed and shared rather than
 invented per machine.
 
 ## Reading a single secret in a script
@@ -143,6 +143,6 @@ recorded.
 
 ## Next
 
-- [Next.js](nextjs.md) — build-time variables and `NEXT_PUBLIC_`.
-- [Docker](docker.md) — containers, without baking secrets into layers.
-- [Secrets in CI](ci.md) — service tokens.
+- [Next.js](nextjs.md): build-time variables and `NEXT_PUBLIC_`.
+- [Docker](docker.md): containers, without baking secrets into layers.
+- [Secrets in CI](ci.md): service tokens.
