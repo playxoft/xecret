@@ -8,6 +8,7 @@ import { ENVIRONMENT_SLUG_PATTERN, slugify, SLUG_MAX_LENGTH } from '@xecret/core
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { createEnvironmentKeys } from '@/components/envkeys';
+import { isPlanRefusal, PlanLockNotice } from '@/components/plans/plan-lock';
 import { useVaultKeys } from '@/components/vault';
 import {
   Alert,
@@ -137,6 +138,8 @@ function CreateEnvironmentForm({
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  /** A plan refusal the lock on "New environment" could not foresee; see `PlanLockNotice`. */
+  const [planError, setPlanError] = useState<unknown>(null);
 
   /** Kept in step with the parent, which blocks dismissal mid-request. */
   function setBusy(busy: boolean) {
@@ -169,6 +172,7 @@ function CreateEnvironmentForm({
 
     setBusy(true);
     setFormError(null);
+    setPlanError(null);
 
     // Minted here because the grant is sealed against it. The bytes below exist
     // in exactly one place until the request commits — the server writes the
@@ -213,6 +217,12 @@ function CreateEnvironmentForm({
       onCreated();
     } catch (cause) {
       setBusy(false);
+      // The ceiling reached between this screen's listing and the request: said
+      // the way the lock on "New environment" would have said it.
+      if (isPlanRefusal(cause)) {
+        setPlanError(cause);
+        return;
+      }
       if (isApiError(cause)) {
         if (cause.code === 'conflict') {
           setErrors({ slug: 'An environment with this slug already exists in this project.' });
@@ -303,6 +313,7 @@ function CreateEnvironmentForm({
         </div>
 
         {formError ? <Alert tone="danger">{formError}</Alert> : null}
+        <PlanLockNotice error={planError} />
       </DialogBody>
 
       <DialogFooter>

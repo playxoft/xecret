@@ -26,6 +26,19 @@ import {
   useToast,
 } from '@/components/ui';
 import type { BadgeTone } from '@/components/ui';
+import type { PlanBlock } from '@/components/plans/plan-gate';
+import { LockedAction } from '@/components/plans/plan-lock';
+
+/**
+ * The lock on turning single sign-on on without the add-on. A `notice`: the
+ * add-on is bought per organisation from us, not by moving to another plan,
+ * so the lock offers no plans page and the sentence beside it says how.
+ */
+const SSO_ADDON_LOCK: PlanBlock = {
+  kind: 'notice',
+  reason: 'Single sign-on is an add-on, bought separately for each organisation.',
+  upgradeTo: null,
+};
 
 /** One identity-provider connection, as `GET /api/orgs/{orgSlug}/sso` reports it. */
 export interface SsoConnection {
@@ -313,17 +326,27 @@ function SsoSettings({
             ) : null}
           </div>
         ) : (
-          <Alert tone="info" title="Single sign-on is an add-on">
-            Single sign-on is purchased separately for each organisation, because every connected
-            identity provider is a paid connection at WorkOS.{' '}
-            <Link
-              href="/contact"
-              className="text-fg decoration-line-strong hover:decoration-fg font-medium underline underline-offset-4"
-            >
-              Contact us
-            </Link>{' '}
-            to turn it on for this organisation.
-          </Alert>
+          // The button is drawn, locked, where an owner would press it; the
+          // sentence beside it is the way to the add-on, which is bought from
+          // us rather than from the plans page.
+          <div className="flex flex-col items-start gap-3">
+            {mayManage ? (
+              <LockedAction lock={SSO_ADDON_LOCK}>
+                <Button variant="primary">Turn on single sign-on</Button>
+              </LockedAction>
+            ) : null}
+            <p className="text-fg-muted text-sm leading-6">
+              Single sign-on is purchased separately for each organisation, because every connected
+              identity provider is a paid connection at WorkOS.{' '}
+              <Link
+                href="/contact"
+                className="text-fg decoration-line-strong hover:decoration-fg font-medium underline underline-offset-4"
+              >
+                Contact us
+              </Link>{' '}
+              to turn it on for this organisation.
+            </p>
+          </div>
         )
       ) : (
         <>

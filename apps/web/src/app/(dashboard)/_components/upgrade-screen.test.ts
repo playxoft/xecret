@@ -3,6 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { authoritySummary } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
+import { PLANS } from '@xecret/core/entitlements';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import type { SessionOrganization } from './session';
 
@@ -200,7 +201,7 @@ describe('UpgradeScreen, for an owner', () => {
     );
     const html = render('owner');
 
-    expect(html).toContain('40 projects of 40. Team allows 100.');
+    expect(html).toContain(`40 projects of 40. Team allows ${PLANS.team.limits.projects}.`);
     expect(html).not.toContain('Pro allows 25');
   });
 

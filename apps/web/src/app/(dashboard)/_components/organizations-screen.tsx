@@ -6,6 +6,8 @@ import { useEffect } from 'react';
 
 import { initials } from '@/lib/format';
 import { ArrowRightIcon, Button, PlusIcon } from '@/components/ui';
+import { useOrganizationCreateLock } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { appPath } from '../_lib/paths';
 import { useSession } from './session';
 
@@ -30,6 +32,8 @@ export function OrganizationsScreen({ intent = null }: { intent?: 'plans' | null
   // The dialog itself is the shell's — see `SessionValue.createOrganization`.
   // This screen only needs the button.
   const { organizations, createOrganization } = useSession();
+  // Locked while this account holds an organisation still waiting for a plan.
+  const createLock = useOrganizationCreateLock();
   const only = organizations.length === 1 ? organizations[0] : undefined;
 
   useEffect(() => {
@@ -58,10 +62,12 @@ export function OrganizationsScreen({ intent = null }: { intent?: 'plans' | null
             them.
           </p>
         </div>
-        <Button variant="secondary" className="shrink-0" onClick={createOrganization}>
-          <PlusIcon className="size-4" />
-          New organisation
-        </Button>
+        <LockedAction lock={createLock}>
+          <Button variant="secondary" className="shrink-0" onClick={createOrganization}>
+            <PlusIcon className="size-4" />
+            New organisation
+          </Button>
+        </LockedAction>
       </div>
 
       <ul className="mt-6 flex flex-col gap-2">

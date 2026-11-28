@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+import { FREE_ORGANIZATIONS_PER_ACCOUNT, MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 import { DELETED_DATA_RETENTION_DAYS } from '@xecret/db/repositories';
 import { PROJECT_VIEW_STORAGE_KEY } from '@/components/projects/project-listing';
 import { DEVICE_PIN_WRAP_KEY } from '@/components/vault/device-pin';
@@ -98,12 +98,14 @@ const PROSE = new Map(
  */
 const WORDS: Readonly<Record<number, string>> = {
   1: 'one',
+  2: 'two',
   3: 'three',
   5: 'five',
   7: 'seven',
   10: 'ten',
   25: 'twenty-five',
   30: 'thirty',
+  60: 'sixty',
   100: 'a hundred',
   180: 'a hundred and eighty',
   250: 'two hundred and fifty',
@@ -219,7 +221,6 @@ describe('every page that states a price states the current one', () => {
  * but "retention" does not.
  */
 const NOUNS = {
-  organizations: 'organisations?',
   projects: 'projects',
   environmentsPerProject: 'environments',
   secretsPerEnvironment: 'secrets',
@@ -245,7 +246,6 @@ describe('every limit stated in prose matches the engine', () => {
    */
   const STATES_CEILINGS: Readonly<Record<string, readonly (keyof typeof NOUNS)[]>> = {
     terms: [
-      'organizations',
       'projects',
       'environmentsPerProject',
       'secretsPerEnvironment',
@@ -254,10 +254,10 @@ describe('every limit stated in prose matches the engine', () => {
       'webhooks',
       'auditRetentionDays',
     ],
-    faq: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
-    features: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
-    about: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
-    '.': ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    faq: ['projects', 'environmentsPerProject', 'auditRetentionDays'],
+    features: ['projects', 'environmentsPerProject', 'auditRetentionDays'],
+    about: ['projects', 'environmentsPerProject', 'auditRetentionDays'],
+    '.': ['projects', 'environmentsPerProject', 'auditRetentionDays'],
   };
 
   // `Object.keys` widens to `string[]`, and `SOURCES` is keyed by the literal
@@ -293,10 +293,10 @@ describe('every limit stated in prose matches the engine', () => {
    * first and Pro next, so the free description is what lies between them.
    */
   function freeRegion(source: string): string {
-    const start = source.search(/free tier|Free is|Free —/i);
+    const start = source.search(/free tier|Free is|Free —|Free:/i);
     if (start < 0) return '';
     const rest = source.slice(start);
-    const end = rest.search(/\bPro (is|will be|—)/);
+    const end = rest.search(/\bPro( is| will be| —|:)/);
     return end < 0 ? rest : rest.slice(0, end);
   }
 
@@ -325,7 +325,6 @@ describe('every limit stated in prose matches the engine', () => {
     const free = PLANS.free.limits;
 
     for (const field of [
-      'organizations',
       'projects',
       'environmentsPerProject',
       'secretsPerEnvironment',
@@ -356,7 +355,6 @@ describe('every limit stated in prose matches the engine', () => {
       expect(region, `${page} enumerates the free tier but no region was found`).not.toBe('');
 
       for (const field of [
-        'organizations',
         'projects',
         'environmentsPerProject',
         'seats',
@@ -370,6 +368,45 @@ describe('every limit stated in prose matches the engine', () => {
         ).toBe(true);
       }
     }
+  });
+});
+
+/**
+ * Organisations per account, which is not a plan limit any more.
+ *
+ * A plan covers the one organisation it is bought for, and each paid one is
+ * billed on its own, so no page may give Pro, Team or Enterprise an
+ * organisation count; Free states the account's allowance instead. The old
+ * ladder (one, three and ten organisations) was in six of these sentences.
+ */
+describe('organisations are stated as the free allowance, and only there', () => {
+  const ENUMERATES_FREE = ['terms', 'faq', 'features', 'about', '.'] as const;
+
+  it.each(ENUMERATES_FREE)('%s states the free organisations per account', (page) => {
+    const prose = PROSE.get(page) ?? '';
+    expect(
+      states(prose, FREE_ORGANIZATIONS_PER_ACCOUNT, 'free organisations per account'),
+      `${page} does not state ${FREE_ORGANIZATIONS_PER_ACCOUNT} free organisations per account`,
+    ).toBe(true);
+  });
+
+  it.each(ENUMERATES_FREE)('%s gives no paid plan an organisation count', (page) => {
+    const prose = (PROSE.get(page) ?? '').toLowerCase().replace(/\s+/g, ' ');
+    for (const retired of [
+      '1 organisation, 5',
+      'one organisation, five',
+      '3 organisations',
+      'three organisations',
+      '10 organisations',
+      'ten organisations',
+    ]) {
+      expect(prose, `${page} still says "${retired}"`).not.toContain(retired);
+    }
+  });
+
+  it.each(ENUMERATES_FREE)('%s says a plan covers the organisation it is bought for', (page) => {
+    const prose = (PROSE.get(page) ?? '').replace(/\s+/g, ' ');
+    expect(prose).toMatch(/plan covers the one organisation it is bought for/);
   });
 });
 

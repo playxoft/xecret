@@ -246,7 +246,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What does xecret cost?',
         answer:
-          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 3 organisations, 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always.',
+          'Free is $0 forever: 2 free organisations per account, each with 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 60 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Each plan covers the one organisation it is bought for. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Both are on the roadmap. Self-hosting is free, always.',
       },
       {
         question: 'Do I need a card to try it?',
@@ -262,7 +262,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'Is the free tier really free?',
         answer:
-          'Yes — $0 forever, not a trial that expires into a quote. It is capped at one organisation, five projects, three members, three environments per project and seven days of audit history, and those are honest limits rather than a nag screen. Everything else on it behaves exactly as it does on the paid plans.',
+          'Yes, $0 forever, not a trial that expires into a quote. It is capped at two free organisations per account, five projects, three members, three environments per project and seven days of audit history, and those are honest limits rather than a nag screen. Everything else on it behaves exactly as it does on the paid plans.',
       },
       {
         question: 'What counts as a member?',

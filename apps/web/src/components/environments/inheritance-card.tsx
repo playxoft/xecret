@@ -8,6 +8,8 @@ import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
 import { planName } from '@/components/plans/plan-copy';
 import { ChangeError } from '@/components/plans/plan-notice';
+import { useControlPlaneLock, usePlanFeature } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import type {
   EnvironmentChangeResponse,
   EnvironmentDetail,
@@ -53,9 +55,10 @@ import { protectionCrossingWarning } from './protection-crossing';
  * — and the server additionally asks that the person can read the parent.
  * Setting a parent needs the `secretReferencing` feature; *clearing* one never
  * does, and an organisation that downgraded keeps every parent it set. The
- * dashboard cannot know the organisation's entitlements in advance — support
- * can raise them — so the selector is offered and a plan refusal comes back
- * through `ChangeError`, naming the plan that would allow it.
+ * selector is always offered, and "Inherit" is drawn locked where the plan
+ * the shell read does not include the feature, so the plan is named before
+ * the button is pressed. A refusal that arrives anyway still comes back
+ * through `ChangeError`.
  *
  * ── What the menu leaves out, and what it only disables ──
  * Itself, always. Everything else is drawn, and the ones that cannot be chosen
@@ -106,6 +109,10 @@ export function InheritanceCard({
   const options = parentOptions(environments, environment.slug);
   const chosen = options.find((option) => option.slug === choice) ?? null;
   const plan = cheapestPlanWithFeature('secretReferencing');
+  const inheritLock = usePlanFeature('secretReferencing');
+  // Clearing a parent needs no plan, only an organisation that is not waiting
+  // for its first one.
+  const clearLock = useControlPlaneLock();
 
   async function change(next: string | null, confirmCrossesProtection = false) {
     setError(null);
@@ -275,17 +282,21 @@ export function InheritanceCard({
                 ) : null}
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="primary"
-                    disabled={chosen === null || chosen.unavailable !== null}
-                    onClick={() => setConfirming('set')}
-                  >
-                    {chosen === null ? 'Inherit' : `Inherit from ${chosen.name}`}
-                  </Button>
-                  {parent !== null ? (
-                    <Button variant="secondary" onClick={() => setConfirming('clear')}>
-                      Stop inheriting
+                  <LockedAction lock={inheritLock}>
+                    <Button
+                      variant="primary"
+                      disabled={chosen === null || chosen.unavailable !== null}
+                      onClick={() => setConfirming('set')}
+                    >
+                      {chosen === null ? 'Inherit' : `Inherit from ${chosen.name}`}
                     </Button>
+                  </LockedAction>
+                  {parent !== null ? (
+                    <LockedAction lock={clearLock}>
+                      <Button variant="secondary" onClick={() => setConfirming('clear')}>
+                        Stop inheriting
+                      </Button>
+                    </LockedAction>
                   ) : null}
                 </div>
               </div>

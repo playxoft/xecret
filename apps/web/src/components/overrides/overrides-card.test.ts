@@ -149,8 +149,11 @@ describe('the card, rendered', () => {
     vault.unlocked = true;
     const html = renderCard();
     expect(html).toContain('DATABASE_URL');
-    expect(html).toContain('Setting a personal override needs the Pro plan.');
-    expect(html).not.toContain('Set an override');
+    // "Set an override" is drawn locked, saying which plan allows another.
+    expect(html).toMatch(
+      /<button[^>]*aria-disabled="true"[^>]*data-plan-locked=""[^>]*>(?:(?!<\/button>)[\s\S])*Set an override/,
+    );
+    expect(html).toContain('Personal overrides are on Pro and above.');
     expect(html).not.toContain('Replace your override');
   });
 
@@ -236,8 +239,7 @@ describe('the set dialog', () => {
 
   it('shows the plan that unlocks it, with nothing to type', () => {
     const html = renderStep({ kind: 'plan', upgradeTo: 'pro' });
-    expect(html).toContain('Setting a personal override needs the Pro plan.');
-    expect(html).toContain('href="/app/acme/settings/plans"');
+    expect(html).toContain('Personal overrides are on Pro and above.');
     expect(html).not.toContain('<textarea');
     expect(html).not.toContain('type="submit"');
   });

@@ -25,7 +25,9 @@ type Params = { orgSlug: string; invitationId: string };
 
 export const DELETE = authenticatedRoute<Params>(
   async ({ params, principal, services, audit, record }) => {
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Open while the control plane is closed: withdrawing a way in must never
+    // wait on a payment (`guardControlPlane` in `tenancy.ts`).
+    const scope = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
     const orgId = scope.organization.id;
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([orgId, params.invitationId]));

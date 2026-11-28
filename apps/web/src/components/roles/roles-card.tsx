@@ -3,8 +3,6 @@
 import { useState } from 'react';
 
 import { actionsForBase } from '@xecret/core/authz';
-import { PLANS } from '@xecret/core/entitlements';
-import type { PlanId } from '@xecret/core/entitlements';
 import { CUSTOM_ROLES_PER_ORGANIZATION } from '@xecret/core/validation';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -28,12 +26,10 @@ import {
 } from '@/components/ui';
 import { ACCESS_LEVEL_LABELS, ROLE_LABELS } from '@/components/members/types';
 import type { CustomRole, CustomRoleListResponse } from '@/components/members/types';
+import { useControlPlaneLock } from '@/components/plans/plan-entitlements';
+import { featureLockFrom } from '@/components/plans/plan-gate';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { RoleDialog } from './role-dialog';
-
-/** A plan's name as the pricing page says it, from the plan table the server enforces. */
-function planName(id: string): string {
-  return id in PLANS ? PLANS[id as PlanId].name : id;
-}
 
 /**
  * The organisation's custom roles, on its settings page.
@@ -80,6 +76,15 @@ export function RolesCard({
   const entitled = feature?.enabled ?? false;
   const upgradeTo = feature?.upgradeTo ?? null;
   const atCeiling = (roles.data?.data.length ?? 0) >= CUSTOM_ROLES_PER_ORGANIZATION;
+  // "New role" is drawn locked, with the plan that includes custom roles,
+  // rather than replaced by a banner about them. Every write, while the
+  // organisation waits for a paid plan.
+  const controlLock = useControlPlaneLock();
+  const defineLock =
+    controlLock ??
+    (feature === undefined
+      ? null
+      : featureLockFrom('customRoles', { enabled: entitled, upgradeTo }));
 
   return (
     <Card>
@@ -92,11 +97,13 @@ export function RolesCard({
             Assign them on the Members page.
           </CardDescription>
         </div>
-        {mayList && mayDefine && entitled && !atCeiling ? (
-          <Button variant="secondary" onClick={() => setEditing('new')}>
-            <PlusIcon className="size-4" />
-            New role
-          </Button>
+        {mayList && mayDefine && feature !== undefined && !atCeiling ? (
+          <LockedAction lock={defineLock}>
+            <Button variant="secondary" onClick={() => setEditing('new')}>
+              <PlusIcon className="size-4" />
+              New role
+            </Button>
+          </LockedAction>
         ) : null}
       </CardHeader>
 
@@ -119,14 +126,16 @@ export function RolesCard({
         ) : (
           <>
             {!entitled ? (
-              <Alert tone="info" title="Custom roles are an Enterprise feature">
-                {upgradeTo !== null
-                  ? `Defining and assigning roles needs the ${planName(upgradeTo)} plan.`
-                  : 'Defining and assigning roles is not part of this organisation’s plan.'}{' '}
-                {roles.data.data.length > 0
-                  ? 'The roles below still apply to the people holding them; you can take members off them and delete roles nobody holds.'
-                  : null}
-              </Alert>
+              // What a downgrade left: the lock on "New role" says what the plan
+              // allows, and this what still happens to the roles already here.
+              roles.data.data.length > 0 ? (
+                <p className="text-fg-subtle text-sm">
+                  The roles below still apply to the people holding them; you can take members off
+                  them and delete roles nobody holds.
+                </p>
+              ) : !mayDefine ? null : (
+                <p className="text-fg-subtle text-sm">No custom roles yet.</p>
+              )
             ) : !mayDefine ? (
               <p className="text-fg-subtle text-sm">
                 Only an owner or admin who holds no custom role can define or change roles.

@@ -32,6 +32,7 @@ vi.mock('@/app/(dashboard)/_lib/use-api-resource', () => ({
 
 const { Toaster } = await import('@/components/ui');
 const { WebhooksCard } = await import('./webhooks-card');
+const { entitlementsFor, planView, withPlan } = await import('@/components/plans/plan-test-view');
 
 function organization(role: OrgRole): SessionOrganization {
   return {
@@ -75,18 +76,33 @@ function shows(over: Partial<WebhookListResponse> = {}): void {
   resource.current = { data, error: null, loading: false };
 }
 
+/** The plan the shell read for the organisation: Pro, unless a test says otherwise. */
+const plan = { current: entitlementsFor('pro') };
+
 function render(org: SessionOrganization): string {
   return renderToStaticMarkup(
-    createElement(
-      Toaster,
-      null,
-      createElement(WebhooksCard, { orgSlug: 'acme', organization: org }),
+    withPlan(
+      planView({ entitlements: plan.current, owner: org.role === 'owner' }),
+      createElement(
+        Toaster,
+        null,
+        createElement(WebhooksCard, { orgSlug: 'acme', organization: org }),
+      ),
     ),
   );
 }
 
+/** The opening tag of the locked button whose text includes `label`, or `null`. */
+function lockedButton(html: string, label: string): string | null {
+  const match = new RegExp(
+    `<button[^>]*aria-disabled="true"[^>]*data-plan-locked=""[^>]*>(?:(?!</button>)[\\s\\S])*${label}`,
+  ).exec(html);
+  return match?.[0] ?? null;
+}
+
 beforeEach(() => {
   resource.paths = [];
+  plan.current = entitlementsFor('pro');
   shows();
 });
 
@@ -111,15 +127,30 @@ describe('WebhooksCard', () => {
     expect(html).toContain('New endpoint');
   });
 
-  it('replaces New endpoint with the plan that allows another, at the ceiling', () => {
+  it('locks New endpoint at the ceiling, saying what the plan allows and which allows more', () => {
     shows({ limit: { max: 3, used: 3 }, upgradeTo: 'team' });
     const html = render(organization('owner'));
-    expect(html).not.toContain('New endpoint');
-    expect(html).toContain('the most its plan allows');
-    expect(html).toContain('Adding another endpoint needs the Team plan.');
+    expect(lockedButton(html, 'New endpoint')).not.toBeNull();
+    expect(html).toContain('Your Pro plan allows 3 webhooks. Upgrade to Team to add more.');
+    // The sentence that used to stand in for the button is gone.
+    expect(html).not.toContain('the most its plan allows');
   });
 
-  it('says a paused organisation keeps its endpoints, and which plan starts them', () => {
+  it('leaves New endpoint unlocked below the ceiling', () => {
+    shows({ limit: { max: 3, used: 2 } });
+    const html = render(organization('owner'));
+    expect(html).toContain('New endpoint');
+    expect(lockedButton(html, 'New endpoint')).toBeNull();
+  });
+
+  it('tells an admin at the ceiling to ask an owner', () => {
+    shows({ limit: { max: 3, used: 3 }, upgradeTo: 'team' });
+    const html = render(organization('admin'));
+    expect(html).toContain('Your Pro plan allows 3 webhooks. Ask an owner to upgrade.');
+  });
+
+  it('says a paused organisation keeps its endpoints, and locks adding another', () => {
+    plan.current = entitlementsFor('free');
     shows({
       webhooks: [webhook({ state: 'paused' })],
       limit: { max: 0, used: 1 },
@@ -128,8 +159,8 @@ describe('WebhooksCard', () => {
     });
     const html = render(organization('owner'));
     expect(html).toContain('Webhooks are paused');
-    expect(html).toContain('Delivering webhooks needs the Pro plan.');
-    expect(html).not.toContain('New endpoint');
+    expect(lockedButton(html, 'New endpoint')).not.toBeNull();
+    expect(html).toContain('Your Free plan includes no webhooks. Upgrade to Pro to add one.');
   });
 
   it('explains an endpoint switched off for failing, and offers to switch it back on', () => {

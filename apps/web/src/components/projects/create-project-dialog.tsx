@@ -15,6 +15,8 @@ import {
 import { api, isApiError } from '@/lib/api';
 import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
 import { createEnvironmentKeys } from '@/components/envkeys';
+import { useRefreshPlan } from '@/components/plans/plan-entitlements';
+import { isPlanRefusal, PlanLockNotice } from '@/components/plans/plan-lock';
 import { useVaultKeys } from '@/components/vault';
 import {
   Alert,
@@ -173,6 +175,7 @@ function CreateProjectForm({
   const router = useRouter();
   const { toast } = useToast();
   const vault = useVaultKeys();
+  const refreshPlan = useRefreshPlan();
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -183,6 +186,12 @@ function CreateProjectForm({
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  /**
+   * A plan refusal that arrived although the button was not locked: the count
+   * moved between the shell reading it and this request (somebody else made
+   * the last project the plan allows). Said in the lock's own words.
+   */
+  const [planError, setPlanError] = useState<unknown>(null);
 
   /** Kept in step with the parent, which blocks dismissal mid-request. */
   function setBusy(busy: boolean) {
@@ -218,6 +227,7 @@ function CreateProjectForm({
 
     setBusy(true);
     setFormError(null);
+    setPlanError(null);
 
     // Generated before the `try` that owns the zeroization, and guarded on its
     // own: a failure part-way through has produced material to wipe but nothing
@@ -251,9 +261,17 @@ function CreateProjectForm({
       });
 
       onOpenChange(false);
+      // One more project against the plan's ceiling, so every lock on it is
+      // read again.
+      refreshPlan();
       router.push(appPath.project(orgSlug, created.project.id));
     } catch (cause) {
       setBusy(false);
+      if (isPlanRefusal(cause)) {
+        setPlanError(cause);
+        refreshPlan();
+        return;
+      }
       if (isApiError(cause)) {
         // 409 is the partial unique index on (org_id, slug) refusing a
         // duplicate. It is a property of the slug, so it is shown on that field
@@ -341,6 +359,7 @@ function CreateProjectForm({
         </Field>
 
         {formError ? <Alert tone="danger">{formError}</Alert> : null}
+        <PlanLockNotice error={planError} />
       </DialogBody>
 
       <DialogFooter>

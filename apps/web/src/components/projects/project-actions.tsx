@@ -33,6 +33,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { ProjectMembersDialog } from '@/components/members/project-members-dialog';
+import { useRefreshPlan } from '@/components/plans/plan-entitlements';
 import { ImportArchiveDialog } from './import-archive-dialog';
 import type { Environment, Project } from './types';
 
@@ -170,6 +171,7 @@ export function ProjectActions({
   onChanged,
 }: ProjectActionsProps) {
   const router = useRouter();
+  const refreshPlan = useRefreshPlan();
   const { toast } = useToast();
   const [managingMembers, setManagingMembers] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -204,6 +206,8 @@ export function ProjectActions({
     );
 
     toast({ variant: 'success', title: `Deleted ${project.name}` });
+    // A place under the plan's project ceiling is free again.
+    refreshPlan();
     router.push(appPath.org(orgSlug));
   }
 

@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { errorMessage, isApiError } from '@/lib/api';
+import { useControlPlaneLock } from '@/components/plans/plan-entitlements';
+import {
+  isPlanRefusal,
+  LockedAction,
+  PlanLockNotice,
+  refusalBlock,
+} from '@/components/plans/plan-lock';
 import { pluralize } from '@/lib/format';
 import type { SecretIo } from '@/components/envkeys';
 import { policyProblem } from '@/components/policies/policy-checks';
@@ -328,6 +335,12 @@ function ImportBody({
   }
 
   const writes = plan === null ? 0 : plan.counts.create + plan.counts.overwrite;
+  // Locked before Import is pressed: the preview is the server's own dry run,
+  // so a file that would carry the environment past the plan's ceiling on
+  // secrets is refused there, and the button says so. And every write while
+  // the organisation waits for a paid plan.
+  const controlLock = useControlPlaneLock();
+  const importLock = controlLock ?? refusalBlock(planError) ?? refusalBlock(applyError);
 
   return (
     <>
@@ -471,7 +484,9 @@ function ImportBody({
               </Field>
             </div>
 
-            {planError !== null ? (
+            {isPlanRefusal(planError) ? (
+              <PlanLockNotice error={planError} />
+            ) : planError !== null ? (
               <Alert tone="danger" title="Could not build a preview">
                 <p>{errorMessage(planError)}</p>
                 {isApiError(planError) && planError.requestId ? (
@@ -503,7 +518,9 @@ function ImportBody({
               </>
             ) : null}
 
-            {applyError !== null ? (
+            {isPlanRefusal(applyError) ? (
+              <PlanLockNotice error={applyError} />
+            ) : applyError !== null ? (
               <Alert tone="danger" title="The import failed">
                 <p>{errorMessage(applyError)}</p>
                 <p className="mt-1.5">
@@ -531,14 +548,16 @@ function ImportBody({
             <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={applying}>
               Cancel
             </Button>
-            <Button
-              variant="primary"
-              onClick={apply}
-              loading={applying}
-              disabled={plan === null || writes === 0}
-            >
-              {writes === 0 ? 'Nothing to import' : `Import ${pluralize(writes, 'secret')}`}
-            </Button>
+            <LockedAction lock={importLock}>
+              <Button
+                variant="primary"
+                onClick={apply}
+                loading={applying}
+                disabled={plan === null || writes === 0}
+              >
+                {writes === 0 ? 'Nothing to import' : `Import ${pluralize(writes, 'secret')}`}
+              </Button>
+            </LockedAction>
           </>
         )}
       </DialogFooter>

@@ -70,9 +70,13 @@ export type SubscriptionStatus =
  * A string union rather than free-form keys so that `checkLimit` cannot be
  * called with a resource nobody defined a limit for — the failure mode being a
  * limit check that silently passes because `undefined` is not a number.
+ *
+ * How many organisations an account may hold is not one of these. A plan is
+ * bought for one organisation and covers that one only, so it has nothing to
+ * say about the others; the account's free allowance is
+ * `FREE_ORGANIZATIONS_PER_ACCOUNT` in `plans.ts`.
  */
 export type LimitedResource =
-  | 'organizations'
   | 'projects'
   | 'environmentsPerProject'
   | 'serviceTokens'
@@ -92,7 +96,6 @@ export type LimitedResource =
  * turn every "unlimited" claim on the pricing page into a lie by omission.
  */
 export interface PlanLimits {
-  readonly organizations: number | null;
   readonly projects: number | null;
   readonly environmentsPerProject: number | null;
   readonly serviceTokens: number | null;
@@ -196,12 +199,30 @@ export interface Entitlements {
   readonly features: PlanFeatures;
   readonly addons: OrgAddons;
   /**
-   * False once the subscription has lapsed — `cancelled` or `expired`.
+   * Whether this is a Free organisation past its creator's free allowance,
+   * waiting for a paid plan before it can be used.
+   *
+   * Every account gets `FREE_ORGANIZATIONS_PER_ACCOUNT` Free organisations
+   * that work: the oldest of the Free ones it created and is still a member
+   * of. A later Free one (a third created, or a paid one that returned to Free
+   * while two older Free ones exist) is held here until somebody buys it a
+   * plan or deletes it. Worked out from the rows on every read, never stored:
+   * buying a plan, deleting an older organisation or leaving one changes the
+   * answer at once, with nothing to keep in step.
+   *
+   * It closes the control plane exactly as a lapsed subscription does, so it
+   * is folded into `controlPlaneActive`, and it is carried separately only so
+   * that a refusal can say which of the two it is.
+   */
+  readonly awaitingPaidPlan: boolean;
+  /**
+   * False once the subscription has lapsed (`cancelled` or `expired`), or
+   * while the organisation is awaiting a paid plan (`awaitingPaidPlan`).
    *
    * Control-plane writes are refused; **the data plane is untouched**. See
    * `isDataPlaneActive`.
    *
-   * Derived from `status` alone, and no date is consulted. A customer who
+   * The lapse is derived from `status` alone, and no date is consulted. A customer who
    * cancels mid-month keeps the month they paid for, but that is carried by the
    * status rather than by `currentPeriodEnd`: cancelling sets
    * `cancel_at_period_end` and leaves the status `active` until the provider's
@@ -228,6 +249,12 @@ export interface SubscriptionState {
    * so an override can never be used to quietly downgrade someone.
    */
   readonly limitOverrides?: Readonly<Record<string, number | null>> | undefined;
+  /**
+   * Whether the organisation is past its creator's free allowance. Not a
+   * column: the repository works it out from the organisations the creator
+   * holds (see `Entitlements.awaitingPaidPlan`). Absent is `false`.
+   */
+  readonly awaitingPaidPlan?: boolean | undefined;
   /**
    * When the paid period ends.
    *

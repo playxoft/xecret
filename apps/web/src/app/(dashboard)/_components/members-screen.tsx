@@ -44,6 +44,8 @@ import type {
   MemberListResponse,
 } from '@/components/members/types';
 import type { ProjectListResponse } from '@/components/projects/types';
+import { useOrgUsage, usePlanLimit, useRefreshPlan } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { useGrantable } from '../_lib/use-authority';
@@ -181,11 +183,24 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
 
   const seats = members.data?.seats;
 
+  // Inviting is locked once every seat is taken, members and open invitations
+  // alike, which is what the server counts against the seat ceiling. The
+  // listing's own count once it is in, being the fresher of the two, and the
+  // shell's read of the plan until then.
+  const usage = useOrgUsage();
+  const inviteLock = usePlanLimit(
+    'seats',
+    seats !== undefined ? seats.used + seats.pendingInvitations : (usage?.seats ?? null),
+  );
+  const refreshPlan = useRefreshPlan();
+
   function reloadAll() {
     members.reload();
     invitations.reload();
     // Holder counts move with every assignment.
     customRoles.reload();
+    // A seat taken or freed: the plan's own count follows.
+    refreshPlan();
   }
 
   return (
@@ -195,9 +210,11 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
         description="Everyone who can act in this organisation. Access to individual projects and environments is granted per member."
         actions={
           canInvite ? (
-            <Button variant="primary" onClick={() => setInviting(true)}>
-              <PlusIcon className="size-4" /> Invite
-            </Button>
+            <LockedAction lock={inviteLock}>
+              <Button variant="primary" onClick={() => setInviting(true)}>
+                <PlusIcon className="size-4" /> Invite
+              </Button>
+            </LockedAction>
           ) : undefined
         }
       />
@@ -288,9 +305,11 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
               description="Invite someone and they will appear here with the role you give them."
               action={
                 canInvite ? (
-                  <Button variant="primary" onClick={() => setInviting(true)}>
-                    Invite a member
-                  </Button>
+                  <LockedAction lock={inviteLock}>
+                    <Button variant="primary" onClick={() => setInviting(true)}>
+                      Invite a member
+                    </Button>
+                  </LockedAction>
                 ) : undefined
               }
             />

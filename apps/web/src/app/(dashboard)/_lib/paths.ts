@@ -236,6 +236,8 @@ export const apiPath = {
   ssoPortal: (org: string): string => `${apiPath.sso(org)}/portal`,
   /** The billing screen's status (P12). */
   billing: (org: string): string => `${apiPath.org(org)}/billing`,
+  /** What the plan allows and what is used, for the dashboard's locks. Any member. */
+  entitlements: (org: string): string => `${apiPath.org(org)}/entitlements`,
   /** `POST` a plan and period: a Dodo checkout URL to send the browser to. */
   billingCheckout: (org: string): string => `${apiPath.billing(org)}/checkout`,
   /** `GET` previews and `POST` requests a move to another plan or period. */

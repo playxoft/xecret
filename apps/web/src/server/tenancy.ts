@@ -24,6 +24,7 @@ import type {
 } from '@xecret/db/repositories';
 import type { CredentialSignIn, Principal } from './actor';
 import type { ServiceContext } from './context';
+import { requireControlPlane } from './entitlements';
 import { errors } from './errors';
 import { isUuid } from './schemas/ids';
 
@@ -74,17 +75,78 @@ export interface EnvironmentScope extends ProjectScope {
 }
 
 /**
+ * How a route reaches its organisation, beyond the slug.
+ *
+ * `controlPlane: 'exempt'` is for the few writes an organisation whose control
+ * plane is closed must still accept (see `guardControlPlane`). Every other
+ * write is gated by default, so a new route cannot forget the gate: leaving it
+ * on takes nothing, and taking it off has to be said, at the call, where a
+ * reviewer reads it.
+ */
+export interface ResolveOrgOptions {
+  controlPlane?: 'exempt' | undefined;
+}
+
+/** The methods that only read. Every other request to an organisation writes to it. */
+const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Refuses a write to an organisation whose control plane is closed: one
+ * awaiting a paid plan (past its creator's free allowance) or one whose
+ * subscription has lapsed. See `Entitlements.controlPlaneActive`.
+ *
+ * ── One place, by method ──
+ * Every route below `/api/orgs/{orgSlug}` resolves its organisation here, so
+ * this is the one gate every one of them passes. It is keyed on the request's
+ * method rather than on the action a route authorises, because several reads
+ * authorise a write's capability (the service tokens are listed for whoever may
+ * mint or revoke one, the webhooks for whoever may change them), and those
+ * must keep answering. A read is never refused for a billing reason: the data
+ * plane (the CLI's pulls, a service token's fetches, the dashboard's listings)
+ * keeps working, and nothing is deleted.
+ *
+ * ── What stays open ──
+ * The routes that pass `controlPlane: 'exempt'`, and only for the reason each
+ * states: the billing routes (checkout, plan change, the portal, promo codes),
+ * because paying is how the organisation is opened; deleting the organisation;
+ * revoking a token, removing a member and withdrawing an invitation, because
+ * taking access away must never wait on a payment; and the CLI's device
+ * sign-in, because that is how a person reads secrets from a terminal at all.
+ *
+ * After the membership and single sign-on checks, so a stranger still learns
+ * nothing about the organisation and a member is told the first thing that
+ * actually stands in the way.
+ */
+function guardControlPlane(
+  entitlements: Entitlements,
+  services: Pick<ServiceContext, 'meta'>,
+  options: ResolveOrgOptions,
+): void {
+  if (options.controlPlane === 'exempt') return;
+  // Absent only from the stubbed contexts of the tenancy unit tests, which
+  // resolve without a request; the route wrapper always stamps it.
+  const method = (services.meta as ServiceContext['meta'] | undefined)?.method ?? 'GET';
+  if (READ_METHODS.has(method.toUpperCase())) return;
+  requireControlPlane(entitlements);
+}
+
+/**
  * Resolves an organisation slug for the current principal.
  *
  * Note the order: the organisation is looked up first, then membership, and a
  * miss at *either* step produces the same `not_found`. Checking membership first
  * and reporting "no such organisation" separately would let an attacker
  * enumerate which slugs are taken.
+ *
+ * A write to an organisation whose control plane is closed is refused here as
+ * well, unless the route says it is one of the few that stay open: see
+ * `guardControlPlane`.
  */
 export async function resolveOrg(
   principal: Principal,
   slug: string,
   services: ServiceContext,
+  options: ResolveOrgOptions = {},
 ): Promise<OrgScope> {
   const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
   if (!found) throw errors.notFound(`no organisation with slug`);
@@ -99,6 +161,7 @@ export async function resolveOrg(
     if (principal.orgId !== organization.id) throw errors.notFound('service token org mismatch');
 
     bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
+    guardControlPlane(entitlements, services, options);
 
     return {
       organization,
@@ -133,6 +196,7 @@ export async function resolveOrg(
   }
 
   bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
+  guardControlPlane(entitlements, services, options);
 
   return {
     organization,

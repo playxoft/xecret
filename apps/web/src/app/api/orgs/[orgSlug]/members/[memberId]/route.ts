@@ -282,7 +282,9 @@ export const PATCH = authenticatedRoute<Params>(
 
 export const DELETE = authenticatedRoute<Params>(
   async ({ params, principal, services, audit, record }) => {
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Open while the control plane is closed: taking somebody's access away
+    // must never wait on a payment (`guardControlPlane` in `tenancy.ts`).
+    const scope = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
     const orgId = scope.organization.id;
     const resource: AuditResource = { type: 'member', id: params.memberId };
 

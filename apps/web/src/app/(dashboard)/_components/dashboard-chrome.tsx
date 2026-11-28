@@ -11,6 +11,8 @@ import { lockVault, VaultProvider } from '@/components/vault';
 import { AppShell, SignOutButton, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
 import { CreateOrganizationDialog } from '@/components/organizations';
+import { AwaitingPlanBanner } from '@/components/plans/awaiting-plan-banner';
+import { PlanEntitlementsProvider } from '@/components/plans/plan-entitlements';
 import type { ProjectResponse } from '@/components/projects/types';
 import { Button, EmptyState, PlusIcon, Skeleton, UsersIcon } from '@/components/ui';
 import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
@@ -22,7 +24,7 @@ import { useAutoLock } from '../_lib/use-auto-lock';
 import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
-import { SessionProvider } from './session';
+import { canAdminister, SessionProvider } from './session';
 import type { MeResponse, VaultStatus } from './session';
 
 /**
@@ -299,33 +301,47 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           thing standing between the new dashboard and the previous account's
           User Key — is never consulted. */}
       <VaultProvider key={user.id} userId={user.id}>
-        <AppShell
-          nav={nav}
-          organizations={shellOrganizations}
-          currentOrgSlug={currentOrg?.slug ?? ''}
-          onCreateOrganization={openCreateOrganization}
-          user={{ name: user.displayName ?? user.email, email: user.email }}
-          accountHref={appPath.account()}
-          // Only for xecret's own staff. Drawn from the session's answer, which
-          // is a courtesy: the page and its API answer everybody else 404.
-          {...(admin ? { adminHref: appPath.admin() } : {})}
-          onLock={lock}
-          breadcrumbs={buildBreadcrumbs(location, {
-            org: currentOrg?.name ?? null,
-            project: trail.data?.project.name ?? null,
-            environment:
-              trail.data?.environments.find((environment) => environment.slug === location.envSlug)
-                ?.name ?? null,
-          })}
+        {/* The plan of the organisation the shell describes, read once per
+            organisation for the locks every screen below draws. Inside the
+            unlocked branch only, so nothing is asked of a locked session. */}
+        <PlanEntitlementsProvider
+          orgSlug={currentOrg?.slug ?? null}
+          owner={canAdminister(currentOrg ?? null, 'billing.manage')}
         >
-          {children}
-        </AppShell>
+          <AppShell
+            nav={nav}
+            organizations={shellOrganizations}
+            currentOrgSlug={currentOrg?.slug ?? ''}
+            onCreateOrganization={openCreateOrganization}
+            user={{ name: user.displayName ?? user.email, email: user.email }}
+            accountHref={appPath.account()}
+            // Only for xecret's own staff. Drawn from the session's answer, which
+            // is a courtesy: the page and its API answer everybody else 404.
+            {...(admin ? { adminHref: appPath.admin() } : {})}
+            onLock={lock}
+            breadcrumbs={buildBreadcrumbs(location, {
+              org: currentOrg?.name ?? null,
+              project: trail.data?.project.name ?? null,
+              environment:
+                trail.data?.environments.find(
+                  (environment) => environment.slug === location.envSlug,
+                )?.name ?? null,
+            })}
+          >
+            <AwaitingPlanBanner
+              onPlansPage={
+                location.orgSlug !== null && pathname === appPath.orgPlans(location.orgSlug)
+              }
+            />
+            {children}
+          </AppShell>
 
-        {/* Outside `AppShell` rather than inside the sidebar: the dialog is
+          {/* Outside `AppShell` rather than inside the sidebar: the dialog is
           portalled to the document either way, and keeping it here means the
           mobile drawer closing does not unmount a form somebody is typing in.
           Inside the provider, so every screen below can open it. */}
-        {createOrganizationDialog}
+          {createOrganizationDialog}
+        </PlanEntitlementsProvider>
       </VaultProvider>
     </SessionProvider>
   );

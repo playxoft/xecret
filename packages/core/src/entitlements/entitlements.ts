@@ -183,13 +183,18 @@ export function resolveEntitlements(state: SubscriptionState): Entitlements {
     directorySync: state.addonDirectorySync,
   });
 
+  // Only a Free organisation can be waiting for a paid plan: whatever a caller
+  // worked out, an organisation on any other plan already has one.
+  const awaitingPaidPlan = plan === 'free' && state.awaitingPaidPlan === true;
+
   return Object.freeze({
     plan,
     status: state.status,
     limits: Object.freeze(applyOverrides(definition.limits, state.limitOverrides)),
     features: definition.features,
     addons,
-    controlPlaneActive: isControlPlaneActive(state.status),
+    awaitingPaidPlan,
+    controlPlaneActive: isControlPlaneActive(state.status) && !awaitingPaidPlan,
   });
 }
 

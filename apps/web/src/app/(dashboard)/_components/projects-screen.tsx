@@ -20,6 +20,8 @@ import {
   TerminalIcon,
   Tooltip,
 } from '@/components/ui';
+import { usePlanLimit, useOrgUsage } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import { CreateProjectDialog } from '@/components/projects/create-project-dialog';
 import { ProjectCards, ProjectRows } from '@/components/projects/project-cards';
 import {
@@ -72,6 +74,11 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
   // honest; the server refuses the request regardless of what this browser
   // decided to render.
   const canCreate = canAdminister(organization, 'project.create');
+  // Drawn locked, before anybody presses it, once the plan's ceiling is
+  // reached: the count is the organisation's own, from the shell's one read of
+  // its plan, rather than this listing's, which stops at a page.
+  const usage = useOrgUsage();
+  const createLock = usePlanLimit('projects', usage?.projects ?? null);
 
   return (
     <div className="flex flex-col gap-6">
@@ -84,9 +91,11 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
         }
         actions={
           canCreate && projects.data !== null && projects.data.projects.length > 0 ? (
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              New project
-            </Button>
+            <LockedAction lock={createLock}>
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                New project
+              </Button>
+            </LockedAction>
           ) : undefined
         }
       />
@@ -111,9 +120,11 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
           description="A project is one application or service. It comes with development, staging and production environments, each holding its own secrets under its own encryption key."
           action={
             canCreate ? (
-              <Button variant="primary" onClick={() => setCreating(true)}>
-                Create a project
-              </Button>
+              <LockedAction lock={createLock}>
+                <Button variant="primary" onClick={() => setCreating(true)}>
+                  Create a project
+                </Button>
+              </LockedAction>
             ) : undefined
           }
           secondaryAction={

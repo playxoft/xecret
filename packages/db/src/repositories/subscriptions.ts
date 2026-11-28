@@ -39,6 +39,12 @@ export interface SubscriptionEntitlementRow {
   addonDirectorySync: boolean;
   limitOverrides: Record<string, number | null> | null;
   currentPeriodEnd: Date | null;
+  /**
+   * Whether the organisation is past its creator's free allowance. Not a
+   * column: worked out by the query that read the row (`awaitingPaidPlanSql`),
+   * and absent from every read that does not ask, which resolves as `false`.
+   */
+  awaitingPaidPlan?: boolean | undefined;
 }
 
 /**
@@ -72,6 +78,7 @@ export function entitlementsFromRow(
     addonDirectorySync: row.addonDirectorySync,
     limitOverrides: row.limitOverrides ?? undefined,
     currentPeriodEnd: row.currentPeriodEnd,
+    awaitingPaidPlan: row.awaitingPaidPlan === true,
   });
 }
 

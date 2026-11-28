@@ -5,6 +5,8 @@ import { useState } from 'react';
 import { MAX_TOKEN_LIFETIME_DAYS } from '@xecret/core/policy';
 import type { TokenPolicy } from '@xecret/core/policy';
 import { errorMessage, isApiError } from '@/lib/api';
+import { useOrgUsage, usePlanLimit } from '@/components/plans/plan-entitlements';
+import { isPlanRefusal, LockedAction, PlanLockNotice } from '@/components/plans/plan-lock';
 import { pluralize } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
@@ -133,6 +135,15 @@ function CreateTokenFlow({
   const [projectSlug, setProjectSlug] = useState('');
   const [environmentSlugs, setEnvironmentSlugs] = useState<ReadonlySet<string>>(new Set());
   const [accessLevel, setAccessLevel] = useState<'read' | 'write'>('read');
+  // One token per environment chosen, weighed whole against the plan's ceiling
+  // the way the server would weigh each mint in turn: a batch that would run
+  // past it is locked before it starts, rather than minting half of it.
+  const usage = useOrgUsage();
+  const batchLock = usePlanLimit(
+    'serviceTokens',
+    usage?.serviceTokens ?? null,
+    Math.max(1, environmentSlugs.size),
+  );
   // Seeded once, from the policy as it stood when the dialog opened: the cap is
   // pre-filled and the allowlist marked required. Radix unmounts a closed
   // dialog's content, so the next opening reads the policy afresh.
@@ -140,6 +151,7 @@ function CreateTokenFlow({
   const [scopeErrors, setScopeErrors] = useState<Partial<Record<ScopeField, string>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [planError, setPlanError] = useState<unknown>(null);
   const [outcome, setOutcome] = useState<MintOutcome | null>(null);
 
   const requiresAllowlist = tokenPolicy?.requireIpAllowlist === true;
@@ -202,6 +214,7 @@ function CreateTokenFlow({
 
     setBusy(true);
     setFormError(null);
+    setPlanError(null);
     setScopeErrors({});
 
     // One token per environment, sequentially — each mint is a separate
@@ -255,6 +268,12 @@ function CreateTokenFlow({
       };
       if (Object.keys(scoped).length > 0) {
         setScopeErrors(scoped);
+        return;
+      }
+      // The ceiling reached since the shell last read the plan: said as the
+      // lock on this button would have said it.
+      if (isPlanRefusal(firstFailure)) {
+        setPlanError(firstFailure);
         return;
       }
       setFormError(
@@ -526,15 +545,24 @@ function CreateTokenFlow({
         </div>
 
         {formError ? <Alert tone="danger">{formError}</Alert> : null}
+        {/* Said inline as well as on the button, because here the reason is
+            the number of environments ticked above it. */}
+        {batchLock !== null ? (
+          <PlanLockNotice lock={batchLock} />
+        ) : (
+          <PlanLockNotice error={planError} />
+        )}
       </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" loading={submitting}>
-          {environmentSlugs.size > 1 ? `Create ${environmentSlugs.size} tokens` : 'Create token'}
-        </Button>
+        <LockedAction lock={batchLock}>
+          <Button type="submit" variant="primary" loading={submitting}>
+            {environmentSlugs.size > 1 ? `Create ${environmentSlugs.size} tokens` : 'Create token'}
+          </Button>
+        </LockedAction>
       </DialogFooter>
     </form>
   );

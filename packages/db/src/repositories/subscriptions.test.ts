@@ -2,9 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
 
-import { FAIR_USE, PLANS } from '@xecret/core/entitlements';
+import { PLANS } from '@xecret/core/entitlements';
 import * as schema from '../schema';
-import { accountOrganizationCeiling } from './organizations';
 import {
   entitlementColumns,
   entitlementsFromRow,
@@ -135,6 +134,14 @@ describe('entitlementsFromRow', () => {
     }
   });
 
+  it('closes the control plane of a Free organisation its query found waiting for a plan', () => {
+    const waiting = entitlementsFromRow(row({ plan: 'free', awaitingPaidPlan: true }));
+    expect(waiting.awaitingPaidPlan).toBe(true);
+    expect(waiting.controlPlaneActive).toBe(false);
+    // A read that did not ask is a read that found nothing waiting.
+    expect(entitlementsFromRow(row({ plan: 'free' })).controlPlaneActive).toBe(true);
+  });
+
   it('closes the control plane only once a subscription has truly lapsed', () => {
     expect(entitlementsFromRow(row({ status: 'past_due' })).controlPlaneActive).toBe(true);
     expect(entitlementsFromRow(row({ status: 'expired' })).controlPlaneActive).toBe(false);
@@ -202,84 +209,5 @@ describe('the usage counter writes', () => {
   it('inserts a zero fetch count when it has to create the row', () => {
     const { params } = recordMeteredUnitsStatement(db, 'org-1', period, 3).toSQL();
     expect(params).toContain(0);
-  });
-});
-
-/**
- * The ceiling on how many organisations one account may hold.
- *
- * It takes **resolved ceilings** rather than plan ids, which is the fix for the
- * defect this block grew out of: reading the plan definition ignored
- * `limitOverrides`, so the one entitlement this product actually enforces was
- * also the one place the fair-usage promise did not work. Resolution — retired
- * plans, unknown plans, overrides — happens once in `countOrganizationsHeldBy`,
- * through the same `entitlementsFromRow` the authorization path uses.
- */
-describe('accountOrganizationCeiling', () => {
-  /** What the resolver produces for a plan with no override. */
-  const ceilingOf = (plan: 'free' | 'pro' | 'team' | 'enterprise') =>
-    PLANS[plan].limits.organizations;
-
-  it('takes the most generous ceiling it was given', () => {
-    expect(accountOrganizationCeiling([ceilingOf('free'), ceilingOf('free')])).toBe(
-      ceilingOf('free'),
-    );
-    // Team publishes a number now rather than `null`, so the most generous of
-    // these two is Team's own — not the fair-use bound, which is reached only by
-    // a plan that genuinely has no limit.
-    expect(accountOrganizationCeiling([ceilingOf('free'), ceilingOf('team')])).toBe(
-      ceilingOf('team'),
-    );
-  });
-
-  it('falls back to Free for an account holding nothing', () => {
-    expect(accountOrganizationCeiling([])).toBe(ceilingOf('free'));
-  });
-
-  it('lets an unlimited plan reach the fair-use bound', () => {
-    expect(accountOrganizationCeiling([null])).toBe(FAIR_USE.organizations);
-    expect(accountOrganizationCeiling([ceilingOf('free'), null])).toBe(FAIR_USE.organizations);
-  });
-
-  /**
-   * The defect, stated as a test. Support raises a ceiling by writing
-   * `limitOverrides`; the ceiling was read from the plan definition, so the
-   * override resolved correctly everywhere the customer could *see* it and had
-   * no effect at the one place that refuses them.
-   */
-  it('honours a support override, because that is the whole fair-usage promise', () => {
-    const raised = entitlementsFromRow({
-      plan: 'pro',
-      status: 'active',
-      addonSaml: false,
-      addonDirectorySync: false,
-      limitOverrides: { organizations: 8 },
-      currentPeriodEnd: null,
-    }).limits.organizations;
-
-    expect(raised).toBe(8);
-    expect(accountOrganizationCeiling([raised])).toBe(8);
-  });
-
-  /**
-   * Both directions of the resolution, asserted through the function that now
-   * performs it. An *unknown* plan must fail closed to Free — a quota check is
-   * the one place that must never fail open. A *retired* one must resolve to
-   * what replaced it, because failing closed on somebody who paid for the tier
-   * above Team is the opposite mistake.
-   */
-  it('tells an unknown plan from a withdrawn one', () => {
-    const resolved = (plan: string) =>
-      entitlementsFromRow({
-        plan: plan as never,
-        status: 'active',
-        addonSaml: false,
-        addonDirectorySync: false,
-        limitOverrides: null,
-        currentPeriodEnd: null,
-      }).limits.organizations;
-
-    expect(accountOrganizationCeiling([resolved('platinum')])).toBe(ceilingOf('free'));
-    expect(accountOrganizationCeiling([resolved('scale')])).toBe(ceilingOf('team'));
   });
 });

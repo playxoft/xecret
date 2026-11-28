@@ -9,7 +9,9 @@ import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
 import { canAdminister } from '@/app/(dashboard)/_components/session';
 import type { SessionOrganization } from '@/app/(dashboard)/_components/session';
-import { ChangeError, PlanLock } from '@/components/plans/plan-notice';
+import { ChangeError } from '@/components/plans/plan-notice';
+import { usePlanLimit, useRefreshPlan } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import {
   Alert,
   Badge,
@@ -44,7 +46,6 @@ import type {
 } from './types';
 import { WebhookDialog } from './webhook-dialog';
 import {
-  atWebhookLimit,
   deliveryErrorText,
   eventSummary,
   statusCodeText,
@@ -70,7 +71,8 @@ import {
  *
  * ── The plan ──
  * `webhooks` is a count: Free none, Pro three, Team twenty-five. At the ceiling
- * "New endpoint" gives way to a sentence naming the plan that allows more. An
+ * "New endpoint" is drawn locked, its lock saying what the plan allows and
+ * which plan allows more, from the listing's own count. An
  * organisation whose plan now allows none keeps every endpoint, *paused* — listed,
  * editable only to switch off or delete, and sent nothing — and the card says so
  * with the plan that would start them again. Switching an endpoint off and
@@ -95,7 +97,10 @@ export function WebhooksCard({
   const [editing, setEditing] = useState<Webhook | 'new' | null>(null);
 
   const data = list.data;
-  const canAdd = data !== null && !data.paused && !atWebhookLimit(data.limit);
+  // Locked rather than hidden at the ceiling, so the reason is on the button.
+  // `checkLimit` over the plan the shell read, at the count this listing gives.
+  const addLock = usePlanLimit('webhooks', data?.limit.used ?? null);
+  const refreshPlan = useRefreshPlan();
 
   return (
     <Card id="webhooks">
@@ -108,11 +113,13 @@ export function WebhooksCard({
             carries a secret’s value.
           </CardDescription>
         </div>
-        {mayManage && canAdd ? (
-          <Button variant="secondary" onClick={() => setEditing('new')}>
-            <PlusIcon className="size-4" />
-            New endpoint
-          </Button>
+        {mayManage && data !== null ? (
+          <LockedAction lock={addLock}>
+            <Button variant="secondary" onClick={() => setEditing('new')}>
+              <PlusIcon className="size-4" />
+              New endpoint
+            </Button>
+          </LockedAction>
         ) : null}
       </CardHeader>
 
@@ -143,7 +150,10 @@ export function WebhooksCard({
             orgSlug={orgSlug}
             data={data}
             onEdit={(webhook) => setEditing(webhook)}
-            onChanged={() => void list.reload()}
+            onChanged={() => {
+              void list.reload();
+              refreshPlan();
+            }}
             editing={editing}
             onEditingChange={setEditing}
           />
@@ -182,8 +192,6 @@ function WebhookList({
   const [rotating, setRotating] = useState<Webhook | null>(null);
   const [deleting, setDeleting] = useState<Webhook | null>(null);
   const [logFor, setLogFor] = useState<Webhook | null>(null);
-
-  const atLimit = atWebhookLimit(data.limit);
 
   async function setEnabled(webhook: Webhook, enabled: boolean) {
     if (busy !== null) return;
@@ -241,34 +249,24 @@ function WebhookList({
     <>
       {error !== null ? <ChangeError error={error} /> : null}
 
-      {data.paused ? (
+      {/* What the plan did to endpoints that already exist, which no lock on
+          "New endpoint" can say. Only where there are some: on a plan with no
+          webhooks and none set up, that lock says it all. */}
+      {data.paused && data.webhooks.length > 0 ? (
         <Alert tone="warning" title="Webhooks are paused">
           <p>
             This organisation’s plan includes no webhooks, so the endpoints below are kept exactly
             as they are and sent nothing. They deliver again the moment the plan includes them.
             Until then each one can still be switched off, have its secret rotated, or be deleted.
           </p>
-          <div className="mt-1.5">
-            <PlanLock what="Delivering webhooks" upgradeTo={data.upgradeTo} />
-          </div>
         </Alert>
-      ) : atLimit ? (
-        <div className="flex flex-col gap-1">
-          <p className="text-fg-subtle text-sm">
-            This organisation has {pluralize(data.limit.used, 'endpoint')}, the most its plan
-            allows. Delete one to add another.
-          </p>
-          <PlanLock what="Adding another endpoint" upgradeTo={data.upgradeTo} />
-        </div>
       ) : null}
 
       {data.webhooks.length === 0 ? (
-        data.paused ? null : (
-          <p className="text-fg-subtle text-sm">
-            No endpoints yet. Add one and choose which events it hears about; a test delivery checks
-            it end to end before anything real is sent.
-          </p>
-        )
+        <p className="text-fg-subtle text-sm">
+          No endpoints yet. Add one and choose which events it hears about; a test delivery checks
+          it end to end before anything real is sent.
+        </p>
       ) : (
         <ul className="border-line divide-line-subtle divide-y rounded-lg border">
           {data.webhooks.map((webhook) => (

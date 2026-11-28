@@ -22,7 +22,11 @@ import {
   Skeleton,
   useToast,
 } from '@/components/ui';
-import { ChangeError, PlanLock } from '@/components/plans/plan-notice';
+import { ChangeError } from '@/components/plans/plan-notice';
+import { useControlPlaneLock } from '@/components/plans/plan-entitlements';
+import { featureLockFrom } from '@/components/plans/plan-gate';
+import type { PlanBlock } from '@/components/plans/plan-gate';
+import { LockedAction, PlanLockBadge } from '@/components/plans/plan-lock';
 import { planName } from '@/components/plans/plan-copy';
 import {
   fieldProblemsUnder,
@@ -147,6 +151,12 @@ function TokenPolicyForm({
     !feature.enabled && !stored.requireIpAllowlist && !draft.requireIpAllowlist;
   const capLocked = !feature.enabled && stored.maxLifetimeDays === null && !draft.capLifetime;
   const nothingOn = !tokenPolicyIsActive(stored);
+  // The lock a checkbox the plan keeps off carries, and the one on Save when
+  // the draft tightens what the plan cannot. Every write, while the
+  // organisation waits for a paid plan.
+  const controlLock = useControlPlaneLock();
+  const featureLock = featureLockFrom('tokenIpAllowlist', feature);
+  const saveLock = controlLock ?? (blocked ? featureLock : null);
 
   function patch(change: Partial<TokenPolicyDraft>) {
     setDraft((current) => ({ ...current, ...change }));
@@ -189,20 +199,17 @@ function TokenPolicyForm({
     <form onSubmit={save} noValidate className="flex flex-col gap-4">
       {error !== null ? <ChangeError error={error} title="The token policy was not saved" /> : null}
 
-      {!feature.enabled ? (
-        nothingOn ? (
-          <PlanLock what="Setting a token policy" upgradeTo={feature.upgradeTo} />
-        ) : (
-          // The downgraded case. Said plainly, because "why can I switch this
-          // off but not back on?" has exactly this answer.
-          <p className="text-fg-subtle text-sm leading-5">
-            This organisation’s plan no longer includes the token policy. The rules below stay
-            enforced, and you can loosen them or switch them off;{' '}
-            {feature.upgradeTo === null
-              ? 'tightening them is not part of this plan.'
-              : `tightening them again needs the ${planName(feature.upgradeTo)} plan.`}
-          </p>
-        )
+      {!feature.enabled && !nothingOn ? (
+        // The downgraded case. Said plainly, because "why can I switch this
+        // off but not back on?" has exactly this answer. A policy that is all
+        // off says nothing here: each locked rule carries its own lock.
+        <p className="text-fg-subtle text-sm leading-5">
+          This organisation’s plan no longer includes the token policy. The rules below stay
+          enforced, and you can loosen them or switch them off;{' '}
+          {feature.upgradeTo === null
+            ? 'tightening them is not part of this plan.'
+            : `tightening them again needs the ${planName(feature.upgradeTo)} plan.`}
+        </p>
       ) : null}
 
       <PolicyCheckRow
@@ -210,7 +217,8 @@ function TokenPolicyForm({
         label="Require an IP allowlist"
         description="Every new service token must name the addresses or ranges it may be used from. A request from anywhere else is refused, so a token copied out of a CI provider is useless outside it."
         checked={draft.requireIpAllowlist}
-        disabled={!canManage || saving || allowlistLocked}
+        disabled={!canManage || saving || allowlistLocked || controlLock !== null}
+        lock={canManage ? (controlLock ?? (allowlistLocked ? featureLock : null)) : null}
         onCheckedChange={(checked) => patch({ requireIpAllowlist: checked })}
       />
 
@@ -219,7 +227,8 @@ function TokenPolicyForm({
         label="Cap how long a token lives"
         description="Every new service token must expire within the cap, and a CLI device login is issued with an expiry no later than it. A credential that cannot outlive a quarter cannot be forgotten for a year."
         checked={draft.capLifetime}
-        disabled={!canManage || saving || capLocked}
+        disabled={!canManage || saving || capLocked || controlLock !== null}
+        lock={canManage ? (controlLock ?? (capLocked ? featureLock : null)) : null}
         onCheckedChange={(checked) => patch({ capLifetime: checked })}
       >
         {draft.capLifetime ? (
@@ -248,15 +257,13 @@ function TokenPolicyForm({
         on a single token stays available on every plan.
       </p>
 
-      {blocked && !nothingOn ? (
-        <PlanLock what="Tightening the token policy" upgradeTo={feature.upgradeTo} />
-      ) : null}
-
       {canManage ? (
         <div>
-          <Button type="submit" variant="primary" loading={saving} disabled={!changed || blocked}>
-            Save token policy
-          </Button>
+          <LockedAction lock={saveLock}>
+            <Button type="submit" variant="primary" loading={saving} disabled={!changed || blocked}>
+              Save token policy
+            </Button>
+          </LockedAction>
         </div>
       ) : (
         <p className="text-fg-subtle text-sm">
@@ -279,6 +286,7 @@ export function PolicyCheckRow({
   description,
   checked,
   disabled,
+  lock = null,
   onCheckedChange,
   children,
 }: {
@@ -287,6 +295,12 @@ export function PolicyCheckRow({
   description: ReactNode;
   checked: boolean;
   disabled: boolean;
+  /**
+   * Why the plan keeps this rule off, drawn as a lock beside its label: the
+   * checkbox itself stays disabled, and the lock is what takes focus and says
+   * which plan would allow it.
+   */
+  lock?: PlanBlock | null;
   onCheckedChange: (checked: boolean) => void;
   children?: ReactNode;
 }) {
@@ -302,7 +316,10 @@ export function PolicyCheckRow({
           aria-describedby={`${id}-description`}
         />
         <div className="min-w-0 flex-1">
-          <Label htmlFor={id}>{label}</Label>
+          <span className="flex items-center gap-1.5">
+            <Label htmlFor={id}>{label}</Label>
+            {lock !== null ? <PlanLockBadge lock={lock} className="-my-1" /> : null}
+          </span>
           <p id={`${id}-description`} className="text-fg-muted mt-1 text-sm leading-5">
             {description}
           </p>

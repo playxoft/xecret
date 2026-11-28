@@ -52,7 +52,6 @@ import { scheduleSeatSync } from './billing/seats';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
 import { attemptKey, consume } from './rate-limit';
-import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from './schemas/resources';
 import type { WorkosIdentityProvider } from './workos';
 
 /**
@@ -437,7 +436,6 @@ async function provisionPersonalOrganization(
   const created = await provisionOrganization(services.db, {
     user,
     envelope: services.envelope,
-    limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
   });
 
   services.waitUntil(

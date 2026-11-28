@@ -1,7 +1,12 @@
 import { and, asc, count, desc, eq, exists, gt, isNull, ne, or, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { CustomRole, OrgRole } from '@xecret/core/authz';
-import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
+import {
+  AWAITING_ORGANIZATIONS_PER_ACCOUNT,
+  FREE_ORGANIZATIONS_PER_ACCOUNT,
+} from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
@@ -23,7 +28,7 @@ import { addMember, CUSTOM_ROLE_COLUMNS, customRoleJoin, toCustomRole } from './
 import type { WrittenMemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
-import { createFreeSubscription, entitlementColumns, entitlementsFromRow } from './subscriptions';
+import { createFreeSubscription, entitlementColumns } from './subscriptions';
 import type { SubscriptionEntitlementRow } from './subscriptions';
 import { isUniqueViolation } from './users';
 import type { User } from './users';
@@ -97,7 +102,11 @@ export interface OrganizationWithEntitlements {
  */
 export function organizationBySlugWithEntitlementsQuery(exec: Executor, slug: string) {
   return exec
-    .select({ organization: organizations, entitlements: entitlementColumns })
+    .select({
+      organization: organizations,
+      entitlements: entitlementColumns,
+      awaitingPaidPlan: awaitingPaidPlanSql(),
+    })
     .from(organizations)
     .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
     .where(and(eq(organizations.slug, slug), isNull(organizations.deletedAt)))
@@ -110,7 +119,151 @@ export async function findOrganizationBySlugWithEntitlements(
 ): Promise<OrganizationWithEntitlements | null> {
   const [row] = await organizationBySlugWithEntitlementsQuery(exec, slug);
   if (!row) return null;
-  return { organization: row.organization, entitlements: row.entitlements };
+  const awaitingPaidPlan = row.awaitingPaidPlan === true;
+  // A missing subscription row reads as Free everywhere, and so it does here:
+  // one that is past its creator's allowance is still waiting, so the answer
+  // carries the flag on the Free row the migration would have written.
+  if (row.entitlements === null) {
+    return {
+      organization: row.organization,
+      entitlements: awaitingPaidPlan ? { ...FREE_ROW, awaitingPaidPlan } : null,
+    };
+  }
+  return {
+    organization: row.organization,
+    entitlements: { ...row.entitlements, awaitingPaidPlan },
+  };
+}
+
+/** The row `entitlementsFromRow` reads a missing subscription as. */
+const FREE_ROW: SubscriptionEntitlementRow = Object.freeze({
+  plan: 'free',
+  status: 'active',
+  addonSaml: false,
+  addonDirectorySync: false,
+  limitOverrides: null,
+  currentPeriodEnd: null,
+});
+
+/* ── The free allowance ───────────────────────────────────────────────────── */
+
+// Aliases, because the expression reads these tables again beneath an outer
+// query that already has `organizations` and `org_subscriptions` in scope. A
+// raw template renders an alias by its name alone, so each is written after
+// its table (`from "org_members" "creator_member"`).
+const heldOrg = alias(organizations, 'held_org');
+const heldMember = alias(orgMembers, 'held_member');
+const heldSubscription = alias(orgSubscriptions, 'held_subscription');
+const creatorMember = alias(orgMembers, 'creator_member');
+
+/**
+ * Whether the organisation in the enclosing query is waiting for a paid plan
+ * (`Entitlements.awaitingPaidPlan`), as one SQL expression.
+ *
+ * For a query that reads `organizations` and left-joins `org_subscriptions` on
+ * it. It is true when all three hold:
+ *
+ *  - the organisation is on Free (no subscription row reads as Free, the same
+ *    answer `entitlementsFromRow` gives it);
+ *  - its creator is still an active member of it, because the allowance is
+ *    spent by the organisations an account *created and is still in*, the set
+ *    `organizationsHeldByQuery` counts; one whose creator has gone is counted
+ *    against nobody;
+ *  - the creator holds at least `FREE_ORGANIZATIONS_PER_ACCOUNT` older Free
+ *    organisations on the same terms, older meaning created earlier.
+ *
+ * So the two oldest are open and every later one waits, and the answer moves
+ * the moment a row does: buying a plan for any of them, deleting one, or the
+ * creator leaving one changes it on the next read, with no column to keep in
+ * step. A complimentary grant is a plan on the row, so a granted organisation
+ * is paid and spends nothing. Joining somebody else's organisation spends
+ * nothing either, because only the creator's own are counted.
+ *
+ * Asked inside the lookup `resolveOrg` already makes, so it costs no round
+ * trip: the inner count reads `organizations_creator_idx` and stops at the
+ * allowance.
+ */
+export function awaitingPaidPlanSql(): SQL<boolean> {
+  return sql<boolean>`(
+    coalesce(${orgSubscriptions.plan}::text, 'free') = 'free'
+    and exists (
+      select 1 from ${orgMembers} ${creatorMember}
+      where ${creatorMember.orgId} = ${organizations.id}
+        and ${creatorMember.userId} = ${organizations.createdBy}
+        and ${creatorMember.status} = 'active'
+    )
+    and (
+      select count(*) from (
+        select 1 from ${organizations} ${heldOrg}
+        inner join ${orgMembers} ${heldMember}
+          on ${heldMember.orgId} = ${heldOrg.id}
+          and ${heldMember.userId} = ${organizations.createdBy}
+          and ${heldMember.status} = 'active'
+        left join ${orgSubscriptions} ${heldSubscription} on ${heldSubscription.orgId} = ${heldOrg.id}
+        where ${heldOrg.createdBy} = ${organizations.createdBy}
+          and ${heldOrg.deletedAt} is null
+          and coalesce(${heldSubscription.plan}::text, 'free') = 'free'
+          and (${heldOrg.createdAt}, ${heldOrg.id}) < (${organizations.createdAt}, ${organizations.id})
+        limit ${FREE_ORGANIZATIONS_PER_ACCOUNT}
+      ) as older_free
+    ) >= ${FREE_ORGANIZATIONS_PER_ACCOUNT}
+  )`;
+}
+
+/** How far into its free allowance an account is. See `freeOrganizationAllowance`. */
+export interface FreeAllowance {
+  /**
+   * The Free organisations the account created and is still a member of,
+   * counted no further than the allowance plus the one that may wait.
+   */
+  free: number;
+  /** How many of those are past the allowance, waiting for a paid plan. */
+  awaiting: number;
+}
+
+/**
+ * The Free organisations an account created and is still in, oldest first,
+ * read no further than the allowance plus the one that may be waiting.
+ *
+ * @internal Exported so the test can read its shape without a database.
+ */
+export function freeOrganizationsHeldQuery(exec: Executor, userId: string) {
+  return exec
+    .select({ id: organizations.id })
+    .from(organizations)
+    .innerJoin(orgMembers, eq(orgMembers.orgId, organizations.id))
+    .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
+    .where(
+      and(
+        eq(organizations.createdBy, userId),
+        eq(orgMembers.userId, userId),
+        eq(orgMembers.status, 'active'),
+        isNull(organizations.deletedAt),
+        sql`coalesce(${orgSubscriptions.plan}::text, 'free') = 'free'`,
+      ),
+    )
+    .orderBy(asc(organizations.createdAt), asc(organizations.id))
+    .limit(FREE_ORGANIZATIONS_PER_ACCOUNT + AWAITING_ORGANIZATIONS_PER_ACCOUNT);
+}
+
+/**
+ * Where an account stands against its free allowance: how many Free
+ * organisations it holds, and how many of them are waiting for a paid plan.
+ *
+ * What `provisionOrganization` refuses on (one waiting at a time), and what the
+ * dashboard reads to say, before somebody creates one, that it will need a plan.
+ * The same set and order `awaitingPaidPlanSql` counts against, so the two
+ * cannot disagree about which organisation is the one waiting.
+ */
+export async function freeOrganizationAllowance(
+  exec: Executor,
+  userId: string,
+): Promise<FreeAllowance> {
+  const rows = await freeOrganizationsHeldQuery(exec, userId);
+  return {
+    free: rows.length,
+    awaiting: Math.max(0, rows.length - FREE_ORGANIZATIONS_PER_ACCOUNT),
+  };
 }
 
 export async function findOrganizationById(
@@ -503,26 +656,15 @@ export interface HeldOrganizations {
   total: number;
   /** The most recent of them, or `null` when the account holds none. */
   latestId: string | null;
-  /**
-   * The resolved organisation ceiling of each organisation counted.
-   *
-   * Carried because the ceiling on *how many organisations an account may hold*
-   * is a plan limit, and an account has no plan of its own — only the
-   * organisations it belongs to have one. `accountOrganizationCeiling` resolves
-   * the set into a number; see the reasoning there.
-   *
-   * Resolved *entitlements* rather than raw plan ids, which is the difference
-   * between the fair-usage promise working and merely being documented: support
-   * raises a ceiling with a `limitOverrides` row, and reading the plan
-   * definition alone ignored it. A customer whose ceiling had been raised was
-   * still refused at the plan's number, by the one entitlement this product
-   * actually enforces.
-   */
-  ceilings: (number | null)[];
 }
 
 /**
- * How many live organisations one account **created and is still in**.
+ * How many live organisations one account **created and is still in**, and the
+ * newest of them.
+ *
+ * What a refused creation is filed against (`POST /api/orgs`), and the set the
+ * free allowance is counted in: `freeOrganizationsHeldQuery` and
+ * `awaitingPaidPlanSql` read the same rows, narrowed to the Free ones.
  *
  * Both halves of that are load-bearing, and each answers a way the other one
  * alone fails:
@@ -570,90 +712,7 @@ export async function countOrganizationsHeldBy(
   limit: number,
 ): Promise<HeldOrganizations> {
   const rows = await organizationsHeldByQuery(exec, userId, limit);
-  return {
-    total: rows.length,
-    latestId: rows[0]?.id ?? null,
-    // Through `entitlementsFromRow`, which is the same resolution the
-    // authorization path applies to the same columns: a retired plan maps to
-    // what replaced it, an unknown one falls to Free, and a support override is
-    // honoured. A null plan means no subscription row — impossible since
-    // migration 0016, and Free is the answer the migration would have written.
-    ceilings: rows.map((row) =>
-      row.plan === null
-        ? PLANS[DEFAULT_PLAN].limits.organizations
-        : entitlementsFromRow({
-            plan: row.plan,
-            status: row.status ?? 'active',
-            addonSaml: false,
-            addonDirectorySync: false,
-            limitOverrides: row.limitOverrides,
-            currentPeriodEnd: null,
-          }).limits.organizations,
-    ),
-  };
-}
-
-/**
- * How many organisations this account may hold.
- *
- * ── The problem this solves ──
- * `organizations` is a plan limit — Free allows one, every paid plan allows as
- * many as fair use permits. But a *plan* belongs to an organisation and this
- * ceiling belongs to an *account*, and an account is not a billable thing. So
- * the question "which plan applies" has no answer until one is chosen.
- *
- * ── The rule ──
- * The most generous ceiling among the organisations the account **created and is
- * still in**. Unlimited wins outright; otherwise the largest number does.
- *
- * Note which set that is, because it is narrower than "organisations the account
- * belongs to" and the difference is deliberate. The plans come from
- * `organizationsHeldByQuery`, which filters `created_by = userId` — so an
- * account that was *invited* into somebody else's Team organisation is measured
- * against the plans it bought itself, and being a member of a paid tenant does
- * not raise its personal allowance. Anything wider would make a colleague's
- * purchase spend on your behalf, and would let one Enterprise organisation hand
- * an unlimited ceiling to everybody it ever invited.
- *
- * Chosen over the alternatives because each of those punishes somebody who paid.
- * Taking the *lowest* of the set would mean starting a second Free organisation
- * silently revoked the Team allowance you are paying for. Taking the plan of the
- * organisation being created is circular — it does not exist yet, and it would be
- * Free. Taking the account's "own" organisation requires picking one, and an
- * account invited into every organisation it belongs to has none.
- *
- * ── The consequences, stated plainly ──
- * An account holding nothing but Free organisations may create one. That is a
- * tightening: the previous fixed ceiling was ten for everybody. It is also what
- * the pricing page says, and the pricing page is the contract.
- *
- * And: somebody who has created one Free organisation and been invited into a
- * colleague's Team organisation is still capped at one. Their own account is on
- * Free, which is the plan they are on; the upgrade that lifts it is one they buy.
- *
- * ── Why unlimited still lands on a number ──
- * `FAIR_USE.organizations`. Not to sell anything past it — crossing a fair-use
- * ceiling is a conversation, not a refusal — but because this particular count
- * is the one an abuse script drives in a loop, and every organisation created
- * derives an Org Master Key. The ceiling here is an abuse bound that happens to
- * coincide with a published number, and support raises it with an override like
- * any other.
- */
-export function accountOrganizationCeiling(ceilings: readonly (number | null)[]): number {
-  if (ceilings.length === 0) return freeCeiling();
-
-  let best = 0;
-  for (const ceiling of ceilings) {
-    // `null` is unlimited, and unlimited wins outright.
-    if (ceiling === null) return FAIR_USE.organizations;
-    if (ceiling > best) best = ceiling;
-  }
-  return best;
-}
-
-/** Free's ceiling, or the fair-use bound if Free ever becomes unlimited. */
-function freeCeiling(): number {
-  return PLANS[DEFAULT_PLAN].limits.organizations ?? FAIR_USE.organizations;
+  return { total: rows.length, latestId: rows[0]?.id ?? null };
 }
 
 /**
@@ -664,24 +723,11 @@ function freeCeiling(): number {
 export function organizationsHeldByQuery(exec: Executor, userId: string, limit: number) {
   return (
     exec
-      // The plan rides along on a primary-key join, so the count that was
-      // already being made now also answers which ceilings apply. A second
-      // query would be a round trip on the first-login path, which is the one
-      // request in the product a new user judges the whole thing by.
-      .select({
-        id: organizations.id,
-        plan: orgSubscriptions.plan,
-        status: orgSubscriptions.status,
-        // The override, without which the fair-usage promise this ceiling
-        // documents does not work: support raises a limit by writing this
-        // column, and a ceiling read from the plan definition never sees it.
-        limitOverrides: orgSubscriptions.limitOverrides,
-      })
+      .select({ id: organizations.id })
       .from(organizations)
       // `org_members_org_user_unique` makes this at most one row per
       // organisation, so the join cannot inflate the count it is part of.
       .innerJoin(orgMembers, eq(orgMembers.orgId, organizations.id))
-      .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
       .where(
         and(
           eq(organizations.createdBy, userId),
@@ -751,17 +797,6 @@ export async function isOrgSlugAvailable(exec: Executor, slug: string): Promise<
 export interface ProvisionOrganizationParams {
   user: Pick<User, 'id' | 'email' | 'displayName'>;
   envelope: EnvelopeService;
-  /**
-   * The most organisations this account may hold, counted by
-   * `countOrganizationsHeldBy` and refused with `quotaExceeded`.
-   *
-   * Required, and deliberately not defaulted. This is the only ceiling on
-   * organisation creation there is, and a parameter with a default is one a
-   * future caller can omit and silently get no ceiling at all — which is
-   * precisely how the bootstrap at `POST /api/auth/session` came to create
-   * organisations without consulting one.
-   */
-  limit: number;
   /** Overrides the name derived from the user's profile. */
   name?: string | undefined;
   /**
@@ -788,6 +823,12 @@ export interface ProvisionOrganizationParams {
 export interface ProvisionedOrganization {
   organization: Organization;
   membership: WrittenMemberRecord;
+  /**
+   * Whether the new organisation is past the account's free allowance and
+   * waiting for a paid plan: the account already held two Free organisations
+   * that work. The dashboard opens a waiting one on its plans page.
+   */
+  awaitingPaidPlan: boolean;
 }
 
 /**
@@ -835,21 +876,22 @@ export interface ProvisionedOrganization {
  * throughput limit. The environment keys are derived concurrently to keep the
  * window as short as it can be.
  *
- * ── Why the ceiling is enforced in here rather than by the caller ──
- * It used to be a count in `POST /api/orgs`, one statement before this
- * transaction and with the whole of it in between. That is check-then-act:
- * every concurrent request that read `total = 9` passed, and nothing downstream
- * disagreed — no unique constraint expresses "at most ten", so the database
- * accepted every one of them. The rate limiter is not a backstop for it either.
- * Cloudflare's counters are per-colo, so a distributed caller gets roughly its
- * whole `RL_MUTATION` allowance *per data centre* in flight at once, and
- * `consume` fails open when the binding is absent — which is the documented
- * state of a local or self-hosted deployment, where the overshoot is then
- * unbounded.
+ * ── The one bound on creating, and why it is enforced in here ──
+ * No plan limits how many organisations an account holds: each paid one is
+ * billed on its own. What is bounded is the free tier. An account's two oldest
+ * Free organisations work, a later one waits for a paid plan
+ * (`awaitingPaidPlanSql`), and an account may hold only one that waits
+ * (`AWAITING_ORGANIZATIONS_PER_ACCOUNT`). So creating is refused, with
+ * `QuotaExceededError`, exactly when the account already holds one waiting:
+ * pay for it or delete it, then start another. That is what keeps the number of
+ * Org Master Keys an account can mint without paying at three.
  *
- * So the count happens here, behind `lockAccount`, and the number it compares
- * against is the caller's — one place where the ceiling is decided and one
- * place where it is applied.
+ * Counted here, behind `lockAccount`, rather than by the caller. A count one
+ * statement before this transaction is check-then-act: every concurrent request
+ * that read "none waiting" would pass, and no constraint downstream can say "at
+ * most one". The rate limiter is not a backstop either: Cloudflare's counters
+ * are per-colo, and `consume` fails open when the binding is absent, which is
+ * the documented state of a local or self-hosted deployment.
  */
 export async function provisionOrganization(
   exec: Executor,
@@ -864,27 +906,16 @@ export async function provisionOrganization(
     // mean anything.
     await lockAccount(tx, user.id);
 
-    // Counted up to the abuse cap rather than to the plan ceiling, because the
-    // ceiling is not known until the plans of the organisations already held
-    // have been read — and they are read by this same query. Counting to the
-    // larger of the two costs at most a few extra index rows and removes the
-    // second round trip that computing it first would need.
-    const held = await countOrganizationsHeldBy(tx, user.id, params.limit);
-
-    // The plan ceiling, bounded by the caller's abuse cap. `min` rather than
-    // either alone: the plan says what was sold, the cap says what this system
-    // will mint Org Master Keys for in one account, and neither is allowed to
-    // override the other.
-    const ceiling = Math.min(accountOrganizationCeiling(held.ceilings), params.limit);
-
-    if (held.total >= ceiling) {
-      // The ceiling rides along on the error: the route has to say the number
-      // out loud, and this transaction is the only place it was ever computed.
+    // Under the lock, so two creations cannot both read "none waiting". A new
+    // organisation is Free and the newest the account holds, so it waits
+    // exactly when two older Free ones already work.
+    const allowance = await freeOrganizationAllowance(tx, user.id);
+    if (allowance.awaiting >= AWAITING_ORGANIZATIONS_PER_ACCOUNT) {
       throw new QuotaExceededError(
-        `An account can hold at most ${ceiling} organisations.`,
-        ceiling,
+        'This account already has an organisation waiting for a paid plan.',
       );
     }
+    const awaitingPaidPlan = allowance.free >= FREE_ORGANIZATIONS_PER_ACCOUNT;
 
     const now = new Date();
     const orgId = uuidv7();
@@ -955,7 +986,7 @@ export async function provisionOrganization(
     // will one day disagree with it.
     await createFreeSubscription(tx, orgId);
 
-    return { organization, membership };
+    return { organization, membership, awaitingPaidPlan };
   });
 }
 

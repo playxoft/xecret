@@ -103,7 +103,10 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
 
   const body = await parseJsonBody(request, authorizeRequest);
 
-  const scope = await resolveOrg(principal, body.orgSlug, services);
+  // Open while the control plane is closed: a device sign-in is how a person
+  // reads secrets from a terminal, and the data plane never closes
+  // (`guardControlPlane` in `tenancy.ts`).
+  const scope = await resolveOrg(principal, body.orgSlug, services, { controlPlane: 'exempt' });
   const orgId = scope.organization.id;
 
   try {

@@ -101,12 +101,26 @@ import {
   operatorBillingEdit,
   raiseCurrentUsageAllowance,
 } from '../packages/db/src/repositories/billing.ts';
+import { findOrganizationBySlugWithEntitlements } from '../packages/db/src/repositories/organizations.ts';
 import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
 import { orgSubscriptions } from '../packages/db/src/schema/billing.ts';
 import { subscriptionStatusEnum } from '../packages/db/src/schema/enums.ts';
 import { organizations } from '../packages/db/src/schema/tenancy.ts';
 
 type Args = Record<string, string | boolean>;
+
+/**
+ * Whether the organisation is waiting for a paid plan, read the way the request
+ * path reads it: worked out from the organisations its creator holds, never
+ * stored. Read after any change this run made, so a plan just set shows open.
+ */
+async function awaitingPaidPlan(
+  db: Parameters<typeof findOrganizationBySlugWithEntitlements>[0],
+  slug: string,
+): Promise<boolean> {
+  const found = await findOrganizationBySlugWithEntitlements(db, slug);
+  return found?.entitlements?.awaitingPaidPlan === true;
+}
 
 type SubscriptionStatusValue = (typeof subscriptionStatusEnum.enumValues)[number];
 type BillingInterval = 'monthly' | 'yearly';
@@ -262,6 +276,7 @@ function describe(
   row: typeof orgSubscriptions.$inferSelect,
   slug: string,
   seatLimit: number,
+  awaitingPaidPlan: boolean,
 ): void {
   const entitlements = resolveEntitlements({
     plan: row.plan,
@@ -270,6 +285,7 @@ function describe(
     addonDirectorySync: row.addonDirectorySync,
     limitOverrides: row.limitOverrides ?? undefined,
     currentPeriodEnd: row.currentPeriodEnd,
+    awaitingPaidPlan,
   });
 
   const enabled = Object.entries(entitlements.features)
@@ -286,7 +302,15 @@ function describe(
   console.log(
     `  seats enforced  ${seatLimit}${seatLimit === row.seats ? '' : '  ← diverged from billed'}`,
   );
-  console.log(`  control plane   ${entitlements.controlPlaneActive ? 'open' : 'closed'}`);
+  console.log(
+    `  control plane   ${
+      entitlements.controlPlaneActive
+        ? 'open'
+        : entitlements.awaitingPaidPlan
+          ? 'closed (awaiting a paid plan: past its creator’s two free organisations)'
+          : 'closed'
+    }`,
+  );
   // Stated on every run because it is the property most likely to be doubted
   // during an incident, and the one the product's promise rests on.
   console.log(`  data plane      open (always — see isDataPlaneActive)`);
@@ -393,7 +417,7 @@ async function main(): Promise<void> {
         .from(orgSubscriptions)
         .where(eq(orgSubscriptions.orgId, org.id))
         .limit(1);
-      if (row) describe(row, slug, org.seatLimit);
+      if (row) describe(row, slug, org.seatLimit, await awaitingPaidPlan(db, slug));
       return;
     }
 
@@ -738,7 +762,7 @@ async function main(): Promise<void> {
               'billing at Dodo until you cancel it there; nothing here will act on it again.',
       );
     }
-    describe(updated, slug, seats?.enforced ?? org.seatLimit);
+    describe(updated, slug, seats?.enforced ?? org.seatLimit, await awaitingPaidPlan(db, slug));
   } finally {
     await end();
   }

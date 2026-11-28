@@ -5,7 +5,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { ChangeError, PlanLock } from '@/components/plans/plan-notice';
+import { ChangeError } from '@/components/plans/plan-notice';
+import { useControlPlaneLock } from '@/components/plans/plan-entitlements';
+import { featureLockFrom } from '@/components/plans/plan-gate';
+import { LockedAction, PlanLockNotice } from '@/components/plans/plan-lock';
 import {
   Alert,
   Button,
@@ -198,6 +201,15 @@ export function OverridesCard({
 
   const canSet = list.data?.canSet ?? false;
   const upgradeTo = list.data?.upgradeTo ?? null;
+  // An organisation that downgraded keeps every override its members set, and
+  // "Set an override" is drawn locked with the plan that allows another; while
+  // the organisation waits for a paid plan, every write is.
+  const controlLock = useControlPlaneLock();
+  const setLock =
+    controlLock ??
+    (list.data === null
+      ? null
+      : featureLockFrom('personalOverrides', { enabled: canSet, upgradeTo }));
   /** Every AAD component this browser needs, present and unlocked. */
   const ready = vault !== null && orgId !== null && environmentId !== null;
   const overrides = list.data?.overrides ?? [];
@@ -229,11 +241,13 @@ export function OverridesCard({
                 Everybody else — and every CI run — keeps getting the shared values.
               </CardDescription>
             </div>
-            {list.data !== null && canSet && ready ? (
-              <Button variant="secondary" onClick={() => onSettingChange('')}>
-                <PlusIcon className="size-4" />
-                Set an override
-              </Button>
+            {list.data !== null && ready ? (
+              <LockedAction lock={setLock}>
+                <Button variant="secondary" onClick={() => onSettingChange('')}>
+                  <PlusIcon className="size-4" />
+                  Set an override
+                </Button>
+              </LockedAction>
             ) : null}
           </CardHeader>
 
@@ -247,12 +261,6 @@ export function OverridesCard({
               </p>
             ) : orgId === null || environmentId === null ? (
               <p className="text-fg-subtle text-sm">Reading this environment’s key state…</p>
-            ) : null}
-
-            {/* An organisation that downgraded keeps every override its members
-                set; the card says why there is no way to add another. */}
-            {list.data !== null && !canSet ? (
-              <PlanLock what="Setting a personal override" upgradeTo={upgradeTo} />
             ) : null}
 
             {list.error !== null ? (
@@ -466,7 +474,12 @@ export function SetOverrideStep({
 
       <DialogBody className="flex flex-col gap-4">
         {gate.kind === 'plan' ? (
-          <PlanLock what="Setting a personal override" upgradeTo={gate.upgradeTo} />
+          <PlanLockNotice
+            lock={featureLockFrom('personalOverrides', {
+              enabled: false,
+              upgradeTo: gate.upgradeTo,
+            })}
+          />
         ) : gate.kind === 'locked' ? (
           <Alert tone="info" title="Unlock your vault first">
             An override is encrypted in this browser under a key derived from your own vault, so it

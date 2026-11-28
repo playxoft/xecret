@@ -2,6 +2,7 @@ import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
 
 import {
   formatRetention,
+  FREE_ORGANIZATIONS,
   LIMITS,
   PLAN_COMPARISON,
   PRICING_FAQ,
@@ -191,7 +192,7 @@ export const YEARLY_SAVING_UP_TO = Math.max(yearlySaving('pro'), yearlySaving('t
 // this page and the pricing page read one constant rather than two of the same
 // name.
 
-/** `3` → "3 members", `1` → "1 organisation", `null` → "Unlimited members". */
+/** `3` → "3 members", `1` → "1 project", `null` → "Unlimited members". */
 function many(limit: number | null, one: string, other: string): string {
   if (limit === null) return `Unlimited ${other}`;
   return `${limit.toLocaleString('en-GB')} ${limit === 1 ? one : other}`;
@@ -235,7 +236,7 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
     name: PLANS.free.name,
     audience: 'For one developer who has had enough of moving .env files around.',
     features: [
-      `${many(LIMITS.free.organizations, 'organisation', 'organisations')}, ${many(LIMITS.free.projects, 'project', 'projects')}`,
+      `${FREE_ORGANIZATIONS} free organisations per account, ${many(LIMITS.free.projects, 'project', 'projects')} in each`,
       `${many(LIMITS.free.environmentsPerProject, 'environment', 'environments')} per project`,
       many(LIMITS.free.seats, 'member', 'members'),
       `${many(LIMITS.free.serviceTokens, 'service token', 'service tokens')} for CI`,
@@ -252,7 +253,7 @@ export const PLAN_OFFERS: readonly PlanOffer[] = [
     // yet need to keep anyone out of production" — the unenforced gate above.
     audience: 'For a small team that has outgrown the free limits.',
     features: [
-      `${many(LIMITS.pro.projects, 'project', 'projects')} across ${many(LIMITS.pro.organizations, 'organisation', 'organisations')}`,
+      many(LIMITS.pro.projects, 'project', 'projects'),
       `${many(LIMITS.pro.environmentsPerProject, 'environment', 'environments')} per project, ${many(LIMITS.pro.secretsPerEnvironment, 'secret', 'secrets')} in each`,
       // Just the count. It said "everyone can read every environment", which
       // is the unenforced per-environment gate stated from the other side.

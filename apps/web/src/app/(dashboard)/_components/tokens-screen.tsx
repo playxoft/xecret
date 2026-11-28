@@ -31,6 +31,8 @@ import {
 } from '@/components/ui';
 import { LevelPills, SERVICE_TOKEN_LEVELS } from '@/components/members/level-toggle';
 import { CreateTokenDialog } from '@/components/tokens/create-token-dialog';
+import { useOrgUsage, usePlanLimit, useRefreshPlan } from '@/components/plans/plan-entitlements';
+import { LockedAction } from '@/components/plans/plan-lock';
 import type {
   CliToken,
   CliTokenListResponse,
@@ -73,6 +75,12 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const cliTokens = useApiResource<CliTokenListResponse>(apiPath.cliTokens(orgSlug));
 
   const { toast } = useToast();
+  // The live service tokens the plan's ceiling counts, from the shell's one
+  // read of the plan: the listing below also holds revoked and expired ones,
+  // which hold no place.
+  const usage = useOrgUsage();
+  const createLock = usePlanLimit('serviceTokens', usage?.serviceTokens ?? null);
+  const refreshPlan = useRefreshPlan();
   const [creating, setCreating] = useState(false);
   const [revokingService, setRevokingService] = useState<ServiceToken | null>(null);
   const [revokingCli, setRevokingCli] = useState<CliToken | null>(null);
@@ -92,9 +100,11 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
         description="Credentials that act without a person present — CI service tokens and your signed-in devices."
         actions={
           canCreate ? (
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              <PlusIcon className="size-4" /> New service token
-            </Button>
+            <LockedAction lock={createLock}>
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                <PlusIcon className="size-4" /> New service token
+              </Button>
+            </LockedAction>
           ) : undefined
         }
       />
@@ -127,9 +137,11 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
               }
               action={
                 canCreate ? (
-                  <Button variant="primary" onClick={() => setCreating(true)}>
-                    New service token
-                  </Button>
+                  <LockedAction lock={createLock}>
+                    <Button variant="primary" onClick={() => setCreating(true)}>
+                      New service token
+                    </Button>
+                  </LockedAction>
                 ) : undefined
               }
             />
@@ -299,7 +311,10 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
         orgSlug={orgSlug}
         open={creating}
         onOpenChange={setCreating}
-        onCreated={serviceTokens.reload}
+        onCreated={() => {
+          void serviceTokens.reload();
+          refreshPlan();
+        }}
         // The policy the listing was judged against, so the form asks what the
         // server will. `null` until the listing lands; the server still
         // refuses, under the right field, if the dialog was opened before then.
@@ -322,6 +337,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
             toast({ variant: 'success', title: `Revoked ${revokingService.name}` });
             setRevokingService(null);
             serviceTokens.reload();
+            refreshPlan();
           } catch (cause) {
             setError(cause);
             throw cause;

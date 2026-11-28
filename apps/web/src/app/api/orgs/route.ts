@@ -11,9 +11,8 @@ import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import type { RouteContext } from '@/server/route';
 import {
+  organizationAwaitingLimitReached,
   organizationCreateSchema,
-  organizationLimitReached,
-  ORGANIZATIONS_PER_ACCOUNT_LIMIT,
   toOrganization,
 } from '@/server/schemas/resources';
 
@@ -74,22 +73,21 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * requirement rather than a policy: `organizations.created_by` is NOT NULL and a
  * service token has no user behind it at all.
  *
- * ── Why there is a ceiling as well as a rate limit ──
- * See `ORGANIZATIONS_PER_ACCOUNT_LIMIT`. In short: a rate limit bounds the cost
- * per minute, and this endpoint's cost is not only per minute — a slug is
- * claimed out of a global namespace permanently, deleted or not.
+ * ── Why there is a bound as well as a rate limit ──
+ * A rate limit bounds the cost per minute, and this endpoint's cost is not only
+ * per minute: a slug is claimed out of a global namespace permanently, deleted
+ * or not, and every organisation mints an Org Master Key. No plan limits how
+ * many organisations an account holds (each paid one is billed on its own), so
+ * the bound is the free tier's: an account's two oldest Free organisations
+ * work, a later one waits for a paid plan, and an account may hold one that
+ * waits at a time. Creating past the free allowance is allowed, so somebody can
+ * start an organisation and then buy it a plan; creating while one already
+ * waits is refused, with `organizationAwaitingLimitReached`.
  *
- * The *abuse cap* is stated here; the ceiling actually applied is decided and
- * imposed inside `provisionOrganization`, behind the row lock it takes on the
- * account. It used to be counted here, one statement before the transaction,
- * which made it advisory: every concurrent request that read nine passed, and
- * nothing further down disagreed.
- *
- * Note that this route can no longer *name* the ceiling, and must not try. The
- * number is `min(ORGANIZATIONS_PER_ACCOUNT_LIMIT, accountOrganizationCeiling)`,
- * and the second half of that is resolved from the plans of the organisations
- * the account already holds — rows this route never reads. It comes back on
- * `QuotaExceededError.ceiling`, which is why that error carries a field at all.
+ * Decided inside `provisionOrganization`, behind the row lock it takes on the
+ * account, so two concurrent requests cannot both read "none waiting". The
+ * answer says whether the new one is waiting (`awaitingPaidPlan`), which is
+ * what sends the dashboard to its plans page.
  *
  * ── What it provisions, and what it deliberately does not ──
  * `provisionOrganization` mints the organisation, the caller's owner membership
@@ -121,18 +119,6 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   const created = await provisionOrganization(services.db, {
     user: principal.user,
     envelope: services.envelope,
-    // The abuse cap, which is a different control from both the rate and the
-    // plan. Sixty of these a minute, sustained, is still an unbounded number of
-    // Org Master Keys and an unbounded number of slugs burned out of a
-    // namespace every tenant shares — `isOrgSlugAvailable` and
-    // `generateUniqueOrgSlug` do not filter `deleted_at`, deliberately, so
-    // deleting the organisation afterwards gives none of them back.
-    //
-    // `provisionOrganization` takes the lower of this and the plan ceiling
-    // resolved from the organisations the account already holds
-    // (`accountOrganizationCeiling`). On Free that is one; this number is what
-    // bounds the paid case, where the plan says unlimited.
-    limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
     name: body.name,
     // Two different contracts, and the difference matters:
     //
@@ -153,14 +139,13 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
       ]);
     }
 
-    // The ceiling comes off the error rather than out of the constant above.
-    // They are no longer the same number: the constant is the abuse cap, and
-    // the transaction applied `min(cap, plan ceiling)` — one, for an account
-    // holding only Free organisations. Stating ten to somebody refused at one
-    // is an error message that describes a rule the system is not following.
+    // One organisation already waiting for a paid plan: pay for it or delete
+    // it first. Recorded, because a script working through this endpoint looks
+    // nothing like a person clicking Create twice, and the log is where the
+    // difference shows.
     if (cause instanceof QuotaExceededError) {
       await recordQuotaRefusal({ services, audit, record }, principal.user.id);
-      throw organizationLimitReached(cause.ceiling);
+      throw organizationAwaitingLimitReached();
     }
 
     throw cause;
@@ -176,7 +161,12 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   return json(
     // `role` is read from the membership the transaction just wrote rather than
     // hard-coded as `owner`, so this response cannot disagree with the row.
-    { organization: toOrganization(created.organization, created.membership.role) },
+    // `awaitingPaidPlan` says the account's free allowance was already spent,
+    // so this one needs a plan before it can be used.
+    {
+      organization: toOrganization(created.organization, created.membership.role),
+      awaitingPaidPlan: created.awaitingPaidPlan,
+    },
     { status: 201 },
   );
 });

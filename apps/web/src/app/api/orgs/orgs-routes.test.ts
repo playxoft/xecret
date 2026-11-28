@@ -4,7 +4,6 @@ import { uuidv7 } from '@xecret/core/ids';
 import { QuotaExceededError } from '@xecret/db/repositories';
 import type { RequestLog } from '@/server/logging';
 import { createLogger } from '@/server/logging';
-import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from '@/server/schemas/resources';
 
 /**
  * The organisation routes, invoked for real.
@@ -220,6 +219,7 @@ function provisioned() {
       deletedAt: null,
     },
     membership: { role: 'owner' },
+    awaitingPaidPlan: false,
   };
 }
 
@@ -269,21 +269,17 @@ describe('POST /api/orgs — who may create one', () => {
 });
 
 /**
- * The refusal `provisionOrganization` raises from inside its transaction.
- *
- * It carries the ceiling, because the ceiling is no longer a constant: the
- * transaction computes `min(abuse cap, plan ceiling)` from the plans of the
- * organisations the account already holds, and on Free that is one. The route
- * has no way to know the number except from this error.
+ * The refusal `provisionOrganization` raises from inside its transaction: the
+ * account already holds an organisation waiting for a paid plan.
  */
-function atTheLimit(ceiling: number = ORGANIZATIONS_PER_ACCOUNT_LIMIT): void {
+function oneAlreadyWaiting(): void {
   repository.provisionOrganization.mockRejectedValue(
-    new QuotaExceededError(`An account can hold at most ${ceiling} organisations.`, ceiling),
+    new QuotaExceededError('This account already has an organisation waiting for a paid plan.'),
   );
 }
 
-describe('POST /api/orgs — how many an account may hold', () => {
-  it('creates one while the account is below its limit', async () => {
+describe('POST /api/orgs: the free allowance', () => {
+  it('creates one while the account holds none waiting for a plan', async () => {
     const response = await orgs.POST(createRequest());
 
     expect(response.status).toBe(201);
@@ -291,40 +287,38 @@ describe('POST /api/orgs — how many an account may hold', () => {
   });
 
   /**
-   * The ceiling is applied where it can actually hold.
-   *
-   * It used to be counted here, one statement before `provisionOrganization`,
-   * with the whole transaction in between — check-then-act with no row lock and
-   * no constraint underneath it, so every concurrent request that read nine
-   * passed. The rate limiter does not bound the overshoot either: Cloudflare's
-   * counters are per-colo, and `consume` fails open when the binding is absent,
-   * which is the documented state of a local or self-hosted deployment. The
-   * route now names the number and the transaction imposes it.
+   * No plan limits how many organisations an account holds, so the route
+   * names no ceiling: the transaction counts the account's Free ones under its
+   * own lock and refuses only a second one waiting.
    */
-  it('hands the ceiling to the transaction rather than checking it beforehand', async () => {
+  it('hands no ceiling to the transaction and counts nothing beforehand', async () => {
     await orgs.POST(createRequest());
 
     expect(repository.provisionOrganization).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT }),
+      expect.not.objectContaining({ limit: expect.anything() }),
     );
-    // Nothing counted outside the transaction on the way in: a second count out
-    // here would be a second, weaker copy of the ceiling.
     expect(repository.countOrganizationsHeldBy).not.toHaveBeenCalled();
   });
 
+  it('says whether the new organisation needs a paid plan before it can be used', async () => {
+    repository.provisionOrganization.mockImplementation(async () => ({
+      ...provisioned(),
+      awaitingPaidPlan: true,
+    }));
+
+    const payload = await body(await orgs.POST(createRequest()));
+
+    expect(payload['awaitingPaidPlan']).toBe(true);
+  });
+
   /**
-   * The refusal that bounds the standing cost. A rate limit bounds how fast this
-   * endpoint can be called; only this bounds how many organisations — and how
-   * many permanently claimed slugs — one account can accumulate by calling it
-   * patiently.
-   *
    * 409 rather than the 422 a `conflict` from the same call would produce: the
    * two are told apart by the repository's code, because a slug somebody else
    * holds is fixed by renaming and this one is not.
    */
-  it('answers the transaction refusal with a conflict', async () => {
-    atTheLimit();
+  it('answers a second organisation waiting for a plan with a conflict', async () => {
+    oneAlreadyWaiting();
 
     const response = await orgs.POST(createRequest());
 
@@ -332,7 +326,7 @@ describe('POST /api/orgs — how many an account may hold', () => {
   });
 
   // The rate limiter is the cheaper gate and guards the transaction itself, so
-  // it has to run first — otherwise a caller who is being limited can still make
+  // it has to run first: otherwise a caller who is being limited can still make
   // the database open one.
   it('spends the rate limit before it provisions', async () => {
     const order: string[] = [];
@@ -356,7 +350,7 @@ describe('POST /api/orgs — how many an account may hold', () => {
    * list, and only the audit log can tell them apart.
    */
   it('records the refusal, against an organisation the account is a member of', async () => {
-    atTheLimit();
+    oneAlreadyWaiting();
     repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
 
     await orgs.POST(createRequest());
@@ -378,13 +372,10 @@ describe('POST /api/orgs — how many an account may hold', () => {
    * The record carries the actor's email address, IP and user agent, and an
    * organisation's audit log is readable by its members. So the anchor has to be
    * an organisation this account is *in*, which is what the membership join in
-   * `countOrganizationsHeldBy` guarantees — filing it against the most recent
-   * organisation the account had merely *created* put a stranger's current
-   * contact details and network position in front of a tenant they had been
-   * removed from.
+   * `countOrganizationsHeldBy` guarantees.
    */
   it('reads the anchor from the membership-scoped count, and asks for one row', async () => {
-    atTheLimit();
+    oneAlreadyWaiting();
     repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
 
     await orgs.POST(createRequest());
@@ -392,14 +383,8 @@ describe('POST /api/orgs — how many an account may hold', () => {
     expect(repository.countOrganizationsHeldBy).toHaveBeenCalledWith(expect.anything(), USER_ID, 1);
   });
 
-  /**
-   * An account-scoped refusal and an organisation-scoped audit log do not fit,
-   * and `audit_logs.org_id` is NOT NULL. With nowhere truthful to file it,
-   * nothing is filed — the same answer `POST /api/auth/vault/lock` gives a user
-   * who belongs to no organisation. The caller is still refused.
-   */
   it('records nothing when the account is in no organisation at all', async () => {
-    atTheLimit();
+    oneAlreadyWaiting();
     repository.countOrganizationsHeldBy.mockResolvedValue({ total: 0, latestId: null });
 
     const response = await orgs.POST(createRequest());
@@ -410,34 +395,18 @@ describe('POST /api/orgs — how many an account may hold', () => {
   });
 
   // The message is a rule, not an echo. Nothing the caller sent comes back.
-  it('states the limit without repeating the request back', async () => {
-    atTheLimit();
+  it('says the two ways past it without repeating the request back', async () => {
+    oneAlreadyWaiting();
     repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
 
     const payload = await body(await orgs.POST(createRequest({ name: 'Acme', slug: 'acme' })));
     const error = payload['error'] as { code: string; message: string };
 
     expect(error.code).toBe('conflict');
-    expect(error.message).toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
+    expect(error.message).toBe(
+      'You already have an organisation waiting for a paid plan. Choose a plan for it or delete it, then create another.',
+    );
     expect(JSON.stringify(payload)).not.toContain('acme');
-  });
-
-  /**
-   * The regression: the route threw a message built from the abuse cap while the
-   * transaction had refused at the plan ceiling. A Free account holding exactly
-   * one organisation was told it could hold ten — a sentence that is false, and
-   * that describes no rule the system is following.
-   */
-  it('states the ceiling the transaction applied, not the abuse cap', async () => {
-    atTheLimit(1);
-    repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
-
-    const payload = await body(await orgs.POST(createRequest({ name: 'Acme', slug: 'acme' })));
-    const error = payload['error'] as { code: string; message: string };
-
-    expect(error.code).toBe('conflict');
-    expect(error.message).not.toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
-    expect(error.message).toContain('one organisation');
   });
 });
 

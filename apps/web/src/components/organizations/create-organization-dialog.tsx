@@ -29,6 +29,9 @@ import {
   useToast,
 } from '@/components/ui';
 import type { OrganizationResponse } from '@/components/projects/types';
+import { useOrganizationCreateLock, usePlanView } from '@/components/plans/plan-entitlements';
+import { freeAllowanceNotice } from '@/components/plans/plan-gate';
+import { LockedAction, PlanLockNotice } from '@/components/plans/plan-lock';
 import { describeSlugProblem, useSlugAvailability } from './use-slug-availability';
 import type { SlugAvailability } from './use-slug-availability';
 
@@ -128,6 +131,14 @@ function CreateOrganizationForm({
 }) {
   const router = useRouter();
   const { toast } = useToast();
+  // The free allowance, from the shell's read of the plan, said before Create
+  // is pressed: two Free organisations already working means this one will
+  // wait for a paid plan, and one already waiting means this one cannot be
+  // made until that one is paid for or deleted.
+  const view = usePlanView();
+  const createLock = useOrganizationCreateLock();
+  const allowanceNotice =
+    view?.entitlements == null ? null : freeAllowanceNotice(view.entitlements.account);
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -187,15 +198,18 @@ function CreateOrganizationForm({
     setFormError(null);
 
     try {
-      const created = await api.post<OrganizationResponse>(apiPath.orgs(), {
-        name: trimmed,
-        slug: effectiveSlug,
-      });
+      const created = await api.post<OrganizationResponse & { awaitingPaidPlan?: boolean }>(
+        apiPath.orgs(),
+        { name: trimmed, slug: effectiveSlug },
+      );
+      const awaiting = created.awaitingPaidPlan === true;
 
       toast({
         variant: 'success',
         title: `Created ${created.organization.name}`,
-        description: `Its slug is ${created.organization.slug}. Create your first project to start storing secrets.`,
+        description: awaiting
+          ? 'Choose a plan for it to start using it.'
+          : `Its slug is ${created.organization.slug}. Create your first project to start storing secrets.`,
       });
 
       onOpenChange(false);
@@ -205,7 +219,13 @@ function CreateOrganizationForm({
       // fell back to the first organisation it knew, and drew that one's name
       // over the new organisation's page until the refetch caught up.
       await onCreated?.();
-      router.push(appPath.org(created.organization.slug));
+      // Past the free allowance it waits for a plan, so it opens on the page
+      // that buys one, under the banner that says why.
+      router.push(
+        awaiting
+          ? appPath.orgPlans(created.organization.slug)
+          : appPath.org(created.organization.slug),
+      );
     } catch (cause) {
       if (isApiError(cause)) {
         const fields = cause.fieldErrors();
@@ -313,6 +333,12 @@ function CreateOrganizationForm({
           </div>
         </Field>
 
+        {createLock !== null ? (
+          <PlanLockNotice lock={createLock} />
+        ) : allowanceNotice !== null ? (
+          <Alert tone="info">{allowanceNotice}</Alert>
+        ) : null}
+
         {formError !== null ? <Alert tone="danger">{formError}</Alert> : null}
       </DialogBody>
 
@@ -327,14 +353,16 @@ function CreateOrganizationForm({
             not an authority, and blocking on it would leave the button dead if
             the request failed for reasons the user cannot see. The server has
             the final say either way. */}
-        <Button
-          type="submit"
-          variant="primary"
-          loading={submitting}
-          disabled={isEmpty || availability.state === 'invalid'}
-        >
-          Create
-        </Button>
+        <LockedAction lock={createLock}>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={submitting}
+            disabled={isEmpty || availability.state === 'invalid'}
+          >
+            Create
+          </Button>
+        </LockedAction>
       </DialogFooter>
     </form>
   );

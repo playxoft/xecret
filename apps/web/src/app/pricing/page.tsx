@@ -42,6 +42,7 @@ import {
   formatCount,
   formatLimit,
   formatRetention,
+  FREE_ORGANIZATIONS,
   LIMITS,
   MINIMUM_SEATS,
   NOT_YET,
@@ -548,7 +549,9 @@ const PRICED_PLANS: readonly Plan[] = [
     },
     audience: 'For one developer who has had enough of moving .env files around.',
     features: [
-      { text: `${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects` },
+      {
+        text: `${FREE_ORGANIZATIONS} free organisations per account, ${LIMITS.free.projects} projects in each`,
+      },
       { text: `${LIMITS.free.environmentsPerProject} environments per project` },
       { text: `${LIMITS.free.seats} members` },
       { text: `${LIMITS.free.serviceTokens} service tokens for CI` },
@@ -614,9 +617,8 @@ const PRICED_PLANS: readonly Plan[] = [
     audience:
       'For a small team that has outgrown the free limits and does not yet need to keep anyone out of production.',
     features: [
-      {
-        text: `${formatLimit(LIMITS.pro.projects)} projects across ${formatLimit(LIMITS.pro.organizations)} organisations`,
-      },
+      // No organisation count: a plan covers the organisation it is bought for.
+      { text: `${formatLimit(LIMITS.pro.projects)} projects` },
       {
         text: `${formatLimit(LIMITS.pro.environmentsPerProject)} environments per project, ${formatLimit(LIMITS.pro.secretsPerEnvironment)} secrets in each`,
       },

@@ -63,7 +63,9 @@ export const POST = authenticatedRoute<Params>(
     requireBillingSession(principal);
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
 
-    const scope = await resolveOrg(principal, params.orgSlug, services);
+    // Open while the control plane is closed: paying is how an organisation
+    // awaiting a plan is opened (`guardControlPlane` in `tenancy.ts`).
+    const scope = await resolveOrg(principal, params.orgSlug, services, { controlPlane: 'exempt' });
     const orgAudit = audit(scope.organization.id);
     authorizeBilling(scope, { audit: orgAudit, record }, ['billing.plan_change_requested']);
 
