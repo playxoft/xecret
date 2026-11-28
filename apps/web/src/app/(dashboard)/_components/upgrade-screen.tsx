@@ -8,7 +8,7 @@ import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { PageHeader } from '@/components/layout';
 import { ComplimentaryPlanNotice } from '@/components/plans/complimentary-plan';
-import { ADDON_NOT_YET, formatCount, NOT_YET } from '@/components/plans/pricing-content';
+import { ADDON_NOT_YET, NOT_YET } from '@/components/plans/pricing-content';
 import type { Cell } from '@/components/plans/pricing-content';
 import { checkoutPromoCode, PromoCodeField } from '@/components/plans/promo-code-field';
 import {
@@ -35,24 +35,34 @@ import type { PromoCodePreviewPayload } from '@/server/schemas/admin';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import {
+  CurrentPlanMarker,
+  PeriodToggle,
+  PlanFeatures,
+  PlanPrice,
+  Reassurance,
+} from './plan-chooser';
 import { ErrorState } from './resource-states';
-import { Segmented } from './segmented';
 import { canAdminister, useOrganization } from './session';
 import {
   billingTerm,
+  CHANGE_PITCH,
+  CHANGE_REASSURANCE,
+  CHECKOUT_REASSURANCE,
   COMPARISON_COLUMNS,
   comparisonFor,
   ENTERPRISE_CAVEAT,
   ENTERPRISE_PRICE,
   FREE_PRICE,
   nextCeiling,
-  pastTheAllowance,
+  PAID_OFFERS,
   PLAN_OFFERS,
+  PLAN_PITCH,
   PURCHASE_FAQ,
+  RECOMMENDED_LABEL,
   switchPlanHref,
+  trialNote,
   USD_PRICES,
-  YEARLY_SAVING_UP_TO,
-  yearlySaving,
 } from './upgrade-plans';
 import type {
   BillingPeriod,
@@ -113,6 +123,18 @@ import type {
  * component. A free-plan code is redeemed on the spot and the page re-reads
  * the plan; a discount code is held here and goes with an "Upgrade to …" for a
  * plan it covers — as part of the decision, so it is under the decision's key.
+ *
+ * ── How the plans are put to a buyer ──
+ * What the organisation gets comes first: a heading about the team rather
+ * than "Choose a plan", and one plain line under it (`PLAN_PITCH`, or
+ * `CHANGE_PITCH` for a subscriber, who is moving rather than buying). Then the
+ * three plans side by side, Team marked as the one built for a team, each
+ * with its figure, the saving yearly billing really makes on it, the few
+ * differences that decide it and one button that says what it does. Under
+ * them, beside the buttons, the facts about paying (`CHECKOUT_REASSURANCE`).
+ * The pieces are `plan-chooser.tsx`'s, shared with the billing screen's
+ * change form so the two read as one chooser. The whole table follows for
+ * anybody who wants every row.
  */
 
 type Billing = BillingStatusPayload;
@@ -276,12 +298,13 @@ export function UpgradeScreen({
       case 'loading':
         return <Skeleton className="h-9 w-full" />;
       case 'current':
-        return (
-          <Button variant="secondary" className="w-full" disabled>
-            Your current plan
-          </Button>
-        );
-      case 'checkout':
+        // Said, not offered: a disabled button reads to a screen reader as a
+        // control that is unavailable, where this is a fact about the plan.
+        return <CurrentPlanMarker />;
+      case 'checkout': {
+        // Only beside a checkout that can start one, and as a condition: see
+        // `trialNote`.
+        const trial = trialNote(offered.plan);
         return (
           <div className="flex flex-col gap-2">
             <Button
@@ -294,6 +317,9 @@ export function UpgradeScreen({
               Upgrade to {offer.name}
               <ArrowRightIcon className="size-4" />
             </Button>
+            {trial !== null ? (
+              <p className="text-fg-muted text-center text-xs leading-5">{trial}</p>
+            ) : null}
             {appliedPromo !== null ? (
               <p className="text-fg-subtle text-center text-xs leading-5">
                 {checkoutPromoCode(appliedPromo, offered.plan) !== null
@@ -306,6 +332,7 @@ export function UpgradeScreen({
             ) : null}
           </div>
         );
+      }
       case 'change':
         return (
           <div className="flex flex-col gap-2">
@@ -392,6 +419,29 @@ export function UpgradeScreen({
   const statusLabel =
     billing !== null && billing.plan !== 'free' ? (STATUS_LABEL[billing.status] ?? null) : null;
 
+  // What the plans lead with. A subscriber is moving between plans, and is
+  // told first when a move lands. An organisation the billing read says can
+  // buy nothing here (support's, or payments switched off since the page was
+  // served) and an installation that sells nothing get a plain "Compare
+  // plans": a pitch with nothing behind it to take up is an advert. Everybody
+  // else, owner or not, gets what a paid plan gives the team.
+  const pitch = !selling
+    ? null
+    : billing?.actions.changePlan === true
+      ? CHANGE_PITCH
+      : billing !== null && !billing.actions.checkout
+        ? null
+        : PLAN_PITCH;
+
+  // The facts about paying go beside the buttons that pay, so only where a
+  // card offers one: `offerFor` decides, as it does for the buttons.
+  const offers = PAID_OFFERS.map((offer) => offerFor(offer.id).kind);
+  const reassurance = offers.includes('checkout')
+    ? { items: CHECKOUT_REASSURANCE, label: 'About paying' }
+    : offers.includes('change')
+      ? { items: CHANGE_REASSURANCE, label: 'About changing plan' }
+      : null;
+
   return (
     // A section of the organisation's settings, and the widest of them: the
     // frame's column, the same width on every section, is sized for its three
@@ -403,12 +453,14 @@ export function UpgradeScreen({
     // laptop-sized viewport leaves the page well short of what `lg` used to
     // promise, and three columns squeezed into it were 15rem each.
     <div className="@container flex flex-col gap-8">
+      {/* The section's name, as the settings list says it. What a plan gives
+          the team is said under it, at the head of the plans themselves. */}
       <PageHeader
         as="h2"
-        title={selling ? `Upgrade ${orgName}` : `Plans for ${orgName}`}
+        title={`Plans for ${orgName}`}
         description={
           selling
-            ? 'Every paid plan is priced per member, with a lower yearly rate. Service tokens, CI runners and agents never take a seat, and a build never fails for a billing reason.'
+            ? 'Priced per member, with a lower yearly rate. Service tokens, CI runners and agents never take a seat, and a build never fails for a billing reason.'
             : 'What each plan includes.'
         }
         badge={
@@ -440,29 +492,23 @@ export function UpgradeScreen({
       />
 
       <section aria-labelledby="plans-heading" className="flex flex-col gap-5">
-        <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-between">
-          <h2 id="plans-heading" className="text-fg text-base font-semibold">
-            {selling && !notOwner ? 'Choose a plan' : 'Compare plans'}
-          </h2>
+        <div className="flex flex-col gap-4 @2xl:flex-row @2xl:items-end @2xl:justify-between">
+          <div className="min-w-0">
+            <h2
+              id="plans-heading"
+              className={cn(
+                'text-fg font-semibold tracking-tight text-balance',
+                pitch !== null ? 'text-lg' : 'text-base',
+              )}
+            >
+              {pitch?.heading ?? 'Compare plans'}
+            </h2>
+            {pitch !== null ? (
+              <p className="text-fg-muted mt-1 max-w-2xl text-sm leading-6">{pitch.subhead}</p>
+            ) : null}
+          </div>
           {selling ? (
-            <Segmented
-              label="Billing period"
-              options={[
-                { value: 'monthly', label: 'Monthly' },
-                {
-                  value: 'yearly',
-                  label: (
-                    <>
-                      Yearly
-                      {/* A tint pill rather than bare green text, so it reads
-                          the same on the selected and unselected segment. */}
-                      <span className="bg-success-tint text-success-text rounded-full px-1.5 py-0.5 text-xs font-normal">
-                        Save up to {YEARLY_SAVING_UP_TO}%
-                      </span>
-                    </>
-                  ),
-                },
-              ]}
+            <PeriodToggle
               value={period}
               onChange={(next) => {
                 setPeriod(next);
@@ -470,6 +516,7 @@ export function UpgradeScreen({
                 // a new choice, with a new key when it is sent.
                 setFailure(null);
               }}
+              className="shrink-0 self-start @2xl:self-auto"
             />
           ) : null}
         </div>
@@ -489,6 +536,17 @@ export function UpgradeScreen({
             />
           ))}
         </div>
+
+        {/* Directly under the row the buttons end, so the facts about paying
+            are read where the decision to pay is made. */}
+        {reassurance !== null ? (
+          <Reassurance
+            items={reassurance.items}
+            label={reassurance.label}
+            layout="row"
+            className="border-line-subtle bg-canvas-inset rounded-xl border px-5 py-4"
+          />
+        ) : null}
 
         {/* Under the cards whose buttons it changes, and only where the
             billing read allows a code at all — which also means an owner. */}
@@ -512,17 +570,16 @@ export function UpgradeScreen({
 
         <EnterpriseRow selling={selling} current={currentPlan === 'enterprise'} />
 
+        {/* It used to add that every currency is on the pricing page, which
+            shows only the sheet for the visitor's country (`currencyMenuShown`
+            there): what is true everywhere is the checkout's price. Not said
+            to a subscriber, who has no checkout ahead of them. */}
         {selling ? (
           <p className="text-fg-subtle text-center text-sm leading-6">
-            Prices in US dollars. Checkout shows yours, in your billing currency, before you pay —
-            every currency is on the{' '}
-            <Link
-              href="/pricing"
-              className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
-            >
-              pricing page
-            </Link>
-            .
+            Prices in US dollars.
+            {billing?.actions.changePlan === true
+              ? ''
+              : ' Checkout shows yours, in your billing currency, before you pay.'}
           </p>
         ) : null}
       </section>
@@ -742,14 +799,19 @@ function PlanCard({
   current: boolean;
   foot: ReactNode;
 }) {
+  // Recommended only where something is sold: with no price and no button, a
+  // recommendation is a judgement about a purchase nobody can make here.
+  const recommended = offer.recommended && payments.taken;
+
   return (
     <article
       aria-labelledby={`plan-${offer.id}`}
       className={cn(
         'bg-surface shadow-raised flex h-full flex-col rounded-xl border p-5',
         // The pricing page's treatment: an accent edge on the recommended plan,
-        // and nothing louder. The current plan is said in words, not colour.
-        offer.recommended ? 'border-accent' : 'border-line',
+        // drawn a hair heavier here so it still stands out beside the current
+        // plan's chip. The current plan is said in words, not colour.
+        recommended ? 'border-accent ring-accent ring-1' : 'border-line',
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -760,9 +822,9 @@ function PlanCard({
           <Badge tone="success" className="text-xs">
             Current plan
           </Badge>
-        ) : offer.recommended && payments.taken ? (
+        ) : recommended ? (
           <Badge tone="accent" className="text-xs">
-            Recommended
+            {RECOMMENDED_LABEL}
           </Badge>
         ) : null}
       </div>
@@ -770,69 +832,22 @@ function PlanCard({
       {/* The price and the seat floor under it are both terms of a sale, so
           neither is shown where there is no sale to make. */}
       {payments.taken ? (
-        <>
-          <Price plan={offer.id} period={period} />
+        <div className="mt-4">
+          <PlanPrice plan={offer.id} period={period} />
           {offer.caveat !== null ? (
             <p className="text-fg-subtle mt-2 text-xs leading-5">{offer.caveat}</p>
           ) : null}
-        </>
+        </div>
       ) : null}
 
       <p className="text-fg-muted border-line-subtle mt-4 border-t pt-4 text-sm leading-6">
         {offer.audience}
       </p>
 
-      <ul className="mt-4 space-y-2.5">
-        {offer.features.map((feature) => (
-          <li key={feature} className="flex gap-2.5">
-            <CheckIcon className="text-success-text mt-1 size-4 shrink-0" />
-            <span className="text-fg-muted text-sm leading-6">{feature}</span>
-          </li>
-        ))}
-        {/* The allowance, with what happens past it said beside the number —
-            on a paid plan that is a charge, and a charge is not small print. */}
-        <li className="flex gap-2.5">
-          <CheckIcon className="text-success-text mt-1 size-4 shrink-0" />
-          <span className="text-fg-muted text-sm leading-6">
-            {formatCount(offer.includedFetches)} secret fetches a month included
-            <span className="text-fg-subtle block text-xs leading-5">
-              {pastTheAllowance(offer.id, payments)}
-            </span>
-          </span>
-        </li>
-      </ul>
+      <PlanFeatures offer={offer} payments={payments} className="mt-4" />
 
       {foot !== null ? <div className="mt-auto pt-6">{foot}</div> : null}
     </article>
-  );
-}
-
-function Price({ plan, period }: { plan: OfferPlanId; period: BillingPeriod }) {
-  const figure = plan === 'free' ? null : USD_PRICES[plan][period];
-
-  return (
-    <div className="mt-4">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <p className="text-fg text-3xl font-semibold tracking-[-0.02em]">
-          {figure?.price ?? FREE_PRICE.price}
-        </p>
-        {plan !== 'free' && period === 'yearly' ? (
-          <span className="bg-success-tint text-success-text rounded-full px-1.5 py-0.5 text-xs font-medium">
-            Save {yearlySaving(plan)}% on monthly
-          </span>
-        ) : null}
-      </div>
-      <p className="text-fg-subtle mt-1 text-sm">{figure?.unit ?? FREE_PRICE.unit}</p>
-      {/* Every card keeps the third line's height, shown or not, so pressing
-          the toggle never moves a card's list or its button. */}
-      {figure?.note ? (
-        <p className="text-fg-subtle mt-1 text-xs leading-5">{figure.note}</p>
-      ) : (
-        <p aria-hidden="true" className="invisible mt-1 text-xs leading-5">
-          &nbsp;
-        </p>
-      )}
-    </div>
   );
 }
 

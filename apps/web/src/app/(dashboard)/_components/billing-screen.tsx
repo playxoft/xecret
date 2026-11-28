@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 
@@ -25,9 +25,18 @@ import type { PromoCodePreviewPayload } from '@/server/schemas/admin';
 import type { BillingStatusPayload } from '@/server/schemas/billing';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { PeriodToggle, PlanOption, Reassurance } from './plan-chooser';
 import { ErrorState, FormSkeleton } from './resource-states';
-import { Segmented } from './segmented';
 import { canAdminister, useOrganization } from './session';
+import {
+  CHANGE_PITCH,
+  CHANGE_REASSURANCE,
+  CHECKOUT_REASSURANCE,
+  PAID_OFFERS,
+  PLAN_PITCH,
+  trialNote,
+  TRIALING_CHANGE_NOTE,
+} from './upgrade-plans';
 
 /**
  * The billing screen (P12): the plan, the seats, the renewal, this period's
@@ -52,6 +61,15 @@ import { canAdminister, useOrganization } from './session';
  * with the checkout, where Dodo takes the amount off. A plan given that way —
  * or by an admin — is a complimentary plan, and the screen says so, and until
  * when, instead of "managed by support".
+ *
+ * ── The plan chooser ──
+ * Subscribing and changing plan share one form (`ChoosePlan`): the plans
+ * page's chooser, drawn with its pieces (`plan-chooser.tsx`), so the two
+ * read as one thing. Pro and Team side by side as two radio cards with their
+ * figures, the period toggle over them, and one button under them that names
+ * what it does ("Upgrade to Team", "Review the switch to Team, billed
+ * yearly"), with the facts about paying beside it. What the form sends, and
+ * under which key, is unchanged by how it is drawn.
  */
 
 type Billing = BillingStatusPayload;
@@ -609,37 +627,55 @@ function ChoosePlan({
     }
   }
 
+  // The radios' shared name, unique to this form.
+  const group = useId();
+  const pitch = subscribed ? CHANGE_PITCH : PLAN_PITCH;
+  // What the button moves to, in the words it was chosen by: the plan and its
+  // period, or the period alone where the plan stays the same.
+  const target =
+    billing.plan === plan ? `${interval} billing` : `${PLAN_NAME[plan]}, billed ${interval}`;
+  // A checkout that can start a trial says so, as a condition (`trialNote`).
+  const trial = subscribed ? null : trialNote(plan);
+  // The subscription's own currency, where it is not the one the figures are in.
+  const otherCurrency =
+    subscribed && billing.currency !== null && billing.currency.toUpperCase() !== 'USD'
+      ? billing.currency
+      : null;
+
   return (
-    <Card>
+    // A container, so the two plans sit side by side when the card has the
+    // room for them, whatever the viewport.
+    <Card className="@container">
       <CardHeader>
-        <CardTitle>{subscribed ? 'Change plan' : 'Choose a plan'}</CardTitle>
-        <CardDescription>
-          Per member, with a lower yearly rate. Service tokens and CI never take a seat. Prices in
-          every currency are on the <Link href="/pricing">pricing page</Link>; checkout shows yours
-          before you pay. Enterprise is <Link href="/contact">arranged with us</Link>.
+        <CardTitle className="text-balance">{pitch.heading}</CardTitle>
+        <CardDescription className="leading-6">
+          {pitch.subhead} Service tokens and CI never take a seat.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-wrap gap-3">
-          <Segmented
-            label="Plan"
-            options={[
-              { value: 'pro', label: 'Pro' },
-              { value: 'team', label: 'Team' },
-            ]}
-            value={plan}
-            onChange={choose(setPlan)}
-          />
-          <Segmented
-            label="Billing period"
-            options={[
-              { value: 'monthly', label: 'Monthly' },
-              { value: 'yearly', label: 'Yearly' },
-            ]}
-            value={interval}
-            onChange={choose(setBillingInterval)}
-          />
-        </div>
+        <PeriodToggle
+          value={interval}
+          onChange={choose(setBillingInterval)}
+          className="self-start"
+        />
+
+        <fieldset className="min-w-0">
+          <legend className="sr-only">Plan</legend>
+          <div className="grid gap-3 @xl:grid-cols-2">
+            {PAID_OFFERS.map((offer) => (
+              <PlanOption
+                key={offer.id}
+                offer={offer}
+                group={group}
+                period={interval}
+                selected={plan === offer.id}
+                current={subscribed && billing.plan === offer.id}
+                payments={{ taken: billing.enabled, overageRate: billing.usage.overageRate }}
+                onSelect={choose(setPlan)}
+              />
+            ))}
+          </div>
+        </fieldset>
 
         {/* The billing floor and nothing else. These used to sell Team on roles
             and per-environment access, and Pro by its absence ("every member
@@ -655,6 +691,11 @@ function ChoosePlan({
         ) : (
           <p className="text-fg-subtle text-sm">Pro has no seat minimum.</p>
         )}
+
+        {trial !== null ? <p className="text-fg-muted text-sm leading-6">{trial}</p> : null}
+        {subscribed && billing.status === 'trialing' ? (
+          <p className="text-fg-muted text-sm leading-6">{TRIALING_CHANGE_NOTE}</p>
+        ) : null}
 
         {!subscribed && promoField !== null ? promoField : null}
         {!subscribed && promo !== null && promoCode === null ? (
@@ -691,26 +732,57 @@ function ChoosePlan({
           </Alert>
         ) : null}
 
-        <div>
-          {!subscribed ? (
-            <Button variant="primary" loading={busy} onClick={() => void subscribe()}>
-              Continue to checkout
-            </Button>
-          ) : preview ? (
-            <Button variant="primary" loading={busy} onClick={() => void confirmChange()}>
-              Confirm the change
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              loading={busy}
-              disabled={same}
-              onClick={() => void previewChange()}
-            >
-              {same ? 'This is your current plan' : 'Review the change'}
-            </Button>
-          )}
+        {/* One button, saying what it does, with the facts about paying (or
+            about changing plan) beside it rather than a scroll away. */}
+        <div className="flex flex-col gap-4 @2xl:flex-row @2xl:items-start @2xl:gap-6">
+          <div className="shrink-0">
+            {!subscribed ? (
+              <Button variant="primary" loading={busy} onClick={() => void subscribe()}>
+                Upgrade to {PLAN_NAME[plan]}
+              </Button>
+            ) : preview ? (
+              <Button variant="primary" loading={busy} onClick={() => void confirmChange()}>
+                Confirm the switch to {target}
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                loading={busy}
+                disabled={same}
+                onClick={() => void previewChange()}
+              >
+                {same ? 'This is your current plan' : `Review the switch to ${target}`}
+              </Button>
+            )}
+          </div>
+          <Reassurance
+            items={subscribed ? CHANGE_REASSURANCE : CHECKOUT_REASSURANCE}
+            label={subscribed ? 'About changing plan' : 'About paying'}
+            className="min-w-0 flex-1"
+          />
         </div>
+
+        {/* "In every currency" is not said: the pricing page shows the one
+            sheet for the visitor's country (`currencyMenuShown`). */}
+        <p className="text-fg-subtle text-sm leading-6">
+          Prices in US dollars.
+          {otherCurrency !== null ? ` This subscription is billed in ${otherCurrency}.` : ''} Every
+          limit of every plan is compared on the{' '}
+          <Link
+            href="/pricing#compare"
+            className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
+          >
+            pricing page
+          </Link>
+          , and Enterprise is{' '}
+          <Link
+            href="/contact"
+            className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4"
+          >
+            arranged with us
+          </Link>
+          .
+        </p>
       </CardContent>
     </Card>
   );
